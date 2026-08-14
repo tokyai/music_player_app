@@ -11,6 +11,7 @@ import 'screens/player_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/playlist_screen.dart';
 import 'screens/settings_screen.dart';
+import 'services/favorite_service.dart';
 import 'services/floating_capsule_service.dart';
 import 'theme/app_theme.dart';
 import 'utils/system_ui.dart';
@@ -52,6 +53,7 @@ class MusicPlayerApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => PlayerProvider()),
         ChangeNotifierProvider(create: (_) => ThemeController()),
+        ChangeNotifierProvider(create: (_) => FavoriteService()..load()),
       ],
       child: Consumer<ThemeController>(
         builder: (context, themeCtrl, _) {
@@ -120,145 +122,168 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isLandscape =
-        MediaQuery.orientationOf(context) == Orientation.landscape;
-    final hasCurrentSong = context.select<PlayerProvider, bool>(
-      (player) => player.currentSong != null,
-    );
-    final content = IndexedStack(
-      index: _currentIndex,
-      children: _screens
-          .map((screen) => screen ?? const SizedBox.shrink())
-          .toList(),
-    );
+    return Selector<PlayerProvider, ({bool hasSong, String? error})>(
+      selector: (_, player) =>
+          (hasSong: player.currentSong != null, error: player.lastError),
+      builder: (context, playerState, _) {
+        if (playerState.error != null) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context)
+              ..hideCurrentSnackBar()
+              ..showSnackBar(
+                SnackBar(
+                  content: Text(playerState.error!),
+                  duration: const Duration(seconds: 3),
+                  action: SnackBarAction(label: '知道了', onPressed: () {}),
+                ),
+              );
+            context.read<PlayerProvider>().consumeError();
+          });
+        }
 
-    if (isLandscape) {
-      return LayoutBuilder(
-        builder: (context, constraints) {
-          final showPlayerPane = hasCurrentSong && constraints.maxWidth >= 960;
-          return Scaffold(
-            body: Row(
+        final isLandscape =
+            MediaQuery.orientationOf(context) == Orientation.landscape;
+        final hasCurrentSong = playerState.hasSong;
+        final content = IndexedStack(
+          index: _currentIndex,
+          children: _screens
+              .map((screen) => screen ?? const SizedBox.shrink())
+              .toList(),
+        );
+
+        if (isLandscape) {
+          return LayoutBuilder(
+            builder: (context, constraints) {
+              final showPlayerPane =
+                  hasCurrentSong && constraints.maxWidth >= 960;
+              return Scaffold(
+                body: Row(
+                  children: [
+                    SafeArea(
+                      right: false,
+                      child: NavigationRail(
+                        key: const ValueKey('landscape-navigation'),
+                        minWidth: constraints.maxHeight < 480 ? 88 : 96,
+                        selectedIndex: _currentIndex,
+                        onDestinationSelected: _selectScreen,
+                        labelType: NavigationRailLabelType.all,
+                        groupAlignment: constraints.maxHeight < 480 ? 0 : -0.35,
+                        useIndicator: true,
+                        indicatorColor: AppColors.primarySoft,
+                        selectedIconTheme: const IconThemeData(
+                          color: AppColors.primary,
+                          size: 25,
+                        ),
+                        unselectedIconTheme: IconThemeData(
+                          color: AppColors.textSecondary,
+                          size: 23,
+                        ),
+                        selectedLabelTextStyle: const TextStyle(
+                          color: AppColors.primary,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                        unselectedLabelTextStyle: TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        leading: _buildLandscapeBrand(
+                          compact: constraints.maxHeight < 480,
+                        ),
+                        destinations: const [
+                          NavigationRailDestination(
+                            icon: Icon(Icons.explore_outlined),
+                            selectedIcon: Icon(Icons.explore),
+                            label: Text('发现'),
+                          ),
+                          NavigationRailDestination(
+                            icon: Icon(Icons.search_outlined),
+                            selectedIcon: Icon(Icons.search),
+                            label: Text('搜索'),
+                          ),
+                          NavigationRailDestination(
+                            icon: Icon(Icons.playlist_play_outlined),
+                            selectedIcon: Icon(Icons.playlist_play),
+                            label: Text('歌单'),
+                          ),
+                          NavigationRailDestination(
+                            icon: Icon(Icons.settings_outlined),
+                            selectedIcon: Icon(Icons.settings),
+                            label: Text('设置'),
+                          ),
+                        ],
+                      ),
+                    ),
+                    VerticalDivider(
+                      width: 1,
+                      thickness: 1,
+                      color: AppColors.surfaceSoft,
+                    ),
+                    Expanded(
+                      child: Column(
+                        children: [
+                          Expanded(child: content),
+                          if (hasCurrentSong && !showPlayerPane)
+                            const MiniPlayer(),
+                        ],
+                      ),
+                    ),
+                    if (showPlayerPane) ...[
+                      VerticalDivider(
+                        width: 1,
+                        thickness: 1,
+                        color: AppColors.surfaceSoft,
+                      ),
+                      const SizedBox(width: 240, child: LandscapeMiniPlayer()),
+                    ],
+                  ],
+                ),
+              );
+            },
+          );
+        }
+
+        return Scaffold(
+          body: content,
+          bottomNavigationBar: SafeArea(
+            top: false,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                SafeArea(
-                  right: false,
-                  child: NavigationRail(
-                    key: const ValueKey('landscape-navigation'),
-                    minWidth: constraints.maxHeight < 480 ? 88 : 96,
-                    selectedIndex: _currentIndex,
-                    onDestinationSelected: _selectScreen,
-                    labelType: NavigationRailLabelType.all,
-                    groupAlignment: constraints.maxHeight < 480 ? 0 : -0.35,
-                    useIndicator: true,
-                    indicatorColor: AppColors.primarySoft,
-                    selectedIconTheme: const IconThemeData(
-                      color: AppColors.primary,
-                      size: 25,
+                const MiniPlayer(),
+                NavigationBar(
+                  selectedIndex: _currentIndex,
+                  onDestinationSelected: _selectScreen,
+                  destinations: const [
+                    NavigationDestination(
+                      icon: Icon(Icons.explore_outlined),
+                      selectedIcon: Icon(Icons.explore),
+                      label: '发现',
                     ),
-                    unselectedIconTheme: IconThemeData(
-                      color: AppColors.textSecondary,
-                      size: 23,
+                    NavigationDestination(
+                      icon: Icon(Icons.search_outlined),
+                      selectedIcon: Icon(Icons.search),
+                      label: '搜索',
                     ),
-                    selectedLabelTextStyle: const TextStyle(
-                      color: AppColors.primary,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
+                    NavigationDestination(
+                      icon: Icon(Icons.playlist_play_outlined),
+                      selectedIcon: Icon(Icons.playlist_play),
+                      label: '歌单',
                     ),
-                    unselectedLabelTextStyle: TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
+                    NavigationDestination(
+                      icon: Icon(Icons.settings_outlined),
+                      selectedIcon: Icon(Icons.settings),
+                      label: '设置',
                     ),
-                    leading: _buildLandscapeBrand(
-                      compact: constraints.maxHeight < 480,
-                    ),
-                    destinations: const [
-                      NavigationRailDestination(
-                        icon: Icon(Icons.explore_outlined),
-                        selectedIcon: Icon(Icons.explore),
-                        label: Text('发现'),
-                      ),
-                      NavigationRailDestination(
-                        icon: Icon(Icons.search_outlined),
-                        selectedIcon: Icon(Icons.search),
-                        label: Text('搜索'),
-                      ),
-                      NavigationRailDestination(
-                        icon: Icon(Icons.playlist_play_outlined),
-                        selectedIcon: Icon(Icons.playlist_play),
-                        label: Text('歌单'),
-                      ),
-                      NavigationRailDestination(
-                        icon: Icon(Icons.settings_outlined),
-                        selectedIcon: Icon(Icons.settings),
-                        label: Text('设置'),
-                      ),
-                    ],
-                  ),
+                  ],
                 ),
-                VerticalDivider(
-                  width: 1,
-                  thickness: 1,
-                  color: AppColors.surfaceSoft,
-                ),
-                Expanded(
-                  child: Column(
-                    children: [
-                      Expanded(child: content),
-                      if (hasCurrentSong && !showPlayerPane) const MiniPlayer(),
-                    ],
-                  ),
-                ),
-                if (showPlayerPane) ...[
-                  VerticalDivider(
-                    width: 1,
-                    thickness: 1,
-                    color: AppColors.surfaceSoft,
-                  ),
-                  const SizedBox(width: 240, child: LandscapeMiniPlayer()),
-                ],
               ],
             ),
-          );
-        },
-      );
-    }
-
-    return Scaffold(
-      body: content,
-      bottomNavigationBar: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // 迷你播放器（悬浮在导航栏上方）
-          const MiniPlayer(),
-          // 导航栏
-          NavigationBar(
-            selectedIndex: _currentIndex,
-            onDestinationSelected: _selectScreen,
-            destinations: const [
-              NavigationDestination(
-                icon: Icon(Icons.explore_outlined),
-                selectedIcon: Icon(Icons.explore),
-                label: '发现',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.search_outlined),
-                selectedIcon: Icon(Icons.search),
-                label: '搜索',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.playlist_play_outlined),
-                selectedIcon: Icon(Icons.playlist_play),
-                label: '歌单',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.settings_outlined),
-                selectedIcon: Icon(Icons.settings),
-                label: '设置',
-              ),
-            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 

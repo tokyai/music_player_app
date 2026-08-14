@@ -5,6 +5,7 @@ import 'package:just_audio_background/just_audio_background.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
 import '../services/api_service.dart';
+import '../services/audio_cache_service.dart';
 import '../services/floating_capsule_service.dart';
 import '../utils/lyric_parser.dart';
 
@@ -27,6 +28,9 @@ class PlayerProvider extends ChangeNotifier {
   Duration _buffered = Duration.zero;
   PlayMode _playMode = PlayMode.sequence;
   String? _errorMessage;
+
+  /// 最近一次播放错误（供 UI 弹提示；消费后清空，避免重复弹）
+  String? _lastError;
 
   // 歌词
   List<LyricLine> _lyrics = [];
@@ -70,6 +74,7 @@ class PlayerProvider extends ChangeNotifier {
   Duration get buffered => _buffered;
   PlayMode get playMode => _playMode;
   String? get errorMessage => _errorMessage;
+  String? get lastError => _lastError;
   List<LyricLine> get lyrics => _lyrics;
   int get currentLyricIndex => _currentLyricIndex;
   bool get showLyric => _showLyric;
@@ -88,6 +93,8 @@ class PlayerProvider extends ChangeNotifier {
       if (FloatingCapsuleService.enabled) {
         FloatingCapsuleService.updatePlayState(state.playing);
       }
+      // 空音频/加载失败保护：加载或解码失败（如 404、空文件、格式不支持）
+      // 会触发 playbackEventStream 的 onError（下方 _errorSub 统一处理：停止 + 提示）
       if (state.processingState == ProcessingState.completed) {
         _onSongComplete();
       }
@@ -113,10 +120,22 @@ class PlayerProvider extends ChangeNotifier {
     _errorSub = _audioPlayer.playbackEventStream.listen(
       (_) {},
       onError: (e) {
+        // 播放中途出错（解码失败/数据流中断）：停止并提示，避免静默
+        _isLoading = false;
         _errorMessage = '播放错误: $e';
+        _lastError = '播放出错：音源可能已失效，已停止播放';
+        _audioPlayer.stop();
         notifyListeners();
       },
     );
+  }
+
+  /// UI 消费完错误后调用，防止重复弹提示
+  void consumeError() {
+    if (_lastError != null) {
+      _lastError = null;
+      notifyListeners();
+    }
   }
 
   Future<void> _loadSettings() async {
@@ -236,14 +255,14 @@ class PlayerProvider extends ChangeNotifier {
       await settingsReady;
       if (!_isCurrentRequest(requestId, item)) return;
 
+      // 上游 v2.2.18 起，三平台播放地址均由 ChKSz 解析。
+      if (_apiKey.isEmpty) {
+        throw ApiException('API_KEY_REQUIRED', '播放需要配置 API Key（设置 → API 配置）');
+      }
+
       // 选中一首新歌后先停止旧音源，避免 UI 与实际播放内容不一致。
       await _audioPlayer.stop();
       if (!_isCurrentRequest(requestId, item)) return;
-
-      // 网易云直连不需要 API Key；酷狗/QQ 解析播放地址需要。
-      if (item.platform != MusicPlatform.netease && _apiKey.isEmpty) {
-        throw ApiException('API_KEY_REQUIRED', '酷狗/QQ音乐播放需要配置 API Key');
-      }
 
       // 解析播放地址
       SongDetail detail;
@@ -298,10 +317,48 @@ class PlayerProvider extends ChangeNotifier {
         clearError: true,
       );
 
+      // === 缓存逻辑 ===
+      // 1. 先检查本地缓存
+      // 2. 有缓存 → 直接播放本地文件（秒开）
+      // 3. 无缓存 → 直接播放在线 URL，后台异步缓存（不影响首次播放体验）
+      String playPath = detail.url; // 最终播放的路径（URL 或本地文件）
+
+      final cachedPath = await AudioCacheService.getCachedPath(
+        platformCode: item.platform.code,
+        songId: item.id,
+        url: detail.url,
+      );
+
+      if (cachedPath != null) {
+        // 命中缓存：直接播放本地文件
+        debugPrint('缓存命中: $cachedPath');
+        playPath = cachedPath;
+      } else {
+        // 未命中缓存：后台异步下载（不阻塞播放）
+        final cacheName = detail.name.isNotEmpty ? detail.name : item.name;
+        final cacheArtist = detail.artist.isNotEmpty
+            ? detail.artist
+            : item.artist;
+        AudioCacheService.cacheAudio(
+          platformCode: item.platform.code,
+          songId: item.id,
+          url: detail.url,
+          name: cacheName,
+          artist: cacheArtist,
+        ).then((localPath) {
+          if (localPath != null) {
+            debugPrint('后台缓存完成: $localPath');
+          }
+        });
+      }
+
       // 设置音频源并播放（tag: MediaItem 用于系统媒体通知显示歌曲信息）
+      final audioUri = playPath.startsWith('/')
+          ? Uri.file(playPath)
+          : Uri.parse(playPath);
       await _audioPlayer.setAudioSource(
         AudioSource.uri(
-          Uri.parse(detail.url),
+          audioUri,
           tag: MediaItem(
             id: '${item.platform.code}_${item.id}',
             title: item.name,
@@ -342,6 +399,7 @@ class PlayerProvider extends ChangeNotifier {
         error: e.toString(),
       );
       _errorMessage = e.toString();
+      _lastError = _friendlyError(e);
       _isLoading = false;
       notifyListeners();
     } finally {
@@ -368,6 +426,22 @@ class PlayerProvider extends ChangeNotifier {
         requestId == _playRequestId &&
         current?.platform == item.platform &&
         current?.id == item.id;
+  }
+
+  /// 把底层异常翻译成用户可读的提示
+  String _friendlyError(Object e) {
+    final s = e.toString();
+    if (s.contains('404') || s.contains('版权') || s.contains('无法获取播放地址')) {
+      return '音源获取失败：可能是版权限制或无资源，换一首试试';
+    }
+    if (s.contains('SocketException') ||
+        s.contains('Connection') ||
+        s.contains('Failed host lookup') ||
+        s.contains('timeout') ||
+        s.contains('网络')) {
+      return '网络异常：音源下载失败，请检查网络后重试';
+    }
+    return '播放失败：音源可能失效，请重试或切换音质';
   }
 
   void _onSongComplete() {

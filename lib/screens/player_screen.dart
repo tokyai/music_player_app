@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
+import '../services/favorite_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/color_extractor.dart';
 import '../utils/system_ui.dart';
@@ -954,6 +955,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     Color subColor, {
     bool compact = false,
   }) {
+    // 收藏状态跟随 FavoriteService（点击收藏/取消收藏实时刷新）
+    final fav = ctx.watch<FavoriteService>();
+    final song = player.currentSong;
+    final isFav = song != null && fav.isFavorite(song.platform, song.id);
     return Selector<PlayerProvider, bool>(
       selector: (_, p) => p.showLyric,
       builder: (ctx, showLyric, _) {
@@ -974,6 +979,31 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   style: TextStyle(
                     color: showLyric ? AppColors.primary : subColor,
                   ),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: () async {
+                  if (song == null) return;
+                  final added = await fav.toggle(
+                    SongSearchResult.fromQueueItem(song),
+                  );
+                  if (ctx.mounted) {
+                    ScaffoldMessenger.of(ctx).showSnackBar(
+                      SnackBar(
+                        content: Text(added ? '已收藏 ♥' : '已取消收藏'),
+                        duration: const Duration(seconds: 1),
+                      ),
+                    );
+                  }
+                },
+                icon: Icon(
+                  isFav ? Icons.favorite : Icons.favorite_border,
+                  color: isFav ? Colors.redAccent : subColor,
+                  size: 20,
+                ),
+                label: Text(
+                  isFav ? '已收藏' : '收藏',
+                  style: TextStyle(color: isFav ? Colors.redAccent : subColor),
                 ),
               ),
               TextButton.icon(

@@ -5,8 +5,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../providers/theme_controller.dart';
+import '../services/audio_cache_service.dart';
+import '../services/favorite_service.dart';
 import '../services/floating_capsule_service.dart';
 import '../theme/app_theme.dart';
+import 'cache_list_screen.dart';
+import 'favorites_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -22,6 +26,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   String _versionName = '';
   String _versionCode = '';
+  String _cacheSizeText = '';
+  int _cacheCount = 0;
 
   @override
   void initState() {
@@ -34,6 +40,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     });
     _loadVersion();
+    _loadCacheInfo();
   }
 
   Future<void> _loadVersion() async {
@@ -46,6 +53,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
         });
       }
     } catch (_) {}
+  }
+
+  Future<void> _loadCacheInfo() async {
+    try {
+      final results = await Future.wait([
+        AudioCacheService.getCacheSize(),
+        AudioCacheService.getCacheCount(),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _cacheSizeText = AudioCacheService.formatSize(results[0]);
+        _cacheCount = results[1];
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _clearCache() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('清除缓存'),
+        content: Text('将删除 $_cacheCount 首已缓存歌曲（$_cacheSizeText），下次播放需重新联网。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('清除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    await AudioCacheService.clearCache();
+    await _loadCacheInfo();
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('缓存已清除')));
   }
 
   @override
@@ -111,6 +160,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       children: [
         _buildPageTitle(),
         _buildAppearanceCard(),
+        _buildLibraryCard(),
         _buildPlaybackCard(),
         _buildApiCard(),
         _buildAboutCard(),
@@ -133,6 +183,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: Column(
                     children: [
                       _buildAppearanceCard(compact: true),
+                      _buildLibraryCard(compact: true),
                       _buildPlaybackCard(compact: true),
                     ],
                   ),
@@ -359,6 +410,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _buildLibraryCard({bool compact = false}) {
+    return _buildCard(
+      compact: compact,
+      children: [
+        _buildSectionHeader(icon: Icons.library_music_outlined, title: '音乐库'),
+        Consumer<FavoriteService>(
+          builder: (context, favorites, _) => ListTile(
+            dense: compact,
+            leading: const Icon(Icons.favorite, color: Colors.redAccent),
+            title: const Text('我的收藏'),
+            subtitle: Text('${favorites.favorites.length} 首已收藏歌曲'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const FavoritesScreen()),
+            ),
+          ),
+        ),
+        const Divider(height: 1),
+        ListTile(
+          dense: compact,
+          leading: const Icon(Icons.download_done_outlined),
+          title: const Text('已缓存歌曲'),
+          subtitle: Text(
+            _cacheSizeText.isEmpty
+                ? '播放过的歌曲自动缓存'
+                : '$_cacheCount 首 · $_cacheSizeText',
+          ),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (_cacheCount > 0)
+                IconButton(
+                  tooltip: '清除缓存',
+                  onPressed: _clearCache,
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              const Icon(Icons.chevron_right),
+            ],
+          ),
+          onTap: () async {
+            await Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const CacheListScreen()),
+            );
+            await _loadCacheInfo();
+          },
+        ),
+      ],
+    );
+  }
+
   Widget _buildApiCard({bool compact = false}) {
     return _buildCard(
       compact: compact,
@@ -378,7 +481,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               const SizedBox(height: 4),
               Text(
-                '用于酷狗/QQ 播放地址解析（网易云免配置）',
+                '用于网易云 / QQ / 酷狗播放地址解析',
                 style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
               ),
               const SizedBox(height: 12),

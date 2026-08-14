@@ -169,8 +169,9 @@ class UpdateService {
 
   /// 调用系统安装器安装 APK。
   /// 原生侧会校验包名、版本号和签名证书，再交给系统安装器。
-  static const MethodChannel _installChannel =
-      MethodChannel('music_player/install');
+  static const MethodChannel _installChannel = MethodChannel(
+    'music_player/install',
+  );
 
   static Future<void> installApk(
     String filePath, {

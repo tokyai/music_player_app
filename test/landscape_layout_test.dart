@@ -12,6 +12,7 @@ import 'package:music_player_app/screens/playlist_detail_screen.dart';
 import 'package:music_player_app/screens/playlist_screen.dart';
 import 'package:music_player_app/screens/search_screen.dart';
 import 'package:music_player_app/screens/settings_screen.dart';
+import 'package:music_player_app/services/favorite_service.dart';
 import 'package:music_player_app/theme/app_theme.dart';
 import 'package:music_player_app/utils/lyric_parser.dart';
 import 'package:music_player_app/widgets/mini_player.dart';
@@ -413,6 +414,7 @@ Future<void> _pumpScreen(
       providers: [
         ChangeNotifierProvider<PlayerProvider>.value(value: player),
         ChangeNotifierProvider<ThemeController>.value(value: theme),
+        ChangeNotifierProvider(create: (_) => FavoriteService()),
       ],
       child: MaterialApp(theme: AppTheme.light(), home: screen),
     ),

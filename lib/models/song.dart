@@ -206,12 +206,23 @@ class SongSearchResult {
     final sep = filename.indexOf(' - ');
     final name = sep >= 0 ? filename.substring(sep + 3) : filename;
     final artist = sep >= 0 ? filename.substring(0, sep) : '未知歌手';
+    // 封面：优先 album_sizable_cover，备选 trans_param.union_cover
+    String? coverUrl = CoverHelper.fromKugouTemplate(
+      json['album_sizable_cover'],
+    );
+    if (coverUrl == null) {
+      final transParam = json['trans_param'];
+      if (transParam is Map) {
+        coverUrl = CoverHelper.fromKugouTemplate(transParam['union_cover']);
+      }
+    }
     return SongSearchResult(
       platform: MusicPlatform.kugou,
       id: json['hash'] ?? '',
       name: name,
       artist: artist,
       album: json['album_name'] ?? '',
+      coverUrl: coverUrl,
       duration: json['duration'] is int ? json['duration'] as int : null,
     );
   }
@@ -265,15 +276,22 @@ class SongSearchResult {
 
   /// 酷狗官方 mobilecdn 歌曲搜索 (search/song)
   factory SongSearchResult.fromKugouSearchSong(Map<String, dynamic> json) {
+    var coverUrl = CoverHelper.fromKugouTemplate(
+      json['album_sizable_cover']?.toString(),
+    );
+    final transParam = json['trans_param'];
+    if (coverUrl == null && transParam is Map) {
+      coverUrl = CoverHelper.fromKugouTemplate(
+        transParam['union_cover']?.toString(),
+      );
+    }
     return SongSearchResult(
       platform: MusicPlatform.kugou,
       id: json['hash']?.toString() ?? '',
       name: json['songname']?.toString() ?? '未知歌曲',
       artist: json['singername']?.toString() ?? '未知歌手',
       album: json['album_name']?.toString() ?? '',
-      coverUrl: CoverHelper.fromKugouTemplate(
-        json['album_sizable_cover']?.toString(),
-      ),
+      coverUrl: coverUrl,
       duration: json['duration'] is num
           ? (json['duration'] as num).toInt()
           : int.tryParse(json['duration']?.toString() ?? ''),
@@ -291,15 +309,65 @@ class SongSearchResult {
     } else if (json['singername'] != null) {
       artistName = json['singername'].toString();
     }
+    var coverUrl = CoverHelper.fromKugouTemplate(
+      json['album_sizable_cover']?.toString(),
+    );
+    final transParam = json['trans_param'];
+    if (coverUrl == null && transParam is Map) {
+      coverUrl = CoverHelper.fromKugouTemplate(
+        transParam['union_cover']?.toString(),
+      );
+    }
     return SongSearchResult(
       platform: MusicPlatform.kugou,
       id: json['hash']?.toString() ?? '',
       name: json['songname']?.toString() ?? '未知歌曲',
       artist: artistName,
       album: json['album_name']?.toString() ?? '',
-      coverUrl: CoverHelper.fromKugouTemplate(
-        json['album_sizable_cover']?.toString(),
-      ),
+      coverUrl: coverUrl,
+      duration: json['duration'] is num
+          ? (json['duration'] as num).toInt()
+          : int.tryParse(json['duration']?.toString() ?? ''),
+    );
+  }
+
+  /// 从播放队列项构造（收藏用）
+  factory SongSearchResult.fromQueueItem(PlayQueueItem item) {
+    return SongSearchResult(
+      platform: item.platform,
+      id: item.id,
+      name: item.name,
+      artist: item.artist,
+      album: item.album,
+      coverUrl: item.coverUrl,
+      duration: item.duration,
+    );
+  }
+
+  /// 序列化（收藏本地持久化用）
+  Map<String, dynamic> toJson() => {
+    'platform': platform.code,
+    'id': id,
+    'name': name,
+    'artist': artist,
+    'album': album,
+    'coverUrl': coverUrl,
+    'duration': duration,
+  };
+
+  /// 反序列化（收藏本地持久化用）
+  factory SongSearchResult.fromJson(Map<String, dynamic> json) {
+    final platform = MusicPlatform.values.firstWhere(
+      (e) => e.code == json['platform'],
+      orElse: () => MusicPlatform.netease,
+    );
+    return SongSearchResult(
+      platform: platform,
+      id: json['id']?.toString() ?? '',
+      name: json['name']?.toString() ?? '未知歌曲',
+      artist: json['artist']?.toString() ?? '未知歌手',
+      album: json['album']?.toString() ?? '',
+      coverUrl: json['coverUrl']?.toString(),
       duration: json['duration'] is num
           ? (json['duration'] as num).toInt()
           : int.tryParse(json['duration']?.toString() ?? ''),

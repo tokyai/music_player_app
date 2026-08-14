@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
+import '../services/favorite_service.dart';
 import '../theme/app_theme.dart';
 import 'smart_cover.dart';
 
@@ -12,6 +13,7 @@ class SongTile extends StatelessWidget {
   final VoidCallback? onAddToQueue;
   final bool isPlaying;
   final bool showPlatformTag;
+  final bool showFavorite;
 
   const SongTile({
     super.key,
@@ -20,16 +22,19 @@ class SongTile extends StatelessWidget {
     this.onAddToQueue,
     this.isPlaying = false,
     this.showPlatformTag = true,
+    this.showFavorite = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final playerState = context
-        .select<PlayerProvider, (String?, MusicPlatform?, bool)>((player) => (
-              player.currentSong?.id,
-              player.currentSong?.platform,
-              player.isPlaying,
-            ));
+        .select<PlayerProvider, (String?, MusicPlatform?, bool)>(
+          (player) => (
+            player.currentSong?.id,
+            player.currentSong?.platform,
+            player.isPlaying,
+          ),
+        );
     final isCurrent =
         playerState.$1 == song.id && playerState.$2 == song.platform;
     final platformColor = PlatformColors.of(song.platform);
@@ -87,6 +92,30 @@ class SongTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (showFavorite)
+            Consumer<FavoriteService>(
+              builder: (ctx, fav, _) {
+                final isFav = fav.isFavorite(song.platform, song.id);
+                return IconButton(
+                  icon: Icon(
+                    isFav ? Icons.favorite : Icons.favorite_border,
+                    size: 20,
+                    color: isFav ? Colors.redAccent : AppColors.textHint,
+                  ),
+                  onPressed: () {
+                    fav.toggle(song);
+                    ScaffoldMessenger.of(ctx).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          isFav ? '已取消收藏: ${song.name}' : '已收藏: ${song.name}',
+                        ),
+                        duration: const Duration(seconds: 1),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
           if (showPlatformTag)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),

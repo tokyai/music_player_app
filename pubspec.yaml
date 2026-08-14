@@ -1,7 +1,7 @@
 name: music_player_app
 description: 库仔音乐，一款支持 QQ音乐/网易云/酷狗搜索与播放的多平台音乐应用。
 publish_to: 'none'
-version: 2.2.16+2216
+version: 2.2.21+2221
 
 environment:
   sdk: ^3.11.0
