@@ -39,11 +39,28 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   }
 
   Future<void> _loadAll() async {
+    if (!mounted) return;
+    setState(() {
+      _loadingQQ = true;
+      _loadingNetease = true;
+      _loadingKugouDaily = true;
+      _loadingKugouNew = true;
+      _errQQ = null;
+      _errNetease = null;
+      _errKugouDaily = null;
+      _errKugouNew = null;
+    });
+
+    // 每列自上而下加载，同时最多保留两个请求，避免启动瞬间压满中转服务。
     await Future.wait([
-      _loadQQ(),
-      _loadNetease(),
-      _loadKugouDaily(),
-      _loadKugouNew(),
+      () async {
+        await _loadQQ();
+        if (mounted) await _loadNetease();
+      }(),
+      () async {
+        await _loadKugouDaily();
+        if (mounted) await _loadKugouNew();
+      }(),
     ]);
   }
 
@@ -53,10 +70,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       _errNetease = null;
     });
     try {
-      final list = await context
-          .read<PlayerProvider>()
-          .api
-          .neteaseHotPlaylists();
+      final list = await context.read<PlayerProvider>().api.neteaseHotPlaylists(
+        limit: 12,
+      );
       if (mounted) setState(() => _neteasePlaylists = list);
     } catch (e) {
       if (mounted) setState(() => _errNetease = e.toString());
@@ -89,10 +105,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       _errKugouDaily = null;
     });
     try {
-      final list = await context
-          .read<PlayerProvider>()
-          .api
-          .kugouDailyRecommend();
+      final list = await context.read<PlayerProvider>().api.kugouDailyRecommend(
+        pagesize: 12,
+      );
       if (mounted) setState(() => _kugouDaily = list);
     } catch (e) {
       if (mounted) setState(() => _errKugouDaily = e.toString());
@@ -107,7 +122,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       _errKugouNew = null;
     });
     try {
-      final list = await context.read<PlayerProvider>().api.kugouNewSongs();
+      final list = await context.read<PlayerProvider>().api.kugouNewSongs(
+        pagesize: 12,
+      );
       if (mounted) setState(() => _kugouNewSongs = list);
     } catch (e) {
       if (mounted) setState(() => _errKugouNew = e.toString());
@@ -153,10 +170,20 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
           ),
           const SizedBox(height: 12),
           _buildSectionHeader('酷狗每日推荐', PlatformColors.kugou, '每天为你精选 20 首'),
-          _buildSongSection(_kugouDaily, _loadingKugouDaily, _errKugouDaily),
+          _buildSongSection(
+            _kugouDaily,
+            _loadingKugouDaily,
+            _errKugouDaily,
+            onRetry: _loadKugouDaily,
+          ),
           const SizedBox(height: 12),
           _buildSectionHeader('酷狗新歌速递', PlatformColors.kugou, '最新上架的热门歌曲'),
-          _buildSongSection(_kugouNewSongs, _loadingKugouNew, _errKugouNew),
+          _buildSongSection(
+            _kugouNewSongs,
+            _loadingKugouNew,
+            _errKugouNew,
+            onRetry: _loadKugouNew,
+          ),
         ],
       ),
     );
@@ -225,6 +252,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                     _kugouDaily,
                     _loadingKugouDaily,
                     _errKugouDaily,
+                    onRetry: _loadKugouDaily,
                   ),
                   const SizedBox(height: 12),
                   _buildSectionHeader(
@@ -237,6 +265,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                     _kugouNewSongs,
                     _loadingKugouNew,
                     _errKugouNew,
+                    onRetry: _loadKugouNew,
                   ),
                   const SizedBox(height: 24),
                 ],
@@ -415,7 +444,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       );
     }
     return SizedBox(
-      height: 185,
+      height: 198,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -443,8 +472,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   Widget _buildSongSection(
     List<SongSearchResult> songs,
     bool loading,
-    String? error,
-  ) {
+    String? error, {
+    Future<void> Function()? onRetry,
+  }) {
     if (loading) {
       return SizedBox(
         height: 200,
@@ -460,7 +490,14 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       return SizedBox(
         height: 80,
         child: Center(
-          child: Text('加载失败', style: TextStyle(color: AppColors.textHint)),
+          child: TextButton.icon(
+            onPressed: onRetry,
+            icon: Icon(Icons.refresh, size: 18, color: AppColors.primary),
+            label: Text(
+              '加载失败，点击重试',
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
+          ),
         ),
       );
     }

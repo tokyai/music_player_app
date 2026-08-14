@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -13,6 +14,9 @@ import '../models/song.dart';
 /// mobilecdn.kugou.com 歌单），故统一经服务器 161.118.252.183 的 nginx
 /// 反代中转（/api-netease /api-qq /api-kugou-search /api-kugou）。
 class ApiService {
+  static const _requestTimeout = Duration(seconds: 8);
+  static const _retryDelay = Duration(milliseconds: 350);
+
   // ChKSz API (酷狗/QQ 播放地址解析)
   static const String _chkszUrl = 'https://api.chksz.com';
   // API 中转入口（服务器反代到各平台，规避手机直连不稳定）
@@ -21,12 +25,38 @@ class ApiService {
       'http://161.118.252.183/api-kugou-search';
   static const String qqBaseUrl = 'http://161.118.252.183/api-qq';
 
+  final http.Client _client = http.Client();
   String apiKey;
 
   ApiService({required this.apiKey});
 
   void setApiKey(String key) {
     apiKey = key;
+  }
+
+  void close() => _client.close();
+
+  Future<http.Response> _get(Uri uri) async {
+    Exception? lastError;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        final response = await _client
+            .get(uri, headers: const {'Accept': 'application/json'})
+            .timeout(_requestTimeout);
+        if (attempt == 0 && response.statusCode >= 500) {
+          await Future<void>.delayed(_retryDelay);
+          continue;
+        }
+        return response;
+      } on Exception catch (error) {
+        lastError = error;
+        if (attempt == 0) {
+          await Future<void>.delayed(_retryDelay);
+          continue;
+        }
+      }
+    }
+    throw lastError ?? StateError('请求失败');
   }
 
   // ---- ChKSz 请求 ----
@@ -38,12 +68,13 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> _chkszGet(
-      String path, Map<String, dynamic> params) async {
-    final uri = Uri.parse('$_chkszUrl$path')
-        .replace(queryParameters: _chkszQuery(params));
-    final res = await http.get(uri, headers: {
-      'Accept': 'application/json'
-    }).timeout(const Duration(seconds: 15));
+    String path,
+    Map<String, dynamic> params,
+  ) async {
+    final uri = Uri.parse(
+      '$_chkszUrl$path',
+    ).replace(queryParameters: _chkszQuery(params));
+    final res = await _get(uri);
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw ApiException('HTTP_${res.statusCode}', '服务暂时不可用');
     }
@@ -56,7 +87,9 @@ class ApiService {
     if (body is Map<String, dynamic>) {
       if (body['code'] != null && body['code'].toString() != '200') {
         throw ApiException(
-            body['code'].toString(), body['msg']?.toString() ?? '请求失败');
+          body['code'].toString(),
+          body['msg']?.toString() ?? '请求失败',
+        );
       }
       return body;
     }
@@ -65,12 +98,14 @@ class ApiService {
 
   // ---- 通用 HTTP GET ----
   Future<Map<String, dynamic>> _httpGet(
-      String baseUrl, String path, Map<String, dynamic> params) async {
-    final uri = Uri.parse('$baseUrl$path').replace(
-        queryParameters: params.map((k, v) => MapEntry(k, v.toString())));
-    final res = await http.get(uri, headers: {
-      'Accept': 'application/json'
-    }).timeout(const Duration(seconds: 15));
+    String baseUrl,
+    String path,
+    Map<String, dynamic> params,
+  ) async {
+    final uri = Uri.parse(
+      '$baseUrl$path',
+    ).replace(queryParameters: params.map((k, v) => MapEntry(k, v.toString())));
+    final res = await _get(uri);
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw ApiException('HTTP_${res.statusCode}', '服务暂时不可用');
     }
@@ -89,10 +124,14 @@ class ApiService {
   // ======================== 网易云 (直连) ========================
 
   /// 搜索网易云歌曲
-  Future<List<SongSearchResult>> neteaseSearch(String keyword,
-      {int limit = 30}) async {
-    final json = await _httpGet(
-        neteaseBaseUrl, '/search', {'keywords': keyword, 'limit': limit});
+  Future<List<SongSearchResult>> neteaseSearch(
+    String keyword, {
+    int limit = 20,
+  }) async {
+    final json = await _httpGet(neteaseBaseUrl, '/search', {
+      'keywords': keyword,
+      'limit': limit,
+    });
     final list = json['result']?['songs'] as List? ?? [];
     final songs = list
         .map((e) => SongSearchResult.fromNetease(e as Map<String, dynamic>))
@@ -103,10 +142,15 @@ class ApiService {
   }
 
   /// 网易云歌单搜索 (/search?type=1000)
-  Future<List<PlaylistInfo>> neteaseSearchPlaylists(String keyword,
-      {int limit = 20}) async {
-    final json = await _httpGet(neteaseBaseUrl, '/search',
-        {'keywords': keyword, 'type': 1000, 'limit': limit});
+  Future<List<PlaylistInfo>> neteaseSearchPlaylists(
+    String keyword, {
+    int limit = 20,
+  }) async {
+    final json = await _httpGet(neteaseBaseUrl, '/search', {
+      'keywords': keyword,
+      'type': 1000,
+      'limit': limit,
+    });
     final list = json['result']?['playlists'] as List? ?? [];
     return list
         .map((e) => PlaylistInfo.fromNeteaseList(e as Map<String, dynamic>))
@@ -116,8 +160,9 @@ class ApiService {
   /// 批量补充网易云歌曲封面（失败不影响主流程）
   Future<void> _fillNeteaseCovers(List<SongSearchResult> songs) async {
     if (songs.isEmpty) return;
-    final missing =
-        songs.where((s) => s.coverUrl == null || s.coverUrl!.isEmpty).toList();
+    final missing = songs
+        .where((s) => s.coverUrl == null || s.coverUrl!.isEmpty)
+        .toList();
     if (missing.isEmpty) return;
     try {
       final ids = missing.map((s) => s.id).join(',');
@@ -149,8 +194,10 @@ class ApiService {
 
   /// 解析网易云歌曲播放地址 (直连 /song/url/v1)，附带专辑封面
   Future<SongDetail> neteaseMusic(String id, {String level = 'exhigh'}) async {
-    final json = await _httpGet(
-        neteaseBaseUrl, '/song/url/v1', {'id': id, 'level': level});
+    final json = await _httpGet(neteaseBaseUrl, '/song/url/v1', {
+      'id': id,
+      'level': level,
+    });
     final dataArr = json['data'] as List?;
     final data = (dataArr != null && dataArr.isNotEmpty)
         ? dataArr[0]
@@ -162,8 +209,9 @@ class ApiService {
         final d = await _httpGet(neteaseBaseUrl, '/song/detail', {'ids': id});
         final songsArr = d['songs'] as List? ?? [];
         if (songsArr.isNotEmpty) {
-          final cover =
-              CoverHelper.normalize(songsArr[0]['al']?['picUrl']?.toString());
+          final cover = CoverHelper.normalize(
+            songsArr[0]['al']?['picUrl']?.toString(),
+          );
           if (cover != null) {
             detail = SongDetail(
               name: detail.name,
@@ -196,8 +244,10 @@ class ApiService {
 
   /// 网易云热门歌单
   Future<List<PlaylistInfo>> neteaseHotPlaylists({int limit = 20}) async {
-    final json = await _httpGet(
-        neteaseBaseUrl, '/top/playlist', {'limit': limit, 'order': 'hot'});
+    final json = await _httpGet(neteaseBaseUrl, '/top/playlist', {
+      'limit': limit,
+      'order': 'hot',
+    });
     final list = json['playlists'] as List? ?? [];
     return list
         .map((e) => PlaylistInfo.fromNeteaseList(e as Map<String, dynamic>))
@@ -217,44 +267,67 @@ class ApiService {
   // ======================== 酷狗 (mobilecdn 官方接口, ChKSz解析) ========================
 
   /// 搜索酷狗歌曲 (mobilecdn /api/v3/search/song)
-  Future<List<SongSearchResult>> kugouSearch(String keyword,
-      {int page = 1, int pagesize = 30}) async {
-    final json = await _httpGet(kugouSearchBase, '/api/v3/search/song',
-        {'keyword': keyword, 'page': page, 'pagesize': pagesize});
+  Future<List<SongSearchResult>> kugouSearch(
+    String keyword, {
+    int page = 1,
+    int pagesize = 20,
+  }) async {
+    final json = await _httpGet(kugouSearchBase, '/api/v3/search/song', {
+      'keyword': keyword,
+      'page': page,
+      'pagesize': pagesize,
+    });
     final list = json['data']?['info'] as List? ?? [];
     return list
-        .map((e) =>
-            SongSearchResult.fromKugouSearchSong(e as Map<String, dynamic>))
+        .map(
+          (e) =>
+              SongSearchResult.fromKugouSearchSong(e as Map<String, dynamic>),
+        )
         .toList();
   }
 
   /// 酷狗新歌速递（mobilecdn 新歌榜 74534）
-  Future<List<SongSearchResult>> kugouNewSongs(
-      {int page = 1, int pagesize = 30}) async {
-    final json = await _httpGet(kugouSearchBase, '/api/v3/rank/song',
-        {'rankid': '74534', 'page': page, 'pagesize': pagesize});
+  Future<List<SongSearchResult>> kugouNewSongs({
+    int page = 1,
+    int pagesize = 30,
+  }) async {
+    final json = await _httpGet(kugouSearchBase, '/api/v3/rank/song', {
+      'rankid': '74534',
+      'page': page,
+      'pagesize': pagesize,
+    });
     final list = json['data']?['info'] as List? ?? [];
     return list
-        .map((e) =>
-            SongSearchResult.fromKugouRankSong(e as Map<String, dynamic>))
+        .map(
+          (e) => SongSearchResult.fromKugouRankSong(e as Map<String, dynamic>),
+        )
         .toList();
   }
 
   /// 酷狗每日推荐（mobilecdn 飙升榜 6666）
-  Future<List<SongSearchResult>> kugouDailyRecommend() async {
-    final json = await _httpGet(kugouSearchBase, '/api/v3/rank/song',
-        {'rankid': '6666', 'page': 1, 'pagesize': 20});
+  Future<List<SongSearchResult>> kugouDailyRecommend({
+    int pagesize = 20,
+  }) async {
+    final json = await _httpGet(kugouSearchBase, '/api/v3/rank/song', {
+      'rankid': '6666',
+      'page': 1,
+      'pagesize': pagesize,
+    });
     final list = json['data']?['info'] as List? ?? [];
     return list
-        .map((e) =>
-            SongSearchResult.fromKugouRankSong(e as Map<String, dynamic>))
+        .map(
+          (e) => SongSearchResult.fromKugouRankSong(e as Map<String, dynamic>),
+        )
         .toList();
   }
 
   /// 解析酷狗播放地址 (ChKSz 兜底)
   Future<SongDetail> kugouMusic(String hash, {String size = 'flac'}) async {
-    final json = await _chkszGet(
-        '/api/kugou_music', {'id': hash, 'size': size, 'type': 'json'});
+    final json = await _chkszGet('/api/kugou_music', {
+      'id': hash,
+      'size': size,
+      'type': 'json',
+    });
     return SongDetail.fromKugou(json);
   }
 
@@ -288,10 +361,16 @@ class ApiService {
   }
 
   /// 酷狗歌单搜索 (mobilecdn /api/v3/search/special)
-  Future<List<PlaylistInfo>> kugouSearchPlaylists(String keyword,
-      {int page = 1, int pagesize = 20}) async {
-    final json = await _httpGet(kugouSearchBase, '/api/v3/search/special',
-        {'keyword': keyword, 'page': page, 'pagesize': pagesize});
+  Future<List<PlaylistInfo>> kugouSearchPlaylists(
+    String keyword, {
+    int page = 1,
+    int pagesize = 20,
+  }) async {
+    final json = await _httpGet(kugouSearchBase, '/api/v3/search/special', {
+      'keyword': keyword,
+      'page': page,
+      'pagesize': pagesize,
+    });
     final list = json['data']?['info'] as List? ?? [];
     return list
         .map((e) => PlaylistInfo.fromKugouSearchList(e as Map<String, dynamic>))
@@ -299,14 +378,22 @@ class ApiService {
   }
 
   /// 酷狗歌单详情 (mobilecdn /api/v3/special/song)
-  Future<PlaylistInfo> kugouPlaylist(String specialid,
-      {int page = 1, int pagesize = 200}) async {
-    final json = await _httpGet(kugouSearchBase, '/api/v3/special/song',
-        {'specialid': specialid, 'page': page, 'pagesize': pagesize});
+  Future<PlaylistInfo> kugouPlaylist(
+    String specialid, {
+    int page = 1,
+    int pagesize = 200,
+  }) async {
+    final json = await _httpGet(kugouSearchBase, '/api/v3/special/song', {
+      'specialid': specialid,
+      'page': page,
+      'pagesize': pagesize,
+    });
     final list = json['data']?['info'] as List? ?? [];
     final tracks = list
-        .map((e) =>
-            SongSearchResult.fromKugouSpecialSong(e as Map<String, dynamic>))
+        .map(
+          (e) =>
+              SongSearchResult.fromKugouSpecialSong(e as Map<String, dynamic>),
+        )
         .toList();
     return PlaylistInfo(
       id: specialid,
@@ -327,16 +414,16 @@ class ApiService {
   Future<LyricData> qqLyric(String songmid) async {
     final json = await _httpGet(qqBaseUrl, '/lyric', {'songmid': songmid});
     final data = json['data'] ?? json;
-    return LyricData(
-      original: data['lyric'],
-      translated: data['trans'],
-    );
+    return LyricData(original: data['lyric'], translated: data['trans']);
   }
 
   /// 解析QQ音乐播放地址 (ChKSz 兜底)
   Future<SongDetail> qqMusic(String mid, {String size = 'flac'}) async {
-    final json = await _chkszGet(
-        '/api/qq_music', {'mid': mid, 'size': size, 'type': 'json'});
+    final json = await _chkszGet('/api/qq_music', {
+      'mid': mid,
+      'size': size,
+      'type': 'json',
+    });
     return SongDetail.fromQQ(json);
   }
 
@@ -344,7 +431,9 @@ class ApiService {
 
   /// 搜索指定平台歌曲
   Future<List<SongSearchResult>> search(
-      MusicPlatform platform, String keyword) {
+    MusicPlatform platform,
+    String keyword,
+  ) {
     switch (platform) {
       case MusicPlatform.netease:
         return neteaseSearch(keyword);

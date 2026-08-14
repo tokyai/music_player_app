@@ -505,6 +505,7 @@ class PlayerProvider extends ChangeNotifier {
     _positionSub?.cancel();
     _bufferSub?.cancel();
     _errorSub?.cancel();
+    _api.close();
     _audioPlayer.dispose();
     super.dispose();
   }

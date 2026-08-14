@@ -255,6 +255,117 @@ void main() {
     }, _mockClient);
   });
 
+  testWidgets('first landscape player pane preserves search state', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      final player = _ControllablePlayer();
+      final theme = ThemeController();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        player.dispose();
+        theme.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      await _pumpScreen(
+        tester,
+        const MainScreen(),
+        player,
+        theme,
+        const Size(1280, 800),
+      );
+      await tester.tap(find.text('搜索').first);
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField), '周杰伦');
+      await tester.testTextInput.receiveAction(TextInputAction.search);
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller?.text,
+        '周杰伦',
+      );
+
+      player.showSong();
+      await tester.pumpAndSettle();
+
+      expect(find.byType(LandscapeMiniPlayer), findsOneWidget);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller?.text,
+        '周杰伦',
+      );
+      expect(find.text('没有找到结果'), findsOneWidget);
+      _expectNoException(tester);
+    }, _mockClient);
+  });
+
+  testWidgets('search loads platforms on demand', (tester) async {
+    final requestedPaths = <String>[];
+    await http.runWithClient(
+      () async {
+        final player = PlayerProvider();
+        final theme = ThemeController();
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          player.dispose();
+          theme.dispose();
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        await _pumpScreen(
+          tester,
+          const SearchScreen(),
+          player,
+          theme,
+          const Size(800, 360),
+        );
+        await tester.enterText(find.byType(TextField), '周杰伦');
+        await tester.testTextInput.receiveAction(TextInputAction.search);
+        await tester.pumpAndSettle();
+
+        expect(
+          requestedPaths.where((path) => path.startsWith('/api-qq/')).length,
+          2,
+        );
+        expect(
+          requestedPaths.any((path) => path.startsWith('/api-netease/')),
+          isFalse,
+        );
+        expect(
+          requestedPaths.any((path) => path.startsWith('/api-kugou-search/')),
+          isFalse,
+        );
+
+        await tester.tap(find.text('网易云').first);
+        await tester.pumpAndSettle();
+
+        expect(
+          requestedPaths
+              .where((path) => path.startsWith('/api-netease/'))
+              .length,
+          2,
+        );
+        expect(
+          requestedPaths.any((path) => path.startsWith('/api-kugou-search/')),
+          isFalse,
+        );
+        _expectNoException(tester);
+      },
+      () {
+        return MockClient((request) async {
+          requestedPaths.add(request.url.path);
+          return http.Response(
+            '{}',
+            200,
+            headers: const {'content-type': 'application/json; charset=utf-8'},
+          );
+        });
+      },
+    );
+  });
+
   testWidgets('compact landscape navigation fits without crowding', (
     tester,
   ) async {
@@ -353,4 +464,28 @@ class _PlayerWithLyrics extends PlayerProvider {
 
   @override
   List<LyricLine> get lyrics => _testLyrics;
+}
+
+class _ControllablePlayer extends PlayerProvider {
+  PlayQueueItem? _currentSong;
+
+  void showSong() {
+    _currentSong = PlayQueueItem(
+      platform: MusicPlatform.qq,
+      id: 'first-song',
+      name: '首次播放测试歌曲',
+      artist: '测试歌手',
+      album: '测试专辑',
+    );
+    notifyListeners();
+  }
+
+  @override
+  PlayQueueItem? get currentSong => _currentSong;
+
+  @override
+  List<PlayQueueItem> get queue => [if (_currentSong != null) _currentSong!];
+
+  @override
+  int get currentIndex => _currentSong == null ? -1 : 0;
 }

@@ -98,12 +98,25 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
 
-  final _screens = const [
-    DiscoverScreen(),
-    SearchScreen(),
-    PlaylistScreen(),
-    SettingsScreen(),
-  ];
+  final List<Widget?> _screens = [const DiscoverScreen(), null, null, null];
+
+  Widget _createScreen(int index) {
+    return switch (index) {
+      0 => const DiscoverScreen(),
+      1 => const SearchScreen(),
+      2 => const PlaylistScreen(),
+      3 => const SettingsScreen(),
+      _ => throw RangeError.index(index, _screens),
+    };
+  }
+
+  void _selectScreen(int index) {
+    if (index == _currentIndex) return;
+    setState(() {
+      _screens[index] ??= _createScreen(index);
+      _currentIndex = index;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -112,7 +125,12 @@ class _MainScreenState extends State<MainScreen> {
     final hasCurrentSong = context.select<PlayerProvider, bool>(
       (player) => player.currentSong != null,
     );
-    final content = IndexedStack(index: _currentIndex, children: _screens);
+    final content = IndexedStack(
+      index: _currentIndex,
+      children: _screens
+          .map((screen) => screen ?? const SizedBox.shrink())
+          .toList(),
+    );
 
     if (isLandscape) {
       return LayoutBuilder(
@@ -127,8 +145,7 @@ class _MainScreenState extends State<MainScreen> {
                     key: const ValueKey('landscape-navigation'),
                     minWidth: constraints.maxHeight < 480 ? 88 : 96,
                     selectedIndex: _currentIndex,
-                    onDestinationSelected: (i) =>
-                        setState(() => _currentIndex = i),
+                    onDestinationSelected: _selectScreen,
                     labelType: NavigationRailLabelType.all,
                     groupAlignment: constraints.maxHeight < 480 ? 0 : -0.35,
                     useIndicator: true,
@@ -184,14 +201,12 @@ class _MainScreenState extends State<MainScreen> {
                   color: AppColors.surfaceSoft,
                 ),
                 Expanded(
-                  child: showPlayerPane
-                      ? content
-                      : Column(
-                          children: [
-                            Expanded(child: content),
-                            if (hasCurrentSong) const MiniPlayer(),
-                          ],
-                        ),
+                  child: Column(
+                    children: [
+                      Expanded(child: content),
+                      if (hasCurrentSong && !showPlayerPane) const MiniPlayer(),
+                    ],
+                  ),
                 ),
                 if (showPlayerPane) ...[
                   VerticalDivider(
@@ -218,7 +233,7 @@ class _MainScreenState extends State<MainScreen> {
           // 导航栏
           NavigationBar(
             selectedIndex: _currentIndex,
-            onDestinationSelected: (i) => setState(() => _currentIndex = i),
+            onDestinationSelected: _selectScreen,
             destinations: const [
               NavigationDestination(
                 icon: Icon(Icons.explore_outlined),
