@@ -11,13 +11,14 @@ sudo apt-get update -qq
 sudo apt-get install -y -qq clang cmake git wget unzip curl libglu1-mesa > /dev/null 2>&1
 
 # 检查 Flutter
-FLUTTER_DIR="$HOME/flutter"
-if [ ! -d "$FLUTTER_DIR" ]; then
-    echo "[2/6] 下载 Flutter SDK (arm64)..."
-    cd $HOME
-    wget -q "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.24.5-stable.tar.xz" -O flutter.tar.xz
-    tar xf flutter.tar.xz
-    rm flutter.tar.xz
+FLUTTER_VERSION="3.41.6"
+FLUTTER_DIR="$HOME/flutter-$FLUTTER_VERSION"
+if [ ! -x "$FLUTTER_DIR/bin/flutter" ]; then
+    echo "[2/6] 下载 Flutter SDK $FLUTTER_VERSION..."
+    mkdir -p "$FLUTTER_DIR"
+    wget -q "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_$FLUTTER_VERSION-stable.tar.xz" -O /tmp/flutter.tar.xz
+    tar xf /tmp/flutter.tar.xz --strip-components=1 -C "$FLUTTER_DIR"
+    rm /tmp/flutter.tar.xz
     echo "Flutter SDK 下载完成"
 else
     echo "[2/6] Flutter SDK 已存在，跳过下载"
@@ -45,7 +46,7 @@ export ANDROID_SDK_ROOT="$ANDROID_DIR"
 
 echo "[4/6] 安装 Android SDK 组件..."
 yes | $ANDROID_DIR/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
-$ANDROID_DIR/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1 || true
+$ANDROID_DIR/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" > /dev/null 2>&1 || true
 
 # 接受 Flutter 许可
 echo "[5/6] 配置 Flutter..."
@@ -55,6 +56,10 @@ yes | flutter doctor --android-licenses > /dev/null 2>&1 || true
 # 构建项目
 echo "[6/6] 开始构建 APK..."
 cd /tmp/music_player_app
+if [ ! -f android/key.properties ]; then
+    echo "ERROR: 缺少 android/key.properties，release 构建必须配置持久化签名。"
+    exit 1
+fi
 flutter pub get
 flutter build apk --release 2>&1
 

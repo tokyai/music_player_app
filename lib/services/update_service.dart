@@ -1,7 +1,8 @@
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
-import 'package:open_filex/open_filex.dart';
+import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -12,6 +13,7 @@ class UpdateInfo {
   final String apkUrl;
   final int apkSize;
   final String md5;
+  final String sha256;
   final bool forceUpdate;
   final String updateLog;
   final String publishTime;
@@ -22,6 +24,7 @@ class UpdateInfo {
     required this.apkUrl,
     required this.apkSize,
     required this.md5,
+    required this.sha256,
     required this.forceUpdate,
     required this.updateLog,
     required this.publishTime,
@@ -33,9 +36,10 @@ class UpdateInfo {
       versionCode: _toInt(json['versionCode']),
       apkUrl: (json['apkUrl'] as String?) ?? '',
       apkSize: _toInt(json['apkSize']),
-      md5: (json['md5'] as String?) ?? '',
+      md5: (json['md5'] as String?)?.toLowerCase() ?? '',
+      sha256: (json['sha256'] as String?)?.toLowerCase() ?? '',
       forceUpdate: (json['forceUpdate'] as bool?) ?? false,
-      updateLog: (json['updateLog'] as String?) ?? '',
+      updateLog: (json['updateLog'] ?? json['updateContent'])?.toString() ?? '',
       publishTime: (json['publishTime'] as String?) ?? '',
     );
   }
@@ -54,11 +58,30 @@ class UpdateService {
 
   /// 检查是否有新版本。
   /// 返回 [UpdateInfo] 表示有新版本；返回 null 表示已是最新或请求失败。
-  static Future<UpdateInfo?> checkUpdate({String? currentVersionCode}) async {
+  static Future<UpdateInfo?> checkUpdate({
+    String? currentVersionCode,
+    bool throwOnError = false,
+  }) async {
     try {
-      final resp = await Dio().get<Map<String, dynamic>>(updateUrl);
-      if (resp.statusCode != 200 || resp.data == null) return null;
+      final dio = Dio(
+        BaseOptions(
+          connectTimeout: const Duration(seconds: 8),
+          receiveTimeout: const Duration(seconds: 12),
+        ),
+      );
+      final resp = await dio.get<Map<String, dynamic>>(updateUrl);
+      if (resp.statusCode != 200 || resp.data == null) {
+        throw Exception('更新服务返回异常');
+      }
       final info = UpdateInfo.fromJson(resp.data!);
+      final apkUri = Uri.tryParse(info.apkUrl);
+      if (info.versionCode <= 0 ||
+          info.versionName.isEmpty ||
+          apkUri == null ||
+          !apkUri.hasAuthority ||
+          (apkUri.scheme != 'http' && apkUri.scheme != 'https')) {
+        throw Exception('更新信息格式错误');
+      }
 
       final int localCode;
       if (currentVersionCode != null) {
@@ -70,7 +93,8 @@ class UpdateService {
 
       if (info.versionCode > localCode) return info;
       return null;
-    } catch (e) {
+    } catch (_) {
+      if (throwOnError) rethrow;
       // 网络异常时静默失败，不影响主流程。
       return null;
     }
@@ -89,25 +113,78 @@ class UpdateService {
     if (!await saveDir.exists()) {
       await saveDir.create(recursive: true);
     }
-    final filePath = '${saveDir.path}/music_player_${info.versionName}.apk';
+    final safeVersion = info.versionName.replaceAll(
+      RegExp(r'[^0-9A-Za-z._-]'),
+      '_',
+    );
+    final filePath = '${saveDir.path}/music_player_$safeVersion.apk';
     final file = File(filePath);
     if (await file.exists()) await file.delete();
+    final partialFile = File('$filePath.part');
+    if (await partialFile.exists()) await partialFile.delete();
 
-    await Dio().download(
-      info.apkUrl,
-      filePath,
-      onReceiveProgress: (received, total) {
-        if (total > 0) onProgress(received, total);
-      },
-    );
+    try {
+      await Dio(
+        BaseOptions(
+          connectTimeout: const Duration(seconds: 10),
+          receiveTimeout: const Duration(minutes: 5),
+        ),
+      ).download(
+        info.apkUrl,
+        partialFile.path,
+        onReceiveProgress: (received, total) {
+          if (total > 0) onProgress(received, total);
+        },
+      );
+
+      final actualSize = await partialFile.length();
+      if (info.apkSize > 0 && actualSize != info.apkSize) {
+        throw Exception('安装包大小校验失败');
+      }
+      if (info.sha256.isNotEmpty) {
+        await _verifyDigest(partialFile, sha256, info.sha256, 'SHA-256');
+      } else if (info.md5.isNotEmpty) {
+        await _verifyDigest(partialFile, md5, info.md5, 'MD5');
+      }
+
+      await partialFile.rename(filePath);
+    } catch (_) {
+      if (await partialFile.exists()) await partialFile.delete();
+      rethrow;
+    }
     return filePath;
   }
 
+  static Future<void> _verifyDigest(
+    File file,
+    Hash algorithm,
+    String expected,
+    String label,
+  ) async {
+    final actual = (await algorithm.bind(file.openRead()).first).toString();
+    if (actual.toLowerCase() != expected.toLowerCase()) {
+      throw Exception('安装包 $label 校验失败');
+    }
+  }
+
   /// 调用系统安装器安装 APK。
-  static Future<void> installApk(String filePath) async {
-    final result = await OpenFilex.open(filePath);
-    if (result.type != ResultType.done && result.message.isNotEmpty) {
-      throw Exception('安装失败：${result.message}');
+  /// 原生侧会校验包名、版本号和签名证书，再交给系统安装器。
+  static const MethodChannel _installChannel =
+      MethodChannel('music_player/install');
+
+  static Future<void> installApk(
+    String filePath, {
+    required int versionCode,
+  }) async {
+    try {
+      await _installChannel.invokeMethod('installApk', {
+        'path': filePath,
+        'versionCode': versionCode,
+      });
+    } on PlatformException catch (e) {
+      throw Exception('安装失败：${e.message ?? e.code}');
+    } on MissingPluginException {
+      throw Exception('安装组件未就绪，请重启应用后重试');
     }
   }
 }

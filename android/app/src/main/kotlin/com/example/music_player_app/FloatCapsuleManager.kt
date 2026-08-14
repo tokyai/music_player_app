@@ -120,9 +120,13 @@ object FloatCapsuleManager {
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    if (isDragging) {
+                    if (!isDragging) {
                         v.performClick()
                     }
+                    isDragging = false
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
                     isDragging = false
                     true
                 }

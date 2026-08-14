@@ -24,8 +24,14 @@ class SongTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final player = context.watch<PlayerProvider>();
-    final isCurrent = player.currentSong?.id == song.id && player.currentSong?.platform == song.platform;
+    final playerState = context
+        .select<PlayerProvider, (String?, MusicPlatform?, bool)>((player) => (
+              player.currentSong?.id,
+              player.currentSong?.platform,
+              player.isPlaying,
+            ));
+    final isCurrent =
+        playerState.$1 == song.id && playerState.$2 == song.platform;
     final platformColor = PlatformColors.of(song.platform);
 
     return ListTile(
@@ -58,7 +64,7 @@ class SongTile extends StatelessWidget {
               ),
             ),
           ),
-          if (isCurrent && player.isPlaying) ...[
+          if (isCurrent && playerState.$3) ...[
             const SizedBox(width: 8),
             _PlayingIndicator(color: AppColors.primary),
           ],
@@ -72,7 +78,9 @@ class SongTile extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
             fontSize: 12,
-            color: isCurrent ? AppColors.primary.withOpacity(0.7) : AppColors.textSecondary,
+            color: isCurrent
+                ? AppColors.primary.withOpacity(0.7)
+                : AppColors.textSecondary,
           ),
         ),
       ),
@@ -132,7 +140,8 @@ class _PlayingIndicator extends StatefulWidget {
   State<_PlayingIndicator> createState() => _PlayingIndicatorState();
 }
 
-class _PlayingIndicatorState extends State<_PlayingIndicator> with TickerProviderStateMixin {
+class _PlayingIndicatorState extends State<_PlayingIndicator>
+    with TickerProviderStateMixin {
   late AnimationController _controller;
 
   @override

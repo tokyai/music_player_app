@@ -1,10 +1,10 @@
 name: music_player_app
-description: 一款基于 ChKSz API 的多平台音乐播放器应用，支持网易云/QQ/酷狗三大平台搜索与播放。
+description: 库仔音乐，一款支持 QQ音乐/网易云/酷狗搜索与播放的多平台音乐应用。
 publish_to: 'none'
-version: 2.2.12+2212
+version: 2.2.16+2216
 
 environment:
-  sdk: ^3.5.0
+  sdk: ^3.11.0
 
 dependencies:
   flutter:
@@ -14,6 +14,7 @@ dependencies:
   # 网络
   http: ^1.2.2
   dio: ^5.7.0
+  crypto: ^3.0.6
 
   # 音频播放
   just_audio: ^0.9.39
@@ -32,17 +33,10 @@ dependencies:
   shared_preferences: ^2.3.2
 
   # UI
-  flutter_svg: ^2.0.10+1
-  google_fonts: ^6.2.1
-  shimmer: ^3.0.0
-  glassmorphism: ^3.0.0
-
   # 工具
   palette_generator: ^0.3.3+4
 
-  # 在线更新
   package_info_plus: ^8.0.0
-  open_filex: ^4.0.0
   path_provider: ^2.1.0
 
 dev_dependencies:

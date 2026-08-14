@@ -3,10 +3,11 @@ build/
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
+**/Flutter/ephemeral/
+**/GeneratedPluginRegistrant.*
 .packages
 .pub-cache/
 .pub/
-pubspec.lock
 
 # IntelliJ / Android Studio
 *.iml
@@ -22,7 +23,9 @@ pubspec.lock
 
 # Android
 android/.gradle/
+android/.kotlin/
 android/local.properties
+android/key.properties
 android/app/debug/
 android/app/profile/
 *.jks

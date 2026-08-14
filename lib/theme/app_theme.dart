@@ -31,9 +31,9 @@ class AppColors {
 
 /// 平台品牌色
 class PlatformColors {
-  static const netease = Color(0xFFE84D3D);   // 网易云红
-  static const qq = Color(0xFF31C27C);        // QQ 绿
-  static const kugou = Color(0xFF2CA2F9);     // 酷狗蓝
+  static const netease = Color(0xFFE84D3D); // 网易云红
+  static const qq = Color(0xFF31C27C); // QQ 绿
+  static const kugou = Color(0xFF2CA2F9); // 酷狗蓝
 
   static Color of(MusicPlatform p) {
     switch (p) {
@@ -54,6 +54,19 @@ class AppTheme {
   static ThemeData dark() => _build(Brightness.dark);
 
   static ThemeData _build(Brightness brightness) {
+    final isDark = brightness == Brightness.dark;
+    final background =
+        isDark ? const Color(0xFF121212) : const Color(0xFFFFFFFF);
+    final surface = isDark ? const Color(0xFF1E1E1E) : const Color(0xFFFFFFFF);
+    final surfaceSoft =
+        isDark ? const Color(0xFF2A2A2A) : const Color(0xFFF5F6F7);
+    final primarySoft =
+        isDark ? const Color(0xFF1E3A5F) : const Color(0xFFE3F2FD);
+    final textPrimary =
+        isDark ? const Color(0xFFE8EAED) : const Color(0xFF1F2329);
+    final textSecondary =
+        isDark ? const Color(0xFF9AA0A8) : const Color(0xFF646A73);
+    final textHint = isDark ? const Color(0xFF6B7075) : const Color(0xFF9AA0A8);
     final scheme = ColorScheme.fromSeed(
       seedColor: AppColors.primary,
       brightness: brightness,
@@ -66,45 +79,45 @@ class AppTheme {
       colorScheme: scheme.copyWith(
         primary: AppColors.primary,
         secondary: AppColors.primaryDark,
-        surface: AppColors.surface,
-        onSurface: AppColors.textPrimary,
+        surface: surface,
+        onSurface: textPrimary,
       ),
-      scaffoldBackgroundColor: AppColors.background,
+      scaffoldBackgroundColor: background,
       fontFamily: 'PingFang SC',
       splashFactory: InkRipple.splashFactory,
       appBarTheme: AppBarTheme(
-        backgroundColor: AppColors.background,
+        backgroundColor: background,
         elevation: 0,
         centerTitle: true,
         titleTextStyle: TextStyle(
-          color: AppColors.textPrimary,
+          color: textPrimary,
           fontSize: 17,
           fontWeight: FontWeight.w600,
         ),
-        iconTheme: IconThemeData(color: AppColors.textPrimary),
+        iconTheme: IconThemeData(color: textPrimary),
       ),
       navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: AppColors.surface,
-        indicatorColor: AppColors.primarySoft,
+        backgroundColor: surface,
+        indicatorColor: primarySoft,
         height: 64,
         labelTextStyle: WidgetStateProperty.resolveWith((states) {
           final selected = states.contains(WidgetState.selected);
           return TextStyle(
             fontSize: 12,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-            color: selected ? AppColors.primary : AppColors.textSecondary,
+            color: selected ? AppColors.primary : textSecondary,
           );
         }),
         iconTheme: WidgetStateProperty.resolveWith((states) {
           final selected = states.contains(WidgetState.selected);
           return IconThemeData(
-            color: selected ? AppColors.primary : AppColors.textSecondary,
+            color: selected ? AppColors.primary : textSecondary,
           );
         }),
       ),
       tabBarTheme: TabBarThemeData(
         labelColor: AppColors.primary,
-        unselectedLabelColor: AppColors.textSecondary,
+        unselectedLabelColor: textSecondary,
         indicatorColor: AppColors.primary,
         indicatorSize: TabBarIndicatorSize.label,
         dividerColor: Colors.transparent,
@@ -114,8 +127,8 @@ class AppTheme {
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: AppColors.surface,
-        hintStyle: TextStyle(color: AppColors.textHint),
+        fillColor: surface,
+        hintStyle: TextStyle(color: textHint),
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         border: OutlineInputBorder(
@@ -143,20 +156,20 @@ class AppTheme {
         ),
       ),
       listTileTheme: ListTileThemeData(
-        iconColor: AppColors.textSecondary,
+        iconColor: textSecondary,
       ),
       dividerTheme: DividerThemeData(
-        color: AppColors.surfaceSoft,
+        color: surfaceSoft,
         thickness: 1,
         space: 1,
       ),
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
-        backgroundColor: AppColors.textPrimary,
+        backgroundColor: textPrimary,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
       bottomSheetTheme: BottomSheetThemeData(
-        backgroundColor: AppColors.surface,
+        backgroundColor: surface,
         surfaceTintColor: Colors.transparent,
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(24)),

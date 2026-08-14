@@ -15,6 +15,20 @@ if (localPropertiesFile.exists()) {
 def flutterVersionCode = localProperties.getProperty("flutter.versionCode") ?: "1"
 def flutterVersionName = localProperties.getProperty("flutter.versionName") ?: "1.0"
 
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+}
+def releaseStoreFile = keystoreProperties["storeFile"]
+        ? file(keystoreProperties["storeFile"])
+        : null
+def hasReleaseSigning = releaseStoreFile != null &&
+        releaseStoreFile.exists() &&
+        keystoreProperties["storePassword"] &&
+        keystoreProperties["keyAlias"] &&
+        keystoreProperties["keyPassword"]
+
 android {
     namespace = "com.example.music_player_app"
     compileSdk = 36
@@ -31,15 +45,28 @@ android {
 
     defaultConfig {
         applicationId = "com.example.music_player_app"
-        minSdk = 21
+        minSdkVersion = flutter.minSdkVersion
         targetSdk = 34
         versionCode = flutterVersionCode.toInteger()
         versionName = flutterVersionName
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                keyAlias = keystoreProperties["keyAlias"]
+                keyPassword = keystoreProperties["keyPassword"]
+                storeFile = releaseStoreFile
+                storePassword = keystoreProperties["storePassword"]
+            }
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig = signingConfigs.debug
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.release
+            }
         }
     }
 
@@ -70,4 +97,16 @@ subprojects {
 
 flutter {
     source = "../.."
+}
+
+gradle.taskGraph.whenReady { graph ->
+    def releaseRequested = graph.allTasks.any { task ->
+        task.project == project && task.name.toLowerCase().contains("release")
+    }
+    if (releaseRequested && !hasReleaseSigning) {
+        throw new GradleException(
+                "Release signing is not configured. Copy android/key.properties.example " +
+                "to android/key.properties and provide a persistent release keystore."
+        )
+    }
 }

@@ -15,6 +15,7 @@ enum PlayMode { sequence, repeat, shuffle }
 class PlayerProvider extends ChangeNotifier {
   final AudioPlayer _audioPlayer = AudioPlayer();
   late ApiService _api;
+  late final Future<void> settingsReady;
 
   // ---- 状态 ----
   List<PlayQueueItem> _queue = [];
@@ -45,18 +46,23 @@ class PlayerProvider extends ChangeNotifier {
   StreamSubscription? _positionSub;
   StreamSubscription? _bufferSub;
   StreamSubscription? _errorSub;
+  int _playRequestId = 0;
+  bool _disposed = false;
 
   PlayerProvider() {
     _api = ApiService(apiKey: '');
     _initAudioPlayer();
-    _loadSettings();
+    settingsReady = _loadSettings();
   }
 
   // ==================== Getters ====================
 
   List<PlayQueueItem> get queue => _queue;
   int get currentIndex => _currentIndex;
-  PlayQueueItem? get currentSong => _currentIndex >= 0 && _currentIndex < _queue.length ? _queue[_currentIndex] : null;
+  PlayQueueItem? get currentSong =>
+      _currentIndex >= 0 && _currentIndex < _queue.length
+      ? _queue[_currentIndex]
+      : null;
   bool get isPlaying => _isPlaying;
   bool get isLoading => _isLoading;
   Duration get position => _position;
@@ -114,27 +120,33 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   Future<void> _loadSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    _apiKey = prefs.getString('api_key') ?? '';
-    _api.setApiKey(_apiKey);
-    final levelStr = prefs.getString('netease_level');
-    if (levelStr != null) {
-      _neteaseLevel = NeteaseLevel.values.firstWhere(
-        (e) => e.value == levelStr,
-        orElse: () => NeteaseLevel.jymaster,
-      );
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _apiKey = prefs.getString('api_key') ?? '';
+      _api.setApiKey(_apiKey);
+      final levelStr = prefs.getString('netease_level');
+      if (levelStr != null) {
+        _neteaseLevel = NeteaseLevel.values.firstWhere(
+          (e) => e.value == levelStr,
+          orElse: () => NeteaseLevel.jymaster,
+        );
+      }
+      final commonStr = prefs.getString('common_level');
+      if (commonStr != null) {
+        _commonLevel = CommonLevel.values.firstWhere(
+          (e) => e.value == commonStr,
+          orElse: () => CommonLevel.flac,
+        );
+      }
+    } catch (e) {
+      debugPrint('读取播放器设置失败: $e');
     }
-    final commonStr = prefs.getString('common_level');
-    if (commonStr != null) {
-      _commonLevel = CommonLevel.values.firstWhere(
-        (e) => e.value == commonStr,
-        orElse: () => CommonLevel.flac,
-      );
-    }
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   Future<void> setApiKey(String key) async {
+    await settingsReady;
+    if (_disposed) return;
     _apiKey = key;
     _api.setApiKey(key);
     final prefs = await SharedPreferences.getInstance();
@@ -143,6 +155,8 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   Future<void> setNeteaseLevel(NeteaseLevel level) async {
+    await settingsReady;
+    if (_disposed) return;
     _neteaseLevel = level;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('netease_level', level.value);
@@ -150,6 +164,8 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   Future<void> setCommonLevel(CommonLevel level) async {
+    await settingsReady;
+    if (_disposed) return;
     _commonLevel = level;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('common_level', level.value);
@@ -159,7 +175,11 @@ class PlayerProvider extends ChangeNotifier {
   // ==================== 播放控制 ====================
 
   /// 从搜索结果播放（替换整个队列）
-  Future<void> playFromSearchResults(List<SongSearchResult> results, int index) async {
+  Future<void> playFromSearchResults(
+    List<SongSearchResult> results,
+    int index,
+  ) async {
+    if (index < 0 || index >= results.length) return;
     _queue = results.map((e) => PlayQueueItem.fromSearchResult(e)).toList();
     _currentIndex = index;
     notifyListeners();
@@ -181,7 +201,11 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   /// 从歌单播放
-  Future<void> playFromPlaylist(List<SongSearchResult> tracks, int index) async {
+  Future<void> playFromPlaylist(
+    List<SongSearchResult> tracks,
+    int index,
+  ) async {
+    if (index < 0 || index >= tracks.length) return;
     _queue = tracks.map((e) => PlayQueueItem.fromSearchResult(e)).toList();
     _currentIndex = index;
     notifyListeners();
@@ -191,13 +215,7 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> _playCurrent() async {
     if (_currentIndex < 0 || _currentIndex >= _queue.length) return;
     final item = _queue[_currentIndex];
-
-    // 网易云直连不需要 API Key；酷狗/QQ 解析播放地址需要
-    if (item.platform != MusicPlatform.netease && _apiKey.isEmpty) {
-      _errorMessage = '酷狗/QQ音乐播放需要配置 API Key';
-      notifyListeners();
-      return;
-    }
+    final requestId = ++_playRequestId;
 
     _isLoading = true;
     _errorMessage = null;
@@ -205,11 +223,28 @@ class PlayerProvider extends ChangeNotifier {
     _currentLyricIndex = 0;
     _position = Duration.zero;
 
-    // 标记 loading
-    _queue[_currentIndex] = item.copyWith(loading: true);
+    // 新请求会使旧请求失效，同时清掉旧请求遗留的加载状态。
+    for (var i = 0; i < _queue.length; i++) {
+      if (_queue[i].loading) {
+        _queue[i] = _queue[i].copyWith(loading: false);
+      }
+    }
+    _queue[_currentIndex] = item.copyWith(loading: true, clearError: true);
     notifyListeners();
 
     try {
+      await settingsReady;
+      if (!_isCurrentRequest(requestId, item)) return;
+
+      // 选中一首新歌后先停止旧音源，避免 UI 与实际播放内容不一致。
+      await _audioPlayer.stop();
+      if (!_isCurrentRequest(requestId, item)) return;
+
+      // 网易云直连不需要 API Key；酷狗/QQ 解析播放地址需要。
+      if (item.platform != MusicPlatform.netease && _apiKey.isEmpty) {
+        throw ApiException('API_KEY_REQUIRED', '酷狗/QQ音乐播放需要配置 API Key');
+      }
+
       // 解析播放地址
       SongDetail detail;
       if (item.platform == MusicPlatform.netease) {
@@ -219,6 +254,7 @@ class PlayerProvider extends ChangeNotifier {
       } else {
         detail = await _api.kugouMusic(item.id, size: _commonLevel.value);
       }
+      if (!_isCurrentRequest(requestId, item)) return;
 
       if (detail.url.isEmpty) {
         throw ApiException('404', '无法获取播放地址，可能是版权限制');
@@ -226,25 +262,31 @@ class PlayerProvider extends ChangeNotifier {
 
       // 获取歌词
       String? lyricText;
+      late final List<LyricLine> resolvedLyrics;
       if (item.platform == MusicPlatform.netease) {
         final lyricData = await _api.neteaseLyric(item.id);
         lyricText = lyricData.original;
         final transLyric = LyricParser.parse(lyricData.translated);
-        _lyrics = LyricParser.mergeTranslation(LyricParser.parse(lyricText), transLyric);
+        resolvedLyrics = LyricParser.mergeTranslation(
+          LyricParser.parse(lyricText),
+          transLyric,
+        );
       } else if (item.platform == MusicPlatform.qq) {
         // QQ音乐: 优先直连歌词 API，失败则用解析返回的歌词
         try {
           final lyricData = await _api.qqLyric(item.id);
           lyricText = lyricData.original;
-          _lyrics = LyricParser.parse(lyricText);
+          resolvedLyrics = LyricParser.parse(lyricText);
         } catch (_) {
           lyricText = detail.lyric;
-          _lyrics = LyricParser.parse(lyricText);
+          resolvedLyrics = LyricParser.parse(lyricText);
         }
       } else {
         lyricText = detail.lyric;
-        _lyrics = LyricParser.parse(lyricText);
+        resolvedLyrics = LyricParser.parse(lyricText);
       }
+      if (!_isCurrentRequest(requestId, item)) return;
+      _lyrics = resolvedLyrics;
 
       // 更新队列项
       _queue[_currentIndex] = _queue[_currentIndex].copyWith(
@@ -253,6 +295,7 @@ class PlayerProvider extends ChangeNotifier {
         duration: detail.duration,
         coverUrl: detail.coverUrl ?? item.coverUrl,
         loading: false,
+        clearError: true,
       );
 
       // 设置音频源并播放（tag: MediaItem 用于系统媒体通知显示歌曲信息）
@@ -264,14 +307,22 @@ class PlayerProvider extends ChangeNotifier {
             title: item.name,
             artist: item.artist,
             album: item.album,
-            artUri: detail.coverUrl != null && detail.coverUrl!.isNotEmpty
-                ? Uri.parse(detail.coverUrl!)
+            artUri:
+                (detail.coverUrl ?? item.coverUrl) != null &&
+                    (detail.coverUrl ?? item.coverUrl)!.isNotEmpty
+                ? Uri.parse((detail.coverUrl ?? item.coverUrl)!)
                 : null,
           ),
         ),
         preload: true,
       );
-      await _audioPlayer.play();
+      if (!_isCurrentRequest(requestId, item)) return;
+
+      // just_audio 的 play() Future 会在暂停、停止或播放结束时才完成。
+      // 音源准备完成即结束“加载中”，播放过程放到后台等待。
+      _isLoading = false;
+      notifyListeners();
+      unawaited(_startPlayback(requestId, item));
 
       // 系统悬浮胶囊：显示/更新当前歌曲
       if (FloatingCapsuleService.enabled) {
@@ -285,14 +336,38 @@ class PlayerProvider extends ChangeNotifier {
 
       // 歌词索引由 positionStream 驱动更新（无需额外定时器）
     } catch (e) {
-      _queue[_currentIndex] = _queue[_currentIndex].copyWith(loading: false, error: e.toString());
+      if (!_isCurrentRequest(requestId, item)) return;
+      _queue[_currentIndex] = _queue[_currentIndex].copyWith(
+        loading: false,
+        error: e.toString(),
+      );
       _errorMessage = e.toString();
       _isLoading = false;
       notifyListeners();
     } finally {
-      _isLoading = false;
+      if (_isCurrentRequest(requestId, item) && _isLoading) {
+        _isLoading = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> _startPlayback(int requestId, PlayQueueItem item) async {
+    try {
+      await _audioPlayer.play();
+    } catch (e) {
+      if (!_isCurrentRequest(requestId, item)) return;
+      _errorMessage = '播放错误: $e';
       notifyListeners();
     }
+  }
+
+  bool _isCurrentRequest(int requestId, PlayQueueItem item) {
+    final current = currentSong;
+    return !_disposed &&
+        requestId == _playRequestId &&
+        current?.platform == item.platform &&
+        current?.id == item.id;
   }
 
   void _onSongComplete() {
@@ -315,6 +390,7 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   Future<void> playPause() async {
+    if (currentSong == null || _isLoading) return;
     if (_isPlaying) {
       await _audioPlayer.pause();
     } else {
@@ -367,11 +443,11 @@ class PlayerProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void playQueueItem(int index) {
+  Future<void> playQueueItem(int index) async {
     if (index < 0 || index >= _queue.length) return;
     _currentIndex = index;
     notifyListeners();
-    _playCurrent();
+    await _playCurrent();
   }
 
   void removeFromQueue(int index) {
@@ -382,19 +458,28 @@ class PlayerProvider extends ChangeNotifier {
     } else if (index == _currentIndex) {
       if (_currentIndex >= _queue.length) _currentIndex = _queue.length - 1;
       if (_currentIndex >= 0) {
-        _playCurrent();
+        unawaited(_playCurrent());
       } else {
-        _audioPlayer.stop();
+        _playRequestId++;
+        unawaited(_audioPlayer.stop());
       }
     }
     notifyListeners();
   }
 
   void clearQueue() {
+    _playRequestId++;
     _queue.clear();
     _currentIndex = -1;
     _lyrics.clear();
-    _audioPlayer.stop();
+    _position = Duration.zero;
+    _duration = Duration.zero;
+    _buffered = Duration.zero;
+    _isLoading = false;
+    _isPlaying = false;
+    _errorMessage = null;
+    unawaited(_audioPlayer.stop());
+    unawaited(FloatingCapsuleService.hide());
     notifyListeners();
   }
 
@@ -413,6 +498,8 @@ class PlayerProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    _playRequestId++;
     _playerSub?.cancel();
     _durationSub?.cancel();
     _positionSub?.cancel();

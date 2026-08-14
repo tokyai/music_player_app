@@ -68,158 +68,210 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final p = _detail ?? widget.playlist;
-    final platformColor = PlatformColors.of(widget.platform);
+    final isLandscape =
+        MediaQuery.orientationOf(context) == Orientation.landscape;
     return Scaffold(
       body: SafeArea(
-        child: Column(
+        child: isLandscape
+            ? _buildLandscapeBody()
+            : Column(
+                children: [
+                  _buildDetailHeader(),
+                  Expanded(child: _buildTrackArea()),
+                ],
+              ),
+      ),
+    );
+  }
+
+  Widget _buildLandscapeBody() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final infoWidth = (constraints.maxWidth * 0.36).clamp(220.0, 330.0);
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 头部渐变区
-            Container(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [
-                    platformColor.withOpacity(0.15),
-                    AppColors.background,
-                  ],
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                ),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 16, 16),
-                child: Row(
-                  children: [
-                    GestureDetector(
-                      onTap: () => Navigator.pop(context),
-                      child: Padding(
-                        padding: EdgeInsets.only(right: 8),
-                        child: Icon(Icons.arrow_back_ios_new, size: 20, color: AppColors.textPrimary),
-                      ),
-                    ),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(14),
-                      child: SizedBox(
-                        width: 100,
-                        height: 100,
-                        child: p.coverUrl != null && p.coverUrl!.isNotEmpty
-                            ? SmartCover(
-                                url: p.coverUrl,
-                                fit: BoxFit.cover,
-                                placeholder: () => _coverPlaceholder(platformColor),
-                              )
-                            : _coverPlaceholder(platformColor),
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            p.name,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 17,
-                              fontWeight: FontWeight.w700,
-                              color: AppColors.textPrimary,
-                            ),
-                          ),
-                          if (p.creator != null) ...[
-                            const SizedBox(height: 6),
-                            Text(
-                              'by ${p.creator}',
-                              style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
-                            ),
-                          ],
-                          const SizedBox(height: 4),
-                          Text(
-                            '${p.trackCount} 首',
-                            style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
-                          ),
-                        ],
-                      ),
-                    ),
-                    if (_detail != null && _detail!.tracks.isNotEmpty)
-                      IconButton.filled(
-                        onPressed: () {
-                          context
-                              .read<PlayerProvider>()
-                              .playFromPlaylist(_detail!.tracks, 0);
-                        },
-                        style: IconButton.styleFrom(
-                          backgroundColor: AppColors.primary,
-                          foregroundColor: Colors.white,
-                        ),
-                        icon: const Icon(Icons.play_arrow_rounded, size: 28),
-                        tooltip: '播放全部',
-                      ),
-                  ],
-                ),
-              ),
+            SizedBox(
+              width: infoWidth,
+              child: _buildDetailHeader(compact: true),
             ),
-            // 歌曲列表
-            Expanded(
-              child: _loading
-                  ? Center(
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2.5,
-                        color: AppColors.primary,
-                      ),
-                    )
-                  : _error != null
-                      ? Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Text('加载失败: $_error',
-                                  style: const TextStyle(color: Colors.redAccent)),
-                              const SizedBox(height: 16),
-                              FilledButton(
-                                onPressed: _loadDetail,
-                                child: const Text('重试'),
-                              ),
-                            ],
-                          ),
-                        )
-                      : _detail == null || _detail!.tracks.isEmpty
-                          ? Center(
-                              child: Text(
-                                '暂无歌曲',
-                                style: TextStyle(color: AppColors.textHint),
-                              ),
-                            )
-                          : ListView.builder(
-                              padding: const EdgeInsets.only(bottom: 16),
-                              itemCount: _detail!.tracks.length,
-                              itemBuilder: (ctx, i) {
-                                final track = _detail!.tracks[i];
-                                return SongTile(
-                                  song: track,
-                                  onTap: () {
-                                    context
-                                        .read<PlayerProvider>()
-                                        .playFromPlaylist(_detail!.tracks, i);
-                                  },
-                                  onAddToQueue: () {
-                                    context
-                                        .read<PlayerProvider>()
-                                        .addToQueue(track);
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: Text('已添加: ${track.name}'),
-                                        duration: const Duration(seconds: 1),
-                                      ),
-                                    );
-                                  },
-                                );
-                              },
-                            ),
+            VerticalDivider(
+              width: 1,
+              thickness: 1,
+              color: AppColors.surfaceSoft,
             ),
+            Expanded(child: _buildTrackArea()),
           ],
+        );
+      },
+    );
+  }
+
+  Widget _buildDetailHeader({bool compact = false}) {
+    final p = _detail ?? widget.playlist;
+    final platformColor = PlatformColors.of(widget.platform);
+    final cover = ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: SizedBox(
+        width: compact ? 148 : 100,
+        height: compact ? 148 : 100,
+        child: p.coverUrl != null && p.coverUrl!.isNotEmpty
+            ? SmartCover(
+                url: p.coverUrl,
+                fit: BoxFit.cover,
+                placeholder: () => _coverPlaceholder(platformColor),
+              )
+            : _coverPlaceholder(platformColor),
+      ),
+    );
+    final metadata = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          p.name,
+          maxLines: compact ? 3 : 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: compact ? 17 : 17,
+            fontWeight: FontWeight.w700,
+            color: AppColors.textPrimary,
+          ),
+        ),
+        if (p.creator != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            'by ${p.creator}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+          ),
+        ],
+        const SizedBox(height: 4),
+        Text(
+          '${p.trackCount} 首',
+          style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+        ),
+      ],
+    );
+    final playButton = _detail != null && _detail!.tracks.isNotEmpty
+        ? IconButton.filled(
+            onPressed: () {
+              context.read<PlayerProvider>().playFromPlaylist(
+                _detail!.tracks,
+                0,
+              );
+            },
+            style: IconButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+            ),
+            icon: const Icon(Icons.play_arrow_rounded, size: 28),
+            tooltip: '播放全部',
+          )
+        : const SizedBox.shrink();
+
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [platformColor.withOpacity(0.15), AppColors.background],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
         ),
       ),
+      child: compact
+          ? ListView(
+              key: const PageStorageKey('playlist-detail-landscape-info'),
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 20),
+              children: [
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: IconButton(
+                    tooltip: '返回',
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.arrow_back_ios_new),
+                  ),
+                ),
+                Center(child: cover),
+                const SizedBox(height: 14),
+                metadata,
+                const SizedBox(height: 12),
+                Align(alignment: Alignment.centerRight, child: playButton),
+              ],
+            )
+          : Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 16, 16),
+              child: Row(
+                children: [
+                  IconButton(
+                    tooltip: '返回',
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.arrow_back_ios_new),
+                  ),
+                  cover,
+                  const SizedBox(width: 16),
+                  Expanded(child: metadata),
+                  playButton,
+                ],
+              ),
+            ),
+    );
+  }
+
+  Widget _buildTrackArea() {
+    if (_loading) {
+      return Center(
+        child: CircularProgressIndicator(
+          strokeWidth: 2.5,
+          color: AppColors.primary,
+        ),
+      );
+    }
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                '加载失败: $_error',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.redAccent),
+              ),
+              const SizedBox(height: 16),
+              FilledButton(onPressed: _loadDetail, child: const Text('重试')),
+            ],
+          ),
+        ),
+      );
+    }
+    if (_detail == null || _detail!.tracks.isEmpty) {
+      return Center(
+        child: Text('暂无歌曲', style: TextStyle(color: AppColors.textHint)),
+      );
+    }
+    return ListView.builder(
+      key: const PageStorageKey('playlist-detail-tracks'),
+      padding: const EdgeInsets.only(bottom: 16),
+      itemCount: _detail!.tracks.length,
+      itemBuilder: (ctx, i) {
+        final track = _detail!.tracks[i];
+        return SongTile(
+          song: track,
+          onTap: () {
+            context.read<PlayerProvider>().playFromPlaylist(_detail!.tracks, i);
+          },
+          onAddToQueue: () {
+            context.read<PlayerProvider>().addToQueue(track);
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('已添加: ${track.name}'),
+                duration: const Duration(seconds: 1),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 

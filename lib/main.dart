@@ -12,11 +12,11 @@ import 'screens/search_screen.dart';
 import 'screens/playlist_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/floating_capsule_service.dart';
-import 'services/update_service.dart';
 import 'theme/app_theme.dart';
 import 'utils/system_ui.dart';
 import 'widgets/mini_player.dart';
-import 'widgets/update_dialog.dart';
+
+final _navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -25,7 +25,7 @@ void main() async {
   // 系统媒体通知：播放时通知栏/锁屏显示媒体控制（系统级胶囊体验）
   await JustAudioBackground.init(
     androidNotificationChannelId: 'com.example.music_player_app.audio',
-    androidNotificationChannelName: '音乐播放',
+    androidNotificationChannelName: '库仔音乐播放',
     androidNotificationOngoing: true,
   );
   // Android 13+ 请求通知权限（否则系统媒体通知不显示）
@@ -37,7 +37,8 @@ void main() async {
   try {
     final prefs = await SharedPreferences.getInstance();
     FloatingCapsuleService.setEnabled(
-        prefs.getBool('floating_capsule_enabled') ?? false);
+      prefs.getBool('floating_capsule_enabled') ?? false,
+    );
   } catch (_) {}
   runApp(const MusicPlayerApp());
 }
@@ -55,7 +56,8 @@ class MusicPlayerApp extends StatelessWidget {
       child: Consumer<ThemeController>(
         builder: (context, themeCtrl, _) {
           return MaterialApp(
-            title: '音乐播放器',
+            navigatorKey: _navigatorKey,
+            title: '库仔音乐',
             debugShowCheckedModeBanner: false,
             theme: AppTheme.light(),
             darkTheme: AppTheme.dark(),
@@ -71,12 +73,9 @@ class MusicPlayerApp extends StatelessWidget {
                   context.read<PlayerProvider>().playPause();
                 };
                 FloatingCapsuleService.onCapsuleTap = () {
-                  final navigator = Navigator.of(context);
-                  if (navigator.canPop()) {
-                    navigator.push(
-                      MaterialPageRoute(builder: (_) => const PlayerScreen()),
-                    );
-                  }
+                  _navigatorKey.currentState?.push(
+                    MaterialPageRoute(builder: (_) => const PlayerScreen()),
+                  );
                 };
               }
               return child!;
@@ -107,25 +106,110 @@ class _MainScreenState extends State<MainScreen> {
   ];
 
   @override
-  void initState() {
-    super.initState();
-    // 启动后静默检查一次更新（仿 momo：有新版本则弹窗）
-    WidgetsBinding.instance.addPostFrameCallback((_) => _autoCheckUpdate());
-  }
-
-  Future<void> _autoCheckUpdate() async {
-    final info = await UpdateService.checkUpdate();
-    if (!mounted) return;
-    if (info != null) showUpdateDialog(context, info);
-  }
-
-  @override
   Widget build(BuildContext context) {
+    final isLandscape =
+        MediaQuery.orientationOf(context) == Orientation.landscape;
+    final hasCurrentSong = context.select<PlayerProvider, bool>(
+      (player) => player.currentSong != null,
+    );
+    final content = IndexedStack(index: _currentIndex, children: _screens);
+
+    if (isLandscape) {
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final showPlayerPane = hasCurrentSong && constraints.maxWidth >= 960;
+          return Scaffold(
+            body: Row(
+              children: [
+                SafeArea(
+                  right: false,
+                  child: NavigationRail(
+                    key: const ValueKey('landscape-navigation'),
+                    minWidth: constraints.maxHeight < 480 ? 88 : 96,
+                    selectedIndex: _currentIndex,
+                    onDestinationSelected: (i) =>
+                        setState(() => _currentIndex = i),
+                    labelType: NavigationRailLabelType.all,
+                    groupAlignment: constraints.maxHeight < 480 ? 0 : -0.35,
+                    useIndicator: true,
+                    indicatorColor: AppColors.primarySoft,
+                    selectedIconTheme: const IconThemeData(
+                      color: AppColors.primary,
+                      size: 25,
+                    ),
+                    unselectedIconTheme: IconThemeData(
+                      color: AppColors.textSecondary,
+                      size: 23,
+                    ),
+                    selectedLabelTextStyle: const TextStyle(
+                      color: AppColors.primary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    unselectedLabelTextStyle: TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    leading: _buildLandscapeBrand(
+                      compact: constraints.maxHeight < 480,
+                    ),
+                    destinations: const [
+                      NavigationRailDestination(
+                        icon: Icon(Icons.explore_outlined),
+                        selectedIcon: Icon(Icons.explore),
+                        label: Text('发现'),
+                      ),
+                      NavigationRailDestination(
+                        icon: Icon(Icons.search_outlined),
+                        selectedIcon: Icon(Icons.search),
+                        label: Text('搜索'),
+                      ),
+                      NavigationRailDestination(
+                        icon: Icon(Icons.playlist_play_outlined),
+                        selectedIcon: Icon(Icons.playlist_play),
+                        label: Text('歌单'),
+                      ),
+                      NavigationRailDestination(
+                        icon: Icon(Icons.settings_outlined),
+                        selectedIcon: Icon(Icons.settings),
+                        label: Text('设置'),
+                      ),
+                    ],
+                  ),
+                ),
+                VerticalDivider(
+                  width: 1,
+                  thickness: 1,
+                  color: AppColors.surfaceSoft,
+                ),
+                Expanded(
+                  child: showPlayerPane
+                      ? content
+                      : Column(
+                          children: [
+                            Expanded(child: content),
+                            if (hasCurrentSong) const MiniPlayer(),
+                          ],
+                        ),
+                ),
+                if (showPlayerPane) ...[
+                  VerticalDivider(
+                    width: 1,
+                    thickness: 1,
+                    color: AppColors.surfaceSoft,
+                  ),
+                  const SizedBox(width: 240, child: LandscapeMiniPlayer()),
+                ],
+              ],
+            ),
+          );
+        },
+      );
+    }
+
     return Scaffold(
-      body: IndexedStack(
-        index: _currentIndex,
-        children: _screens,
-      ),
+      body: content,
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -158,6 +242,38 @@ class _MainScreenState extends State<MainScreen> {
               ),
             ],
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLandscapeBrand({required bool compact}) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(8, compact ? 8 : 14, 8, compact ? 8 : 18),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(compact ? 11 : 14),
+            child: Image.asset(
+              'assets/images/app_logo.png',
+              width: compact ? 40 : 48,
+              height: compact ? 40 : 48,
+              fit: BoxFit.cover,
+            ),
+          ),
+          if (!compact) ...[
+            const SizedBox(height: 8),
+            Text(
+              '库仔音乐',
+              maxLines: 1,
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
         ],
       ),
     );

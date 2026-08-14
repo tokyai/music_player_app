@@ -1,11 +1,9 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../theme/app_theme.dart';
 import '../utils/color_extractor.dart';
-import '../utils/lyric_parser.dart';
 import '../utils/system_ui.dart';
 import '../widgets/smart_cover.dart';
 
@@ -19,6 +17,7 @@ class PlayerScreen extends StatefulWidget {
 class _PlayerScreenState extends State<PlayerScreen> {
   Color? _dominantColor;
   bool _lyricsAutoScroll = true;
+  double _lyricFontSize = 17;
   final ScrollController _lyricScrollController = ScrollController();
   String? _lastColorSongId;
 
@@ -67,8 +66,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     // 第 index 行顶部在内容坐标 = topPadding + index*行高；
     // 让它滚到与首行初始位置（topPadding 处）重合，offset = index*行高。
     // 用 jumpTo 瞬时定位，避免 animateTo 300ms 动画在快歌下“追不上”当前行。
-    final target =
-        (index * _kLyricLineHeight).clamp(0.0, position.maxScrollExtent);
+    final target = (index * _kLyricLineHeight).clamp(
+      0.0,
+      position.maxScrollExtent,
+    );
     position.jumpTo(target);
   }
 
@@ -96,7 +97,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
         applySystemUi(dark: isDark);
         // 文字颜色：深色背景用白色，浅色背景用深色
         final textColor = isDark ? Colors.white : AppColors.textPrimary;
-        final subTextColor = (isDark ? Colors.white : AppColors.textPrimary).withOpacity(0.6);
+        final subTextColor = (isDark ? Colors.white : AppColors.textPrimary)
+            .withOpacity(0.6);
+        final isLandscape =
+            MediaQuery.orientationOf(ctx) == Orientation.landscape;
 
         return Scaffold(
           body: Container(
@@ -113,36 +117,39 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
             ),
             child: SafeArea(
-              child: Column(
-                children: [
-                  // 顶部导航
-                  _buildTopBar(ctx, player, textColor, subTextColor),
-                  // 主内容区：仅监听 showLyric + 当前歌词行，换行才重建
-                  Expanded(
-                    child: Selector<PlayerProvider, (bool, int)>(
-                      selector: (_, p) => (p.showLyric, p.currentLyricIndex),
-                      builder: (ctx, sel, _) {
-                        if (sel.$1) {
-                          // 歌词换行后滚动到当前行
-                          WidgetsBinding.instance.addPostFrameCallback((_) {
-                            _scrollToLyric(sel.$2);
-                          });
-                          return _buildLyricView(ctx, player, textColor);
-                        }
-                        return _buildCoverArt(ctx, player, song, baseColor);
-                      },
+              child: isLandscape
+                  ? _buildLandscapePlayer(
+                      ctx,
+                      player,
+                      song,
+                      baseColor,
+                      textColor,
+                      subTextColor,
+                    )
+                  : Column(
+                      children: [
+                        _buildTopBar(ctx, player, textColor, subTextColor),
+                        Expanded(
+                          child: _buildPlayerVisual(
+                            ctx,
+                            player,
+                            song,
+                            baseColor,
+                            textColor,
+                          ),
+                        ),
+                        _buildSongInfo(
+                          ctx,
+                          player,
+                          song,
+                          textColor,
+                          subTextColor,
+                        ),
+                        _buildProgressBar(ctx, player, textColor, subTextColor),
+                        _buildControls(ctx, player, textColor),
+                        _buildBottomActions(ctx, player, subTextColor),
+                      ],
                     ),
-                  ),
-                  // 歌曲信息
-                  _buildSongInfo(ctx, player, song, textColor, subTextColor),
-                  // 进度条
-                  _buildProgressBar(ctx, player, textColor, subTextColor),
-                  // 播放控制
-                  _buildControls(ctx, player, textColor),
-                  // 底部功能区
-                  _buildBottomActions(ctx, player, subTextColor),
-                ],
-              ),
             ),
           ),
         );
@@ -151,37 +158,345 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Widget _buildEmptyPlayer(BuildContext ctx) {
+    final isLandscape = MediaQuery.orientationOf(ctx) == Orientation.landscape;
+    final illustration = Container(
+      width: 96,
+      height: 96,
+      decoration: BoxDecoration(
+        color: AppColors.primarySoft,
+        shape: BoxShape.circle,
+      ),
+      child: Icon(Icons.music_note, size: 44, color: AppColors.primary),
+    );
+    final message = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          '还没有播放任何歌曲',
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 16),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '去搜索你喜欢的音乐吧',
+          style: TextStyle(color: AppColors.textHint, fontSize: 14),
+        ),
+      ],
+    );
     return Scaffold(
       body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              width: 96,
-              height: 96,
-              decoration: BoxDecoration(
-                color: AppColors.primarySoft,
-                shape: BoxShape.circle,
+        child: isLandscape
+            ? Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [illustration, const SizedBox(width: 24), message],
+              )
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [illustration, const SizedBox(height: 16), message],
               ),
-              child: Icon(Icons.music_note, size: 44, color: AppColors.primary),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              '还没有播放任何歌曲',
-              style: TextStyle(color: AppColors.textSecondary, fontSize: 16),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '去搜索你喜欢的音乐吧',
-              style: TextStyle(color: AppColors.textHint, fontSize: 14),
-            ),
-          ],
-        ),
       ),
     );
   }
 
-  Widget _buildTopBar(BuildContext ctx, PlayerProvider player, Color textColor, Color subColor) {
+  Widget _buildLandscapePlayer(
+    BuildContext ctx,
+    PlayerProvider player,
+    PlayQueueItem song,
+    Color baseColor,
+    Color textColor,
+    Color subTextColor,
+  ) {
+    return Column(
+      children: [
+        _buildTopBar(ctx, player, textColor, subTextColor, showQueue: false),
+        Expanded(
+          child: Row(
+            children: [
+              Expanded(
+                flex: 10,
+                child: KeyedSubtree(
+                  key: const ValueKey('landscape-player-controls'),
+                  child: _buildLandscapeControlPane(
+                    ctx,
+                    player,
+                    song,
+                    baseColor,
+                    textColor,
+                    subTextColor,
+                  ),
+                ),
+              ),
+              Container(
+                width: 1,
+                margin: const EdgeInsets.symmetric(vertical: 8),
+                color: subTextColor.withOpacity(0.16),
+              ),
+              Expanded(
+                flex: 11,
+                child: KeyedSubtree(
+                  key: const ValueKey('landscape-player-lyrics'),
+                  child: _buildLandscapeLyrics(ctx, player, textColor),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLandscapeControlPane(
+    BuildContext ctx,
+    PlayerProvider player,
+    PlayQueueItem song,
+    Color baseColor,
+    Color textColor,
+    Color subTextColor,
+  ) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compactHeight = constraints.maxHeight < 360;
+        final widthLimit = constraints.maxWidth - (compactHeight ? 28 : 40);
+        final heightLimit =
+            constraints.maxHeight * (compactHeight ? 0.38 : 0.52);
+        final rawCoverSize = widthLimit < heightLimit
+            ? widthLimit
+            : heightLimit;
+        final coverSize = rawCoverSize.clamp(88.0, 300.0);
+        final verticalPadding = compactHeight ? 4.0 : 10.0;
+
+        return SingleChildScrollView(
+          padding: EdgeInsets.symmetric(vertical: verticalPadding),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              minHeight: constraints.maxHeight - verticalPadding * 2,
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _buildLandscapeCoverArt(song, baseColor, coverSize),
+                SizedBox(height: compactHeight ? 4 : 10),
+                _buildLandscapeSongInfo(
+                  ctx,
+                  player,
+                  song,
+                  textColor,
+                  subTextColor,
+                ),
+                _buildProgressBar(
+                  ctx,
+                  player,
+                  textColor,
+                  subTextColor,
+                  compact: true,
+                ),
+                _buildControls(
+                  ctx,
+                  player,
+                  textColor,
+                  compact: true,
+                  landscape: true,
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildLandscapeCoverArt(
+    PlayQueueItem song,
+    Color baseColor,
+    double size,
+  ) {
+    return Container(
+      key: const ValueKey('landscape-player-cover'),
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: baseColor.withOpacity(0.3),
+            blurRadius: 22,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: song.coverUrl != null && song.coverUrl!.isNotEmpty
+            ? SmartCover(
+                url: song.coverUrl,
+                fit: BoxFit.cover,
+                placeholder: () => Container(
+                  color: AppColors.primarySoft,
+                  child: Center(
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.5,
+                      color: AppColors.primary,
+                    ),
+                  ),
+                ),
+              )
+            : _buildDefaultCover(song, compact: true),
+      ),
+    );
+  }
+
+  Widget _buildLandscapeSongInfo(
+    BuildContext ctx,
+    PlayerProvider player,
+    PlayQueueItem song,
+    Color textColor,
+    Color subColor,
+  ) {
+    return Selector<PlayerProvider, (bool, String?)>(
+      selector: (_, p) => (p.isLoading, p.errorMessage),
+      builder: (ctx, selection, _) {
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(16, 2, 8, 0),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      song.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: textColor,
+                        fontSize: 17,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '${song.artist} - ${song.album}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: subColor, fontSize: 12),
+                    ),
+                    if (selection.$2 != null) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        selection.$2!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.redAccent,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (selection.$1)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.primary,
+                    ),
+                  ),
+                ),
+              PopupMenuButton<double>(
+                tooltip: '歌词字号',
+                initialValue: _lyricFontSize,
+                position: PopupMenuPosition.under,
+                icon: Icon(Icons.format_size_rounded, color: subColor),
+                onSelected: (size) => setState(() => _lyricFontSize = size),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 14, child: Text('小')),
+                  PopupMenuItem(value: 17, child: Text('标准')),
+                  PopupMenuItem(value: 20, child: Text('大')),
+                  PopupMenuItem(value: 23, child: Text('特大')),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildLandscapeLyrics(
+    BuildContext ctx,
+    PlayerProvider player,
+    Color textColor,
+  ) {
+    return Selector<PlayerProvider, (int, int, bool)>(
+      selector: (_, p) => (p.lyrics.length, p.currentLyricIndex, p.isLoading),
+      builder: (ctx, selection, _) {
+        if (selection.$1 > 0) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _scrollToLyric(selection.$2);
+          });
+        }
+        if (selection.$1 == 0 && selection.$3) {
+          return Center(
+            child: SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(
+                strokeWidth: 2.5,
+                color: AppColors.primary,
+              ),
+            ),
+          );
+        }
+        return _buildLyricView(
+          ctx,
+          player,
+          textColor,
+          landscape: true,
+          toggleOnTap: false,
+        );
+      },
+    );
+  }
+
+  Widget _buildPlayerVisual(
+    BuildContext ctx,
+    PlayerProvider player,
+    PlayQueueItem song,
+    Color baseColor,
+    Color textColor, {
+    bool landscape = false,
+  }) {
+    return Selector<PlayerProvider, (bool, int, int)>(
+      selector: (_, p) => (p.showLyric, p.currentLyricIndex, p.lyrics.length),
+      builder: (ctx, sel, _) {
+        if (sel.$1) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _scrollToLyric(sel.$2);
+          });
+          return _buildLyricView(ctx, player, textColor, landscape: landscape);
+        }
+        return _buildCoverArt(
+          ctx,
+          player,
+          song,
+          baseColor,
+          landscape: landscape,
+        );
+      },
+    );
+  }
+
+  Widget _buildTopBar(
+    BuildContext ctx,
+    PlayerProvider player,
+    Color textColor,
+    Color subColor, {
+    bool showQueue = true,
+  }) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Row(
@@ -193,10 +508,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           Expanded(
             child: Column(
               children: [
-                Text(
-                  '正在播放',
-                  style: TextStyle(color: subColor, fontSize: 11),
-                ),
+                Text('正在播放', style: TextStyle(color: subColor, fontSize: 11)),
                 const SizedBox(height: 2),
                 Text(
                   player.queue.length > 1
@@ -211,57 +523,73 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ],
             ),
           ),
-          IconButton(
-            icon: Icon(Icons.queue_music, color: textColor),
-            onPressed: () => _showQueueSheet(ctx, player),
-          ),
+          if (showQueue)
+            IconButton(
+              icon: Icon(Icons.queue_music, color: textColor),
+              onPressed: () => _showQueueSheet(ctx, player),
+            )
+          else
+            const SizedBox(width: 48),
         ],
       ),
     );
   }
 
-  Widget _buildCoverArt(BuildContext ctx, PlayerProvider player, PlayQueueItem song, Color baseColor) {
-    return GestureDetector(
-      onTap: () => player.toggleShowLyric(),
-      child: Center(
-        child: Container(
-          width: 300,
-          height: 300,
-          margin: const EdgeInsets.all(24),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(28),
-            boxShadow: [
-              BoxShadow(
-                color: baseColor.withOpacity(0.35),
-                blurRadius: 40,
-                offset: const Offset(0, 16),
+  Widget _buildCoverArt(
+    BuildContext ctx,
+    PlayerProvider player,
+    PlayQueueItem song,
+    Color baseColor, {
+    bool landscape = false,
+  }) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final coverSize = landscape
+            ? (constraints.biggest.shortestSide - 32).clamp(96.0, 300.0)
+            : 300.0;
+        return GestureDetector(
+          onTap: () => player.toggleShowLyric(),
+          child: Center(
+            child: Container(
+              width: coverSize,
+              height: coverSize,
+              margin: EdgeInsets.all(landscape ? 16 : 24),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(28),
+                boxShadow: [
+                  BoxShadow(
+                    color: baseColor.withOpacity(0.35),
+                    blurRadius: landscape ? 24 : 40,
+                    offset: Offset(0, landscape ? 8 : 16),
+                  ),
+                ],
               ),
-            ],
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(28),
-            child: song.coverUrl != null && song.coverUrl!.isNotEmpty
-                ? SmartCover(
-                    url: song.coverUrl,
-                    fit: BoxFit.cover,
-                    placeholder: () => Container(
-                      color: AppColors.primarySoft,
-                      child: Center(
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2.5,
-                          color: AppColors.primary,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(28),
+                child: song.coverUrl != null && song.coverUrl!.isNotEmpty
+                    ? SmartCover(
+                        url: song.coverUrl,
+                        fit: BoxFit.cover,
+                        placeholder: () => Container(
+                          color: AppColors.primarySoft,
+                          child: Center(
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2.5,
+                              color: AppColors.primary,
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
-                  )
-                : _buildDefaultCover(song),
+                      )
+                    : _buildDefaultCover(song),
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
-  Widget _buildDefaultCover(PlayQueueItem song) {
+  Widget _buildDefaultCover(PlayQueueItem song, {bool compact = false}) {
     final color = PlatformColors.of(song.platform);
     return Container(
       color: color.withOpacity(0.15),
@@ -269,11 +597,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.music_note, size: 80, color: color),
-            const SizedBox(height: 12),
+            Icon(Icons.music_note, size: compact ? 34 : 80, color: color),
+            SizedBox(height: compact ? 4 : 12),
             Text(
               song.platform.label,
-              style: TextStyle(color: color, fontSize: 16),
+              style: TextStyle(color: color, fontSize: compact ? 11 : 16),
             ),
           ],
         ),
@@ -281,13 +609,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  Widget _buildLyricView(BuildContext ctx, PlayerProvider player, Color textColor) {
+  Widget _buildLyricView(
+    BuildContext ctx,
+    PlayerProvider player,
+    Color textColor, {
+    bool landscape = false,
+    bool toggleOnTap = true,
+  }) {
     if (player.lyrics.isEmpty) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.lyrics_outlined, size: 64, color: textColor.withOpacity(0.3)),
+            Icon(
+              Icons.lyrics_outlined,
+              size: 64,
+              color: textColor.withOpacity(0.3),
+            ),
             const SizedBox(height: 16),
             Text(
               '暂无歌词',
@@ -298,44 +636,65 @@ class _PlayerScreenState extends State<PlayerScreen> {
       );
     }
 
-    return GestureDetector(
-      onTap: () => player.toggleShowLyric(),
-      onVerticalDragUpdate: (_) => setState(() => _lyricsAutoScroll = false),
-      child: ListView.builder(
-        controller: _lyricScrollController,
-        padding: EdgeInsets.symmetric(
-          vertical: MediaQuery.of(ctx).size.height * 0.35,
-          horizontal: 32,
-        ),
-        itemCount: player.lyrics.length,
-        itemBuilder: (ctx, i) {
-          final lyric = player.lyrics[i];
-          final isCurrent = i == player.currentLyricIndex;
-          return GestureDetector(
-            onTap: () {
-              player.seekTo(lyric.time);
-              setState(() => _lyricsAutoScroll = true);
-            },
-            // 固定行高：保证滚动偏移计算精确，当前行高亮时不改变占位高度
-            child: SizedBox(
-              height: _kLyricLineHeight,
-              child: Center(
-                child: Text(
-                  lyric.text,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: isCurrent ? textColor : textColor.withOpacity(0.4),
-                    fontSize: isCurrent ? 17 : 14,
-                    fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableHeight = constraints.maxHeight.isFinite
+            ? constraints.maxHeight
+            : _kLyricLineHeight * 2;
+        final landscapePadding = availableHeight <= 20
+            ? 0.0
+            : ((availableHeight - _kLyricLineHeight) / 2).clamp(
+                20.0,
+                availableHeight,
+              );
+        return GestureDetector(
+          onTap: toggleOnTap ? () => player.toggleShowLyric() : null,
+          onVerticalDragUpdate: (_) =>
+              setState(() => _lyricsAutoScroll = false),
+          child: ListView.builder(
+            controller: _lyricScrollController,
+            padding: EdgeInsets.symmetric(
+              vertical: landscape
+                  ? landscapePadding
+                  : MediaQuery.sizeOf(ctx).height * 0.35,
+              horizontal: landscape ? 20 : 32,
+            ),
+            itemCount: player.lyrics.length,
+            itemBuilder: (ctx, i) {
+              final lyric = player.lyrics[i];
+              final isCurrent = i == player.currentLyricIndex;
+              return GestureDetector(
+                onTap: () {
+                  player.seekTo(lyric.time);
+                  setState(() => _lyricsAutoScroll = true);
+                },
+                child: SizedBox(
+                  height: _kLyricLineHeight,
+                  child: Center(
+                    child: Text(
+                      lyric.text,
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: isCurrent
+                            ? textColor
+                            : textColor.withOpacity(0.4),
+                        fontSize: isCurrent
+                            ? _lyricFontSize
+                            : (_lyricFontSize - 3).clamp(12.0, 20.0),
+                        fontWeight: isCurrent
+                            ? FontWeight.bold
+                            : FontWeight.normal,
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ),
-          );
-        },
-      ),
+              );
+            },
+          ),
+        );
+      },
     );
   }
 
@@ -344,8 +703,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
     PlayerProvider player,
     PlayQueueItem song,
     Color textColor,
-    Color subColor,
-  ) {
+    Color subColor, {
+    bool compact = false,
+  }) {
     // 仅监听加载状态与错误信息，避免随播放进度频繁重建
     return Selector<PlayerProvider, (bool, String?)>(
       selector: (_, p) => (p.isLoading, p.errorMessage),
@@ -354,7 +714,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         final errorMessage = sel.$2;
         if (isLoading) {
           return Padding(
-            padding: EdgeInsets.symmetric(vertical: 16),
+            padding: EdgeInsets.symmetric(vertical: compact ? 4 : 16),
             child: Center(
               child: SizedBox(
                 width: 24,
@@ -368,7 +728,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
           );
         }
         return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 8),
+          padding: EdgeInsets.symmetric(
+            horizontal: compact ? 20 : 32,
+            vertical: compact ? 2 : 8,
+          ),
           child: Column(
             children: [
               Text(
@@ -377,7 +740,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   color: textColor,
-                  fontSize: 20,
+                  fontSize: compact ? 18 : 20,
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -386,7 +749,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 '${song.artist} - ${song.album}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: subColor, fontSize: 13),
+                style: TextStyle(color: subColor, fontSize: compact ? 12 : 13),
               ),
               if (errorMessage != null) ...[
                 const SizedBox(height: 4),
@@ -402,7 +765,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  Widget _buildProgressBar(BuildContext ctx, PlayerProvider player, Color textColor, Color subColor) {
+  Widget _buildProgressBar(
+    BuildContext ctx,
+    PlayerProvider player,
+    Color textColor,
+    Color subColor, {
+    bool compact = false,
+  }) {
     // 进度条独立监听 position/duration，只有时间变化才重建这一小块
     return Selector<PlayerProvider, (Duration, Duration)>(
       selector: (_, p) => (p.position, p.duration),
@@ -410,16 +779,26 @@ class _PlayerScreenState extends State<PlayerScreen> {
         final position = sel.$1;
         final duration = sel.$2;
         final total = duration.inMilliseconds.toDouble();
-        final pos = position.inMilliseconds.toDouble().clamp(0, total > 0 ? total : 1);
+        final pos = position.inMilliseconds.toDouble().clamp(
+          0,
+          total > 0 ? total : 1,
+        );
         return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
+          padding: EdgeInsets.symmetric(
+            horizontal: compact ? 16 : 24,
+            vertical: compact ? 0 : 4,
+          ),
           child: Column(
             children: [
               SliderTheme(
                 data: SliderTheme.of(ctx).copyWith(
                   trackHeight: 3,
-                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                  thumbShape: const RoundSliderThumbShape(
+                    enabledThumbRadius: 6,
+                  ),
+                  overlayShape: const RoundSliderOverlayShape(
+                    overlayRadius: 12,
+                  ),
                   activeTrackColor: AppColors.primary,
                   inactiveTrackColor: subColor.withOpacity(0.25),
                   thumbColor: AppColors.primary,
@@ -428,13 +807,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   value: total > 0 ? pos / total : 0,
                   onChanged: total > 0
                       ? (v) {
-                          player.seekTo(Duration(milliseconds: (v * total).toInt()));
+                          player.seekTo(
+                            Duration(milliseconds: (v * total).toInt()),
+                          );
                         }
                       : null,
                 ),
               ),
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
+                padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 16),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -456,7 +837,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  Widget _buildControls(BuildContext ctx, PlayerProvider player, Color textColor) {
+  Widget _buildControls(
+    BuildContext ctx,
+    PlayerProvider player,
+    Color textColor, {
+    bool compact = false,
+    bool landscape = false,
+  }) {
     // 仅监听播放状态/模式/歌词开关，避免随播放进度重建
     return Selector<PlayerProvider, (bool, PlayMode, bool)>(
       selector: (_, p) => (p.isPlaying, p.playMode, p.showLyric),
@@ -465,18 +852,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
         final playMode = sel.$2;
         final showLyric = sel.$3;
         return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
+          key: landscape ? const ValueKey('landscape-player-buttons') : null,
+          padding: EdgeInsets.symmetric(
+            horizontal: compact ? 12 : 24,
+            vertical: compact ? 0 : 4,
+          ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               // 播放模式
               IconButton(
+                tooltip: '播放模式',
                 icon: Icon(
                   playMode == PlayMode.sequence
                       ? Icons.repeat_rounded
                       : playMode == PlayMode.repeat
-                          ? Icons.repeat_one_rounded
-                          : Icons.shuffle_rounded,
+                      ? Icons.repeat_one_rounded
+                      : Icons.shuffle_rounded,
                   color: textColor,
                   size: 24,
                 ),
@@ -484,13 +876,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
               // 上一首
               IconButton(
-                icon: Icon(Icons.skip_previous_rounded, color: textColor, size: 42),
+                tooltip: '上一首',
+                icon: Icon(
+                  Icons.skip_previous_rounded,
+                  color: textColor,
+                  size: compact ? 36 : 42,
+                ),
                 onPressed: player.playPrevious,
               ),
               // 播放/暂停
               Container(
-                width: 68,
-                height: 68,
+                width: compact ? 56 : 68,
+                height: compact ? 56 : 68,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: AppColors.primary,
@@ -503,28 +900,47 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   ],
                 ),
                 child: IconButton(
+                  tooltip: isPlaying ? '暂停' : '播放',
                   icon: Icon(
                     isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
                     color: Colors.white,
-                    size: 38,
+                    size: compact ? 32 : 38,
                   ),
                   onPressed: player.playPause,
                 ),
               ),
               // 下一首
               IconButton(
-                icon: Icon(Icons.skip_next_rounded, color: textColor, size: 42),
+                tooltip: '下一首',
+                icon: Icon(
+                  Icons.skip_next_rounded,
+                  color: textColor,
+                  size: compact ? 36 : 42,
+                ),
                 onPressed: player.playNext,
               ),
-              // 歌词
-              IconButton(
-                icon: Icon(
-                  Icons.lyrics_rounded,
-                  color: showLyric ? AppColors.primary : textColor.withOpacity(0.5),
-                  size: 24,
+              if (landscape)
+                IconButton(
+                  tooltip: '播放队列',
+                  icon: Icon(
+                    Icons.queue_music_rounded,
+                    color: textColor,
+                    size: 24,
+                  ),
+                  onPressed: () => _showQueueSheet(ctx, player),
+                )
+              else
+                IconButton(
+                  tooltip: '歌词',
+                  icon: Icon(
+                    Icons.lyrics_rounded,
+                    color: showLyric
+                        ? AppColors.primary
+                        : textColor.withOpacity(0.5),
+                    size: 24,
+                  ),
+                  onPressed: player.toggleShowLyric,
                 ),
-                onPressed: player.toggleShowLyric,
-              ),
             ],
           ),
         );
@@ -532,12 +948,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  Widget _buildBottomActions(BuildContext ctx, PlayerProvider player, Color subColor) {
+  Widget _buildBottomActions(
+    BuildContext ctx,
+    PlayerProvider player,
+    Color subColor, {
+    bool compact = false,
+  }) {
     return Selector<PlayerProvider, bool>(
       selector: (_, p) => p.showLyric,
       builder: (ctx, showLyric, _) {
         return Padding(
-          padding: const EdgeInsets.only(bottom: 12),
+          padding: EdgeInsets.only(bottom: compact ? 0 : 12),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
@@ -557,7 +978,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
               TextButton.icon(
                 onPressed: () => _showQueueSheet(ctx, player),
-                icon: Icon(Icons.queue_music_rounded, color: subColor, size: 20),
+                icon: Icon(
+                  Icons.queue_music_rounded,
+                  color: subColor,
+                  size: 20,
+                ),
                 label: Text('队列', style: TextStyle(color: subColor)),
               ),
             ],
@@ -568,6 +993,44 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _showQueueSheet(BuildContext ctx, PlayerProvider player) {
+    final isLandscape = MediaQuery.orientationOf(ctx) == Orientation.landscape;
+    if (isLandscape) {
+      showDialog<void>(
+        context: ctx,
+        barrierColor: Colors.black54,
+        builder: (dialogCtx) {
+          final size = MediaQuery.sizeOf(dialogCtx);
+          final panelWidth = (size.width * 0.42).clamp(300.0, 420.0);
+          return Align(
+            alignment: Alignment.centerRight,
+            child: SafeArea(
+              left: false,
+              child: Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: Material(
+                  color: AppColors.surface,
+                  elevation: 12,
+                  borderRadius: BorderRadius.circular(20),
+                  clipBehavior: Clip.antiAlias,
+                  child: SizedBox(
+                    width: panelWidth,
+                    height: size.height * 0.86,
+                    child: _buildQueueContent(
+                      dialogCtx,
+                      player,
+                      null,
+                      showHandle: false,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      );
+      return;
+    }
+
     showModalBottomSheet(
       context: ctx,
       isScrollControlled: true,
@@ -582,115 +1045,131 @@ class _PlayerScreenState extends State<PlayerScreen> {
           maxChildSize: 0.9,
           expand: false,
           builder: (ctx, scrollController) {
-            return Column(
-              children: [
-                // 拖拽指示条
-                Container(
-                  margin: const EdgeInsets.only(top: 10),
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: AppColors.textHint.withOpacity(0.4),
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        '播放队列 (${player.queue.length})',
-                        style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.textPrimary,
-                        ),
-                      ),
-                      if (player.queue.isNotEmpty)
-                        TextButton(
-                          onPressed: () {
-                            player.clearQueue();
-                            Navigator.pop(ctx);
-                          },
-                          child: Text(
-                            '清空',
-                            style: TextStyle(color: AppColors.primary),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-                const Divider(height: 1),
-                Expanded(
-                  child: ListView.builder(
-                    controller: scrollController,
-                    itemCount: player.queue.length,
-                    itemBuilder: (ctx, i) {
-                      final item = player.queue[i];
-                      final isCurrent = i == player.currentIndex;
-                      return ListTile(
-                        leading: ClipRRect(
-                          borderRadius: BorderRadius.circular(10),
-                          child: SizedBox(
-                            width: 44,
-                            height: 44,
-                            child: item.coverUrl != null && item.coverUrl!.isNotEmpty
-                                ? SmartCover(
-                                    url: item.coverUrl,
-                                    fit: BoxFit.cover,
-                                    placeholder: () => Container(
-                                      color: AppColors.primarySoft,
-                                      child: Icon(Icons.music_note, size: 20, color: AppColors.primary),
-                                    ),
-                                  )
-                                : Container(
-                                    color: AppColors.primarySoft,
-                                    child: Icon(Icons.music_note, size: 20, color: AppColors.primary),
-                                  ),
-                          ),
-                        ),
-                        title: Text(
-                          item.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: isCurrent ? AppColors.primary : AppColors.textPrimary,
-                            fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
-                            fontSize: 14,
-                          ),
-                        ),
-                        subtitle: Text(
-                          '${item.platform.label} · ${item.artist}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 11, color: AppColors.textSecondary),
-                        ),
-                        trailing: isCurrent
-                            ? Icon(Icons.equalizer_rounded, color: AppColors.primary)
-                            : item.loading
-                                ? SizedBox(
-                                    width: 20,
-                                    height: 20,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: AppColors.primary,
-                                    ),
-                                  )
-                                : IconButton(
-                                    icon: Icon(Icons.close_rounded, size: 20, color: AppColors.textSecondary),
-                                    onPressed: () => player.removeFromQueue(i),
-                                  ),
-                        onTap: () => player.playQueueItem(i),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            );
+            return _buildQueueContent(ctx, player, scrollController);
           },
         );
       },
+    );
+  }
+
+  Widget _buildQueueContent(
+    BuildContext ctx,
+    PlayerProvider player,
+    ScrollController? scrollController, {
+    bool showHandle = true,
+  }) {
+    return Column(
+      children: [
+        if (showHandle)
+          Container(
+            margin: const EdgeInsets.only(top: 10),
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: AppColors.textHint.withOpacity(0.4),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 12, 10),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '播放队列 (${player.queue.length})',
+                style: TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              if (player.queue.isNotEmpty)
+                TextButton(
+                  onPressed: () {
+                    player.clearQueue();
+                    Navigator.pop(ctx);
+                  },
+                  child: Text('清空', style: TextStyle(color: AppColors.primary)),
+                ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: ListView.builder(
+            controller: scrollController,
+            itemCount: player.queue.length,
+            itemBuilder: (ctx, i) {
+              final item = player.queue[i];
+              final isCurrent = i == player.currentIndex;
+              return ListTile(
+                leading: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: SizedBox(
+                    width: 44,
+                    height: 44,
+                    child: item.coverUrl != null && item.coverUrl!.isNotEmpty
+                        ? SmartCover(
+                            url: item.coverUrl,
+                            fit: BoxFit.cover,
+                            placeholder: () => _queueCoverPlaceholder(),
+                          )
+                        : _queueCoverPlaceholder(),
+                  ),
+                ),
+                title: Text(
+                  item.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: isCurrent
+                        ? AppColors.primary
+                        : AppColors.textPrimary,
+                    fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+                    fontSize: 14,
+                  ),
+                ),
+                subtitle: Text(
+                  '${item.platform.label} · ${item.artist}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+                trailing: isCurrent
+                    ? Icon(Icons.equalizer_rounded, color: AppColors.primary)
+                    : item.loading
+                    ? SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: AppColors.primary,
+                        ),
+                      )
+                    : IconButton(
+                        icon: Icon(
+                          Icons.close_rounded,
+                          size: 20,
+                          color: AppColors.textSecondary,
+                        ),
+                        onPressed: () => player.removeFromQueue(i),
+                      ),
+                onTap: () => player.playQueueItem(i),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _queueCoverPlaceholder() {
+    return Container(
+      color: AppColors.primarySoft,
+      child: Icon(Icons.music_note, size: 20, color: AppColors.primary),
     );
   }
 

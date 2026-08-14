@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/song.dart';
 
-/// 歌单导入对话框（支持网易云 / QQ音乐）
+/// 歌单导入对话框（支持 QQ音乐 / 网易云）
 class PlaylistImportDialog extends StatefulWidget {
   final void Function(MusicPlatform platform, String id) onImport;
 
@@ -14,7 +14,7 @@ class PlaylistImportDialog extends StatefulWidget {
 class _PlaylistImportDialogState extends State<PlaylistImportDialog> {
   final _controller = TextEditingController();
   final _formKey = GlobalKey<FormState>();
-  MusicPlatform _platform = MusicPlatform.netease;
+  MusicPlatform _platform = MusicPlatform.qq;
 
   @override
   void dispose() {
@@ -33,6 +33,7 @@ class _PlaylistImportDialogState extends State<PlaylistImportDialog> {
   Widget build(BuildContext context) {
     final isQQ = _platform == MusicPlatform.qq;
     return AlertDialog(
+      scrollable: true,
       title: const Text('导入歌单'),
       content: Form(
         key: _formKey,
@@ -43,14 +44,14 @@ class _PlaylistImportDialogState extends State<PlaylistImportDialog> {
             SegmentedButton<MusicPlatform>(
               segments: const [
                 ButtonSegment(
-                  value: MusicPlatform.netease,
-                  label: Text('网易云'),
-                  icon: Icon(Icons.music_note),
-                ),
-                ButtonSegment(
                   value: MusicPlatform.qq,
                   label: Text('QQ音乐'),
                   icon: Icon(Icons.headphones),
+                ),
+                ButtonSegment(
+                  value: MusicPlatform.netease,
+                  label: Text('网易云'),
+                  icon: Icon(Icons.music_note),
                 ),
               ],
               selected: {_platform},
@@ -58,7 +59,10 @@ class _PlaylistImportDialogState extends State<PlaylistImportDialog> {
               onSelectionChanged: (s) => setState(() => _platform = s.first),
               style: SegmentedButton.styleFrom(
                 visualDensity: VisualDensity.compact,
-                textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                textStyle: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
             const SizedBox(height: 12),

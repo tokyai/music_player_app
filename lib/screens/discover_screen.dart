@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/song.dart';
@@ -33,14 +35,16 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   @override
   void initState() {
     super.initState();
-    _loadAll();
+    unawaited(_loadAll());
   }
 
-  void _loadAll() {
-    _loadNetease();
-    _loadQQ();
-    _loadKugouDaily();
-    _loadKugouNew();
+  Future<void> _loadAll() async {
+    await Future.wait([
+      _loadQQ(),
+      _loadNetease(),
+      _loadKugouDaily(),
+      _loadKugouNew(),
+    ]);
   }
 
   Future<void> _loadNetease() async {
@@ -49,7 +53,10 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       _errNetease = null;
     });
     try {
-      final list = await context.read<PlayerProvider>().api.neteaseHotPlaylists();
+      final list = await context
+          .read<PlayerProvider>()
+          .api
+          .neteaseHotPlaylists();
       if (mounted) setState(() => _neteasePlaylists = list);
     } catch (e) {
       if (mounted) setState(() => _errNetease = e.toString());
@@ -64,7 +71,10 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       _errQQ = null;
     });
     try {
-      final list = await context.read<PlayerProvider>().api.qqRecommendPlaylists();
+      final list = await context
+          .read<PlayerProvider>()
+          .api
+          .qqRecommendPlaylists();
       if (mounted) setState(() => _qqPlaylists = list);
     } catch (e) {
       if (mounted) setState(() => _errQQ = e.toString());
@@ -79,7 +89,10 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       _errKugouDaily = null;
     });
     try {
-      final list = await context.read<PlayerProvider>().api.kugouDailyRecommend();
+      final list = await context
+          .read<PlayerProvider>()
+          .api
+          .kugouDailyRecommend();
       if (mounted) setState(() => _kugouDaily = list);
     } catch (e) {
       if (mounted) setState(() => _errKugouDaily = e.toString());
@@ -105,33 +118,150 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isLandscape =
+        MediaQuery.orientationOf(context) == Orientation.landscape;
     return Scaffold(
       body: SafeArea(
-        child: RefreshIndicator(
-          onRefresh: () async => _loadAll(),
-          color: AppColors.primary,
-          child: ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.only(bottom: 24),
-            children: [
-              _buildHeader(),
-              _buildSectionHeader('网易云热门歌单', PlatformColors.netease, '为你精选全网好听的歌单'),
-              _buildPlaylistSection(_neteasePlaylists, _loadingNetease, _errNetease, MusicPlatform.netease),
-              const SizedBox(height: 12),
+        child: isLandscape ? _buildLandscapeContent() : _buildPortraitContent(),
+      ),
+    );
+  }
 
-              _buildSectionHeader('QQ音乐推荐歌单', PlatformColors.qq, 'QQ 音乐编辑推荐'),
-              _buildPlaylistSection(_qqPlaylists, _loadingQQ, _errQQ, MusicPlatform.qq),
-              const SizedBox(height: 12),
-
-              _buildSectionHeader('酷狗每日推荐', PlatformColors.kugou, '每天为你精选 20 首'),
-              _buildSongSection(_kugouDaily, _loadingKugouDaily, _errKugouDaily),
-              const SizedBox(height: 12),
-
-              _buildSectionHeader('酷狗新歌速递', PlatformColors.kugou, '最新上架的热门歌曲'),
-              _buildSongSection(_kugouNewSongs, _loadingKugouNew, _errKugouNew),
-            ],
+  Widget _buildPortraitContent() {
+    return RefreshIndicator(
+      onRefresh: _loadAll,
+      color: AppColors.primary,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.only(bottom: 24),
+        children: [
+          _buildHeader(),
+          _buildSectionHeader('QQ音乐推荐歌单', PlatformColors.qq, 'QQ 音乐编辑推荐'),
+          _buildPlaylistSection(
+            _qqPlaylists,
+            _loadingQQ,
+            _errQQ,
+            MusicPlatform.qq,
           ),
-        ),
+          const SizedBox(height: 12),
+          _buildSectionHeader('网易云热门歌单', PlatformColors.netease, '为你精选全网好听的歌单'),
+          _buildPlaylistSection(
+            _neteasePlaylists,
+            _loadingNetease,
+            _errNetease,
+            MusicPlatform.netease,
+          ),
+          const SizedBox(height: 12),
+          _buildSectionHeader('酷狗每日推荐', PlatformColors.kugou, '每天为你精选 20 首'),
+          _buildSongSection(_kugouDaily, _loadingKugouDaily, _errKugouDaily),
+          const SizedBox(height: 12),
+          _buildSectionHeader('酷狗新歌速递', PlatformColors.kugou, '最新上架的热门歌曲'),
+          _buildSongSection(_kugouNewSongs, _loadingKugouNew, _errKugouNew),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLandscapeContent() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 760;
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              child: _buildLandscapeColumn(
+                key: const PageStorageKey('discover-landscape-playlists'),
+                compact: compact,
+                children: [
+                  _buildHeader(),
+                  _buildSectionHeader(
+                    'QQ音乐推荐歌单',
+                    PlatformColors.qq,
+                    'QQ 音乐编辑推荐',
+                    compact: compact,
+                  ),
+                  _buildPlaylistSection(
+                    _qqPlaylists,
+                    _loadingQQ,
+                    _errQQ,
+                    MusicPlatform.qq,
+                  ),
+                  const SizedBox(height: 12),
+                  _buildSectionHeader(
+                    '网易云热门歌单',
+                    PlatformColors.netease,
+                    '为你精选全网好听的歌单',
+                    compact: compact,
+                  ),
+                  _buildPlaylistSection(
+                    _neteasePlaylists,
+                    _loadingNetease,
+                    _errNetease,
+                    MusicPlatform.netease,
+                  ),
+                  const SizedBox(height: 24),
+                ],
+              ),
+            ),
+            VerticalDivider(
+              width: 1,
+              thickness: 1,
+              color: AppColors.surfaceSoft,
+            ),
+            Expanded(
+              child: _buildLandscapeColumn(
+                key: const PageStorageKey('discover-landscape-songs'),
+                compact: compact,
+                children: [
+                  const SizedBox(height: 16),
+                  _buildSectionHeader(
+                    '酷狗每日推荐',
+                    PlatformColors.kugou,
+                    '每天为你精选 20 首',
+                    compact: compact,
+                  ),
+                  _buildSongSection(
+                    _kugouDaily,
+                    _loadingKugouDaily,
+                    _errKugouDaily,
+                  ),
+                  const SizedBox(height: 12),
+                  _buildSectionHeader(
+                    '酷狗新歌速递',
+                    PlatformColors.kugou,
+                    '最新上架的热门歌曲',
+                    compact: compact,
+                  ),
+                  _buildSongSection(
+                    _kugouNewSongs,
+                    _loadingKugouNew,
+                    _errKugouNew,
+                  ),
+                  const SizedBox(height: 24),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildLandscapeColumn({
+    required Key key,
+    required bool compact,
+    required List<Widget> children,
+  }) {
+    return RefreshIndicator(
+      key: key,
+      onRefresh: _loadAll,
+      color: AppColors.primary,
+      child: ListView(
+        key: PageStorageKey('${key.toString()}-scroll'),
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: EdgeInsets.only(bottom: compact ? 12 : 24),
+        children: children,
       ),
     );
   }
@@ -142,52 +272,62 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     final greet = hour < 6
         ? '夜深了'
         : hour < 12
-            ? '早上好'
-            : hour < 18
-                ? '下午好'
-                : '晚上好';
+        ? '早上好'
+        : hour < 18
+        ? '下午好'
+        : '晚上好';
     return Container(
       margin: const EdgeInsets.fromLTRB(20, 16, 20, 8),
       child: Row(
         children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [AppColors.primary, AppColors.primaryDark],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(14),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(14),
+            child: Image.asset(
+              'assets/images/app_logo.png',
+              width: 44,
+              height: 44,
+              fit: BoxFit.cover,
             ),
-            child: const Icon(Icons.graphic_eq, color: Colors.white, size: 26),
           ),
           const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '$greet 👋',
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textPrimary,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '$greet 👋',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textPrimary,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                '发现好音乐，开启一天好心情',
-                style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
-              ),
-            ],
+                const SizedBox(height: 2),
+                Text(
+                  '发现好音乐，开启一天好心情',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildSectionHeader(String title, Color color, String subtitle) {
+  Widget _buildSectionHeader(
+    String title,
+    Color color,
+    String subtitle, {
+    bool compact = false,
+  }) {
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
       child: Row(
@@ -201,19 +341,28 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
             ),
           ),
           const SizedBox(width: 8),
-          Text(
-            title,
-            style: TextStyle(
-              fontSize: 17,
-              fontWeight: FontWeight.w700,
-              color: AppColors.textPrimary,
+          Expanded(
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: compact ? 15 : 17,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textPrimary,
+              ),
             ),
           ),
-          const Spacer(),
-          Text(
-            subtitle,
-            style: TextStyle(fontSize: 11, color: AppColors.textHint),
-          ),
+          if (!compact)
+            Flexible(
+              child: Text(
+                subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.end,
+                style: TextStyle(fontSize: 11, color: AppColors.textHint),
+              ),
+            ),
         ],
       ),
     );
@@ -229,7 +378,10 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       return SizedBox(
         height: 170,
         child: Center(
-          child: CircularProgressIndicator(strokeWidth: 2.5, color: AppColors.primary),
+          child: CircularProgressIndicator(
+            strokeWidth: 2.5,
+            color: AppColors.primary,
+          ),
         ),
       );
     }
@@ -246,7 +398,10 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               }
             },
             icon: Icon(Icons.refresh, size: 18, color: AppColors.primary),
-            label: Text('加载失败，点击重试', style: TextStyle(color: AppColors.textSecondary)),
+            label: Text(
+              '加载失败，点击重试',
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
           ),
         ),
       );
@@ -274,10 +429,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => PlaylistDetailScreen(
-                    playlist: p,
-                    platform: platform,
-                  ),
+                  builder: (_) =>
+                      PlaylistDetailScreen(playlist: p, platform: platform),
                 ),
               );
             },
@@ -296,7 +449,10 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       return SizedBox(
         height: 200,
         child: Center(
-          child: CircularProgressIndicator(strokeWidth: 2.5, color: AppColors.primary),
+          child: CircularProgressIndicator(
+            strokeWidth: 2.5,
+            color: AppColors.primary,
+          ),
         ),
       );
     }
@@ -375,7 +531,9 @@ class _PlaylistCard extends StatelessWidget {
                   child: SizedBox(
                     width: 130,
                     height: 130,
-                    child: playlist.coverUrl != null && playlist.coverUrl!.isNotEmpty
+                    child:
+                        playlist.coverUrl != null &&
+                            playlist.coverUrl!.isNotEmpty
                         ? SmartCover(
                             url: playlist.coverUrl,
                             fit: BoxFit.cover,
@@ -389,7 +547,10 @@ class _PlaylistCard extends StatelessWidget {
                   right: 6,
                   bottom: 6,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 3,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.black.withOpacity(0.45),
                       borderRadius: BorderRadius.circular(10),
@@ -397,10 +558,17 @@ class _PlaylistCard extends StatelessWidget {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.play_arrow_rounded, size: 12, color: Colors.white),
+                        const Icon(
+                          Icons.play_arrow_rounded,
+                          size: 12,
+                          color: Colors.white,
+                        ),
                         Text(
                           '${playlist.trackCount}',
-                          style: const TextStyle(fontSize: 10, color: Colors.white),
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: Colors.white,
+                          ),
                         ),
                       ],
                     ),

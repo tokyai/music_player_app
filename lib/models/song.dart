@@ -9,6 +9,13 @@ enum MusicPlatform {
   const MusicPlatform(this.label, this.code);
 }
 
+/// 面向用户的平台展示顺序；不改变底层枚举值及接口映射。
+const musicPlatformDisplayOrder = <MusicPlatform>[
+  MusicPlatform.qq,
+  MusicPlatform.netease,
+  MusicPlatform.kugou,
+];
+
 /// 封面 URL 工具
 class CoverHelper {
   /// 网易云封面 URL 统一转 https（接口有时返回 http://）
@@ -64,12 +71,12 @@ enum CommonLevel {
 /// 统一歌曲模型（搜索结果）
 class SongSearchResult {
   final MusicPlatform platform;
-  final String id;       // 网易云: 歌曲ID; QQ: mid; 酷狗: hash id
+  final String id; // 网易云: 歌曲ID; QQ: mid; 酷狗: hash id
   final String name;
   final String artist;
   final String album;
   final String? coverUrl;
-  final int? duration;   // 秒
+  final int? duration; // 秒
 
   SongSearchResult({
     required this.platform,
@@ -86,7 +93,9 @@ class SongSearchResult {
     String artistName = '未知歌手';
     final artistsRaw = json['artists'] ?? json['ar'];
     if (artistsRaw is List && artistsRaw.isNotEmpty) {
-      artistName = artistsRaw.map((a) => a is Map ? a['name'] : a.toString()).join(' / ');
+      artistName = artistsRaw
+          .map((a) => a is Map ? a['name'] : a.toString())
+          .join(' / ');
     } else if (artistsRaw is String && artistsRaw.isNotEmpty) {
       artistName = artistsRaw;
     }
@@ -113,6 +122,10 @@ class SongSearchResult {
     if (coverUrl == null) {
       coverUrl = json['picUrl'];
     }
+    final durationRaw = json['dt'] ?? json['duration'];
+    final durationMs = durationRaw is num
+        ? durationRaw.toInt()
+        : int.tryParse(durationRaw?.toString() ?? '');
     return SongSearchResult(
       platform: MusicPlatform.netease,
       id: json['id'].toString(),
@@ -120,7 +133,7 @@ class SongSearchResult {
       artist: artistName,
       album: albumName,
       coverUrl: CoverHelper.normalize(coverUrl),
-      duration: json['dt'] ?? json['duration'],
+      duration: durationMs == null ? null : durationMs ~/ 1000,
     );
   }
 
@@ -141,7 +154,9 @@ class SongSearchResult {
     String artistName = '未知歌手';
     final singer = json['singer'];
     if (singer is List && singer.isNotEmpty) {
-      artistName = singer.map((s) => s is Map ? s['name'] : s.toString()).join(' / ');
+      artistName = singer
+          .map((s) => s is Map ? s['name'] : s.toString())
+          .join(' / ');
     } else if (singer is String && singer.isNotEmpty) {
       artistName = singer;
     }
@@ -164,7 +179,9 @@ class SongSearchResult {
       artist: json['singer'] ?? '未知歌手',
       album: json['album'] ?? '',
       duration: json['duration'] != null
-          ? (json['duration'] is int ? json['duration'] as int : int.tryParse(json['duration'].toString()))
+          ? (json['duration'] is int
+                ? json['duration'] as int
+                : int.tryParse(json['duration'].toString()))
           : null,
     );
   }
@@ -204,7 +221,9 @@ class SongSearchResult {
     String artistName = '未知歌手';
     final authors = json['authors'];
     if (authors is List && authors.isNotEmpty) {
-      artistName = authors.map((a) => a is Map ? a['author_name'] : a.toString()).join(' / ');
+      artistName = authors
+          .map((a) => a is Map ? a['author_name'] : a.toString())
+          .join(' / ');
     }
     int? duration;
     final tl = json['timelength'];
@@ -241,6 +260,49 @@ class SongSearchResult {
       album: json['album_name'] ?? json['remark'] ?? '',
       coverUrl: CoverHelper.fromKugouTemplate(json['sizable_cover']),
       duration: duration,
+    );
+  }
+
+  /// 酷狗官方 mobilecdn 歌曲搜索 (search/song)
+  factory SongSearchResult.fromKugouSearchSong(Map<String, dynamic> json) {
+    return SongSearchResult(
+      platform: MusicPlatform.kugou,
+      id: json['hash']?.toString() ?? '',
+      name: json['songname']?.toString() ?? '未知歌曲',
+      artist: json['singername']?.toString() ?? '未知歌手',
+      album: json['album_name']?.toString() ?? '',
+      coverUrl: CoverHelper.fromKugouTemplate(
+        json['album_sizable_cover']?.toString(),
+      ),
+      duration: json['duration'] is num
+          ? (json['duration'] as num).toInt()
+          : int.tryParse(json['duration']?.toString() ?? ''),
+    );
+  }
+
+  /// 酷狗官方 mobilecdn 排行榜歌曲 (rank/song)
+  factory SongSearchResult.fromKugouRankSong(Map<String, dynamic> json) {
+    String artistName = '未知歌手';
+    final authors = json['authors'];
+    if (authors is List && authors.isNotEmpty) {
+      artistName = authors
+          .map((a) => a is Map ? a['author_name'] : a.toString())
+          .join(' / ');
+    } else if (json['singername'] != null) {
+      artistName = json['singername'].toString();
+    }
+    return SongSearchResult(
+      platform: MusicPlatform.kugou,
+      id: json['hash']?.toString() ?? '',
+      name: json['songname']?.toString() ?? '未知歌曲',
+      artist: artistName,
+      album: json['album_name']?.toString() ?? '',
+      coverUrl: CoverHelper.fromKugouTemplate(
+        json['album_sizable_cover']?.toString(),
+      ),
+      duration: json['duration'] is num
+          ? (json['duration'] as num).toInt()
+          : int.tryParse(json['duration']?.toString() ?? ''),
     );
   }
 }
@@ -309,7 +371,8 @@ class SongDetail {
     if (interval != null) {
       final parts = interval.split(':');
       if (parts.length == 2) {
-        duration = (int.tryParse(parts[0]) ?? 0) * 60 + (int.tryParse(parts[1]) ?? 0);
+        duration =
+            (int.tryParse(parts[0]) ?? 0) * 60 + (int.tryParse(parts[1]) ?? 0);
       }
     }
     return SongDetail(
@@ -331,7 +394,8 @@ class SongDetail {
     if (interval != null) {
       final parts = interval.split(':');
       if (parts.length == 2) {
-        duration = (int.tryParse(parts[0]) ?? 0) * 60 + (int.tryParse(parts[1]) ?? 0);
+        duration =
+            (int.tryParse(parts[0]) ?? 0) * 60 + (int.tryParse(parts[1]) ?? 0);
       }
     }
     return SongDetail(
@@ -350,9 +414,9 @@ class SongDetail {
 
 /// 歌词模型
 class LyricData {
-  final String? original;   // 原文歌词
+  final String? original; // 原文歌词
   final String? translated; // 翻译歌词
-  final String? romaji;     // 罗马音歌词
+  final String? romaji; // 罗马音歌词
 
   LyricData({this.original, this.translated, this.romaji});
 }
@@ -437,7 +501,8 @@ class PlaylistInfo {
       id: json['specialid']?.toString() ?? '',
       name: json['specialname'] ?? '酷狗歌单',
       coverUrl: CoverHelper.normalize(
-          CoverHelper.fromKugouTemplate(json['imgurl'], size: 500)),
+        CoverHelper.fromKugouTemplate(json['imgurl'], size: 500),
+      ),
       creator: json['nickname'],
       trackCount: json['songcount'] ?? 0,
       tracks: [],
@@ -471,11 +536,11 @@ class PlayQueueItem {
   final String album;
   final String? coverUrl;
 
-  String? playUrl;    // 解析后填充
-  String? lyric;      // 歌词
-  int? duration;      // 秒
-  bool loading;       // 正在解析中
-  String? error;      // 解析失败信息
+  String? playUrl; // 解析后填充
+  String? lyric; // 歌词
+  int? duration; // 秒
+  bool loading; // 正在解析中
+  String? error; // 解析失败信息
 
   PlayQueueItem({
     required this.platform,
@@ -510,6 +575,7 @@ class PlayQueueItem {
     bool? loading,
     String? error,
     String? coverUrl,
+    bool clearError = false,
   }) {
     return PlayQueueItem(
       platform: platform,
@@ -522,7 +588,7 @@ class PlayQueueItem {
       lyric: lyric ?? this.lyric,
       duration: duration ?? this.duration,
       loading: loading ?? this.loading,
-      error: error ?? this.error,
+      error: clearError ? null : error ?? this.error,
     );
   }
 }

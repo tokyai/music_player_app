@@ -32,7 +32,8 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       _error = null;
     });
     try {
-      final path = await UpdateService.downloadApk(widget.info, (received, total) {
+      final path =
+          await UpdateService.downloadApk(widget.info, (received, total) {
         if (mounted && total > 0) {
           setState(() => _progress = received / total);
         }
@@ -42,7 +43,10 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         _downloading = false;
         _progress = 1;
       });
-      await UpdateService.installApk(path);
+      await UpdateService.installApk(
+        path,
+        versionCode: widget.info.versionCode,
+      );
       if (mounted) Navigator.of(context, rootNavigator: true).pop();
     } catch (e) {
       if (!mounted) return;
@@ -65,7 +69,8 @@ class _UpdateDialogState extends State<_UpdateDialog> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (info.updateLog.isNotEmpty) ...[
-                const Text('更新内容：', style: TextStyle(fontWeight: FontWeight.w600)),
+                const Text('更新内容：',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
                 const SizedBox(height: 6),
                 Text(info.updateLog),
                 const SizedBox(height: 12),
@@ -87,7 +92,9 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       actions: [
         if (!info.forceUpdate)
           TextButton(
-            onPressed: _downloading ? null : () => Navigator.of(context, rootNavigator: true).pop(),
+            onPressed: _downloading
+                ? null
+                : () => Navigator.of(context, rootNavigator: true).pop(),
             child: const Text('稍后'),
           ),
         ElevatedButton(

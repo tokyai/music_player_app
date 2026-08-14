@@ -6,9 +6,7 @@ import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../providers/theme_controller.dart';
 import '../services/floating_capsule_service.dart';
-import '../services/update_service.dart';
 import '../theme/app_theme.dart';
-import '../widgets/update_dialog.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -20,16 +18,21 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   final _apiKeyController = TextEditingController();
   bool _obscureKey = true;
+  bool _apiKeyEdited = false;
 
   String _versionName = '';
   String _versionCode = '';
-  bool _checking = false;
 
   @override
   void initState() {
     super.initState();
     final player = context.read<PlayerProvider>();
     _apiKeyController.text = player.apiKey;
+    player.settingsReady.then((_) {
+      if (mounted && !_apiKeyEdited) {
+        _apiKeyController.text = player.apiKey;
+      }
+    });
     _loadVersion();
   }
 
@@ -43,25 +46,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         });
       }
     } catch (_) {}
-  }
-
-  Future<void> _checkUpdate({bool manual = false}) async {
-    if (_checking) return;
-    setState(() => _checking = true);
-    try {
-      final info =
-          await UpdateService.checkUpdate(currentVersionCode: _versionCode);
-      if (!mounted) return;
-      if (info != null) {
-        showUpdateDialog(context, info);
-      } else if (manual) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('已是最新版本'), duration: Duration(seconds: 1)),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _checking = false);
-    }
   }
 
   @override
@@ -89,7 +73,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else {
       FloatingCapsuleService.hide();
     }
+    if (!mounted) return;
     FloatingCapsuleService.setEnabled(value);
+    if (value) {
+      final player = context.read<PlayerProvider>();
+      final song = player.currentSong;
+      if (song != null) {
+        await FloatingCapsuleService.show(
+          title: song.name,
+          artist: song.artist,
+          coverUrl: song.coverUrl,
+          isPlaying: player.isPlaying,
+        );
+      }
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('floating_capsule_enabled', value);
@@ -99,310 +96,386 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isLandscape =
+        MediaQuery.orientationOf(context) == Orientation.landscape;
     return Scaffold(
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.only(bottom: 24),
-          children: [
-            // 顶部标题
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
-              child: Text(
-                '设置',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-            ),
+        child: isLandscape ? _buildLandscapeBody() : _buildPortraitBody(),
+      ),
+    );
+  }
 
-            // ============ 外观 ============
-            _buildCard(
-              children: [
-                _buildSectionHeader(
-                  icon: Icons.dark_mode_outlined,
-                  title: '外观',
-                ),
-                Consumer<ThemeController>(
-                  builder: (ctx, themeCtrl, _) {
-                    return Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '深色模式',
-                            style: TextStyle(
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.textPrimary,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '夜间使用深色配色，保护眼睛',
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: AppColors.textSecondary,
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          SizedBox(
-                            width: double.infinity,
-                            child: SegmentedButton<ThemeMode>(
-                              segments: const [
-                                ButtonSegment(
-                                  value: ThemeMode.system,
-                                  label: Text('跟随系统'),
-                                  icon: Icon(Icons.brightness_auto),
-                                ),
-                                ButtonSegment(
-                                  value: ThemeMode.light,
-                                  label: Text('浅色'),
-                                  icon: Icon(Icons.light_mode_outlined),
-                                ),
-                                ButtonSegment(
-                                  value: ThemeMode.dark,
-                                  label: Text('深色'),
-                                  icon: Icon(Icons.dark_mode_outlined),
-                                ),
-                              ],
-                              selected: {themeCtrl.mode},
-                              showSelectedIcon: false,
-                              onSelectionChanged: (s) =>
-                                  themeCtrl.setMode(s.first),
-                              style: SegmentedButton.styleFrom(
-                                visualDensity: VisualDensity.compact,
-                                textStyle: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          ),
-                          const Divider(height: 24),
-                          // 系统悬浮胶囊（跨 App 悬浮）
-                          SwitchListTile(
-                            secondary: const Icon(Icons.circle_notifications),
-                            title: const Text('系统悬浮胶囊'),
-                            subtitle: Text(
-                              FloatingCapsuleService.enabled
-                                  ? '播放时跨 App 悬浮显示（需悬浮窗权限）'
-                                  : '在任意界面顶部显示播放胶囊',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: AppColors.textSecondary,
-                              ),
-                            ),
-                            value: FloatingCapsuleService.enabled,
-                            onChanged: _toggleFloatingCapsule,
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ],
-            ),
+  Widget _buildPortraitBody() {
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 24),
+      children: [
+        _buildPageTitle(),
+        _buildAppearanceCard(),
+        _buildPlaybackCard(),
+        _buildApiCard(),
+        _buildAboutCard(),
+      ],
+    );
+  }
 
-            // ============ 播放与音质 ============
-            _buildCard(
-              children: [
-                _buildSectionHeader(
-                  icon: Icons.graphic_eq,
-                  title: '播放与音质',
-                ),
-                Consumer<PlayerProvider>(
-                  builder: (ctx, player, _) {
-                    return Column(
-                      children: [
-                        ListTile(
-                          leading: const Icon(Icons.audiotrack),
-                          title: const Text('网易云音质'),
-                          subtitle: Text(player.neteaseLevel.label),
-                          trailing: const Icon(Icons.chevron_right),
-                          onTap: () => _showNeteaseLevelPicker(ctx, player),
-                        ),
-                        ListTile(
-                          leading: const Icon(Icons.library_music),
-                          title: const Text('QQ / 酷狗音质'),
-                          subtitle: Text(player.commonLevel.label),
-                          trailing: const Icon(Icons.chevron_right),
-                          onTap: () => _showCommonLevelPicker(ctx, player),
-                        ),
-                        ExpansionTile(
-                          leading: const Icon(Icons.info_outline),
-                          title: const Text('音质说明'),
-                          childrenPadding:
-                              const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                          children: [
-                            _buildQualityRow('网易云', NeteaseLevel.values),
-                            const SizedBox(height: 6),
-                            _buildQualityRow('QQ音乐', CommonLevel.values),
-                            const SizedBox(height: 6),
-                            _buildQualityRow('酷狗音乐', CommonLevel.values),
-                            const SizedBox(height: 10),
-                            Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: Colors.orange.withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Icon(Icons.warning_amber,
-                                      color: Colors.orange[700], size: 20),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      '高音质（无损/Hi-Res/母带）加载更慢，部分歌曲可能受版权限制无法播放。',
-                                      style: TextStyle(
-                                        fontSize: 13,
-                                        color: Colors.orange[800],
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ],
-            ),
-
-            // ============ API 配置 ============
-            _buildCard(
-              children: [
-                _buildSectionHeader(icon: Icons.key, title: 'API 配置'),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+  Widget _buildLandscapeBody() {
+    return Column(
+      children: [
+        _buildPageTitle(compact: true),
+        Expanded(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: SingleChildScrollView(
+                  key: const PageStorageKey('settings-landscape-preferences'),
+                  padding: const EdgeInsets.only(bottom: 20),
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        'ChKSz API Key',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textPrimary,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '用于酷狗/QQ 播放地址解析（网易云免配置）',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: AppColors.textSecondary,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _apiKeyController,
-                        obscureText: _obscureKey,
-                        decoration: InputDecoration(
-                          suffixIcon: IconButton(
-                            icon: Icon(
-                              _obscureKey
-                                  ? Icons.visibility
-                                  : Icons.visibility_off,
-                            ),
-                            onPressed: () =>
-                                setState(() => _obscureKey = !_obscureKey),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          FilledButton.icon(
-                            onPressed: () {
-                              context
-                                  .read<PlayerProvider>()
-                                  .setApiKey(_apiKeyController.text.trim());
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('API Key 已保存'),
-                                  duration: Duration(seconds: 1),
-                                ),
-                              );
-                            },
-                            icon: const Icon(Icons.save),
-                            label: const Text('保存'),
-                          ),
-                          const SizedBox(width: 8),
-                          OutlinedButton.icon(
-                            onPressed: () => _showApiKeyHelp(context),
-                            icon: const Icon(Icons.help_outline),
-                            label: const Text('如何获取？'),
-                          ),
-                        ],
-                      ),
+                      _buildAppearanceCard(compact: true),
+                      _buildPlaybackCard(compact: true),
                     ],
                   ),
                 ),
-              ],
-            ),
-
-            // ============ 关于 ============
-            _buildCard(
-              children: [
-                _buildSectionHeader(
-                  icon: Icons.music_note,
-                  title: '关于',
-                ),
-                const ListTile(
-                  leading: Icon(Icons.link),
-                  title: Text('API 文档'),
-                  subtitle: Text('api.chksz.com'),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.system_update_alt),
-                  title: const Text('检查更新'),
-                  subtitle: _checking
-                      ? const Text('检查中…')
-                      : const Text('点击检查是否有新版本'),
-                  trailing: _checking
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.chevron_right),
-                  onTap: _checking ? null : () => _checkUpdate(manual: true),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.info),
-                  title: const Text('版本'),
-                  trailing: Text(
-                    _versionName.isEmpty ? '—' : '$_versionName ($_versionCode)',
+              ),
+              VerticalDivider(
+                width: 1,
+                thickness: 1,
+                color: AppColors.surfaceSoft,
+              ),
+              Expanded(
+                child: SingleChildScrollView(
+                  key: const PageStorageKey('settings-landscape-system'),
+                  padding: const EdgeInsets.only(bottom: 20),
+                  child: Column(
+                    children: [
+                      _buildApiCard(compact: true),
+                      _buildAboutCard(compact: true),
+                    ],
                   ),
                 ),
-              ],
-            ),
-          ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPageTitle({bool compact = false}) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        compact ? 16 : 20,
+        compact ? 10 : 16,
+        compact ? 16 : 20,
+        compact ? 4 : 4,
+      ),
+      child: Text(
+        '设置',
+        style: TextStyle(
+          fontSize: compact ? 20 : 24,
+          fontWeight: FontWeight.w700,
+          color: AppColors.textPrimary,
         ),
       ),
     );
   }
 
+  Widget _buildAppearanceCard({bool compact = false}) {
+    return _buildCard(
+      compact: compact,
+      children: [
+        _buildSectionHeader(icon: Icons.dark_mode_outlined, title: '外观'),
+        Consumer<ThemeController>(
+          builder: (ctx, themeCtrl, _) {
+            final segments = compact
+                ? const [
+                    ButtonSegment<ThemeMode>(
+                      value: ThemeMode.system,
+                      label: Text('系统'),
+                    ),
+                    ButtonSegment<ThemeMode>(
+                      value: ThemeMode.light,
+                      label: Text('浅色'),
+                    ),
+                    ButtonSegment<ThemeMode>(
+                      value: ThemeMode.dark,
+                      label: Text('深色'),
+                    ),
+                  ]
+                : const [
+                    ButtonSegment<ThemeMode>(
+                      value: ThemeMode.system,
+                      label: Text('跟随系统'),
+                      icon: Icon(Icons.brightness_auto),
+                    ),
+                    ButtonSegment<ThemeMode>(
+                      value: ThemeMode.light,
+                      label: Text('浅色'),
+                      icon: Icon(Icons.light_mode_outlined),
+                    ),
+                    ButtonSegment<ThemeMode>(
+                      value: ThemeMode.dark,
+                      label: Text('深色'),
+                      icon: Icon(Icons.dark_mode_outlined),
+                    ),
+                  ];
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '深色模式',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '夜间使用深色配色，保护眼睛',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: SegmentedButton<ThemeMode>(
+                      segments: segments,
+                      selected: {themeCtrl.mode},
+                      showSelectedIcon: false,
+                      onSelectionChanged: (s) => themeCtrl.setMode(s.first),
+                      style: SegmentedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        textStyle: TextStyle(
+                          fontSize: compact ? 11 : 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const Divider(height: 24),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    secondary: const Icon(Icons.circle_notifications),
+                    title: const Text('系统悬浮胶囊'),
+                    subtitle: Text(
+                      FloatingCapsuleService.enabled
+                          ? '播放时跨 App 悬浮显示（需悬浮窗权限）'
+                          : '在任意界面顶部显示播放胶囊',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    value: FloatingCapsuleService.enabled,
+                    onChanged: _toggleFloatingCapsule,
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPlaybackCard({bool compact = false}) {
+    return _buildCard(
+      compact: compact,
+      children: [
+        _buildSectionHeader(icon: Icons.graphic_eq, title: '播放与音质'),
+        Consumer<PlayerProvider>(
+          builder: (ctx, player, _) {
+            return Column(
+              children: [
+                ListTile(
+                  dense: compact,
+                  leading: const Icon(Icons.audiotrack),
+                  title: const Text('网易云音质'),
+                  subtitle: Text(player.neteaseLevel.label),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _showNeteaseLevelPicker(ctx, player),
+                ),
+                ListTile(
+                  dense: compact,
+                  leading: const Icon(Icons.library_music),
+                  title: const Text('QQ / 酷狗音质'),
+                  subtitle: Text(player.commonLevel.label),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _showCommonLevelPicker(ctx, player),
+                ),
+                ExpansionTile(
+                  tilePadding: compact
+                      ? const EdgeInsets.symmetric(horizontal: 8)
+                      : null,
+                  leading: const Icon(Icons.info_outline),
+                  title: const Text('音质说明'),
+                  childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  children: [
+                    _buildQualityRow('QQ音乐', CommonLevel.values),
+                    const SizedBox(height: 6),
+                    _buildQualityRow('网易云', NeteaseLevel.values),
+                    const SizedBox(height: 6),
+                    _buildQualityRow('酷狗音乐', CommonLevel.values),
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.warning_amber,
+                            color: Colors.orange[700],
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '高音质（无损/Hi-Res/母带）加载更慢，部分歌曲可能受版权限制无法播放。',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.orange[800],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildApiCard({bool compact = false}) {
+    return _buildCard(
+      compact: compact,
+      children: [
+        _buildSectionHeader(icon: Icons.key, title: 'API 配置'),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'ChKSz API Key',
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '用于酷狗/QQ 播放地址解析（网易云免配置）',
+                style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _apiKeyController,
+                obscureText: _obscureKey,
+                onChanged: (_) => _apiKeyEdited = true,
+                decoration: InputDecoration(
+                  suffixIcon: IconButton(
+                    icon: Icon(
+                      _obscureKey ? Icons.visibility : Icons.visibility_off,
+                    ),
+                    onPressed: () => setState(() => _obscureKey = !_obscureKey),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilledButton.icon(
+                    onPressed: () async {
+                      final player = context.read<PlayerProvider>();
+                      final messenger = ScaffoldMessenger.of(context);
+                      await player.setApiKey(_apiKeyController.text.trim());
+                      if (!mounted) return;
+                      messenger.showSnackBar(
+                        const SnackBar(
+                          content: Text('API Key 已保存'),
+                          duration: Duration(seconds: 1),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.save),
+                    label: const Text('保存'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () => _showApiKeyHelp(context),
+                    icon: const Icon(Icons.help_outline),
+                    label: const Text('如何获取？'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAboutCard({bool compact = false}) {
+    return _buildCard(
+      compact: compact,
+      children: [
+        _buildSectionHeader(icon: Icons.music_note, title: '关于'),
+        ListTile(
+          dense: compact,
+          leading: ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Image.asset(
+              'assets/images/app_logo.png',
+              width: 40,
+              height: 40,
+            ),
+          ),
+          title: const Text('库仔音乐'),
+          subtitle: const Text('多平台音乐播放器'),
+        ),
+        const ListTile(
+          leading: Icon(Icons.link),
+          title: Text('API 文档'),
+          subtitle: Text('api.chksz.com'),
+        ),
+        ListTile(
+          dense: compact,
+          leading: const Icon(Icons.info),
+          title: const Text('版本'),
+          trailing: Text(
+            _versionName.isEmpty ? '—' : '$_versionName ($_versionCode)',
+          ),
+        ),
+      ],
+    );
+  }
+
   /// 卡片分组容器
-  Widget _buildCard({required List<Widget> children}) {
+  Widget _buildCard({required List<Widget> children, bool compact = false}) {
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      margin: EdgeInsets.fromLTRB(compact ? 8 : 16, 8, compact ? 8 : 16, 8),
       decoration: CardStyle.softCard(),
       child: Column(children: children),
     );
   }
 
   /// 分组标题（图标 + 文字）
-  Widget _buildSectionHeader({
-    required IconData icon,
-    required String title,
-  }) {
+  Widget _buildSectionHeader({required IconData icon, required String title}) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
       child: Row(
@@ -437,10 +510,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         Expanded(
           child: Text(
             labels,
-            style: TextStyle(
-              fontSize: 13,
-              color: AppColors.textSecondary,
-            ),
+            style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
           ),
         ),
       ],
@@ -506,7 +576,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('知道了')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('知道了'),
+          ),
         ],
       ),
     );

@@ -1,18 +1,18 @@
-# 🎵 音乐播放器 App (Flutter)
+# 库仔音乐 (Flutter)
 
-一款支持 **网易云音乐 / QQ音乐 / 酷狗音乐** 三大平台聚合搜索与播放的 Flutter 音乐播放器。
+一款支持 **QQ音乐 / 网易云音乐 / 酷狗音乐** 三大平台聚合搜索与播放的 Flutter 音乐播放器。
 
-> 当前版本：**v2.2.12**（`2.2.12+2212`）
+> 当前版本：**v2.2.16**（`2.2.16+2216`）
 
 > 📌 **项目来源**：本项目基于 [ChKSz](https://linux.do/u/chksz) 作者的 API 项目对接开发，感谢作者的无私分享。API 文档：https://api.chksz.com/ · 社区：[LINUX DO](https://linux.do/)
 
 ## ✨ 功能特性
 
 ### 搜索与播放
-- **三平台聚合搜索**：同时搜索网易云 / QQ / 酷狗，Tab 切换查看结果
+- **三平台聚合搜索**：同时搜索 QQ / 网易云 / 酷狗，Tab 切换查看结果
 - **高品质播放**：无损 / Hi-Res / 母带等音质可选，按平台自定义音质等级
 - **歌词同步**：LRC 歌词逐行高亮滚动，支持翻译歌词合并显示，点击歌词跳转
-- **歌单导入**：支持 **网易云 + QQ音乐** 双平台，粘贴歌单链接或 ID 即可导入（自动提取 ID）
+- **歌单导入**：支持 **QQ音乐 + 网易云** 双平台，粘贴歌单链接或 ID 即可导入（自动提取 ID）
 
 ### 播放体验
 - **播放队列**：队列管理，顺序 / 单曲循环 / 随机播放模式
@@ -24,7 +24,6 @@
 ### 系统级能力
 - **系统媒体通知**：播放时通知栏 / 锁屏显示媒体控制胶囊（MediaSession）
 - **系统悬浮胶囊**：Android 系统级悬浮窗（跨 App 常驻），支持拖动、点击回 App、播放/暂停控制
-- **在线更新**：内置版本检查，一键下载安装新版 APK
 
 ## 🧱 项目结构
 
@@ -35,7 +34,7 @@ lib/
 │   └── song.dart                # 数据模型（歌曲、歌单、歌词等）
 ├── services/
 │   ├── api_service.dart         # 三平台 API 封装（走服务器中转）
-│   ├── update_service.dart      # 在线更新检查 / 下载
+│   ├── update_service.dart      # 更新模块（当前未启用）
 │   └── floating_capsule_service.dart  # 系统悬浮胶囊通道封装
 ├── providers/
 │   ├── player_provider.dart     # 播放器状态管理（Provider）
@@ -49,7 +48,7 @@ lib/
 │   ├── song_tile.dart           # 歌曲列表项
 │   ├── mini_player.dart         # 底部迷你播放器
 │   ├── smart_cover.dart         # 智能封面（失败自动走代理）
-│   └── playlist_import_dialog.dart # 歌单导入弹窗（网易云/QQ）
+│   └── playlist_import_dialog.dart # 歌单导入弹窗（QQ/网易云）
 ├── theme/
 │   └── app_theme.dart           # 亮/暗双主题 + 动态颜色
 └── utils/
@@ -65,7 +64,7 @@ android/app/src/main/kotlin/com/example/music_player_app/
 
 ### 前置条件
 
-- Flutter SDK >= 3.5.0（Dart >= 3.5.0）
+- Flutter SDK >= 3.38.4（Dart >= 3.11.0；发布脚本固定使用 Flutter 3.41.6）
 - Android Studio（构建 Android 端）
 
 ### 安装与运行
@@ -86,15 +85,12 @@ flutter run
 
 ```bash
 # Android APK（release）
+# 先将 android/key.properties.example 复制为 android/key.properties，
+# 填写持久化 release keystore 信息；须与已发布 APK 使用同一证书，后续版本继续复用。
 flutter build apk --release
-
-# 在线更新发布
-# 1. 上传 latest.apk 到服务器 /www/wwwroot/music-release/
-# 2. 更新 update.json（versionCode / apkUrl / md5 / apkSize / updateLog）
-# 3. 客户端「设置 - 关于 - 检查更新」即可拉取
 ```
 
-> 注意：App 内所有 API / 封面 / 更新请求均通过 `http://161.118.252.183` 服务器中转（手机直连各平台域名不稳定），服务器 nginx 反向代理到各平台源站。
+> 注意：App 内音乐 API 与封面请求通过 `http://161.118.252.183` 服务器中转（手机直连各平台域名不稳定），服务器 nginx 反向代理到各平台源站。
 
 ## 🛠 技术栈
 
@@ -107,7 +103,6 @@ flutter build apk --release
 | 图片 | cached_network_image + palette_generator（封面主色） |
 | 存储 | shared_preferences |
 | 权限 | permission_handler（通知 / 悬浮窗） |
-| 更新 | package_info_plus / open_filex / path_provider |
 
 ## ⚠️ 免责声明
 

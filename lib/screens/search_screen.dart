@@ -14,24 +14,39 @@ class SearchScreen extends StatefulWidget {
   State<SearchScreen> createState() => _SearchScreenState();
 }
 
-class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderStateMixin {
+class _SearchScreenState extends State<SearchScreen>
+    with SingleTickerProviderStateMixin {
   final TextEditingController _controller = TextEditingController();
   late TabController _tabController;
   bool _searching = false;
   String _lastKeyword = '';
   bool _playlistMode = false; // true=歌单模式, false=歌曲模式
-  List<String> _hotKeywords = ['周杰伦', '海阔天空', '晴天', '邓紫棋', 'Beyond', '告白气球'];
+  int _searchRequestId = 0;
+  final List<String> _hotKeywords = [
+    '周杰伦',
+    '海阔天空',
+    '晴天',
+    '邓紫棋',
+    'Beyond',
+    '告白气球',
+  ];
 
   final Map<MusicPlatform, List<SongSearchResult>> _results = {
-    MusicPlatform.netease: [],
     MusicPlatform.qq: [],
+    MusicPlatform.netease: [],
     MusicPlatform.kugou: [],
   };
 
   final Map<MusicPlatform, List<PlaylistInfo>> _playlistResults = {
-    MusicPlatform.netease: [],
     MusicPlatform.qq: [],
+    MusicPlatform.netease: [],
     MusicPlatform.kugou: [],
+  };
+
+  final Map<MusicPlatform, String?> _searchErrors = {
+    MusicPlatform.qq: null,
+    MusicPlatform.netease: null,
+    MusicPlatform.kugou: null,
   };
 
   @override
@@ -48,69 +63,89 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
   }
 
   Future<void> _search(String keyword) async {
-    if (keyword.trim().isEmpty) return;
+    final normalizedKeyword = keyword.trim();
+    if (normalizedKeyword.isEmpty) return;
     final provider = context.read<PlayerProvider>();
+    final requestId = ++_searchRequestId;
+    final playlistMode = _playlistMode;
 
     setState(() {
       _searching = true;
-      _lastKeyword = keyword;
+      _lastKeyword = normalizedKeyword;
+      for (final platform in musicPlatformDisplayOrder) {
+        _results[platform] = [];
+        _playlistResults[platform] = [];
+        _searchErrors[platform] = null;
+      }
     });
 
-    if (_playlistMode) {
+    bool isCurrent() =>
+        mounted &&
+        requestId == _searchRequestId &&
+        playlistMode == _playlistMode;
+
+    Future<void> loadSongs(MusicPlatform platform) async {
+      try {
+        final list = await provider.api.search(platform, normalizedKeyword);
+        if (isCurrent()) setState(() => _results[platform] = list);
+      } catch (e) {
+        debugPrint('搜索 ${platform.label} 歌曲失败: $e');
+        if (isCurrent()) {
+          setState(() => _searchErrors[platform] = '搜索失败，请稍后重试');
+        }
+      }
+    }
+
+    Future<void> loadPlaylists(MusicPlatform platform) async {
+      try {
+        final List<PlaylistInfo> list;
+        switch (platform) {
+          case MusicPlatform.netease:
+            list = await provider.api.neteaseSearchPlaylists(normalizedKeyword);
+            break;
+          case MusicPlatform.qq:
+            list = await provider.api.qqSearchPlaylists(normalizedKeyword);
+            break;
+          case MusicPlatform.kugou:
+            list = await provider.api.kugouSearchPlaylists(normalizedKeyword);
+            break;
+        }
+        if (isCurrent()) setState(() => _playlistResults[platform] = list);
+      } catch (e) {
+        debugPrint('搜索 ${platform.label} 歌单失败: $e');
+        if (isCurrent()) {
+          setState(() => _searchErrors[platform] = '搜索失败，请稍后重试');
+        }
+      }
+    }
+
+    final futures = <Future<void>>[];
+    if (playlistMode) {
       // 歌单模式：三平台并行搜索歌单
-      setState(() {
-        _playlistResults[MusicPlatform.netease] = [];
-        _playlistResults[MusicPlatform.qq] = [];
-        _playlistResults[MusicPlatform.kugou] = [];
-      });
-      final futures = <Future>[];
-      futures.add(provider.api.neteaseSearchPlaylists(keyword).then((list) {
-        if (mounted) setState(() => _playlistResults[MusicPlatform.netease] = list);
-      }).catchError((e) => debugPrint('搜索网易云歌单失败: $e')));
-      futures.add(provider.api.qqSearchPlaylists(keyword).then((list) {
-        if (mounted) setState(() => _playlistResults[MusicPlatform.qq] = list);
-      }).catchError((e) => debugPrint('搜索QQ歌单失败: $e')));
-      futures.add(provider.api.kugouSearchPlaylists(keyword).then((list) {
-        if (mounted) setState(() => _playlistResults[MusicPlatform.kugou] = list);
-      }).catchError((e) => debugPrint('搜索酷狗歌单失败: $e')));
-      await Future.wait(futures);
+      futures.addAll(musicPlatformDisplayOrder.map(loadPlaylists));
     } else {
       // 歌曲模式：并行搜索三平台歌曲 + 相关歌单（混合展示，歌单默认可见）
-      setState(() {
-        _results[MusicPlatform.netease] = [];
-        _results[MusicPlatform.qq] = [];
-        _results[MusicPlatform.kugou] = [];
-        _playlistResults[MusicPlatform.netease] = [];
-        _playlistResults[MusicPlatform.qq] = [];
-        _playlistResults[MusicPlatform.kugou] = [];
-      });
-      final futures = <Future>[];
-      for (final platform in MusicPlatform.values) {
-        futures.add(
-          provider.api.search(platform, keyword).then((list) {
-            if (mounted) {
-              setState(() {
-                _results[platform] = list;
-              });
-            }
-          }).catchError((e) {
-            debugPrint('搜索 ${platform.label} 失败: $e');
-          }),
-        );
+      for (final platform in musicPlatformDisplayOrder) {
+        futures.add(loadSongs(platform));
+        futures.add(loadPlaylists(platform));
       }
-      // 相关歌单（默认与单曲一起展示）
-      futures.add(provider.api.neteaseSearchPlaylists(keyword).then((list) {
-        if (mounted) setState(() => _playlistResults[MusicPlatform.netease] = list);
-      }).catchError((e) => debugPrint('搜索网易云歌单失败: $e')));
-      futures.add(provider.api.qqSearchPlaylists(keyword).then((list) {
-        if (mounted) setState(() => _playlistResults[MusicPlatform.qq] = list);
-      }).catchError((e) => debugPrint('搜索QQ歌单失败: $e')));
-      futures.add(provider.api.kugouSearchPlaylists(keyword).then((list) {
-        if (mounted) setState(() => _playlistResults[MusicPlatform.kugou] = list);
-      }).catchError((e) => debugPrint('搜索酷狗歌单失败: $e')));
-      await Future.wait(futures);
     }
-    if (mounted) setState(() => _searching = false);
+    await Future.wait(futures);
+    if (isCurrent()) setState(() => _searching = false);
+  }
+
+  void _clearSearch() {
+    _searchRequestId++;
+    _controller.clear();
+    setState(() {
+      _lastKeyword = '';
+      _searching = false;
+      for (final platform in musicPlatformDisplayOrder) {
+        _results[platform] = [];
+        _playlistResults[platform] = [];
+        _searchErrors[platform] = null;
+      }
+    });
   }
 
   void _switchMode(bool playlistMode) {
@@ -125,92 +160,214 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
   @override
   Widget build(BuildContext context) {
     final hasSearched = _lastKeyword.isNotEmpty;
+    final isLandscape =
+        MediaQuery.orientationOf(context) == Orientation.landscape;
     return Scaffold(
       body: SafeArea(
-        child: Column(
+        child: isLandscape
+            ? _buildLandscapeLayout(hasSearched)
+            : _buildPortraitLayout(hasSearched),
+      ),
+    );
+  }
+
+  Widget _buildPortraitLayout(bool hasSearched) {
+    return Column(
+      children: [
+        _buildTitle(),
+        _buildSearchField(),
+        _buildPlatformTabs(),
+        const SizedBox(height: 4),
+        Expanded(child: _buildResultsBody(hasSearched)),
+      ],
+    );
+  }
+
+  Widget _buildLandscapeLayout(bool hasSearched) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final controlWidth = (constraints.maxWidth * 0.38).clamp(220.0, 320.0);
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // 顶部标题
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
-              child: Row(
+            SizedBox(width: controlWidth, child: _buildLandscapeControls()),
+            VerticalDivider(
+              width: 1,
+              thickness: 1,
+              color: AppColors.surfaceSoft,
+            ),
+            Expanded(
+              child: Column(
                 children: [
-                  Text(
-                    '搜索',
-                    style: TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textPrimary,
-                    ),
-                  ),
-                  const Spacer(),
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: BoxDecoration(
-                      color: AppColors.primary,
-                      shape: BoxShape.circle,
-                    ),
+                  _buildPlatformTabs(),
+                  const SizedBox(height: 4),
+                  Expanded(
+                    child: _buildResultsBody(hasSearched, landscape: true),
                   ),
                 ],
               ),
             ),
-            // 搜索栏
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
-              child: TextField(
-                controller: _controller,
-                decoration: InputDecoration(
-                  hintText: '搜索歌曲、歌手...',
-                  prefixIcon: Icon(Icons.search, color: AppColors.textSecondary),
-                  suffixIcon: _controller.text.isNotEmpty
-                      ? IconButton(
-                          icon: Icon(Icons.clear, size: 20, color: AppColors.textSecondary),
-                          onPressed: () {
-                            _controller.clear();
-                            setState(() {});
-                          },
-                        )
-                      : null,
-                  hintStyle: TextStyle(color: AppColors.textHint),
-                ),
-                textInputAction: TextInputAction.search,
-                onSubmitted: _search,
-                onChanged: (_) => setState(() {}),
-              ),
-            ),
-
-            // 平台 Tab
-            TabBar(
-              controller: _tabController,
-              tabs: const [
-                Tab(text: '网易云'),
-                Tab(text: 'QQ音乐'),
-                Tab(text: '酷狗'),
-              ],
-            ),
-            const SizedBox(height: 4),
-
-            // 搜索结果
-            Expanded(
-              child: !hasSearched
-                  ? _buildWelcome()
-                  : _searching && _allResultsEmpty()
-                      ? Center(
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.5,
-                            color: AppColors.primary,
-                          ),
-                        )
-                      : TabBarView(
-                          controller: _tabController,
-                          children: MusicPlatform.values
-                              .map((platform) => _buildPlatformPage(platform))
-                              .toList(),
-                        ),
-            ),
           ],
+        );
+      },
+    );
+  }
+
+  Widget _buildTitle() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+      child: Row(
+        children: [
+          Text(
+            '搜索',
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const Spacer(),
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: AppColors.primary,
+              shape: BoxShape.circle,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSearchField() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+      child: TextField(
+        controller: _controller,
+        decoration: InputDecoration(
+          hintText: '搜索歌曲、歌手...',
+          prefixIcon: Icon(Icons.search, color: AppColors.textSecondary),
+          suffixIcon: _controller.text.isNotEmpty
+              ? IconButton(
+                  icon: Icon(
+                    Icons.clear,
+                    size: 20,
+                    color: AppColors.textSecondary,
+                  ),
+                  onPressed: _clearSearch,
+                )
+              : null,
+          hintStyle: TextStyle(color: AppColors.textHint),
+        ),
+        textInputAction: TextInputAction.search,
+        onSubmitted: _search,
+        onChanged: (_) => setState(() {}),
+      ),
+    );
+  }
+
+  Widget _buildPlatformTabs() {
+    return TabBar(
+      controller: _tabController,
+      tabs: musicPlatformDisplayOrder
+          .map((platform) => Tab(text: platform.label))
+          .toList(),
+    );
+  }
+
+  Widget _buildResultsBody(bool hasSearched, {bool landscape = false}) {
+    return !hasSearched
+        ? (landscape ? _buildWelcomeBody() : _buildWelcome())
+        : _searching && _allResultsEmpty()
+        ? Center(
+            child: CircularProgressIndicator(
+              strokeWidth: 2.5,
+              color: AppColors.primary,
+            ),
+          )
+        : TabBarView(
+            controller: _tabController,
+            children: musicPlatformDisplayOrder
+                .map(
+                  (platform) =>
+                      _buildPlatformPage(platform, showModeToggle: !landscape),
+                )
+                .toList(),
+          );
+  }
+
+  Widget _buildLandscapeControls() {
+    return ListView(
+      key: const PageStorageKey('search-landscape-controls'),
+      padding: const EdgeInsets.only(bottom: 20),
+      children: [
+        _buildTitle(),
+        _buildSearchField(),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+          child: _buildModeToggle(),
+        ),
+        _buildHotKeywords(),
+      ],
+    );
+  }
+
+  Widget _buildModeToggle() {
+    return SizedBox(
+      width: double.infinity,
+      child: SegmentedButton<bool>(
+        segments: const [
+          ButtonSegment(value: false, label: Text('歌曲')),
+          ButtonSegment(value: true, label: Text('歌单')),
+        ],
+        selected: {_playlistMode},
+        showSelectedIcon: false,
+        onSelectionChanged: (s) => _switchMode(s.first),
+        style: SegmentedButton.styleFrom(
+          visualDensity: VisualDensity.compact,
+          textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
         ),
       ),
+    );
+  }
+
+  Widget _buildWelcomeBody() {
+    return ListView(
+      key: const PageStorageKey('search-welcome-results'),
+      padding: const EdgeInsets.fromLTRB(20, 28, 20, 24),
+      children: [
+        Center(
+          child: Column(
+            children: [
+              Container(
+                width: 88,
+                height: 88,
+                decoration: BoxDecoration(
+                  color: AppColors.primarySoft,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(Icons.search, size: 40, color: AppColors.primary),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                '搜索全网音乐',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'QQ音乐 · 网易云 · 酷狗 三大平台同步搜索',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -222,30 +379,20 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
   }
 
   /// 单个平台的结果页：歌曲/歌单切换 + 结果列表
-  Widget _buildPlatformPage(MusicPlatform platform) {
+  Widget _buildPlatformPage(
+    MusicPlatform platform, {
+    bool showModeToggle = true,
+  }) {
     return Column(
       children: [
         // 歌曲 / 歌单 切换
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 6, 20, 2),
-          child: SizedBox(
-            width: double.infinity,
-            child: SegmentedButton<bool>(
-              segments: const [
-                ButtonSegment(value: false, label: Text('歌曲')),
-                ButtonSegment(value: true, label: Text('歌单')),
-              ],
-              selected: {_playlistMode},
-              showSelectedIcon: false,
-              onSelectionChanged: (s) => _switchMode(s.first),
-              style: SegmentedButton.styleFrom(
-                visualDensity: VisualDensity.compact,
-                textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-              ),
-            ),
+        if (showModeToggle) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 6, 20, 2),
+            child: _buildModeToggle(),
           ),
-        ),
-        const SizedBox(height: 4),
+          const SizedBox(height: 4),
+        ],
         Expanded(
           child: _playlistMode
               ? _buildPlaylistResults(platform)
@@ -258,17 +405,21 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
   Widget _buildSongResults(MusicPlatform platform) {
     final list = _results[platform] ?? [];
     final playlists = _playlistResults[platform] ?? [];
-    if (list.isEmpty && playlists.isEmpty && _lastKeyword.isNotEmpty && !_searching) {
+    final error = _searchErrors[platform];
+    if (list.isEmpty && playlists.isEmpty && error != null && !_searching) {
+      return _buildEmptyHint(Icons.error_outline, error);
+    }
+    if (list.isEmpty &&
+        playlists.isEmpty &&
+        _lastKeyword.isNotEmpty &&
+        !_searching) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(Icons.music_off, size: 64, color: AppColors.textHint),
             const SizedBox(height: 16),
-            Text(
-              '没有找到结果',
-              style: TextStyle(color: AppColors.textSecondary),
-            ),
+            Text('没有找到结果', style: TextStyle(color: AppColors.textSecondary)),
           ],
         ),
       );
@@ -302,7 +453,10 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
   }
 
   /// 搜索结果顶部的「相关歌单」横滑卡片
-  Widget _buildRelatedPlaylists(MusicPlatform platform, List<PlaylistInfo> playlists) {
+  Widget _buildRelatedPlaylists(
+    MusicPlatform platform,
+    List<PlaylistInfo> playlists,
+  ) {
     final platformColor = PlatformColors.of(platform);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -345,7 +499,8 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (_) => PlaylistDetailScreen(playlist: p, platform: platform),
+                      builder: (_) =>
+                          PlaylistDetailScreen(playlist: p, platform: platform),
                     ),
                   );
                 },
@@ -366,12 +521,20 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
                                   fit: BoxFit.cover,
                                   placeholder: () => Container(
                                     color: platformColor.withOpacity(0.12),
-                                    child: Icon(Icons.queue_music, size: 30, color: platformColor),
+                                    child: Icon(
+                                      Icons.queue_music,
+                                      size: 30,
+                                      color: platformColor,
+                                    ),
                                   ),
                                 )
                               : Container(
                                   color: platformColor.withOpacity(0.12),
-                                  child: Icon(Icons.queue_music, size: 30, color: platformColor),
+                                  child: Icon(
+                                    Icons.queue_music,
+                                    size: 30,
+                                    color: platformColor,
+                                  ),
                                 ),
                         ),
                       ),
@@ -380,7 +543,10 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
                         p.name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 12, color: AppColors.textPrimary),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textPrimary,
+                        ),
                       ),
                     ],
                   ),
@@ -396,6 +562,10 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
 
   Widget _buildPlaylistResults(MusicPlatform platform) {
     final list = _playlistResults[platform] ?? [];
+    final error = _searchErrors[platform];
+    if (list.isEmpty && error != null && !_searching) {
+      return _buildEmptyHint(Icons.error_outline, error);
+    }
     if (list.isEmpty && _lastKeyword.isNotEmpty && !_searching) {
       return _buildEmptyHint(Icons.playlist_remove, '没有找到相关歌单');
     }
@@ -406,7 +576,10 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
       itemBuilder: (ctx, i) {
         final p = list[i];
         return ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 2,
+          ),
           leading: ClipRRect(
             borderRadius: BorderRadius.circular(10),
             child: SizedBox(
@@ -418,12 +591,20 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
                       fit: BoxFit.cover,
                       placeholder: () => Container(
                         color: platformColor.withOpacity(0.12),
-                        child: Icon(Icons.queue_music, size: 24, color: platformColor),
+                        child: Icon(
+                          Icons.queue_music,
+                          size: 24,
+                          color: platformColor,
+                        ),
                       ),
                     )
                   : Container(
                       color: platformColor.withOpacity(0.12),
-                      child: Icon(Icons.queue_music, size: 24, color: platformColor),
+                      child: Icon(
+                        Icons.queue_music,
+                        size: 24,
+                        color: platformColor,
+                      ),
                     ),
             ),
           ),
@@ -431,7 +612,11 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
             p.name,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: AppColors.textPrimary),
+            style: TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w500,
+              color: AppColors.textPrimary,
+            ),
           ),
           subtitle: Text(
             p.creator != null && p.creator!.isNotEmpty
@@ -441,12 +626,17 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
             overflow: TextOverflow.ellipsis,
             style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
           ),
-          trailing: Icon(Icons.chevron_right, size: 20, color: AppColors.textHint),
+          trailing: Icon(
+            Icons.chevron_right,
+            size: 20,
+            color: AppColors.textHint,
+          ),
           onTap: () {
             Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (_) => PlaylistDetailScreen(playlist: p, platform: platform),
+                builder: (_) =>
+                    PlaylistDetailScreen(playlist: p, platform: platform),
               ),
             );
           },
@@ -472,60 +662,79 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
     );
   }
 
+  Widget _buildHotKeywords() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                '热门搜索',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Icon(
+                Icons.local_fire_department,
+                size: 18,
+                color: PlatformColors.qq,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: _hotKeywords.map((kw) {
+              return GestureDetector(
+                onTap: () {
+                  _controller.text = kw;
+                  _search(kw);
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(22),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.cardShadow,
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Text(
+                    kw,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: AppColors.textPrimary,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// 未搜索时的欢迎页 + 热门关键词
   Widget _buildWelcome() {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
       children: [
-        Row(
-          children: [
-            Text(
-              '热门搜索',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textPrimary,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Icon(Icons.local_fire_department, size: 18, color: PlatformColors.netease),
-          ],
-        ),
-        const SizedBox(height: 12),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: _hotKeywords.map((kw) {
-            return GestureDetector(
-              onTap: () {
-                _controller.text = kw;
-                _search(kw);
-              },
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(22),
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppColors.cardShadow,
-                      blurRadius: 6,
-                      offset: Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: Text(
-                  kw,
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
-            );
-          }).toList(),
-        ),
+        _buildHotKeywords(),
         const SizedBox(height: 40),
         Center(
           child: Column(
@@ -550,7 +759,7 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
               ),
               const SizedBox(height: 6),
               Text(
-                '网易云 · QQ音乐 · 酷狗 三大平台同步搜索',
+                'QQ音乐 · 网易云 · 酷狗 三大平台同步搜索',
                 style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
               ),
             ],

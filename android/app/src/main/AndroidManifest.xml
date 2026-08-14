@@ -10,9 +10,10 @@
     <!-- 系统悬浮窗胶囊（跨 App 悬浮显示） -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
     <application
-        android:label="音乐播放器"
+        android:label="库仔音乐"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:usesCleartextTraffic="true">
         <!-- MainActivity 继承 AudioServiceActivity：系统媒体通知/锁屏控制 + 悬浮窗胶囊通道 -->
         <activity
@@ -53,17 +54,15 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2"/>
-        <!-- 用于 APK 在线更新安装（open_filex 通过 FileProvider 共享文件） -->
+        <!-- 用于 APK 在线更新安装（原生安装通道通过 FileProvider 共享文件） -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileProvider"
             android:exported="false"
-            android:grantUriPermissions="true"
-            tools:replace="android:authorities">
+            android:grantUriPermissions="true">
             <meta-data
                 android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths"
-                tools:replace="android:resource"/>
+                android:resource="@xml/file_paths"/>
         </provider>
     </application>
     <queries>
