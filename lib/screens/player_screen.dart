@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
+import '../providers/search_session.dart';
 import '../services/favorite_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/color_extractor.dart';
@@ -72,6 +75,136 @@ class _PlayerScreenState extends State<PlayerScreen> {
       position.maxScrollExtent,
     );
     position.jumpTo(target);
+  }
+
+  void _openScopedSearch(
+    BuildContext context,
+    PlayerProvider player,
+    PlayQueueItem song,
+    SearchSubject subject,
+  ) {
+    final keyword = (subject == SearchSubject.artist ? song.artist : song.album)
+        .trim();
+    if (!_isSearchableMetadata(keyword)) return;
+    unawaited(
+      context.read<SearchSession>().openScopedSearch(
+        player.api,
+        keyword: keyword,
+        subject: subject,
+        preferredPlatform: song.platform,
+      ),
+    );
+    Navigator.of(context).popUntil((route) => route.isFirst);
+  }
+
+  bool _isSearchableMetadata(String value) {
+    final normalized = value.trim();
+    return normalized.isNotEmpty &&
+        normalized != '未知歌手' &&
+        normalized != '未知专辑';
+  }
+
+  Widget _buildSongNameLink(
+    BuildContext context,
+    PlayerProvider player,
+    PlayQueueItem song,
+    Color color, {
+    required double fontSize,
+    TextAlign textAlign = TextAlign.start,
+  }) {
+    final text = Text(
+      song.name,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      textAlign: textAlign,
+      style: TextStyle(
+        color: color,
+        fontSize: fontSize,
+        fontWeight: FontWeight.bold,
+      ),
+    );
+    if (!_isSearchableMetadata(song.artist)) return text;
+    return Tooltip(
+      message: '搜索 ${song.artist} 的歌曲',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          key: const ValueKey('player-artist-search'),
+          onTap: () =>
+              _openScopedSearch(context, player, song, SearchSubject.artist),
+          borderRadius: BorderRadius.circular(6),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+            child: text,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildArtistAlbumLine(
+    BuildContext context,
+    PlayerProvider player,
+    PlayQueueItem song,
+    Color color, {
+    required double fontSize,
+    bool centered = false,
+  }) {
+    final hasAlbum = _isSearchableMetadata(song.album);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      mainAxisAlignment: centered
+          ? MainAxisAlignment.center
+          : MainAxisAlignment.start,
+      children: [
+        Flexible(
+          child: Text(
+            song.artist,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: color, fontSize: fontSize),
+          ),
+        ),
+        if (hasAlbum) ...[
+          Text(
+            ' · ',
+            style: TextStyle(color: color, fontSize: fontSize),
+          ),
+          Flexible(
+            child: Tooltip(
+              message: '搜索专辑 ${song.album}',
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  key: const ValueKey('player-album-search'),
+                  onTap: () => _openScopedSearch(
+                    context,
+                    player,
+                    song,
+                    SearchSubject.album,
+                  ),
+                  borderRadius: BorderRadius.circular(6),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Text(
+                      song.album,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: color,
+                        fontSize: fontSize,
+                        decoration: TextDecoration.underline,
+                        decorationColor: color.withValues(alpha: 0.55),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
   }
 
   @override
@@ -297,6 +430,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   compact: true,
                   landscape: true,
                 ),
+                _buildBottomActions(ctx, player, subTextColor, compact: true),
               ],
             ),
           ),
@@ -363,22 +497,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      song.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: textColor,
-                        fontSize: 17,
-                        fontWeight: FontWeight.bold,
-                      ),
+                    _buildSongNameLink(
+                      ctx,
+                      player,
+                      song,
+                      textColor,
+                      fontSize: 17,
                     ),
                     const SizedBox(height: 3),
-                    Text(
-                      '${song.artist} - ${song.album}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: subColor, fontSize: 12),
+                    _buildArtistAlbumLine(
+                      ctx,
+                      player,
+                      song,
+                      subColor,
+                      fontSize: 12,
                     ),
                     if (selection.$2 != null) ...[
                       const SizedBox(height: 3),
@@ -503,6 +635,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
       child: Row(
         children: [
           IconButton(
+            key: const ValueKey('player-back'),
+            tooltip: '返回',
             icon: Icon(Icons.keyboard_arrow_down, color: textColor),
             onPressed: () => Navigator.pop(ctx),
           ),
@@ -735,22 +869,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ),
           child: Column(
             children: [
-              Text(
-                song.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: textColor,
-                  fontSize: compact ? 18 : 20,
-                  fontWeight: FontWeight.bold,
-                ),
+              _buildSongNameLink(
+                ctx,
+                player,
+                song,
+                textColor,
+                fontSize: compact ? 18 : 20,
+                textAlign: TextAlign.center,
               ),
               const SizedBox(height: 4),
-              Text(
-                '${song.artist} - ${song.album}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: subColor, fontSize: compact ? 12 : 13),
+              _buildArtistAlbumLine(
+                ctx,
+                player,
+                song,
+                subColor,
+                fontSize: compact ? 12 : 13,
+                centered: true,
               ),
               if (errorMessage != null) ...[
                 const SizedBox(height: 4),

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -5,8 +7,10 @@ import 'package:http/testing.dart';
 import 'package:music_player_app/main.dart' show MainScreen;
 import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/providers/player_provider.dart';
+import 'package:music_player_app/providers/search_session.dart';
 import 'package:music_player_app/providers/theme_controller.dart';
 import 'package:music_player_app/screens/discover_screen.dart';
+import 'package:music_player_app/screens/favorites_screen.dart';
 import 'package:music_player_app/screens/player_screen.dart';
 import 'package:music_player_app/screens/playlist_detail_screen.dart';
 import 'package:music_player_app/screens/playlist_screen.dart';
@@ -143,6 +147,254 @@ void main() {
     }, _mockClient);
   });
 
+  testWidgets('search results survive player route and shell rotation', (
+    tester,
+  ) async {
+    await http.runWithClient(
+      () async {
+        final player = _ControllablePlayer();
+        final theme = ThemeController();
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          player.dispose();
+          theme.dispose();
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        await _pumpScreen(
+          tester,
+          const MainScreen(),
+          player,
+          theme,
+          const Size(390, 844),
+        );
+        await tester.tap(find.text('搜索').first);
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byType(TextField), '保留搜索');
+        await tester.testTextInput.receiveAction(TextInputAction.search);
+        await tester.pumpAndSettle();
+        expect(find.text('保留结果'), findsOneWidget);
+
+        await tester.tap(find.text('保留结果'));
+        await tester.pumpAndSettle();
+        expect(find.byType(MiniPlayer), findsOneWidget);
+        await tester.tap(find.byType(MiniPlayer));
+        await tester.pumpAndSettle();
+        expect(find.byType(PlayerScreen), findsOneWidget);
+
+        _setViewSize(tester, const Size(640, 360));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const ValueKey('player-back')).hitTestable(),
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller?.text,
+          '保留搜索',
+        );
+        expect(find.text('保留结果'), findsWidgets);
+        _expectNoException(tester);
+      },
+      () => MockClient((request) async {
+        final isQqSongSearch =
+            request.url.path == '/api-qq/search' &&
+            request.url.queryParameters['t'] != '2';
+        final body = isQqSongSearch
+            ? {
+                'data': {
+                  'list': [
+                    {
+                      'songmid': 'preserved-song',
+                      'songname': '保留结果',
+                      'singer': [
+                        {'name': '测试歌手'},
+                      ],
+                      'albumname': '测试专辑',
+                    },
+                  ],
+                },
+              }
+            : <String, dynamic>{};
+        return http.Response(
+          jsonEncode(body),
+          200,
+          headers: const {'content-type': 'application/json; charset=utf-8'},
+        );
+      }),
+    );
+  });
+
+  testWidgets('landscape player opens artist and album searches', (
+    tester,
+  ) async {
+    final requestedKeywords = <String>[];
+    await http.runWithClient(
+      () async {
+        final player = _ControllablePlayer()..showSong();
+        final theme = ThemeController();
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          player.dispose();
+          theme.dispose();
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        await _pumpScreen(
+          tester,
+          const MainScreen(),
+          player,
+          theme,
+          const Size(640, 360),
+        );
+        await tester.tap(find.byType(MiniPlayer));
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const ValueKey('player-artist-search')).hitTestable(),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('player-album-search')).hitTestable(),
+          findsOneWidget,
+        );
+
+        await tester.tap(
+          find.byKey(const ValueKey('player-artist-search')).hitTestable(),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(SearchScreen), findsOneWidget);
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller?.text,
+          '测试歌手',
+        );
+
+        await tester.tap(find.byType(MiniPlayer));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const ValueKey('player-album-search')).hitTestable(),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller?.text,
+          '测试专辑',
+        );
+        expect(find.text('专辑曲目一'), findsOneWidget);
+        expect(find.text('专辑曲目二'), findsOneWidget);
+        expect(find.text('其他专辑曲目'), findsNothing);
+        expect(requestedKeywords, containsAllInOrder(['测试歌手', '测试专辑']));
+        _expectNoException(tester);
+      },
+      () => MockClient((request) async {
+        final keyword = request.url.queryParameters['key'];
+        Map<String, dynamic> body = {};
+        if (request.url.path == '/api-qq/search' && keyword != null) {
+          requestedKeywords.add(keyword);
+          final songs = keyword == '测试专辑'
+              ? [
+                  {
+                    'songmid': 'album-track-1',
+                    'songname': '专辑曲目一',
+                    'singer': [
+                      {'name': '测试歌手'},
+                    ],
+                    'albumname': '测试专辑',
+                  },
+                  {
+                    'songmid': 'album-track-2',
+                    'songname': '专辑曲目二',
+                    'singer': [
+                      {'name': '测试歌手'},
+                    ],
+                    'albumname': '测试专辑',
+                  },
+                  {
+                    'songmid': 'other-album-track',
+                    'songname': '其他专辑曲目',
+                    'singer': [
+                      {'name': '测试歌手'},
+                    ],
+                    'albumname': '其他专辑',
+                  },
+                ]
+              : <Map<String, dynamic>>[];
+          body = {
+            'data': {'list': songs},
+          };
+        }
+        return http.Response(
+          jsonEncode(body),
+          200,
+          headers: const {'content-type': 'application/json; charset=utf-8'},
+        );
+      }),
+    );
+  });
+
+  testWidgets('home favorites is a landscape carousel and opens its page', (
+    tester,
+  ) async {
+    final favorites = [
+      SongSearchResult(
+        platform: MusicPlatform.qq,
+        id: 'favorite-1',
+        name: '收藏歌曲一',
+        artist: '收藏歌手一',
+        album: '收藏专辑',
+      ),
+      SongSearchResult(
+        platform: MusicPlatform.netease,
+        id: 'favorite-2',
+        name: '收藏歌曲二',
+        artist: '收藏歌手二',
+        album: '收藏专辑',
+      ),
+    ];
+    SharedPreferences.setMockInitialValues({
+      'favorites': jsonEncode(favorites.map((song) => song.toJson()).toList()),
+    });
+
+    await http.runWithClient(() async {
+      final player = PlayerProvider();
+      final theme = ThemeController();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        player.dispose();
+        theme.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      await _pumpScreen(
+        tester,
+        const DiscoverScreen(),
+        player,
+        theme,
+        const Size(640, 360),
+      );
+
+      final carousel = tester.widget<ListView>(
+        find.byKey(const ValueKey('home-favorites-carousel')),
+      );
+      expect(carousel.scrollDirection, Axis.horizontal);
+      expect(find.text('收藏歌曲一'), findsOneWidget);
+      expect(find.text('收藏歌手一'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('home-favorites-header')).hitTestable(),
+        findsOneWidget,
+      );
+      _expectNoException(tester);
+
+      await tester.tap(
+        find.byKey(const ValueKey('home-favorites-header')).hitTestable(),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(FavoritesScreen), findsOneWidget);
+      _expectNoException(tester);
+    }, _mockClient);
+  });
+
   testWidgets('player fits short landscape and opens a side queue', (
     tester,
   ) async {
@@ -166,6 +418,7 @@ void main() {
       );
       expect(find.text('正在播放'), findsOneWidget);
       expect(find.text('第一句歌词'), findsOneWidget);
+      expect(find.text('收藏').hitTestable(), findsOneWidget);
       expect(find.byType(CircularProgressIndicator), findsNothing);
 
       final controlsRect = tester.getRect(
@@ -413,6 +666,7 @@ Future<void> _pumpScreen(
     MultiProvider(
       providers: [
         ChangeNotifierProvider<PlayerProvider>.value(value: player),
+        ChangeNotifierProvider(create: (_) => SearchSession()),
         ChangeNotifierProvider<ThemeController>.value(value: theme),
         ChangeNotifierProvider(create: (_) => FavoriteService()),
       ],
@@ -479,6 +733,12 @@ class _ControllablePlayer extends PlayerProvider {
       artist: '测试歌手',
       album: '测试专辑',
     );
+    notifyListeners();
+  }
+
+  @override
+  Future<void> playSingle(SongSearchResult result) async {
+    _currentSong = PlayQueueItem.fromSearchResult(result);
     notifyListeners();
   }
 

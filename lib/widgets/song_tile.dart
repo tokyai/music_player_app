@@ -14,6 +14,10 @@ class SongTile extends StatelessWidget {
   final bool isPlaying;
   final bool showPlatformTag;
   final bool showFavorite;
+  final bool selectionMode;
+  final bool selected;
+  final ValueChanged<bool>? onSelectionChanged;
+  final VoidCallback? onLongPress;
 
   const SongTile({
     super.key,
@@ -23,7 +27,11 @@ class SongTile extends StatelessWidget {
     this.isPlaying = false,
     this.showPlatformTag = true,
     this.showFavorite = false,
-  });
+    this.selectionMode = false,
+    this.selected = false,
+    this.onSelectionChanged,
+    this.onLongPress,
+  }) : assert(!selectionMode || onSelectionChanged != null);
 
   @override
   Widget build(BuildContext context) {
@@ -39,116 +47,155 @@ class SongTile extends StatelessWidget {
         playerState.$1 == song.id && playerState.$2 == song.platform;
     final platformColor = PlatformColors.of(song.platform);
 
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-      leading: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: SizedBox(
-          width: 48,
-          height: 48,
-          child: song.coverUrl != null && song.coverUrl!.isNotEmpty
-              ? SmartCover(
-                  url: song.coverUrl,
-                  fit: BoxFit.cover,
-                  placeholder: () => _placeholder(platformColor),
-                )
-              : _placeholder(platformColor),
-        ),
-      ),
-      title: Row(
-        children: [
-          Expanded(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final veryCompact = constraints.maxWidth < 180;
+        return ListTile(
+          contentPadding: EdgeInsets.symmetric(
+            horizontal: veryCompact ? 8 : 16,
+            vertical: 2,
+          ),
+          leading: veryCompact
+              ? null
+              : ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: SizedBox(
+                    width: 48,
+                    height: 48,
+                    child: song.coverUrl != null && song.coverUrl!.isNotEmpty
+                        ? SmartCover(
+                            url: song.coverUrl,
+                            fit: BoxFit.cover,
+                            placeholder: () => _placeholder(platformColor),
+                          )
+                        : _placeholder(platformColor),
+                  ),
+                ),
+          title: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  song.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: isCurrent
+                        ? AppColors.primary
+                        : AppColors.textPrimary,
+                    fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+                    fontSize: 15,
+                  ),
+                ),
+              ),
+              if (isCurrent && playerState.$3) ...[
+                const SizedBox(width: 8),
+                _PlayingIndicator(color: AppColors.primary),
+              ],
+            ],
+          ),
+          subtitle: Padding(
+            padding: const EdgeInsets.only(top: 2),
             child: Text(
-              song.name,
+              '${song.artist} · ${song.album}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                color: isCurrent ? AppColors.primary : AppColors.textPrimary,
-                fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
-                fontSize: 15,
+                fontSize: 12,
+                color: isCurrent
+                    ? AppColors.primary.withOpacity(0.7)
+                    : AppColors.textSecondary,
               ),
             ),
           ),
-          if (isCurrent && playerState.$3) ...[
-            const SizedBox(width: 8),
-            _PlayingIndicator(color: AppColors.primary),
-          ],
-        ],
-      ),
-      subtitle: Padding(
-        padding: const EdgeInsets.only(top: 2),
-        child: Text(
-          '${song.artist} · ${song.album}',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            fontSize: 12,
-            color: isCurrent
-                ? AppColors.primary.withOpacity(0.7)
-                : AppColors.textSecondary,
-          ),
-        ),
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (showFavorite)
-            Consumer<FavoriteService>(
-              builder: (ctx, fav, _) {
-                final isFav = fav.isFavorite(song.platform, song.id);
-                return IconButton(
-                  icon: Icon(
-                    isFav ? Icons.favorite : Icons.favorite_border,
-                    size: 20,
-                    color: isFav ? Colors.redAccent : AppColors.textHint,
-                  ),
-                  onPressed: () {
-                    fav.toggle(song);
-                    ScaffoldMessenger.of(ctx).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          isFav ? '已取消收藏: ${song.name}' : '已收藏: ${song.name}',
-                        ),
-                        duration: const Duration(seconds: 1),
+          trailing: veryCompact
+              ? null
+              : selectionMode
+              ? Checkbox(
+                  value: selected,
+                  onChanged: (value) =>
+                      onSelectionChanged?.call(value ?? false),
+                )
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (showFavorite)
+                      Consumer<FavoriteService>(
+                        builder: (ctx, fav, _) {
+                          final isFav = fav.isFavorite(song.platform, song.id);
+                          return IconButton(
+                            tooltip: isFav ? '取消收藏' : '收藏',
+                            icon: Icon(
+                              isFav ? Icons.favorite : Icons.favorite_border,
+                              size: 20,
+                              color: isFav
+                                  ? Colors.redAccent
+                                  : AppColors.textHint,
+                            ),
+                            onPressed: () {
+                              fav.toggle(song);
+                              ScaffoldMessenger.of(ctx).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    isFav
+                                        ? '已取消收藏: ${song.name}'
+                                        : '已收藏: ${song.name}',
+                                  ),
+                                  duration: const Duration(seconds: 1),
+                                ),
+                              );
+                            },
+                          );
+                        },
                       ),
-                    );
-                  },
-                );
-              },
-            ),
-          if (showPlatformTag)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: platformColor.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Text(
-                song.platform.label,
-                style: TextStyle(
-                  fontSize: 10,
-                  color: platformColor,
-                  fontWeight: FontWeight.w600,
+                    if (showPlatformTag)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          color: platformColor.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          song.platform.label,
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: platformColor,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    if (onAddToQueue != null) ...[
+                      const SizedBox(width: 2),
+                      PopupMenuButton<String>(
+                        iconSize: 20,
+                        color: AppColors.surface,
+                        onSelected: (value) {
+                          if (value == 'add_queue') onAddToQueue!();
+                        },
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(
+                            value: 'add_queue',
+                            child: Text('添加到队列'),
+                          ),
+                        ],
+                      ),
+                    ] else
+                      Icon(
+                        Icons.chevron_right,
+                        size: 20,
+                        color: AppColors.textHint,
+                      ),
+                  ],
                 ),
-              ),
-            ),
-          if (onAddToQueue != null) ...[
-            const SizedBox(width: 2),
-            PopupMenuButton<String>(
-              iconSize: 20,
-              color: AppColors.surface,
-              onSelected: (val) {
-                if (val == 'add_queue') onAddToQueue!();
-              },
-              itemBuilder: (_) => [
-                const PopupMenuItem(value: 'add_queue', child: Text('添加到队列')),
-              ],
-            ),
-          ] else
-            Icon(Icons.chevron_right, size: 20, color: AppColors.textHint),
-        ],
-      ),
-      onTap: onTap,
+          selected: selectionMode && selected,
+          onTap: selectionMode
+              ? () => onSelectionChanged?.call(!selected)
+              : onTap,
+          onLongPress: onLongPress,
+        );
+      },
     );
   }
 

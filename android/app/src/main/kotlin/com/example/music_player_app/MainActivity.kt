@@ -1,5 +1,6 @@
 package com.example.music_player_app
 
+import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageInfo
@@ -17,7 +18,13 @@ class MainActivity : AudioServiceActivity() {
     companion object {
         const val CHANNEL = "music_player/floating_capsule"
         const val INSTALL_CHANNEL = "music_player/install"
+        const val FAVORITES_FILE_CHANNEL = "music_player/favorites_file"
+        const val REQUEST_IMPORT_FAVORITES = 4101
+        const val REQUEST_EXPORT_FAVORITES = 4102
     }
+
+    private var pendingFileResult: MethodChannel.Result? = null
+    private var pendingExportContent: String? = null
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -33,6 +40,19 @@ class MainActivity : AudioServiceActivity() {
                     )
                 } else {
                     result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, FAVORITES_FILE_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "importFavorites" -> openFavoriteBackup(result)
+                    "exportFavorites" -> createFavoriteBackup(
+                        call.argument<String>("content"),
+                        call.argument<String>("fileName"),
+                        result
+                    )
+                    else -> result.notImplemented()
                 }
             }
 
@@ -92,6 +112,97 @@ class MainActivity : AudioServiceActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    private fun openFavoriteBackup(result: MethodChannel.Result) {
+        if (pendingFileResult != null) {
+            result.error("BUSY", "已有文件操作正在进行", null)
+            return
+        }
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+        }
+        try {
+            pendingFileResult = result
+            startActivityForResult(intent, REQUEST_IMPORT_FAVORITES)
+        } catch (_: ActivityNotFoundException) {
+            pendingFileResult = null
+            result.error("UNSUPPORTED", "系统没有可用的文件选择器", null)
+        }
+    }
+
+    private fun createFavoriteBackup(
+        content: String?,
+        fileName: String?,
+        result: MethodChannel.Result
+    ) {
+        if (pendingFileResult != null) {
+            result.error("BUSY", "已有文件操作正在进行", null)
+            return
+        }
+        if (content.isNullOrEmpty()) {
+            result.error("EMPTY_BACKUP", "收藏备份内容为空", null)
+            return
+        }
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+            putExtra(Intent.EXTRA_TITLE, fileName ?: "kuzai-music-favorites.json")
+        }
+        try {
+            pendingFileResult = result
+            pendingExportContent = content
+            startActivityForResult(intent, REQUEST_EXPORT_FAVORITES)
+        } catch (_: ActivityNotFoundException) {
+            pendingFileResult = null
+            pendingExportContent = null
+            result.error("UNSUPPORTED", "系统没有可用的文件选择器", null)
+        }
+    }
+
+    @Deprecated("Deprecated in Android, retained for Flutter activity compatibility")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_IMPORT_FAVORITES &&
+            requestCode != REQUEST_EXPORT_FAVORITES
+        ) {
+            return
+        }
+
+        val callback = pendingFileResult ?: return
+        pendingFileResult = null
+        val uri = data?.data
+        if (resultCode != Activity.RESULT_OK || uri == null) {
+            pendingExportContent = null
+            callback.success(null)
+            return
+        }
+
+        try {
+            if (requestCode == REQUEST_IMPORT_FAVORITES) {
+                val content = contentResolver.openInputStream(uri)
+                    ?.bufferedReader(Charsets.UTF_8)
+                    ?.use { it.readText() }
+                    ?: throw IllegalStateException("无法读取所选文件")
+                if (content.length > 5 * 1024 * 1024) {
+                    throw IllegalArgumentException("收藏备份不能超过 5 MB")
+                }
+                callback.success(content)
+            } else {
+                val content = pendingExportContent
+                    ?: throw IllegalStateException("收藏备份内容已失效")
+                contentResolver.openOutputStream(uri, "wt")
+                    ?.bufferedWriter(Charsets.UTF_8)
+                    ?.use { it.write(content) }
+                    ?: throw IllegalStateException("无法写入所选文件")
+                callback.success(true)
+            }
+        } catch (error: Exception) {
+            callback.error("FILE_ERROR", error.message ?: "文件操作失败", null)
+        } finally {
+            pendingExportContent = null
+        }
     }
 
     private fun installApk(

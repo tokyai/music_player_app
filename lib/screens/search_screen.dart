@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
+import '../providers/search_session.dart';
 import '../theme/app_theme.dart';
 import '../widgets/smart_cover.dart';
 import '../widgets/song_tile.dart';
@@ -18,11 +19,10 @@ class SearchScreen extends StatefulWidget {
 
 class _SearchScreenState extends State<SearchScreen>
     with SingleTickerProviderStateMixin {
-  final TextEditingController _controller = TextEditingController();
+  late final TextEditingController _controller;
   late TabController _tabController;
-  String _lastKeyword = '';
-  bool _playlistMode = false; // true=歌单模式, false=歌曲模式
-  int _searchRequestId = 0;
+  late final SearchSession _session;
+  late String _observedSessionKeyword;
   final List<String> _hotKeywords = [
     '周杰伦',
     '海阔天空',
@@ -32,40 +32,24 @@ class _SearchScreenState extends State<SearchScreen>
     '告白气球',
   ];
 
-  final Map<MusicPlatform, List<SongSearchResult>> _results = {
-    MusicPlatform.qq: [],
-    MusicPlatform.netease: [],
-    MusicPlatform.kugou: [],
-  };
-
-  final Map<MusicPlatform, List<PlaylistInfo>> _playlistResults = {
-    MusicPlatform.qq: [],
-    MusicPlatform.netease: [],
-    MusicPlatform.kugou: [],
-  };
-
-  final Map<MusicPlatform, String?> _searchErrors = {
-    MusicPlatform.qq: null,
-    MusicPlatform.netease: null,
-    MusicPlatform.kugou: null,
-  };
-
-  final Map<MusicPlatform, bool> _platformLoading = {
-    MusicPlatform.qq: false,
-    MusicPlatform.netease: false,
-    MusicPlatform.kugou: false,
-  };
-  final Set<MusicPlatform> _loadedPlatforms = {};
-
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _session = context.read<SearchSession>();
+    _observedSessionKeyword = _session.keyword;
+    _controller = TextEditingController(text: _session.keyword);
+    _tabController = TabController(
+      length: musicPlatformDisplayOrder.length,
+      initialIndex: _session.selectedPlatformIndex,
+      vsync: this,
+    );
     _tabController.addListener(_handleTabChanged);
+    _session.addListener(_handleSessionChanged);
   }
 
   @override
   void dispose() {
+    _session.removeListener(_handleSessionChanged);
     _tabController.removeListener(_handleTabChanged);
     _controller.dispose();
     _tabController.dispose();
@@ -73,161 +57,55 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Future<void> _search(String keyword) async {
-    final normalizedKeyword = keyword.trim();
-    if (normalizedKeyword.isEmpty) return;
-    _searchRequestId++;
-
-    setState(() {
-      _lastKeyword = normalizedKeyword;
-      _loadedPlatforms.clear();
-      for (final platform in musicPlatformDisplayOrder) {
-        _results[platform] = [];
-        _playlistResults[platform] = [];
-        _searchErrors[platform] = null;
-        _platformLoading[platform] = false;
-      }
-    });
-
-    await _ensurePlatformLoaded(
-      musicPlatformDisplayOrder[_tabController.index],
-    );
+    await _session.search(context.read<PlayerProvider>().api, keyword);
   }
 
   void _handleTabChanged() {
-    if (_tabController.indexIsChanging || _lastKeyword.isEmpty) return;
+    if (_tabController.indexIsChanging) return;
     unawaited(
-      _ensurePlatformLoaded(musicPlatformDisplayOrder[_tabController.index]),
+      _session.selectPlatform(
+        context.read<PlayerProvider>().api,
+        _tabController.index,
+      ),
     );
   }
 
-  bool _isCurrentSearch(int requestId, bool playlistMode) {
-    return mounted &&
-        requestId == _searchRequestId &&
-        playlistMode == _playlistMode;
-  }
-
-  Future<void> _ensurePlatformLoaded(MusicPlatform platform) async {
-    if (_lastKeyword.isEmpty ||
-        _loadedPlatforms.contains(platform) ||
-        (_platformLoading[platform] ?? false)) {
-      return;
-    }
-
-    final provider = context.read<PlayerProvider>();
-    final keyword = _lastKeyword;
-    final requestId = _searchRequestId;
-    final playlistMode = _playlistMode;
-    setState(() {
-      _platformLoading[platform] = true;
-      _searchErrors[platform] = null;
-    });
-
-    if (playlistMode) {
-      await _loadPlaylists(
-        provider,
-        platform,
-        keyword,
-        requestId,
-        playlistMode,
-      );
-    } else {
-      await Future.wait([
-        _loadSongs(provider, platform, keyword, requestId, playlistMode),
-        _loadPlaylists(provider, platform, keyword, requestId, playlistMode),
-      ]);
-    }
-
-    if (_isCurrentSearch(requestId, playlistMode)) {
-      setState(() {
-        _platformLoading[platform] = false;
-        _loadedPlatforms.add(platform);
-      });
-    }
-  }
-
-  Future<void> _loadSongs(
-    PlayerProvider provider,
-    MusicPlatform platform,
-    String keyword,
-    int requestId,
-    bool playlistMode,
-  ) async {
-    try {
-      final list = await provider.api.search(platform, keyword);
-      if (_isCurrentSearch(requestId, playlistMode)) {
-        setState(() => _results[platform] = list);
-      }
-    } catch (e) {
-      debugPrint('搜索 ${platform.label} 歌曲失败: $e');
-      if (_isCurrentSearch(requestId, playlistMode)) {
-        setState(() => _searchErrors[platform] = '搜索失败，请稍后重试');
-      }
-    }
-  }
-
-  Future<void> _loadPlaylists(
-    PlayerProvider provider,
-    MusicPlatform platform,
-    String keyword,
-    int requestId,
-    bool playlistMode,
-  ) async {
-    try {
-      final List<PlaylistInfo> list;
-      switch (platform) {
-        case MusicPlatform.netease:
-          list = await provider.api.neteaseSearchPlaylists(keyword);
-          break;
-        case MusicPlatform.qq:
-          list = await provider.api.qqSearchPlaylists(keyword);
-          break;
-        case MusicPlatform.kugou:
-          list = await provider.api.kugouSearchPlaylists(keyword);
-          break;
-      }
-      if (_isCurrentSearch(requestId, playlistMode)) {
-        setState(() => _playlistResults[platform] = list);
-      }
-    } catch (e) {
-      debugPrint('搜索 ${platform.label} 歌单失败: $e');
-      if (_isCurrentSearch(requestId, playlistMode)) {
-        setState(() => _searchErrors[platform] = '搜索失败，请稍后重试');
-      }
-    }
-  }
-
   void _retryPlatform(MusicPlatform platform) {
-    _loadedPlatforms.remove(platform);
-    unawaited(_ensurePlatformLoaded(platform));
+    unawaited(_session.retry(context.read<PlayerProvider>().api, platform));
   }
 
   void _clearSearch() {
-    _searchRequestId++;
-    _controller.clear();
-    setState(() {
-      _lastKeyword = '';
-      _loadedPlatforms.clear();
-      for (final platform in musicPlatformDisplayOrder) {
-        _results[platform] = [];
-        _playlistResults[platform] = [];
-        _searchErrors[platform] = null;
-        _platformLoading[platform] = false;
-      }
-    });
+    _session.clear();
   }
 
   void _switchMode(bool playlistMode) {
-    if (_playlistMode == playlistMode) return;
-    setState(() => _playlistMode = playlistMode);
-    // 已有关键词时立即按新模式搜索
-    if (_lastKeyword.isNotEmpty) {
-      unawaited(_search(_lastKeyword));
+    unawaited(
+      _session.setPlaylistMode(
+        context.read<PlayerProvider>().api,
+        playlistMode,
+      ),
+    );
+  }
+
+  void _handleSessionChanged() {
+    if (!mounted) return;
+    if (_observedSessionKeyword != _session.keyword) {
+      _observedSessionKeyword = _session.keyword;
+      _controller.value = TextEditingValue(
+        text: _session.keyword,
+        selection: TextSelection.collapsed(offset: _session.keyword.length),
+      );
     }
+    if (!_tabController.indexIsChanging &&
+        _tabController.index != _session.selectedPlatformIndex) {
+      _tabController.index = _session.selectedPlatformIndex;
+    }
+    setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
-    final hasSearched = _lastKeyword.isNotEmpty;
+    final hasSearched = _session.keyword.isNotEmpty;
     final isLandscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
     return Scaffold(
@@ -382,7 +260,7 @@ class _SearchScreenState extends State<SearchScreen>
           ButtonSegment(value: false, label: Text('歌曲')),
           ButtonSegment(value: true, label: Text('歌单')),
         ],
-        selected: {_playlistMode},
+        selected: {_session.playlistMode},
         showSelectedIcon: false,
         onSelectionChanged: (s) => _switchMode(s.first),
         style: SegmentedButton.styleFrom(
@@ -448,7 +326,7 @@ class _SearchScreenState extends State<SearchScreen>
           const SizedBox(height: 4),
         ],
         Expanded(
-          child: _playlistMode
+          child: _session.playlistMode
               ? _buildPlaylistResults(platform)
               : _buildSongResults(platform),
         ),
@@ -457,10 +335,10 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Widget _buildSongResults(MusicPlatform platform) {
-    final list = _results[platform] ?? [];
-    final playlists = _playlistResults[platform] ?? [];
-    final error = _searchErrors[platform];
-    final loading = _platformLoading[platform] ?? false;
+    final list = _session.songsFor(platform);
+    final playlists = _session.playlistsFor(platform);
+    final error = _session.errorFor(platform);
+    final loading = _session.isLoading(platform);
     if (list.isEmpty && playlists.isEmpty && loading) {
       return _buildLoadingHint();
     }
@@ -471,7 +349,7 @@ class _SearchScreenState extends State<SearchScreen>
         onRetry: () => _retryPlatform(platform),
       );
     }
-    if (list.isEmpty && playlists.isEmpty && _lastKeyword.isNotEmpty) {
+    if (list.isEmpty && playlists.isEmpty && _session.keyword.isNotEmpty) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -494,6 +372,7 @@ class _SearchScreenState extends State<SearchScreen>
         final song = list[i - (hasPlaylists ? 1 : 0)];
         return SongTile(
           song: song,
+          showFavorite: true,
           onTap: () {
             context.read<PlayerProvider>().playSingle(song);
           },
@@ -620,9 +499,9 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Widget _buildPlaylistResults(MusicPlatform platform) {
-    final list = _playlistResults[platform] ?? [];
-    final error = _searchErrors[platform];
-    final loading = _platformLoading[platform] ?? false;
+    final list = _session.playlistsFor(platform);
+    final error = _session.errorFor(platform);
+    final loading = _session.isLoading(platform);
     if (list.isEmpty && loading) {
       return _buildLoadingHint();
     }
@@ -633,7 +512,7 @@ class _SearchScreenState extends State<SearchScreen>
         onRetry: () => _retryPlatform(platform),
       );
     }
-    if (list.isEmpty && _lastKeyword.isNotEmpty) {
+    if (list.isEmpty && _session.keyword.isNotEmpty) {
       return _buildEmptyHint(Icons.playlist_remove, '没有找到相关歌单');
     }
     final platformColor = PlatformColors.of(platform);

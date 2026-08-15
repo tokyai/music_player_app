@@ -260,6 +260,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         final track = _detail!.tracks[i];
         return SongTile(
           song: track,
+          showFavorite: true,
           onTap: () {
             context.read<PlayerProvider>().playFromPlaylist(_detail!.tracks, i);
           },

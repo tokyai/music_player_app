@@ -7,14 +7,9 @@ import '../theme/app_theme.dart';
 import 'smart_cover.dart';
 
 /// 迷你播放器（底部悬浮圆角卡片）
-class MiniPlayer extends StatefulWidget {
+class MiniPlayer extends StatelessWidget {
   const MiniPlayer({super.key});
 
-  @override
-  State<MiniPlayer> createState() => _MiniPlayerState();
-}
-
-class _MiniPlayerState extends State<MiniPlayer> {
   @override
   Widget build(BuildContext context) {
     return Consumer<PlayerProvider>(
@@ -32,10 +27,7 @@ class _MiniPlayerState extends State<MiniPlayer> {
             Navigator.push(
               ctx,
               MaterialPageRoute(builder: (_) => const PlayerScreen()),
-            ).then((_) {
-              // 返回时强制刷新
-              if (mounted) setState(() {});
-            });
+            );
           },
           child: Container(
             margin: const EdgeInsets.fromLTRB(12, 4, 12, 6),

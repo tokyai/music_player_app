@@ -5,6 +5,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'providers/player_provider.dart';
+import 'providers/search_session.dart';
 import 'providers/theme_controller.dart';
 import 'screens/discover_screen.dart';
 import 'screens/player_screen.dart';
@@ -52,6 +53,7 @@ class MusicPlayerApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => PlayerProvider()),
+        ChangeNotifierProvider(create: (_) => SearchSession()),
         ChangeNotifierProvider(create: (_) => ThemeController()),
         ChangeNotifierProvider(create: (_) => FavoriteService()..load()),
       ],
@@ -99,8 +101,36 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
+  SearchSession? _searchSession;
+  int _handledSearchNavigationId = 0;
 
   final List<Widget?> _screens = [const DiscoverScreen(), null, null, null];
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final session = context.read<SearchSession>();
+    if (identical(_searchSession, session)) return;
+    _searchSession?.removeListener(_handleSearchNavigation);
+    _searchSession = session..addListener(_handleSearchNavigation);
+    _handleSearchNavigation();
+  }
+
+  @override
+  void dispose() {
+    _searchSession?.removeListener(_handleSearchNavigation);
+    super.dispose();
+  }
+
+  void _handleSearchNavigation() {
+    final navigationId = _searchSession?.navigationId ?? 0;
+    if (!mounted || navigationId <= _handledSearchNavigationId) return;
+    _handledSearchNavigationId = navigationId;
+    setState(() {
+      _screens[1] ??= _createScreen(1);
+      _currentIndex = 1;
+    });
+  }
 
   Widget _createScreen(int index) {
     return switch (index) {

@@ -4,9 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
+import '../services/favorite_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/song_tile.dart';
 import '../widgets/smart_cover.dart';
+import 'favorites_screen.dart';
 import 'playlist_detail_screen.dart';
 
 class DiscoverScreen extends StatefulWidget {
@@ -35,6 +37,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(context.read<FavoriteService>().load());
     unawaited(_loadAll());
   }
 
@@ -153,6 +156,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         padding: const EdgeInsets.only(bottom: 24),
         children: [
           _buildHeader(),
+          _buildFavoritesBlock(),
+          const SizedBox(height: 12),
           _buildSectionHeader('QQ音乐推荐歌单', PlatformColors.qq, 'QQ 音乐编辑推荐'),
           _buildPlaylistSection(
             _qqPlaylists,
@@ -202,6 +207,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                 compact: compact,
                 children: [
                   _buildHeader(),
+                  _buildFavoritesBlock(compact: compact),
+                  const SizedBox(height: 12),
                   _buildSectionHeader(
                     'QQ音乐推荐歌单',
                     PlatformColors.qq,
@@ -356,8 +363,10 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     Color color,
     String subtitle, {
     bool compact = false,
+    VoidCallback? onTap,
+    Key? key,
   }) {
-    return Container(
+    final content = Container(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
       child: Row(
         children: [
@@ -392,8 +401,99 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                 style: TextStyle(fontSize: 11, color: AppColors.textHint),
               ),
             ),
+          if (onTap != null) ...[
+            const SizedBox(width: 4),
+            Icon(
+              Icons.chevron_right_rounded,
+              size: 20,
+              color: AppColors.textHint,
+            ),
+          ],
         ],
       ),
+    );
+    if (onTap == null) return content;
+    return Material(
+      key: key,
+      color: Colors.transparent,
+      child: InkWell(onTap: onTap, child: content),
+    );
+  }
+
+  Widget _buildFavoritesBlock({bool compact = false}) {
+    return Consumer<FavoriteService>(
+      builder: (context, favorites, _) {
+        final songs = favorites.favorites;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildSectionHeader(
+              '我的收藏',
+              Colors.redAccent,
+              '${songs.length} 首',
+              compact: compact,
+              key: const ValueKey('home-favorites-header'),
+              onTap: _openFavorites,
+            ),
+            _buildFavoriteSection(favorites),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildFavoriteSection(FavoriteService favorites) {
+    if (!favorites.loaded) {
+      return const SizedBox(
+        height: 112,
+        child: Center(
+          child: SizedBox.square(
+            dimension: 24,
+            child: CircularProgressIndicator(
+              strokeWidth: 2.5,
+              color: AppColors.primary,
+            ),
+          ),
+        ),
+      );
+    }
+
+    final songs = favorites.favorites;
+    if (songs.isEmpty) {
+      return SizedBox(
+        height: 96,
+        child: Center(
+          child: TextButton.icon(
+            onPressed: _openFavorites,
+            icon: const Icon(Icons.favorite_border_rounded, size: 20),
+            label: const Text('还没有收藏歌曲'),
+          ),
+        ),
+      );
+    }
+
+    return SizedBox(
+      height: 180,
+      child: ListView.builder(
+        key: const ValueKey('home-favorites-carousel'),
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: songs.length,
+        itemBuilder: (context, index) {
+          final song = songs[index];
+          return _FavoriteSongCard(
+            song: song,
+            onTap: () => context.read<PlayerProvider>().playSingle(song),
+          );
+        },
+      ),
+    );
+  }
+
+  void _openFavorites() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const FavoritesScreen()),
     );
   }
 
@@ -518,6 +618,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         children: display.map((song) {
           return SongTile(
             song: song,
+            showFavorite: true,
             showPlatformTag: false,
             onTap: () {
               context.read<PlayerProvider>().playSingle(song);
@@ -533,6 +634,68 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
             },
           );
         }).toList(),
+      ),
+    );
+  }
+}
+
+class _FavoriteSongCard extends StatelessWidget {
+  final SongSearchResult song;
+  final VoidCallback onTap;
+
+  const _FavoriteSongCard({required this.song, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final platformColor = PlatformColors.of(song.platform);
+    return InkWell(
+      key: ValueKey('home-favorite-${song.platform.code}-${song.id}'),
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        width: 130,
+        margin: const EdgeInsets.symmetric(horizontal: 5),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: SizedBox.square(
+                dimension: 130,
+                child: SmartCover(
+                  url: song.coverUrl,
+                  fit: BoxFit.cover,
+                  placeholder: () => Container(
+                    color: platformColor.withValues(alpha: 0.12),
+                    child: Icon(
+                      Icons.music_note_rounded,
+                      size: 38,
+                      color: platformColor,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 7),
+            Text(
+              song.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              song.artist,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 10.5, color: AppColors.textHint),
+            ),
+          ],
+        ),
       ),
     );
   }

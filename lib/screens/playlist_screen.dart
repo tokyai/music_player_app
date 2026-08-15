@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
+import '../services/favorite_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/song_tile.dart';
 import '../widgets/playlist_import_dialog.dart';
 import '../widgets/smart_cover.dart';
+import 'favorites_screen.dart';
 
 class PlaylistScreen extends StatefulWidget {
   const PlaylistScreen({super.key});
@@ -150,22 +152,51 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
               ),
             ),
           ),
-          FilledButton.icon(
-            onPressed: () {
-              showDialog(
-                context: context,
-                builder: (_) => PlaylistImportDialog(
-                  onImport: (platform, id) => _loadPlaylist(platform, id),
-                ),
-              );
-            },
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('导入'),
-            style: FilledButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          Consumer<FavoriteService>(
+            builder: (context, favorites, _) => IconButton(
+              tooltip: '我的收藏',
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const FavoritesScreen()),
+              ),
+              icon: Icon(
+                favorites.favorites.isEmpty
+                    ? Icons.favorite_border
+                    : Icons.favorite,
+                color: favorites.favorites.isEmpty
+                    ? AppColors.textSecondary
+                    : Colors.redAccent,
+              ),
             ),
           ),
+          if (compact)
+            IconButton.filledTonal(
+              tooltip: '导入歌单',
+              onPressed: _showImportDialog,
+              icon: const Icon(Icons.add),
+            )
+          else
+            FilledButton.icon(
+              onPressed: _showImportDialog,
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('导入'),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 7,
+                ),
+              ),
+            ),
         ],
+      ),
+    );
+  }
+
+  void _showImportDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => PlaylistImportDialog(
+        onImport: (platform, id) => _loadPlaylist(platform, id),
       ),
     );
   }
@@ -300,6 +331,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
         final track = _playlist!.tracks[i];
         return SongTile(
           song: track,
+          showFavorite: true,
           onTap: () {
             context.read<PlayerProvider>().playFromPlaylist(
               _playlist!.tracks,
