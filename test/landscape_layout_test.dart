@@ -57,6 +57,16 @@ void main() {
 
       await _pumpScreen(
         tester,
+        const DiscoverScreen(),
+        player,
+        theme,
+        const Size(1280, 800),
+      );
+      expect(find.byType(VerticalDivider), findsOneWidget);
+      _expectNoException(tester);
+
+      await _pumpScreen(
+        tester,
         const SearchScreen(),
         player,
         theme,
@@ -67,10 +77,37 @@ void main() {
 
       await _pumpScreen(
         tester,
+        const SearchScreen(),
+        player,
+        theme,
+        const Size(1280, 800),
+      );
+      expect(find.byType(VerticalDivider), findsOneWidget);
+      _expectNoException(tester);
+
+      await _pumpScreen(
+        tester,
         const PlaylistScreen(),
         player,
         theme,
         const Size(640, 360),
+      );
+      expect(find.byType(VerticalDivider), findsOneWidget);
+      _expectNoException(tester);
+
+      await tester.tap(find.byTooltip('导入歌单'));
+      await tester.pumpAndSettle();
+      expect(find.text('导入歌单'), findsOneWidget);
+      _expectNoException(tester);
+      await tester.tap(find.text('取消').last);
+      await tester.pumpAndSettle();
+
+      await _pumpScreen(
+        tester,
+        const PlaylistScreen(),
+        player,
+        theme,
+        const Size(1280, 800),
       );
       expect(find.byType(VerticalDivider), findsOneWidget);
       _expectNoException(tester);
@@ -90,6 +127,25 @@ void main() {
         player,
         theme,
         const Size(640, 360),
+      );
+      expect(find.byType(VerticalDivider), findsOneWidget);
+      _expectNoException(tester);
+
+      await _pumpScreen(
+        tester,
+        PlaylistDetailScreen(
+          playlist: PlaylistInfo(
+            id: '42-wide',
+            name: '宽屏测试歌单',
+            creator: '测试用户',
+            trackCount: 0,
+            tracks: const [],
+          ),
+          platform: MusicPlatform.qq,
+        ),
+        player,
+        theme,
+        const Size(1280, 800),
       );
       expect(find.byType(VerticalDivider), findsOneWidget);
       _expectNoException(tester);
@@ -207,6 +263,68 @@ void main() {
                   'list': [
                     {
                       'songmid': 'preserved-song',
+                      'songname': '保留结果',
+                      'singer': [
+                        {'name': '测试歌手'},
+                      ],
+                      'albumname': '测试专辑',
+                    },
+                  ],
+                },
+              }
+            : <String, dynamic>{};
+        return http.Response(
+          jsonEncode(body),
+          200,
+          headers: const {'content-type': 'application/json; charset=utf-8'},
+        );
+      }),
+    );
+  });
+
+  testWidgets('clearing the query keeps the current search results', (
+    tester,
+  ) async {
+    await http.runWithClient(
+      () async {
+        final player = PlayerProvider();
+        final theme = ThemeController();
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          player.dispose();
+          theme.dispose();
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        await _pumpScreen(
+          tester,
+          const SearchScreen(),
+          player,
+          theme,
+          const Size(640, 360),
+        );
+        await tester.enterText(find.byType(TextField), '保留搜索');
+        await tester.testTextInput.receiveAction(TextInputAction.search);
+        await tester.pumpAndSettle();
+        expect(find.text('保留结果'), findsOneWidget);
+
+        await tester.tap(find.byIcon(Icons.clear));
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller?.text,
+          isEmpty,
+        );
+        expect(find.text('保留结果'), findsOneWidget);
+        _expectNoException(tester);
+      },
+      () => MockClient((request) async {
+        final body = request.url.path == '/api-qq/search'
+            ? {
+                'data': {
+                  'list': [
+                    {
+                      'songmid': 'clear-result',
                       'songname': '保留结果',
                       'singer': [
                         {'name': '测试歌手'},
@@ -643,11 +761,149 @@ void main() {
       );
 
       final rail = tester.widget<NavigationRail>(find.byType(NavigationRail));
-      expect(rail.minWidth, 88);
+      expect(rail.minWidth, 84);
       expect(rail.labelType, NavigationRailLabelType.all);
       expect(
         find.byKey(const ValueKey('landscape-navigation')),
         findsOneWidget,
+      );
+      _expectNoException(tester);
+    }, _mockClient);
+  });
+
+  testWidgets('1920x1080 car display keeps wide panes and readable controls', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      SharedPreferences.setMockInitialValues({
+        'favorites': jsonEncode([
+          SongSearchResult(
+            platform: MusicPlatform.qq,
+            id: 'car-favorite',
+            name: '车机收藏歌曲',
+            artist: '测试歌手',
+            album: '测试专辑',
+          ).toJson(),
+        ]),
+      });
+      final player = _PlayerWithLyrics();
+      final theme = ThemeController();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        player.dispose();
+        theme.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      const carSize = Size(1920, 1080);
+      await _pumpScreen(tester, const MainScreen(), player, theme, carSize);
+      expect(find.byType(NavigationRail), findsOneWidget);
+      expect(find.byType(LandscapeMiniPlayer), findsOneWidget);
+      final rail = tester.widget<NavigationRail>(
+        find.byKey(const ValueKey('landscape-navigation')),
+      );
+      expect(rail.minWidth, 112);
+      final sidePlayer = tester.getRect(find.byType(LandscapeMiniPlayer));
+      expect(sidePlayer.width, closeTo(296, 0.1));
+      expect(sidePlayer.height, closeTo(1080, 0.1));
+      _expectNoException(tester);
+
+      for (final screen in <Widget>[
+        const DiscoverScreen(),
+        const SearchScreen(),
+        const PlaylistScreen(),
+        PlaylistDetailScreen(
+          playlist: PlaylistInfo(
+            id: 'car-playlist',
+            name: '车机歌单',
+            creator: '测试用户',
+            trackCount: 0,
+            tracks: const [],
+          ),
+          platform: MusicPlatform.qq,
+        ),
+        const FavoritesScreen(),
+        const SettingsScreen(),
+      ]) {
+        await _pumpScreen(tester, screen, player, theme, carSize);
+        expect(find.byType(VerticalDivider), findsOneWidget);
+        _expectNoException(tester);
+      }
+
+      await _pumpScreen(tester, const PlayerScreen(), player, theme, carSize);
+      final controlsRect = tester.getRect(
+        find.byKey(const ValueKey('landscape-player-controls')),
+      );
+      final lyricsRect = tester.getRect(
+        find.byKey(const ValueKey('landscape-player-lyrics')),
+      );
+      final coverRect = tester.getRect(
+        find.byKey(const ValueKey('landscape-player-cover')),
+      );
+      expect(controlsRect.right, lessThanOrEqualTo(lyricsRect.left));
+      expect(coverRect.width, greaterThanOrEqualTo(380));
+      expect(find.text('第一句歌词'), findsOneWidget);
+      final lyric = tester.widget<Text>(find.text('第一句歌词'));
+      expect(lyric.style?.fontSize, 22);
+      expect(lyric.style?.height, 1.2);
+      expect(find.text('收藏').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('歌词字号').hitTestable(), findsOneWidget);
+      _expectNoException(tester);
+    }, _mockClient);
+  });
+
+  testWidgets('1920x1080 physical display remains usable at 2x density', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      final player = _PlayerWithLyrics();
+      final theme = ThemeController();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        player.dispose();
+        theme.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      await _pumpScreen(
+        tester,
+        const MainScreen(),
+        player,
+        theme,
+        const Size(1920, 1080),
+        devicePixelRatio: 2,
+      );
+      final mediaQuery = tester.widget<MediaQuery>(
+        find.byType(MediaQuery).first,
+      );
+      expect(mediaQuery.data.size, const Size(960, 540));
+      expect(find.byType(NavigationRail), findsOneWidget);
+      expect(find.byType(MiniPlayer), findsOneWidget);
+      expect(find.text('发现'), findsWidgets);
+      _expectNoException(tester);
+
+      await _pumpScreen(
+        tester,
+        const PlayerScreen(),
+        player,
+        theme,
+        const Size(1920, 1080),
+        devicePixelRatio: 2,
+      );
+      expect(find.text('第一句歌词'), findsOneWidget);
+      expect(find.text('收藏').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('歌词字号').hitTestable(), findsOneWidget);
+      expect(
+        tester
+            .getRect(find.byKey(const ValueKey('landscape-player-controls')))
+            .right,
+        lessThanOrEqualTo(
+          tester
+              .getRect(find.byKey(const ValueKey('landscape-player-lyrics')))
+              .left,
+        ),
       );
       _expectNoException(tester);
     }, _mockClient);
@@ -659,9 +915,10 @@ Future<void> _pumpScreen(
   Widget screen,
   PlayerProvider player,
   ThemeController theme,
-  Size size,
-) async {
-  _setViewSize(tester, size);
+  Size size, {
+  double devicePixelRatio = 1,
+}) async {
+  _setViewSize(tester, size, devicePixelRatio: devicePixelRatio);
   await tester.pumpWidget(
     MultiProvider(
       providers: [
@@ -676,8 +933,12 @@ Future<void> _pumpScreen(
   await tester.pumpAndSettle();
 }
 
-void _setViewSize(WidgetTester tester, Size size) {
-  tester.view.devicePixelRatio = 1;
+void _setViewSize(
+  WidgetTester tester,
+  Size size, {
+  double devicePixelRatio = 1,
+}) {
+  tester.view.devicePixelRatio = devicePixelRatio;
   tester.view.physicalSize = size;
 }
 

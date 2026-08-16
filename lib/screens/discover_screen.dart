@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../services/favorite_service.dart';
+import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../widgets/song_tile.dart';
 import '../widgets/smart_cover.dart';
@@ -197,7 +198,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   Widget _buildLandscapeContent() {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final compact = constraints.maxWidth < 760;
+        final pageLayout = AppLayout.fromConstraints(context, constraints);
+        final compact = pageLayout.isCompactLandscape;
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -296,7 +298,11 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       child: ListView(
         key: PageStorageKey('${key.toString()}-scroll'),
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: EdgeInsets.only(bottom: compact ? 12 : 24),
+        padding: EdgeInsets.only(
+          bottom: compact
+              ? 16
+              : (AppLayout.fromContext(context).isWideLandscape ? 32 : 24),
+        ),
         children: children,
       ),
     );
@@ -304,6 +310,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
 
   /// 顶部问候区
   Widget _buildHeader() {
+    final layout = AppLayout.fromContext(context);
     final hour = DateTime.now().hour;
     final greet = hour < 6
         ? '夜深了'
@@ -313,15 +320,20 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         ? '下午好'
         : '晚上好';
     return Container(
-      margin: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+      margin: EdgeInsets.fromLTRB(
+        layout.isWideLandscape ? 28 : 20,
+        layout.isCompactLandscape ? 10 : 18,
+        layout.isWideLandscape ? 28 : 20,
+        10,
+      ),
       child: Row(
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(14),
             child: Image.asset(
               'assets/images/app_logo.png',
-              width: 44,
-              height: 44,
+              width: layout.isWideLandscape ? 56 : 48,
+              height: layout.isWideLandscape ? 56 : 48,
               fit: BoxFit.cover,
             ),
           ),
@@ -335,7 +347,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 20,
+                    fontSize: layout.isWideLandscape
+                        ? 28
+                        : (layout.isCompactLandscape ? 22 : 24),
                     fontWeight: FontWeight.w700,
                     color: AppColors.textPrimary,
                   ),
@@ -346,7 +360,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 12,
+                    fontSize: layout.isWideLandscape ? 15 : 13,
                     color: AppColors.textSecondary,
                   ),
                 ),
@@ -366,13 +380,19 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     VoidCallback? onTap,
     Key? key,
   }) {
+    final layout = AppLayout.fromContext(context);
     final content = Container(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+      padding: EdgeInsets.fromLTRB(
+        layout.isWideLandscape ? 28 : (layout.isCompactLandscape ? 14 : 20),
+        layout.isWideLandscape ? 18 : 12,
+        layout.isWideLandscape ? 28 : (layout.isCompactLandscape ? 14 : 20),
+        10,
+      ),
       child: Row(
         children: [
           Container(
             width: 4,
-            height: 18,
+            height: layout.isWideLandscape ? 24 : 20,
             decoration: BoxDecoration(
               color: color,
               borderRadius: BorderRadius.circular(2),
@@ -385,7 +405,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: compact ? 15 : 17,
+                fontSize: layout.isWideLandscape
+                    ? 22
+                    : (layout.isCompactLandscape ? 18 : 20),
                 fontWeight: FontWeight.w700,
                 color: AppColors.textPrimary,
               ),
@@ -398,7 +420,10 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.end,
-                style: TextStyle(fontSize: 11, color: AppColors.textHint),
+                style: TextStyle(
+                  fontSize: layout.isWideLandscape ? 14 : 13,
+                  color: AppColors.textHint,
+                ),
               ),
             ),
           if (onTap != null) ...[
@@ -435,17 +460,21 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               key: const ValueKey('home-favorites-header'),
               onTap: _openFavorites,
             ),
-            _buildFavoriteSection(favorites),
+            _buildFavoriteSection(favorites, compact: compact),
           ],
         );
       },
     );
   }
 
-  Widget _buildFavoriteSection(FavoriteService favorites) {
+  Widget _buildFavoriteSection(
+    FavoriteService favorites, {
+    bool compact = false,
+  }) {
+    final layout = AppLayout.fromContext(context);
     if (!favorites.loaded) {
-      return const SizedBox(
-        height: 112,
+      return SizedBox(
+        height: layout.isWideLandscape ? 150 : (compact ? 108 : 128),
         child: Center(
           child: SizedBox.square(
             dimension: 24,
@@ -461,7 +490,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     final songs = favorites.favorites;
     if (songs.isEmpty) {
       return SizedBox(
-        height: 96,
+        height: layout.isWideLandscape ? 126 : (compact ? 92 : 112),
         child: Center(
           child: TextButton.icon(
             onPressed: _openFavorites,
@@ -473,7 +502,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     }
 
     return SizedBox(
-      height: 180,
+      height: layout.isWideLandscape ? 238 : (compact ? 196 : 218),
       child: ListView.builder(
         key: const ValueKey('home-favorites-carousel'),
         scrollDirection: Axis.horizontal,
@@ -503,9 +532,13 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     String? error,
     MusicPlatform platform,
   ) {
+    final layout = AppLayout.fromContext(context);
+    final cardHeight = layout.isWideLandscape
+        ? 246.0
+        : (layout.isCompactLandscape ? 208.0 : 224.0);
     if (loading) {
       return SizedBox(
-        height: 170,
+        height: cardHeight,
         child: Center(
           child: CircularProgressIndicator(
             strokeWidth: 2.5,
@@ -544,7 +577,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       );
     }
     return SizedBox(
-      height: 198,
+      height: cardHeight,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -575,9 +608,13 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     String? error, {
     Future<void> Function()? onRetry,
   }) {
+    final layout = AppLayout.fromContext(context);
+    final listHeight = layout.isWideLandscape
+        ? 520.0
+        : (layout.isCompactLandscape ? 360.0 : 420.0);
     if (loading) {
       return SizedBox(
-        height: 200,
+        height: listHeight,
         child: Center(
           child: CircularProgressIndicator(
             strokeWidth: 2.5,
@@ -612,7 +649,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     // 最多显示 10 首
     final display = songs.length > 10 ? songs.sublist(0, 10) : songs;
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12),
+      margin: EdgeInsets.symmetric(
+        horizontal: AppLayout.fromContext(context).isWideLandscape ? 20 : 12,
+      ),
       decoration: CardStyle.softCard(),
       child: Column(
         children: display.map((song) {
@@ -647,21 +686,23 @@ class _FavoriteSongCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final layout = AppLayout.fromContext(context);
+    final cardSize = layout.mediaCardWidth;
     final platformColor = PlatformColors.of(song.platform);
     return InkWell(
       key: ValueKey('home-favorite-${song.platform.code}-${song.id}'),
       onTap: onTap,
       borderRadius: BorderRadius.circular(14),
       child: Container(
-        width: 130,
-        margin: const EdgeInsets.symmetric(horizontal: 5),
+        width: cardSize,
+        margin: const EdgeInsets.symmetric(horizontal: 7),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             ClipRRect(
               borderRadius: BorderRadius.circular(14),
               child: SizedBox.square(
-                dimension: 130,
+                dimension: cardSize,
                 child: SmartCover(
                   url: song.coverUrl,
                   fit: BoxFit.cover,
@@ -682,7 +723,7 @@ class _FavoriteSongCard extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: 12.5,
+                fontSize: layout.mediaCardTitleSize,
                 fontWeight: FontWeight.w600,
                 color: AppColors.textPrimary,
               ),
@@ -692,7 +733,10 @@ class _FavoriteSongCard extends StatelessWidget {
               song.artist,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 10.5, color: AppColors.textHint),
+              style: TextStyle(
+                fontSize: layout.mediaCardSubtitleSize,
+                color: AppColors.textHint,
+              ),
             ),
           ],
         ),
@@ -715,12 +759,14 @@ class _PlaylistCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final layout = AppLayout.fromContext(context);
+    final cardSize = layout.mediaCardWidth;
     final platformColor = PlatformColors.of(platform);
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 130,
-        margin: const EdgeInsets.symmetric(horizontal: 5),
+        width: cardSize,
+        margin: const EdgeInsets.symmetric(horizontal: 7),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -729,8 +775,8 @@ class _PlaylistCard extends StatelessWidget {
                 ClipRRect(
                   borderRadius: BorderRadius.circular(14),
                   child: SizedBox(
-                    width: 130,
-                    height: 130,
+                    width: cardSize,
+                    height: cardSize,
                     child:
                         playlist.coverUrl != null &&
                             playlist.coverUrl!.isNotEmpty
@@ -782,7 +828,7 @@ class _PlaylistCard extends StatelessWidget {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: 12.5,
+                fontSize: layout.mediaCardTitleSize,
                 fontWeight: FontWeight.w500,
                 color: AppColors.textPrimary,
                 height: 1.3,
@@ -794,7 +840,10 @@ class _PlaylistCard extends StatelessWidget {
                 playlist.creator!,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 10, color: AppColors.textHint),
+                style: TextStyle(
+                  fontSize: layout.mediaCardSubtitleSize,
+                  color: AppColors.textHint,
+                ),
               ),
             ],
           ],

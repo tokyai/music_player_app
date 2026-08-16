@@ -14,19 +14,21 @@ class AppColors {
   static Color get primarySoft =>
       isDark ? const Color(0xFF1E3A5F) : const Color(0xFFE3F2FD);
   static Color get background =>
-      isDark ? const Color(0xFF121212) : const Color(0xFFFFFFFF);
+      isDark ? const Color(0xFF101216) : const Color(0xFFF7F8FA);
   static Color get surface =>
-      isDark ? const Color(0xFF1E1E1E) : const Color(0xFFFFFFFF);
+      isDark ? const Color(0xFF181B20) : const Color(0xFFFFFFFF);
   static Color get surfaceSoft =>
-      isDark ? const Color(0xFF2A2A2A) : const Color(0xFFF5F6F7);
+      isDark ? const Color(0xFF252930) : const Color(0xFFEEF1F4);
   static Color get textPrimary =>
-      isDark ? const Color(0xFFE8EAED) : const Color(0xFF1F2329);
+      isDark ? const Color(0xFFF1F3F5) : const Color(0xFF20242B);
   static Color get textSecondary =>
       isDark ? const Color(0xFF9AA0A8) : const Color(0xFF646A73);
   static Color get textHint =>
       isDark ? const Color(0xFF6B7075) : const Color(0xFF9AA0A8);
   static Color get cardShadow =>
       isDark ? const Color(0x40000000) : const Color(0x0F000000);
+  static Color get outline =>
+      isDark ? const Color(0xFF30353D) : const Color(0xFFE3E7EC);
 }
 
 /// 平台品牌色
@@ -55,22 +57,66 @@ class AppTheme {
 
   static ThemeData _build(Brightness brightness) {
     final isDark = brightness == Brightness.dark;
-    final background =
-        isDark ? const Color(0xFF121212) : const Color(0xFFFFFFFF);
-    final surface = isDark ? const Color(0xFF1E1E1E) : const Color(0xFFFFFFFF);
-    final surfaceSoft =
-        isDark ? const Color(0xFF2A2A2A) : const Color(0xFFF5F6F7);
-    final primarySoft =
-        isDark ? const Color(0xFF1E3A5F) : const Color(0xFFE3F2FD);
-    final textPrimary =
-        isDark ? const Color(0xFFE8EAED) : const Color(0xFF1F2329);
-    final textSecondary =
-        isDark ? const Color(0xFF9AA0A8) : const Color(0xFF646A73);
+    final background = isDark
+        ? const Color(0xFF101216)
+        : const Color(0xFFF7F8FA);
+    final surface = isDark ? const Color(0xFF181B20) : const Color(0xFFFFFFFF);
+    final surfaceSoft = isDark
+        ? const Color(0xFF252930)
+        : const Color(0xFFEEF1F4);
+    final primarySoft = isDark
+        ? const Color(0xFF1E3A5F)
+        : const Color(0xFFE3F2FD);
+    final textPrimary = isDark
+        ? const Color(0xFFF1F3F5)
+        : const Color(0xFF20242B);
+    final textSecondary = isDark
+        ? const Color(0xFF9AA0A8)
+        : const Color(0xFF646A73);
     final textHint = isDark ? const Color(0xFF6B7075) : const Color(0xFF9AA0A8);
     final scheme = ColorScheme.fromSeed(
       seedColor: AppColors.primary,
       brightness: brightness,
       primary: AppColors.primary,
+    );
+    final baseTypography = ThemeData(
+      brightness: brightness,
+      fontFamily: 'PingFang SC',
+    ).textTheme;
+    final textTheme = baseTypography.copyWith(
+      displaySmall: TextStyle(
+        color: textPrimary,
+        fontSize: 32,
+        height: 1.2,
+        fontWeight: FontWeight.w700,
+      ),
+      headlineSmall: TextStyle(
+        color: textPrimary,
+        fontSize: 26,
+        height: 1.24,
+        fontWeight: FontWeight.w700,
+      ),
+      titleLarge: TextStyle(
+        color: textPrimary,
+        fontSize: 22,
+        height: 1.25,
+        fontWeight: FontWeight.w700,
+      ),
+      titleMedium: TextStyle(
+        color: textPrimary,
+        fontSize: 17,
+        height: 1.3,
+        fontWeight: FontWeight.w600,
+      ),
+      bodyLarge: TextStyle(color: textPrimary, fontSize: 16, height: 1.4),
+      bodyMedium: TextStyle(color: textSecondary, fontSize: 14, height: 1.4),
+      bodySmall: TextStyle(color: textHint, fontSize: 13, height: 1.35),
+      labelLarge: TextStyle(
+        color: textPrimary,
+        fontSize: 15,
+        height: 1.2,
+        fontWeight: FontWeight.w600,
+      ),
     );
 
     return ThemeData(
@@ -84,26 +130,34 @@ class AppTheme {
       ),
       scaffoldBackgroundColor: background,
       fontFamily: 'PingFang SC',
+      fontFamilyFallback: const [
+        'Noto Sans CJK SC',
+        'Source Han Sans SC',
+        'Roboto',
+      ],
+      textTheme: textTheme,
       splashFactory: InkRipple.splashFactory,
       appBarTheme: AppBarTheme(
         backgroundColor: background,
         elevation: 0,
-        centerTitle: true,
+        scrolledUnderElevation: 0,
+        centerTitle: false,
+        toolbarHeight: 64,
         titleTextStyle: TextStyle(
           color: textPrimary,
-          fontSize: 17,
-          fontWeight: FontWeight.w600,
+          fontSize: 22,
+          fontWeight: FontWeight.w700,
         ),
         iconTheme: IconThemeData(color: textPrimary),
       ),
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: surface,
         indicatorColor: primarySoft,
-        height: 64,
+        height: 72,
         labelTextStyle: WidgetStateProperty.resolveWith((states) {
           final selected = states.contains(WidgetState.selected);
           return TextStyle(
-            fontSize: 12,
+            fontSize: 13,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
             color: selected ? AppColors.primary : textSecondary,
           );
@@ -121,16 +175,21 @@ class AppTheme {
         indicatorColor: AppColors.primary,
         indicatorSize: TabBarIndicatorSize.label,
         dividerColor: Colors.transparent,
-        labelStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-        unselectedLabelStyle:
-            const TextStyle(fontSize: 15, fontWeight: FontWeight.w400),
+        labelStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+        unselectedLabelStyle: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w500,
+        ),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: surface,
-        hintStyle: TextStyle(color: textHint),
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        hintStyle: TextStyle(color: textHint, fontSize: 16),
+        labelStyle: TextStyle(color: textSecondary, fontSize: 15),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 18,
+          vertical: 15,
+        ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(24),
           borderSide: BorderSide.none,
@@ -141,7 +200,7 @@ class AppTheme {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(24),
-          borderSide: BorderSide(color: AppColors.primary, width: 1.2),
+          borderSide: const BorderSide(color: AppColors.primary, width: 1.2),
         ),
       ),
       filledButtonTheme: FilledButtonThemeData(
@@ -152,11 +211,23 @@ class AppTheme {
             borderRadius: BorderRadius.circular(20),
           ),
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-          textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+          minimumSize: const Size(48, 46),
+          textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
         ),
       ),
       listTileTheme: ListTileThemeData(
         iconColor: textSecondary,
+        minVerticalPadding: 10,
+        titleTextStyle: TextStyle(
+          color: textPrimary,
+          fontSize: 17,
+          fontWeight: FontWeight.w600,
+        ),
+        subtitleTextStyle: TextStyle(
+          color: textSecondary,
+          fontSize: 14,
+          height: 1.35,
+        ),
       ),
       dividerTheme: DividerThemeData(
         color: surfaceSoft,
@@ -167,6 +238,10 @@ class AppTheme {
         behavior: SnackBarBehavior.floating,
         backgroundColor: textPrimary,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        contentTextStyle: TextStyle(
+          color: isDark ? const Color(0xFF20242B) : Colors.white,
+          fontSize: 15,
+        ),
       ),
       bottomSheetTheme: BottomSheetThemeData(
         backgroundColor: surface,
@@ -182,14 +257,15 @@ class AppTheme {
 /// 通用卡片装饰（供各页面复用，颜色随主题动态）
 class CardStyle {
   static BoxDecoration softCard() => BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.cardShadow,
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      );
+    color: AppColors.surface,
+    borderRadius: BorderRadius.circular(18),
+    border: Border.all(color: AppColors.outline),
+    boxShadow: [
+      BoxShadow(
+        color: AppColors.cardShadow,
+        blurRadius: 12,
+        offset: const Offset(0, 4),
+      ),
+    ],
+  );
 }

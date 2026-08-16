@@ -32,61 +32,73 @@ class _PlaylistImportDialogState extends State<PlaylistImportDialog> {
   @override
   Widget build(BuildContext context) {
     final isQQ = _platform == MusicPlatform.qq;
+    final size = MediaQuery.sizeOf(context);
+    final isLandscape = size.width > size.height;
+    final compactLandscape = isLandscape && size.height <= 420;
     return AlertDialog(
       scrollable: true,
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: isLandscape ? (compactLandscape ? 28 : 56) : 24,
+        vertical: compactLandscape ? 12 : 24,
+      ),
       title: const Text('导入歌单'),
-      content: Form(
-        key: _formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SegmentedButton<MusicPlatform>(
-              segments: const [
-                ButtonSegment(
-                  value: MusicPlatform.qq,
-                  label: Text('QQ音乐'),
-                  icon: Icon(Icons.headphones),
-                ),
-                ButtonSegment(
-                  value: MusicPlatform.netease,
-                  label: Text('网易云'),
-                  icon: Icon(Icons.music_note),
-                ),
-              ],
-              selected: {_platform},
-              showSelectedIcon: false,
-              onSelectionChanged: (s) => setState(() => _platform = s.first),
-              style: SegmentedButton.styleFrom(
-                visualDensity: VisualDensity.compact,
-                textStyle: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
+      content: SizedBox(
+        width: isLandscape ? (compactLandscape ? 480 : 600) : 420,
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SegmentedButton<MusicPlatform>(
+                segments: const [
+                  ButtonSegment(
+                    value: MusicPlatform.qq,
+                    label: Text('QQ音乐'),
+                    icon: Icon(Icons.headphones),
+                  ),
+                  ButtonSegment(
+                    value: MusicPlatform.netease,
+                    label: Text('网易云'),
+                    icon: Icon(Icons.music_note),
+                  ),
+                ],
+                selected: {_platform},
+                showSelectedIcon: false,
+                onSelectionChanged: (s) => setState(() => _platform = s.first),
+                style: SegmentedButton.styleFrom(
+                  visualDensity: compactLandscape
+                      ? VisualDensity.compact
+                      : VisualDensity.standard,
+                  textStyle: TextStyle(
+                    fontSize: isLandscape ? 15 : 13,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              isQQ
-                  ? '输入 QQ 歌单链接或 ID\n如: https://y.qq.com/n/ryqq/playlist/8912082986'
-                  : '输入网易云歌单 ID\n如: 5202687076',
-              style: const TextStyle(fontSize: 13),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _controller,
-              decoration: InputDecoration(
-                labelText: isQQ ? 'QQ 歌单链接 / ID' : '歌单 ID',
-                border: const OutlineInputBorder(),
-                hintText: isQQ ? '粘贴链接或输入 ID' : '例如: 5202687076',
+              const SizedBox(height: 16),
+              Text(
+                isQQ
+                    ? '输入 QQ 歌单链接或 ID\n如: https://y.qq.com/n/ryqq/playlist/8912082986'
+                    : '输入网易云歌单 ID\n如: 5202687076',
+                style: TextStyle(fontSize: isLandscape ? 15 : 13, height: 1.4),
               ),
-              keyboardType: TextInputType.url,
-              validator: (v) {
-                if (v == null || v.trim().isEmpty) return '请输入歌单 ID 或链接';
-                return null;
-              },
-            ),
-          ],
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _controller,
+                decoration: InputDecoration(
+                  labelText: isQQ ? 'QQ 歌单链接 / ID' : '歌单 ID',
+                  border: const OutlineInputBorder(),
+                  hintText: isQQ ? '粘贴链接或输入 ID' : '例如: 5202687076',
+                ),
+                keyboardType: TextInputType.url,
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) return '请输入歌单 ID 或链接';
+                  return null;
+                },
+              ),
+            ],
+          ),
         ),
       ),
       actions: [

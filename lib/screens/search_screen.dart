@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../providers/search_session.dart';
+import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../widgets/smart_cover.dart';
 import '../widgets/song_tile.dart';
@@ -75,7 +76,9 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   void _clearSearch() {
-    _session.clear();
+    // 清空仅用于重新输入，已有搜索会话和结果必须继续保留。
+    _controller.clear();
+    setState(() {});
   }
 
   void _switchMode(bool playlistMode) {
@@ -132,23 +135,50 @@ class _SearchScreenState extends State<SearchScreen>
   Widget _buildLandscapeLayout(bool hasSearched) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final controlWidth = (constraints.maxWidth * 0.38).clamp(220.0, 320.0);
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        final layout = AppLayout.fromConstraints(context, constraints);
+        final controlWidth = layout.isCompactLandscape ? 136.0 : 244.0;
+        return Column(
           children: [
-            SizedBox(width: controlWidth, child: _buildLandscapeControls()),
-            VerticalDivider(
-              width: 1,
-              thickness: 1,
-              color: AppColors.surfaceSoft,
-            ),
+            _buildLandscapeHeader(layout),
             Expanded(
-              child: Column(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _buildPlatformTabs(),
-                  const SizedBox(height: 4),
+                  SizedBox(
+                    width: controlWidth,
+                    child: ListView(
+                      key: const PageStorageKey('search-landscape-controls'),
+                      padding: EdgeInsets.fromLTRB(
+                        layout.isCompactLandscape ? 8 : 18,
+                        8,
+                        layout.isCompactLandscape ? 8 : 18,
+                        20,
+                      ),
+                      children: [
+                        _buildModeToggle(),
+                        SizedBox(height: layout.isCompactLandscape ? 10 : 18),
+                        _buildHotKeywords(compact: layout.isCompactLandscape),
+                      ],
+                    ),
+                  ),
+                  VerticalDivider(
+                    width: 1,
+                    thickness: 1,
+                    color: AppColors.surfaceSoft,
+                  ),
                   Expanded(
-                    child: _buildResultsBody(hasSearched, landscape: true),
+                    child: Column(
+                      children: [
+                        _buildPlatformTabs(),
+                        const SizedBox(height: 6),
+                        Expanded(
+                          child: _buildResultsBody(
+                            hasSearched,
+                            landscape: true,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
@@ -156,6 +186,31 @@ class _SearchScreenState extends State<SearchScreen>
           ],
         );
       },
+    );
+  }
+
+  Widget _buildLandscapeHeader(AppLayout layout) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        layout.isCompactLandscape ? 12 : 24,
+        layout.isCompactLandscape ? 6 : 12,
+        layout.isCompactLandscape ? 12 : 24,
+        layout.isCompactLandscape ? 4 : 8,
+      ),
+      child: Row(
+        children: [
+          Text(
+            '搜索',
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: layout.isWideLandscape ? 30 : 24,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          SizedBox(width: layout.isCompactLandscape ? 12 : 20),
+          Expanded(child: _buildSearchField(padding: EdgeInsets.zero)),
+        ],
+      ),
     );
   }
 
@@ -186,9 +241,9 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  Widget _buildSearchField() {
+  Widget _buildSearchField({EdgeInsetsGeometry? padding}) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+      padding: padding ?? const EdgeInsets.fromLTRB(20, 8, 20, 8),
       child: TextField(
         controller: _controller,
         decoration: InputDecoration(
@@ -204,7 +259,7 @@ class _SearchScreenState extends State<SearchScreen>
                   onPressed: _clearSearch,
                 )
               : null,
-          hintStyle: TextStyle(color: AppColors.textHint),
+          hintStyle: TextStyle(color: AppColors.textHint, fontSize: 16),
         ),
         textInputAction: TextInputAction.search,
         onSubmitted: _search,
@@ -236,22 +291,6 @@ class _SearchScreenState extends State<SearchScreen>
           );
   }
 
-  Widget _buildLandscapeControls() {
-    return ListView(
-      key: const PageStorageKey('search-landscape-controls'),
-      padding: const EdgeInsets.only(bottom: 20),
-      children: [
-        _buildTitle(),
-        _buildSearchField(),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-          child: _buildModeToggle(),
-        ),
-        _buildHotKeywords(),
-      ],
-    );
-  }
-
   Widget _buildModeToggle() {
     return SizedBox(
       width: double.infinity,
@@ -265,7 +304,7 @@ class _SearchScreenState extends State<SearchScreen>
         onSelectionChanged: (s) => _switchMode(s.first),
         style: SegmentedButton.styleFrom(
           visualDensity: VisualDensity.compact,
-          textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
         ),
       ),
     );
@@ -395,18 +434,31 @@ class _SearchScreenState extends State<SearchScreen>
     MusicPlatform platform,
     List<PlaylistInfo> playlists,
   ) {
+    final layout = AppLayout.fromContext(context);
+    final isLandscape = layout.isLandscape;
+    final coverSize = isLandscape
+        ? (layout.isCompactLandscape ? 108.0 : 140.0)
+        : 96.0;
+    final cardWidth = coverSize;
+    final cardHeight = coverSize + (isLandscape ? 48 : 28);
+    final horizontalPadding = isLandscape ? layout.pagePadding : 16.0;
     final platformColor = PlatformColors.of(platform);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          padding: EdgeInsets.fromLTRB(
+            horizontalPadding,
+            isLandscape ? 16 : 12,
+            horizontalPadding,
+            isLandscape ? 12 : 8,
+          ),
           child: Row(
             children: [
               Text(
                 '相关歌单',
                 style: TextStyle(
-                  fontSize: 15,
+                  fontSize: isLandscape ? layout.sectionTitleSize : 15,
                   fontWeight: FontWeight.w700,
                   color: AppColors.textPrimary,
                 ),
@@ -414,21 +466,27 @@ class _SearchScreenState extends State<SearchScreen>
               const SizedBox(width: 8),
               Text(
                 '${playlists.length} 个',
-                style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                style: TextStyle(
+                  fontSize: isLandscape ? layout.secondarySize : 12,
+                  color: AppColors.textSecondary,
+                ),
               ),
               const Spacer(),
               Text(
                 '点击查看 >',
-                style: TextStyle(fontSize: 12, color: platformColor),
+                style: TextStyle(
+                  fontSize: isLandscape ? layout.secondarySize : 12,
+                  color: platformColor,
+                ),
               ),
             ],
           ),
         ),
         SizedBox(
-          height: 124,
+          height: cardHeight,
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 16),
+            padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
             itemCount: playlists.length,
             itemBuilder: (ctx, i) {
               final p = playlists[i];
@@ -443,16 +501,16 @@ class _SearchScreenState extends State<SearchScreen>
                   );
                 },
                 child: Container(
-                  width: 96,
-                  margin: const EdgeInsets.only(right: 10),
+                  width: cardWidth,
+                  margin: EdgeInsets.only(right: isLandscape ? 16 : 10),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       ClipRRect(
                         borderRadius: BorderRadius.circular(10),
                         child: SizedBox(
-                          width: 96,
-                          height: 96,
+                          width: coverSize,
+                          height: coverSize,
                           child: p.coverUrl != null && p.coverUrl!.isNotEmpty
                               ? SmartCover(
                                   url: p.coverUrl,
@@ -461,7 +519,7 @@ class _SearchScreenState extends State<SearchScreen>
                                     color: platformColor.withOpacity(0.12),
                                     child: Icon(
                                       Icons.queue_music,
-                                      size: 30,
+                                      size: isLandscape ? 36 : 30,
                                       color: platformColor,
                                     ),
                                   ),
@@ -470,19 +528,24 @@ class _SearchScreenState extends State<SearchScreen>
                                   color: platformColor.withOpacity(0.12),
                                   child: Icon(
                                     Icons.queue_music,
-                                    size: 30,
+                                    size: isLandscape ? 36 : 30,
                                     color: platformColor,
                                   ),
                                 ),
                         ),
                       ),
-                      const SizedBox(height: 4),
+                      SizedBox(height: isLandscape ? 8 : 4),
                       Text(
                         p.name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 12,
+                          fontSize: isLandscape
+                              ? layout.mediaCardTitleSize
+                              : 12,
+                          fontWeight: isLandscape
+                              ? FontWeight.w600
+                              : FontWeight.w400,
                           color: AppColors.textPrimary,
                         ),
                       ),
@@ -515,22 +578,33 @@ class _SearchScreenState extends State<SearchScreen>
     if (list.isEmpty && _session.keyword.isNotEmpty) {
       return _buildEmptyHint(Icons.playlist_remove, '没有找到相关歌单');
     }
+    final layout = AppLayout.fromContext(context);
+    final isLandscape = layout.isLandscape;
+    final coverSize = isLandscape
+        ? (layout.isCompactLandscape ? 56.0 : 68.0)
+        : 52.0;
     final platformColor = PlatformColors.of(platform);
     return ListView.builder(
-      padding: const EdgeInsets.only(top: 4, bottom: 16),
+      padding: EdgeInsets.only(
+        top: isLandscape ? 8 : 4,
+        bottom: isLandscape ? 24 : 16,
+      ),
       itemCount: list.length,
       itemBuilder: (ctx, i) {
         final p = list[i];
         return ListTile(
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 16,
-            vertical: 2,
+          minTileHeight: isLandscape
+              ? (layout.isCompactLandscape ? 68 : 84)
+              : null,
+          contentPadding: EdgeInsets.symmetric(
+            horizontal: isLandscape ? layout.pagePadding : 16,
+            vertical: isLandscape ? 6 : 2,
           ),
           leading: ClipRRect(
             borderRadius: BorderRadius.circular(10),
             child: SizedBox(
-              width: 52,
-              height: 52,
+              width: coverSize,
+              height: coverSize,
               child: p.coverUrl != null && p.coverUrl!.isNotEmpty
                   ? SmartCover(
                       url: p.coverUrl,
@@ -539,7 +613,7 @@ class _SearchScreenState extends State<SearchScreen>
                         color: platformColor.withOpacity(0.12),
                         child: Icon(
                           Icons.queue_music,
-                          size: 24,
+                          size: isLandscape ? 30 : 24,
                           color: platformColor,
                         ),
                       ),
@@ -548,7 +622,7 @@ class _SearchScreenState extends State<SearchScreen>
                       color: platformColor.withOpacity(0.12),
                       child: Icon(
                         Icons.queue_music,
-                        size: 24,
+                        size: isLandscape ? 30 : 24,
                         color: platformColor,
                       ),
                     ),
@@ -559,8 +633,8 @@ class _SearchScreenState extends State<SearchScreen>
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w500,
+              fontSize: isLandscape ? layout.songTitleSize : 15,
+              fontWeight: isLandscape ? FontWeight.w600 : FontWeight.w500,
               color: AppColors.textPrimary,
             ),
           ),
@@ -570,11 +644,14 @@ class _SearchScreenState extends State<SearchScreen>
                 : '${p.trackCount} 首',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            style: TextStyle(
+              fontSize: isLandscape ? layout.songSubtitleSize : 12,
+              color: AppColors.textSecondary,
+            ),
           ),
           trailing: Icon(
             Icons.chevron_right,
-            size: 20,
+            size: isLandscape ? 26 : 20,
             color: AppColors.textHint,
           ),
           onTap: () {
@@ -592,25 +669,37 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Widget _buildLoadingHint() {
+    final layout = AppLayout.fromContext(context);
     return Center(
-      child: CircularProgressIndicator(
-        strokeWidth: 2.5,
-        color: AppColors.primary,
+      child: SizedBox.square(
+        dimension: layout.isLandscape ? 38 : 32,
+        child: CircularProgressIndicator(
+          strokeWidth: layout.isLandscape ? 3 : 2.5,
+          color: AppColors.primary,
+        ),
       ),
     );
   }
 
   Widget _buildEmptyHint(IconData icon, String text, {VoidCallback? onRetry}) {
+    final layout = AppLayout.fromContext(context);
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, size: 64, color: AppColors.textHint),
-          const SizedBox(height: 16),
+          Icon(
+            icon,
+            size: layout.isLandscape ? 72 : 64,
+            color: AppColors.textHint,
+          ),
+          SizedBox(height: layout.isLandscape ? 18 : 16),
           Text(
             text,
             textAlign: TextAlign.center,
-            style: TextStyle(color: AppColors.textSecondary),
+            style: TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: layout.isLandscape ? layout.bodySize : 14,
+            ),
           ),
           if (onRetry != null) ...[
             const SizedBox(height: 10),
@@ -625,9 +714,11 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
-  Widget _buildHotKeywords() {
+  Widget _buildHotKeywords({bool compact = false}) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+      padding: compact
+          ? EdgeInsets.zero
+          : const EdgeInsets.fromLTRB(20, 12, 20, 0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -636,7 +727,7 @@ class _SearchScreenState extends State<SearchScreen>
               Text(
                 '热门搜索',
                 style: TextStyle(
-                  fontSize: 16,
+                  fontSize: compact ? 15 : 18,
                   fontWeight: FontWeight.w700,
                   color: AppColors.textPrimary,
                 ),
@@ -644,7 +735,7 @@ class _SearchScreenState extends State<SearchScreen>
               const SizedBox(width: 8),
               Icon(
                 Icons.local_fire_department,
-                size: 18,
+                size: compact ? 17 : 20,
                 color: PlatformColors.qq,
               ),
             ],
@@ -660,9 +751,9 @@ class _SearchScreenState extends State<SearchScreen>
                   _search(kw);
                 },
                 child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
+                  padding: EdgeInsets.symmetric(
+                    horizontal: compact ? 9 : 13,
+                    vertical: compact ? 7 : 9,
                   ),
                   decoration: BoxDecoration(
                     color: AppColors.surface,
@@ -678,7 +769,7 @@ class _SearchScreenState extends State<SearchScreen>
                   child: Text(
                     kw,
                     style: TextStyle(
-                      fontSize: 13,
+                      fontSize: compact ? 13 : 15,
                       color: AppColors.textPrimary,
                       fontWeight: FontWeight.w500,
                     ),

@@ -59,6 +59,16 @@ void main() {
     expect(find.byTooltip('取消收藏'), findsNWidgets(2));
     expect(tester.takeException(), isNull);
 
+    tester.view.physicalSize = const Size(1280, 800);
+    await tester.pumpAndSettle();
+    expect(find.byType(VerticalDivider), findsOneWidget);
+    expect(find.text('导入'), findsOneWidget);
+    expect(find.text('导出'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    tester.view.physicalSize = const Size(800, 360);
+    await tester.pumpAndSettle();
+
     await tester.tap(find.byTooltip('收藏管理'));
     await tester.pumpAndSettle();
     expect(find.text('导入收藏'), findsOneWidget);

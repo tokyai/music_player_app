@@ -8,6 +8,7 @@ import '../providers/theme_controller.dart';
 import '../services/audio_cache_service.dart';
 import '../services/favorite_service.dart';
 import '../services/floating_capsule_service.dart';
+import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import 'cache_list_screen.dart';
 import 'favorites_screen.dart';
@@ -169,51 +170,67 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildLandscapeBody() {
-    return Column(
-      children: [
-        _buildPageTitle(compact: true),
-        Expanded(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Expanded(
-                child: SingleChildScrollView(
-                  key: const PageStorageKey('settings-landscape-preferences'),
-                  padding: const EdgeInsets.only(bottom: 20),
-                  child: Column(
-                    children: [
-                      _buildAppearanceCard(compact: true),
-                      _buildLibraryCard(compact: true),
-                      _buildPlaybackCard(compact: true),
-                    ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final layout = AppLayout.fromConstraints(context, constraints);
+        final compact = layout.isCompactLandscape;
+        return Column(
+          children: [
+            _buildPageTitle(layout: layout),
+            Expanded(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    child: SingleChildScrollView(
+                      key: const PageStorageKey(
+                        'settings-landscape-preferences',
+                      ),
+                      padding: EdgeInsets.only(
+                        left: compact ? 4 : 8,
+                        right: compact ? 4 : 8,
+                        bottom: compact ? 16 : 28,
+                      ),
+                      child: Column(
+                        children: [
+                          _buildAppearanceCard(compact: compact),
+                          _buildLibraryCard(compact: compact),
+                          _buildPlaybackCard(compact: compact),
+                        ],
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              VerticalDivider(
-                width: 1,
-                thickness: 1,
-                color: AppColors.surfaceSoft,
-              ),
-              Expanded(
-                child: SingleChildScrollView(
-                  key: const PageStorageKey('settings-landscape-system'),
-                  padding: const EdgeInsets.only(bottom: 20),
-                  child: Column(
-                    children: [
-                      _buildApiCard(compact: true),
-                      _buildAboutCard(compact: true),
-                    ],
+                  VerticalDivider(
+                    width: 1,
+                    thickness: 1,
+                    color: AppColors.surfaceSoft,
                   ),
-                ),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      key: const PageStorageKey('settings-landscape-system'),
+                      padding: EdgeInsets.only(
+                        left: compact ? 4 : 8,
+                        right: compact ? 4 : 8,
+                        bottom: compact ? 16 : 28,
+                      ),
+                      child: Column(
+                        children: [
+                          _buildApiCard(compact: compact),
+                          _buildAboutCard(compact: compact),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
-        ),
-      ],
+            ),
+          ],
+        );
+      },
     );
   }
 
-  Widget _buildPageTitle({bool compact = false}) {
+  Widget _buildPageTitle({bool compact = false, AppLayout? layout}) {
     return Padding(
       padding: EdgeInsets.fromLTRB(
         compact ? 16 : 20,
@@ -224,7 +241,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Text(
         '设置',
         style: TextStyle(
-          fontSize: compact ? 20 : 24,
+          fontSize: layout?.pageTitleSize ?? (compact ? 24 : 24),
           fontWeight: FontWeight.w700,
           color: AppColors.textPrimary,
         ),
@@ -302,7 +319,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       style: SegmentedButton.styleFrom(
                         visualDensity: VisualDensity.compact,
                         textStyle: TextStyle(
-                          fontSize: compact ? 11 : 12,
+                          fontSize: compact ? 13 : 14,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -463,6 +480,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildApiCard({bool compact = false}) {
+    final layout = AppLayout.fromContext(context);
     return _buildCard(
       compact: compact,
       children: [
@@ -476,13 +494,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 'ChKSz API Key',
                 style: TextStyle(
                   fontWeight: FontWeight.w600,
+                  fontSize: layout.bodySize,
                   color: AppColors.textPrimary,
                 ),
               ),
               const SizedBox(height: 4),
               Text(
                 '用于网易云 / QQ / 酷狗播放地址解析',
-                style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                style: TextStyle(
+                  fontSize: layout.secondarySize,
+                  color: AppColors.textSecondary,
+                ),
               ),
               const SizedBox(height: 12),
               TextField(
@@ -570,8 +592,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   /// 卡片分组容器
   Widget _buildCard({required List<Widget> children, bool compact = false}) {
+    final layout = AppLayout.fromContext(context);
     return Container(
-      margin: EdgeInsets.fromLTRB(compact ? 8 : 16, 8, compact ? 8 : 16, 8),
+      margin: EdgeInsets.fromLTRB(
+        layout.isWideLandscape ? 16 : (compact ? 8 : 16),
+        layout.isWideLandscape ? 12 : 8,
+        layout.isWideLandscape ? 16 : (compact ? 8 : 16),
+        layout.isWideLandscape ? 12 : 8,
+      ),
       decoration: CardStyle.softCard(),
       child: Column(children: children),
     );
@@ -579,16 +607,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   /// 分组标题（图标 + 文字）
   Widget _buildSectionHeader({required IconData icon, required String title}) {
+    final layout = AppLayout.fromContext(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+      padding: EdgeInsets.fromLTRB(
+        layout.isWideLandscape ? 24 : (layout.isCompactLandscape ? 12 : 16),
+        layout.isWideLandscape ? 18 : (layout.isCompactLandscape ? 12 : 14),
+        layout.isWideLandscape ? 24 : (layout.isCompactLandscape ? 12 : 16),
+        layout.isWideLandscape ? 8 : 6,
+      ),
       child: Row(
         children: [
-          Icon(icon, size: 20, color: AppColors.primary),
+          Icon(
+            icon,
+            size: layout.isWideLandscape
+                ? 24
+                : (layout.isCompactLandscape ? 22 : 20),
+            color: AppColors.primary,
+          ),
           const SizedBox(width: 8),
           Text(
             title,
             style: TextStyle(
-              fontSize: 16,
+              fontSize: layout.sectionTitleSize,
               fontWeight: FontWeight.bold,
               color: AppColors.textPrimary,
             ),
@@ -599,6 +639,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildQualityRow(String platform, List values) {
+    final layout = AppLayout.fromContext(context);
     final labels = values.map((e) => e.label).join(' · ');
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -607,13 +648,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
           width: 80,
           child: Text(
             platform,
-            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              fontSize: layout.isLandscape ? layout.bodySize : 13,
+              color: AppColors.textPrimary,
+            ),
           ),
         ),
         Expanded(
           child: Text(
             labels,
-            style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+            style: TextStyle(
+              fontSize: layout.isLandscape ? layout.secondarySize : 13,
+              color: AppColors.textSecondary,
+            ),
           ),
         ),
       ],

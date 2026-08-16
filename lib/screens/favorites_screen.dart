@@ -8,6 +8,7 @@ import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../services/favorite_file_service.dart';
 import '../services/favorite_service.dart';
+import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../utils/song_source_matcher.dart';
 import '../widgets/mini_player.dart';
@@ -60,7 +61,9 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       body: Stack(
         children: [
           if (songs.isEmpty)
-            _buildEmpty()
+            _buildEmpty(
+              layout: isLandscape ? AppLayout.fromContext(context) : null,
+            )
           else if (isLandscape)
             _buildLandscapeBody(songs)
           else
@@ -73,7 +76,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (_selecting) _buildSelectionBar(songs),
+            if (_selecting && !isLandscape) _buildSelectionBar(songs),
             const MiniPlayer(),
           ],
         ),
@@ -158,13 +161,23 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   Widget _buildLandscapeBody(List<SongSearchResult> songs) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final overviewWidth = (constraints.maxWidth * 0.3).clamp(220.0, 300.0);
+        final layout = AppLayout.fromConstraints(context, constraints);
+        final overviewWidth = layout.isCompactLandscape
+            ? 210.0
+            : layout.isWideLandscape
+            ? 340.0
+            : (constraints.maxWidth * 0.3).clamp(260.0, 320.0);
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             SizedBox(
               width: overviewWidth,
-              child: SingleChildScrollView(child: _buildOverview(songs)),
+              child: SingleChildScrollView(
+                key: const PageStorageKey('favorites-landscape-overview'),
+                child: _selecting
+                    ? _buildSelectionOverview(songs, layout)
+                    : _buildOverview(songs, layout: layout),
+              ),
             ),
             VerticalDivider(
               width: 1,
@@ -178,31 +191,42 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     );
   }
 
-  Widget _buildOverview(List<SongSearchResult> songs) {
+  Widget _buildOverview(List<SongSearchResult> songs, {AppLayout? layout}) {
+    final isLandscape = layout != null;
+    final isCompact = layout?.isCompactLandscape ?? false;
     final counts = {
       for (final platform in musicPlatformDisplayOrder)
         platform: songs.where((song) => song.platform == platform).length,
     };
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 14),
+      padding: EdgeInsets.fromLTRB(
+        isLandscape ? (isCompact ? 12 : 24) : 20,
+        isLandscape ? (isCompact ? 12 : 22) : 16,
+        isLandscape ? (isCompact ? 12 : 24) : 20,
+        isLandscape ? (isCompact ? 14 : 24) : 14,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(Icons.favorite, color: Colors.redAccent, size: 28),
-              const SizedBox(width: 10),
+              Icon(
+                Icons.favorite,
+                color: Colors.redAccent,
+                size: isLandscape ? (isCompact ? 24 : 32) : 28,
+              ),
+              SizedBox(width: isLandscape ? 10 : 10),
               Text(
                 '${songs.length} 首歌曲',
                 style: TextStyle(
                   color: AppColors.textPrimary,
-                  fontSize: 17,
+                  fontSize: isLandscape ? layout.sectionTitleSize : 17,
                   fontWeight: FontWeight.w700,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: isLandscape ? (isCompact ? 12 : 18) : 12),
           Wrap(
             spacing: 8,
             runSpacing: 8,
@@ -222,7 +246,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                   Text(
                     '${platform.label} ${counts[platform]}',
                     style: TextStyle(
-                      fontSize: 12,
+                      fontSize: isLandscape ? layout.secondarySize : 12,
                       color: AppColors.textSecondary,
                     ),
                   ),
@@ -230,14 +254,124 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
               );
             }).toList(),
           ),
-          const SizedBox(height: 16),
+          SizedBox(height: isLandscape ? (isCompact ? 14 : 22) : 16),
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
               onPressed: () =>
                   context.read<PlayerProvider>().playFromPlaylist(songs, 0),
-              icon: const Icon(Icons.play_arrow_rounded),
+              icon: Icon(Icons.play_arrow_rounded, size: isLandscape ? 24 : 20),
               label: const Text('播放全部'),
+            ),
+          ),
+          if (isLandscape) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => unawaited(_importFavorites()),
+                    icon: const Icon(Icons.file_open_outlined, size: 18),
+                    label: const Text('导入'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => unawaited(_exportFavorites()),
+                    icon: const Icon(Icons.save_alt_outlined, size: 18),
+                    label: const Text('导出'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: TextButton.icon(
+                onPressed: () => setState(() => _selecting = true),
+                icon: const Icon(Icons.library_add_check_outlined, size: 19),
+                label: const Text('批量管理'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSelectionOverview(
+    List<SongSearchResult> songs,
+    AppLayout layout,
+  ) {
+    final enabled = _selectedKeys.isNotEmpty && !_switchingSources;
+    final allSelected = _selectedKeys.length == songs.length;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        layout.isCompactLandscape ? 12 : 24,
+        layout.isCompactLandscape ? 14 : 24,
+        layout.isCompactLandscape ? 12 : 24,
+        20,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.library_add_check,
+            color: AppColors.primary,
+            size: layout.isCompactLandscape ? 30 : 40,
+          ),
+          const SizedBox(height: 10),
+          Text(
+            '批量管理',
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: layout.sectionTitleSize,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '已选 ${_selectedKeys.length} / ${songs.length} 首',
+            style: TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: layout.bodySize,
+            ),
+          ),
+          SizedBox(height: layout.isCompactLandscape ? 16 : 24),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () => _toggleSelectAll(songs),
+              icon: Icon(allSelected ? Icons.deselect : Icons.select_all),
+              label: Text(allSelected ? '取消全选' : '全选歌曲'),
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: enabled ? () => _switchSelectedSources(songs) : null,
+              icon: const Icon(Icons.swap_horiz),
+              label: const Text('换源'),
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: enabled ? _deleteSelected : null,
+              icon: const Icon(Icons.delete_outline),
+              label: const Text('删除所选'),
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: TextButton.icon(
+              onPressed: _exitSelection,
+              icon: const Icon(Icons.close),
+              label: const Text('退出选择'),
             ),
           ),
         ],
@@ -303,6 +437,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   Widget _buildSwitchProgress() {
+    final layout = AppLayout.fromContext(context);
     final progress = _switchTotal == 0 ? null : _switchCompleted / _switchTotal;
     return Positioned.fill(
       child: ColoredBox(
@@ -313,7 +448,9 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
             elevation: 12,
             borderRadius: BorderRadius.circular(8),
             child: SizedBox(
-              width: 260,
+              width: layout.isLandscape
+                  ? (layout.isCompactLandscape ? 260 : 360)
+                  : 260,
               child: Padding(
                 padding: const EdgeInsets.all(20),
                 child: Column(
@@ -321,7 +458,10 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                   children: [
                     LinearProgressIndicator(value: progress),
                     const SizedBox(height: 14),
-                    Text('正在匹配 $_switchCompleted / $_switchTotal'),
+                    Text(
+                      '正在匹配 $_switchCompleted / $_switchTotal',
+                      style: TextStyle(fontSize: layout.bodySize),
+                    ),
                   ],
                 ),
               ),
@@ -689,33 +829,43 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     );
   }
 
-  Widget _buildEmpty() {
+  Widget _buildEmpty({AppLayout? layout}) {
+    final isLandscape = layout != null;
+    final isCompact = layout?.isCompactLandscape ?? false;
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Container(
-            width: 88,
-            height: 88,
+            width: isLandscape ? (isCompact ? 76 : 112) : 88,
+            height: isLandscape ? (isCompact ? 76 : 112) : 88,
             decoration: BoxDecoration(
               color: AppColors.primarySoft,
               shape: BoxShape.circle,
             ),
             child: Icon(
               Icons.favorite_border,
-              size: 40,
+              size: isLandscape ? (isCompact ? 34 : 52) : 40,
               color: AppColors.primary,
             ),
           ),
-          const SizedBox(height: 16),
+          SizedBox(height: isCompact ? 10 : 16),
           Text(
             '还没有收藏歌曲',
             style: TextStyle(
-              fontSize: 16,
+              fontSize: isLandscape ? layout.sectionTitleSize : 16,
               fontWeight: FontWeight.w600,
               color: AppColors.textPrimary,
             ),
           ),
+          if (isLandscape) ...[
+            const SizedBox(height: 18),
+            FilledButton.icon(
+              onPressed: () => unawaited(_importFavorites()),
+              icon: const Icon(Icons.file_open_outlined),
+              label: const Text('导入收藏'),
+            ),
+          ],
         ],
       ),
     );

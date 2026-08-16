@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../services/favorite_service.dart';
+import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import 'smart_cover.dart';
 
@@ -46,22 +47,36 @@ class SongTile extends StatelessWidget {
     final isCurrent =
         playerState.$1 == song.id && playerState.$2 == song.platform;
     final platformColor = PlatformColors.of(song.platform);
+    final layout = AppLayout.fromContext(context);
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final veryCompact = constraints.maxWidth < 180;
+        final narrowPane = constraints.maxWidth < 380;
+        final coverSize = layout.songCoverSize;
+        final actionIconSize = layout.isWideLandscape ? 24.0 : 22.0;
         return ListTile(
+          minTileHeight: layout.songRowHeight,
+          tileColor: isCurrent
+              ? AppColors.primarySoft.withValues(alpha: 0.72)
+              : Colors.transparent,
+          selectedTileColor: AppColors.primarySoft,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
           contentPadding: EdgeInsets.symmetric(
-            horizontal: veryCompact ? 8 : 16,
-            vertical: 2,
+            horizontal: veryCompact ? 8 : (layout.isWideLandscape ? 20 : 14),
+            vertical: layout.isWideLandscape ? 6 : 4,
           ),
           leading: veryCompact
               ? null
               : ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(
+                    layout.isWideLandscape ? 14 : 12,
+                  ),
                   child: SizedBox(
-                    width: 48,
-                    height: 48,
+                    width: coverSize,
+                    height: coverSize,
                     child: song.coverUrl != null && song.coverUrl!.isNotEmpty
                         ? SmartCover(
                             url: song.coverUrl,
@@ -83,7 +98,8 @@ class SongTile extends StatelessWidget {
                         ? AppColors.primary
                         : AppColors.textPrimary,
                     fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
-                    fontSize: 15,
+                    fontSize: layout.songTitleSize,
+                    height: 1.25,
                   ),
                 ),
               ),
@@ -100,7 +116,8 @@ class SongTile extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: 12,
+                fontSize: layout.songSubtitleSize,
+                height: 1.25,
                 color: isCurrent
                     ? AppColors.primary.withOpacity(0.7)
                     : AppColors.textSecondary,
@@ -126,7 +143,7 @@ class SongTile extends StatelessWidget {
                             tooltip: isFav ? '取消收藏' : '收藏',
                             icon: Icon(
                               isFav ? Icons.favorite : Icons.favorite_border,
-                              size: 20,
+                              size: actionIconSize,
                               color: isFav
                                   ? Colors.redAccent
                                   : AppColors.textHint,
@@ -147,11 +164,11 @@ class SongTile extends StatelessWidget {
                           );
                         },
                       ),
-                    if (showPlatformTag)
+                    if (showPlatformTag && !narrowPane)
                       Container(
                         padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 3,
+                          horizontal: 9,
+                          vertical: 4,
                         ),
                         decoration: BoxDecoration(
                           color: platformColor.withOpacity(0.1),
@@ -160,7 +177,7 @@ class SongTile extends StatelessWidget {
                         child: Text(
                           song.platform.label,
                           style: TextStyle(
-                            fontSize: 10,
+                            fontSize: layout.isWideLandscape ? 13 : 12,
                             color: platformColor,
                             fontWeight: FontWeight.w600,
                           ),
@@ -169,7 +186,7 @@ class SongTile extends StatelessWidget {
                     if (onAddToQueue != null) ...[
                       const SizedBox(width: 2),
                       PopupMenuButton<String>(
-                        iconSize: 20,
+                        iconSize: actionIconSize,
                         color: AppColors.surface,
                         onSelected: (value) {
                           if (value == 'add_queue') onAddToQueue!();
@@ -184,7 +201,7 @@ class SongTile extends StatelessWidget {
                     ] else
                       Icon(
                         Icons.chevron_right,
-                        size: 20,
+                        size: actionIconSize,
                         color: AppColors.textHint,
                       ),
                   ],

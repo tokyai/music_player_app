@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
+import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/song_tile.dart';
@@ -89,13 +90,18 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   Widget _buildLandscapeBody() {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final infoWidth = (constraints.maxWidth * 0.36).clamp(220.0, 330.0);
+        final layout = AppLayout.fromConstraints(context, constraints);
+        final infoWidth = layout.isCompactLandscape
+            ? 210.0
+            : layout.isWideLandscape
+            ? 370.0
+            : (constraints.maxWidth * 0.36).clamp(290.0, 340.0);
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             SizedBox(
               width: infoWidth,
-              child: _buildDetailHeader(compact: true),
+              child: _buildDetailHeader(layout: layout),
             ),
             VerticalDivider(
               width: 1,
@@ -109,14 +115,23 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
   }
 
-  Widget _buildDetailHeader({bool compact = false}) {
+  Widget _buildDetailHeader({AppLayout? layout}) {
+    final isLandscape = layout != null;
+    final isCompact = layout?.isCompactLandscape ?? false;
     final p = _detail ?? widget.playlist;
     final platformColor = PlatformColors.of(widget.platform);
+    final coverSize = isLandscape
+        ? isCompact
+              ? 104.0
+              : layout.isWideLandscape
+              ? 230.0
+              : 184.0
+        : 100.0;
     final cover = ClipRRect(
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(isLandscape ? 20 : 14),
       child: SizedBox(
-        width: compact ? 148 : 100,
-        height: compact ? 148 : 100,
+        width: coverSize,
+        height: coverSize,
         child: p.coverUrl != null && p.coverUrl!.isNotEmpty
             ? SmartCover(
                 url: p.coverUrl,
@@ -131,10 +146,10 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       children: [
         Text(
           p.name,
-          maxLines: compact ? 3 : 2,
+          maxLines: isLandscape ? (isCompact ? 2 : 3) : 2,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
-            fontSize: compact ? 17 : 17,
+            fontSize: isLandscape ? layout.sectionTitleSize : 17,
             fontWeight: FontWeight.w700,
             color: AppColors.textPrimary,
           ),
@@ -145,31 +160,44 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             'by ${p.creator}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            style: TextStyle(
+              fontSize: isLandscape ? layout.secondarySize : 12,
+              color: AppColors.textSecondary,
+            ),
           ),
         ],
         const SizedBox(height: 4),
         Text(
           '${p.trackCount} 首',
-          style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+          style: TextStyle(
+            fontSize: isLandscape ? layout.secondarySize : 12,
+            color: AppColors.textSecondary,
+          ),
         ),
       ],
     );
-    final playButton = _detail != null && _detail!.tracks.isNotEmpty
-        ? IconButton.filled(
-            onPressed: () {
-              context.read<PlayerProvider>().playFromPlaylist(
-                _detail!.tracks,
-                0,
-              );
-            },
-            style: IconButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-            ),
-            icon: const Icon(Icons.play_arrow_rounded, size: 28),
-            tooltip: '播放全部',
-          )
+    final canPlay = _detail != null && _detail!.tracks.isNotEmpty;
+    void playAll() {
+      if (!canPlay) return;
+      context.read<PlayerProvider>().playFromPlaylist(_detail!.tracks, 0);
+    }
+
+    final playButton = canPlay
+        ? isLandscape
+              ? FilledButton.icon(
+                  onPressed: playAll,
+                  icon: const Icon(Icons.play_arrow_rounded, size: 24),
+                  label: const Text('播放全部'),
+                )
+              : IconButton.filled(
+                  onPressed: playAll,
+                  style: IconButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.play_arrow_rounded, size: 28),
+                  tooltip: '播放全部',
+                )
         : const SizedBox.shrink();
 
     return Container(
@@ -180,24 +208,46 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
           end: Alignment.bottomCenter,
         ),
       ),
-      child: compact
+      child: isLandscape
           ? ListView(
               key: const PageStorageKey('playlist-detail-landscape-info'),
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 20),
+              padding: EdgeInsets.fromLTRB(
+                isCompact ? 10 : 24,
+                isCompact ? 6 : 16,
+                isCompact ? 10 : 24,
+                isCompact ? 14 : 30,
+              ),
               children: [
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: IconButton(
-                    tooltip: '返回',
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.arrow_back_ios_new),
-                  ),
+                Row(
+                  children: [
+                    IconButton(
+                      visualDensity: isCompact
+                          ? VisualDensity.compact
+                          : VisualDensity.standard,
+                      tooltip: '返回',
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.arrow_back_ios_new),
+                    ),
+                    SizedBox(width: isCompact ? 2 : 8),
+                    Expanded(
+                      child: Text(
+                        '歌单详情',
+                        style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: layout.pageTitleSize,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
+                SizedBox(height: isCompact ? 4 : 18),
                 Center(child: cover),
-                const SizedBox(height: 14),
+                SizedBox(height: isCompact ? 10 : 18),
                 metadata,
-                const SizedBox(height: 12),
-                Align(alignment: Alignment.centerRight, child: playButton),
+                SizedBox(height: isCompact ? 10 : 18),
+                if (canPlay)
+                  SizedBox(width: double.infinity, child: playButton),
               ],
             )
           : Padding(
@@ -220,10 +270,11 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   }
 
   Widget _buildTrackArea() {
+    final layout = AppLayout.fromContext(context);
     if (_loading) {
       return Center(
         child: CircularProgressIndicator(
-          strokeWidth: 2.5,
+          strokeWidth: layout.isLandscape ? 3 : 2.5,
           color: AppColors.primary,
         ),
       );
@@ -238,7 +289,10 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               Text(
                 '加载失败: $_error',
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.redAccent),
+                style: TextStyle(
+                  color: Colors.redAccent,
+                  fontSize: layout.isLandscape ? layout.bodySize : 14,
+                ),
               ),
               const SizedBox(height: 16),
               FilledButton(onPressed: _loadDetail, child: const Text('重试')),
@@ -249,7 +303,13 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     }
     if (_detail == null || _detail!.tracks.isEmpty) {
       return Center(
-        child: Text('暂无歌曲', style: TextStyle(color: AppColors.textHint)),
+        child: Text(
+          '暂无歌曲',
+          style: TextStyle(
+            color: AppColors.textHint,
+            fontSize: layout.isLandscape ? layout.bodySize : 14,
+          ),
+        ),
       );
     }
     return ListView.builder(

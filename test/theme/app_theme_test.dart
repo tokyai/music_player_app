@@ -6,12 +6,12 @@ void main() {
   test('theme construction does not depend on the previous global mode', () {
     AppColors.isDark = false;
     final dark = AppTheme.dark();
-    expect(dark.scaffoldBackgroundColor, const Color(0xFF121212));
-    expect(dark.colorScheme.surface, const Color(0xFF1E1E1E));
+    expect(dark.scaffoldBackgroundColor, const Color(0xFF101216));
+    expect(dark.colorScheme.surface, const Color(0xFF181B20));
 
     AppColors.isDark = true;
     final light = AppTheme.light();
-    expect(light.scaffoldBackgroundColor, const Color(0xFFFFFFFF));
+    expect(light.scaffoldBackgroundColor, const Color(0xFFF7F8FA));
     expect(light.colorScheme.surface, const Color(0xFFFFFFFF));
   });
 }

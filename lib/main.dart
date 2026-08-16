@@ -14,6 +14,7 @@ import 'screens/playlist_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/favorite_service.dart';
 import 'services/floating_capsule_service.dart';
+import 'theme/app_layout.dart';
 import 'theme/app_theme.dart';
 import 'utils/system_ui.dart';
 import 'widgets/mini_player.dart';
@@ -185,8 +186,12 @@ class _MainScreenState extends State<MainScreen> {
         if (isLandscape) {
           return LayoutBuilder(
             builder: (context, constraints) {
+              final layout = AppLayout.fromConstraints(context, constraints);
+              final compactRail = constraints.maxHeight < 480;
               final showPlayerPane =
-                  hasCurrentSong && constraints.maxWidth >= 960;
+                  hasCurrentSong &&
+                  constraints.maxWidth >= AppLayout.wideWindowMinWidth &&
+                  constraints.maxHeight >= AppLayout.wideWindowMinHeight;
               return Scaffold(
                 body: Row(
                   children: [
@@ -194,33 +199,39 @@ class _MainScreenState extends State<MainScreen> {
                       right: false,
                       child: NavigationRail(
                         key: const ValueKey('landscape-navigation'),
-                        minWidth: constraints.maxHeight < 480 ? 88 : 96,
+                        minWidth: compactRail
+                            ? 84
+                            : (layout.isWideLandscape ? 112 : 96),
                         selectedIndex: _currentIndex,
                         onDestinationSelected: _selectScreen,
                         labelType: NavigationRailLabelType.all,
-                        groupAlignment: constraints.maxHeight < 480 ? 0 : -0.35,
+                        groupAlignment: compactRail ? 0 : -0.28,
                         useIndicator: true,
                         indicatorColor: AppColors.primarySoft,
+                        indicatorShape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                         selectedIconTheme: const IconThemeData(
                           color: AppColors.primary,
-                          size: 25,
+                          size: 27,
                         ),
                         unselectedIconTheme: IconThemeData(
                           color: AppColors.textSecondary,
-                          size: 23,
+                          size: 25,
                         ),
-                        selectedLabelTextStyle: const TextStyle(
+                        selectedLabelTextStyle: TextStyle(
                           color: AppColors.primary,
-                          fontSize: 12,
+                          fontSize: compactRail ? 13 : 15,
                           fontWeight: FontWeight.w700,
                         ),
                         unselectedLabelTextStyle: TextStyle(
                           color: AppColors.textSecondary,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
+                          fontSize: compactRail ? 13 : 14,
+                          fontWeight: FontWeight.w600,
                         ),
                         leading: _buildLandscapeBrand(
-                          compact: constraints.maxHeight < 480,
+                          compact: compactRail,
+                          wide: layout.isWideLandscape,
                         ),
                         destinations: const [
                           NavigationRailDestination(
@@ -266,7 +277,7 @@ class _MainScreenState extends State<MainScreen> {
                         thickness: 1,
                         color: AppColors.surfaceSoft,
                       ),
-                      const SizedBox(width: 240, child: LandscapeMiniPlayer()),
+                      const SizedBox(width: 296, child: LandscapeMiniPlayer()),
                     ],
                   ],
                 ),
@@ -317,9 +328,9 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  Widget _buildLandscapeBrand({required bool compact}) {
+  Widget _buildLandscapeBrand({required bool compact, required bool wide}) {
     return Padding(
-      padding: EdgeInsets.fromLTRB(8, compact ? 8 : 14, 8, compact ? 8 : 18),
+      padding: EdgeInsets.fromLTRB(8, compact ? 8 : 16, 8, compact ? 8 : 20),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -327,19 +338,19 @@ class _MainScreenState extends State<MainScreen> {
             borderRadius: BorderRadius.circular(compact ? 11 : 14),
             child: Image.asset(
               'assets/images/app_logo.png',
-              width: compact ? 40 : 48,
-              height: compact ? 40 : 48,
+              width: compact ? 42 : (wide ? 54 : 50),
+              height: compact ? 42 : (wide ? 54 : 50),
               fit: BoxFit.cover,
             ),
           ),
           if (!compact) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             Text(
               '库仔音乐',
               maxLines: 1,
               style: TextStyle(
                 color: AppColors.textPrimary,
-                fontSize: 12,
+                fontSize: wide ? 16 : 14,
                 fontWeight: FontWeight.w700,
               ),
             ),

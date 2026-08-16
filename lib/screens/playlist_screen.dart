@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../services/favorite_service.dart';
+import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../widgets/song_tile.dart';
 import '../widgets/playlist_import_dialog.dart';
@@ -78,7 +79,12 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   Widget _buildLandscapeBody() {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final infoWidth = (constraints.maxWidth * 0.36).clamp(220.0, 320.0);
+        final layout = AppLayout.fromConstraints(context, constraints);
+        final infoWidth = layout.isCompactLandscape
+            ? 210.0
+            : layout.isWideLandscape
+            ? 340.0
+            : (constraints.maxWidth * 0.35).clamp(280.0, 320.0);
         return Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -86,19 +92,24 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
               width: infoWidth,
               child: ListView(
                 key: const PageStorageKey('playlist-landscape-info'),
-                padding: const EdgeInsets.only(bottom: 20),
+                padding: EdgeInsets.only(
+                  bottom: layout.isCompactLandscape ? 12 : 28,
+                ),
                 children: [
-                  _buildTitleBar(compact: true),
+                  _buildTitleBar(layout: layout),
                   if (_playlist != null)
-                    _buildPlaylistHeader(compact: true)
+                    _buildPlaylistHeader(layout: layout)
                   else
-                    _buildEmpty(),
+                    _buildEmpty(layout: layout),
                   if (_error != null)
                     Padding(
                       padding: const EdgeInsets.all(16),
                       child: Text(
                         _error!,
-                        style: const TextStyle(color: Colors.redAccent),
+                        style: TextStyle(
+                          color: Colors.redAccent,
+                          fontSize: layout.bodySize,
+                        ),
                       ),
                     ),
                 ],
@@ -113,7 +124,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
               child: _loading
                   ? Center(
                       child: CircularProgressIndicator(
-                        strokeWidth: 2.5,
+                        strokeWidth: 3,
                         color: AppColors.primary,
                       ),
                     )
@@ -121,7 +132,10 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
                   ? Center(
                       child: Text(
                         '导入歌单后在这里查看歌曲',
-                        style: TextStyle(color: AppColors.textHint),
+                        style: TextStyle(
+                          color: AppColors.textHint,
+                          fontSize: layout.bodySize,
+                        ),
                       ),
                     )
                   : _buildTrackList(),
@@ -132,13 +146,50 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     );
   }
 
-  Widget _buildTitleBar({bool compact = false}) {
+  Widget _buildTitleBar({AppLayout? layout}) {
+    final isLandscape = layout != null;
+    final isCompact = layout?.isCompactLandscape ?? false;
+    final favoriteButton = Consumer<FavoriteService>(
+      builder: (context, favorites, _) => IconButton(
+        tooltip: '我的收藏',
+        visualDensity: isCompact ? VisualDensity.compact : null,
+        onPressed: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const FavoritesScreen()),
+        ),
+        icon: Icon(
+          favorites.favorites.isEmpty ? Icons.favorite_border : Icons.favorite,
+          size: isLandscape ? (isCompact ? 22 : 26) : 24,
+          color: favorites.favorites.isEmpty
+              ? AppColors.textSecondary
+              : Colors.redAccent,
+        ),
+      ),
+    );
+    final importButton = isCompact
+        ? IconButton.filledTonal(
+            tooltip: '导入歌单',
+            visualDensity: VisualDensity.compact,
+            onPressed: _showImportDialog,
+            icon: const Icon(Icons.add, size: 22),
+          )
+        : FilledButton.icon(
+            onPressed: _showImportDialog,
+            icon: const Icon(Icons.add, size: 20),
+            label: Text(isLandscape ? '导入歌单' : '导入'),
+            style: FilledButton.styleFrom(
+              padding: EdgeInsets.symmetric(
+                horizontal: isLandscape ? 14 : 10,
+                vertical: isLandscape ? 10 : 7,
+              ),
+            ),
+          );
     return Padding(
       padding: EdgeInsets.fromLTRB(
-        compact ? 14 : 20,
-        compact ? 10 : 16,
-        compact ? 14 : 20,
-        compact ? 6 : 8,
+        isLandscape ? (isCompact ? 12 : 20) : 20,
+        isLandscape ? (isCompact ? 8 : 18) : 16,
+        isLandscape ? (isCompact ? 10 : 20) : 20,
+        isLandscape ? (isCompact ? 6 : 10) : 8,
       ),
       child: Row(
         children: [
@@ -146,47 +197,15 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
             child: Text(
               '我的歌单',
               style: TextStyle(
-                fontSize: compact ? 20 : 24,
+                fontSize: layout?.pageTitleSize ?? 24,
                 fontWeight: FontWeight.w700,
                 color: AppColors.textPrimary,
               ),
             ),
           ),
-          Consumer<FavoriteService>(
-            builder: (context, favorites, _) => IconButton(
-              tooltip: '我的收藏',
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const FavoritesScreen()),
-              ),
-              icon: Icon(
-                favorites.favorites.isEmpty
-                    ? Icons.favorite_border
-                    : Icons.favorite,
-                color: favorites.favorites.isEmpty
-                    ? AppColors.textSecondary
-                    : Colors.redAccent,
-              ),
-            ),
-          ),
-          if (compact)
-            IconButton.filledTonal(
-              tooltip: '导入歌单',
-              onPressed: _showImportDialog,
-              icon: const Icon(Icons.add),
-            )
-          else
-            FilledButton.icon(
-              onPressed: _showImportDialog,
-              icon: const Icon(Icons.add, size: 18),
-              label: const Text('导入'),
-              style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 7,
-                ),
-              ),
-            ),
+          favoriteButton,
+          if (!isCompact) const SizedBox(width: 4),
+          importButton,
         ],
       ),
     );
@@ -214,28 +233,35 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     return _buildTrackList();
   }
 
-  Widget _buildPlaylistHeader({bool compact = false}) {
+  Widget _buildPlaylistHeader({AppLayout? layout}) {
     final p = _playlist!;
+    final isLandscape = layout != null;
+    final isCompact = layout?.isCompactLandscape ?? false;
+    final coverSize = isCompact
+        ? 112.0
+        : layout?.isWideLandscape == true
+        ? 210.0
+        : 176.0;
     return Container(
       margin: EdgeInsets.fromLTRB(
-        compact ? 12 : 16,
-        compact ? 8 : 8,
-        compact ? 12 : 16,
+        isLandscape ? (isCompact ? 10 : 18) : 16,
+        isLandscape ? (isCompact ? 6 : 10) : 8,
+        isLandscape ? (isCompact ? 10 : 18) : 16,
         8,
       ),
-      padding: EdgeInsets.all(compact ? 12 : 16),
+      padding: EdgeInsets.all(isLandscape ? (isCompact ? 10 : 18) : 16),
       decoration: CardStyle.softCard(),
-      child: compact
+      child: isLandscape
           ? Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildPlaylistCover(p, size: 132),
-                const SizedBox(height: 12),
-                _buildPlaylistMetadata(p, compact: true),
-                const SizedBox(height: 12),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: _buildPlayAllButton(),
+                Center(child: _buildPlaylistCover(p, size: coverSize)),
+                SizedBox(height: isCompact ? 10 : 16),
+                _buildPlaylistMetadata(p, layout: layout),
+                SizedBox(height: isCompact ? 10 : 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: _buildPlayAllButton(showLabel: true),
                 ),
               ],
             )
@@ -268,16 +294,18 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     );
   }
 
-  Widget _buildPlaylistMetadata(PlaylistInfo p, {bool compact = false}) {
+  Widget _buildPlaylistMetadata(PlaylistInfo p, {AppLayout? layout}) {
+    final isLandscape = layout != null;
+    final isCompact = layout?.isCompactLandscape ?? false;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           p.name,
-          maxLines: compact ? 3 : 2,
+          maxLines: isLandscape ? (isCompact ? 2 : 3) : 2,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
-            fontSize: compact ? 16 : 16,
+            fontSize: isLandscape ? layout.sectionTitleSize : 16,
             fontWeight: FontWeight.w700,
             color: AppColors.textPrimary,
           ),
@@ -288,25 +316,39 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
             'by ${p.creator}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            style: TextStyle(
+              fontSize: isLandscape ? layout.secondarySize : 12,
+              color: AppColors.textSecondary,
+            ),
           ),
         ],
         const SizedBox(height: 4),
         Text(
           '${p.trackCount} 首',
-          style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+          style: TextStyle(
+            fontSize: isLandscape ? layout.secondarySize : 12,
+            color: AppColors.textSecondary,
+          ),
         ),
       ],
     );
   }
 
-  Widget _buildPlayAllButton() {
+  Widget _buildPlayAllButton({bool showLabel = false}) {
+    final onPressed = () {
+      if (_playlist!.tracks.isNotEmpty) {
+        context.read<PlayerProvider>().playFromPlaylist(_playlist!.tracks, 0);
+      }
+    };
+    if (showLabel) {
+      return FilledButton.icon(
+        onPressed: onPressed,
+        icon: const Icon(Icons.play_arrow_rounded, size: 24),
+        label: const Text('播放全部'),
+      );
+    }
     return IconButton.filled(
-      onPressed: () {
-        if (_playlist!.tracks.isNotEmpty) {
-          context.read<PlayerProvider>().playFromPlaylist(_playlist!.tracks, 0);
-        }
-      },
+      onPressed: onPressed,
       style: IconButton.styleFrom(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
@@ -352,38 +394,47 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     );
   }
 
-  Widget _buildEmpty() {
+  Widget _buildEmpty({AppLayout? layout}) {
+    final isLandscape = layout != null;
+    final isCompact = layout?.isCompactLandscape ?? false;
+    final iconSize = isLandscape ? (isCompact ? 70.0 : 112.0) : 96.0;
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Container(
-            width: 96,
-            height: 96,
+            width: iconSize,
+            height: iconSize,
             decoration: BoxDecoration(
               color: AppColors.primarySoft,
               shape: BoxShape.circle,
             ),
             child: Icon(
               Icons.playlist_play,
-              size: 44,
+              size: isLandscape ? (isCompact ? 34 : 50) : 44,
               color: AppColors.primary,
             ),
           ),
-          const SizedBox(height: 16),
+          SizedBox(height: isCompact ? 10 : 16),
           Text(
             '导入 QQ音乐 / 网易云歌单',
             style: TextStyle(
-              fontSize: 16,
+              fontSize: isLandscape ? layout.sectionTitleSize : 16,
               fontWeight: FontWeight.w600,
               color: AppColors.textPrimary,
             ),
           ),
-          const SizedBox(height: 6),
-          Text(
-            '支持粘贴歌单链接或输入 ID，一键导入全部歌曲',
-            style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
-          ),
+          if (!isCompact) ...[
+            const SizedBox(height: 6),
+            Text(
+              '支持粘贴歌单链接或输入 ID，一键导入全部歌曲',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: isLandscape ? layout.secondarySize : 12,
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ],
         ],
       ),
     );
