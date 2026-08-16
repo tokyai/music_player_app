@@ -14,7 +14,8 @@ import '../models/song.dart';
 /// mobilecdn.kugou.com 歌单），故统一经服务器 161.118.252.183 的 nginx
 /// 反代中转（/api-netease /api-qq /api-kugou-search /api-kugou）。
 class ApiService {
-  static const _requestTimeout = Duration(seconds: 8);
+  // 分页请求体积更小；给移动网络保留少量余量，仍以两次尝试快速失败。
+  static const _requestTimeout = Duration(seconds: 10);
   static const _retryDelay = Duration(milliseconds: 350);
 
   // ChKSz API 经服务器中转，避免移动网络直连 HTTPS 不稳定。
@@ -255,6 +256,37 @@ class ApiService {
     return result;
   }
 
+  /// 网易云歌单曲目分页。
+  ///
+  /// `/playlist/detail` 会把最多 1000 首歌曲一起返回，容易在车机网络下
+  /// 超时；曲目页改用官方分页接口，每次只取一页。
+  Future<PlaylistTrackPage> neteasePlaylistTracks(
+    String id, {
+    int limit = 20,
+    int offset = 0,
+  }) async {
+    final safeLimit = limit.clamp(1, 100);
+    final safeOffset = offset < 0 ? 0 : offset;
+    final json = await _httpGet(neteaseBaseUrl, '/playlist/track/all', {
+      'id': id,
+      'limit': safeLimit,
+      'offset': safeOffset,
+    });
+    final rawSongs = json['songs'] as List? ?? const [];
+    final tracks = rawSongs
+        .whereType<Map>()
+        .map(
+          (song) =>
+              SongSearchResult.fromNetease(Map<String, dynamic>.from(song)),
+        )
+        .toList();
+    final rawTotal = json['total'] ?? json['trackCount'];
+    final total = rawTotal is num
+        ? rawTotal.toInt()
+        : int.tryParse(rawTotal?.toString() ?? '');
+    return PlaylistTrackPage(tracks: tracks, total: total);
+  }
+
   // ======================== 酷狗 (mobilecdn 官方接口, ChKSz解析) ========================
   // mixdown 源站已不可用，搜索、推荐和新歌统一使用 mobilecdn 官方接口。
 
@@ -396,11 +428,82 @@ class ApiService {
     );
   }
 
+  /// 酷狗歌单曲目分页（mobilecdn 原生支持 page/pagesize）。
+  Future<PlaylistTrackPage> kugouPlaylistTracks(
+    String specialid, {
+    int page = 1,
+    int limit = 20,
+  }) async {
+    final safePage = page < 1 ? 1 : page;
+    final safeLimit = limit.clamp(1, 100);
+    final json = await _httpGet(kugouSearchBase, '/api/v3/special/song', {
+      'specialid': specialid,
+      'page': safePage,
+      'pagesize': safeLimit,
+    });
+    final data = json['data'];
+    final list = data is Map ? data['info'] as List? ?? const [] : const [];
+    final tracks = list
+        .whereType<Map>()
+        .map(
+          (song) => SongSearchResult.fromKugouSpecialSong(
+            Map<String, dynamic>.from(song),
+          ),
+        )
+        .toList();
+    final rawTotal = data is Map ? data['total'] : null;
+    final total = rawTotal is num
+        ? rawTotal.toInt()
+        : int.tryParse(rawTotal?.toString() ?? '');
+    return PlaylistTrackPage(tracks: tracks, total: total);
+  }
+
   /// QQ歌单详情
   Future<PlaylistInfo> qqPlaylist(String tid) async {
     final json = await _httpGet(qqBaseUrl, '/songlist', {'id': tid});
     final data = json['data'] ?? json;
     return PlaylistInfo.fromQQDetail(data as Map<String, dynamic>);
+  }
+
+  /// QQ 歌单曲目分页兼容层。
+  ///
+  /// jsososo 的 `/songlist` 路由目前没有把 offset 透传给 QQ 上游，
+  /// 因此先传递分页参数（便于未来中转服务支持），收到完整列表时在本地
+  /// 截取当前页，避免页面一次创建数百个条目。
+  Future<PlaylistTrackPage> qqPlaylistTracks(
+    String tid, {
+    int limit = 20,
+    int offset = 0,
+  }) async {
+    final safeLimit = limit.clamp(1, 100);
+    final safeOffset = offset < 0 ? 0 : offset;
+    final json = await _httpGet(qqBaseUrl, '/songlist', {
+      'id': tid,
+      'song_begin': safeOffset,
+      'song_num': safeLimit,
+    });
+    final rawData = json['data'] ?? json;
+    final data = rawData is Map
+        ? Map<String, dynamic>.from(rawData)
+        : <String, dynamic>{};
+    final rawList = data['songlist'] as List? ?? const [];
+    final allTracks = rawList
+        .whereType<Map>()
+        .map(
+          (song) =>
+              SongSearchResult.fromQQDirect(Map<String, dynamic>.from(song)),
+        )
+        .toList();
+    final rawTotal = data['songnum'] ?? data['total_song_num'];
+    final parsedTotal = rawTotal is num
+        ? rawTotal.toInt()
+        : int.tryParse(rawTotal?.toString() ?? '');
+    final total = parsedTotal ?? allTracks.length;
+    // 若中转层已实现分页，返回值长度不会超过 limit；否则从完整列表切页。
+    final tracks = allTracks.length > safeLimit
+        ? allTracks.skip(safeOffset).take(safeLimit).toList()
+        : allTracks;
+    return PlaylistTrackPage(tracks: tracks, total: total);
   }
 
   /// QQ歌词

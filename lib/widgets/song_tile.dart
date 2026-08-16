@@ -63,18 +63,18 @@ class SongTile extends StatelessWidget {
               : Colors.transparent,
           selectedTileColor: AppColors.primarySoft,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(AppRadius.card),
           ),
           contentPadding: EdgeInsets.symmetric(
-            horizontal: veryCompact ? 8 : (layout.usesLargeTypography ? 20 : 14),
+            horizontal: veryCompact
+                ? 8
+                : (layout.usesLargeTypography ? 20 : 14),
             vertical: layout.usesLargeTypography ? 8 : 4,
           ),
           leading: veryCompact
               ? null
               : ClipRRect(
-                  borderRadius: BorderRadius.circular(
-                    layout.usesLargeTypography ? 16 : 12,
-                  ),
+                  borderRadius: BorderRadius.circular(AppRadius.media),
                   child: SizedBox(
                     width: coverSize,
                     height: coverSize,
@@ -173,12 +173,14 @@ class SongTile extends StatelessWidget {
                         ),
                         decoration: BoxDecoration(
                           color: platformColor.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(20),
+                          borderRadius: BorderRadius.circular(
+                            AppRadius.control,
+                          ),
                         ),
                         child: Text(
                           song.platform.label,
                           style: TextStyle(
-                            fontSize: layout.usesLargeTypography ? 14 : 12,
+                            fontSize: layout.secondarySize,
                             color: platformColor,
                             fontWeight: FontWeight.w600,
                           ),

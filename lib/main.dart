@@ -83,9 +83,12 @@ class MusicPlayerApp extends StatelessWidget {
                 };
               }
               // 在车机大屏上统一放大未显式使用 AppLayout 尺寸令牌的文字，
-              // 同时保留系统无障碍字号设置。
+              // 同时合并系统无障碍字号和用户设置的整体字号比例。
               return MediaQuery(
-                data: AppLayout.adaptiveMediaQueryOf(context),
+                data: AppLayout.adaptiveMediaQueryOf(
+                  context,
+                  fontScale: themeCtrl.fontScale,
+                ),
                 child: child!,
               );
             },
@@ -206,10 +209,10 @@ class _MainScreenState extends State<MainScreen> {
                       child: NavigationRail(
                         key: const ValueKey('landscape-navigation'),
                         minWidth: compactRail
-                            ? 84
+                            ? 96
                             : (largeUi
-                                  ? (layout.isHighDensityCarDisplay ? 120 : 112)
-                                  : 100),
+                                  ? (layout.isHighDensityCarDisplay ? 136 : 132)
+                                  : 118),
                         selectedIndex: _currentIndex,
                         onDestinationSelected: _selectScreen,
                         labelType: NavigationRailLabelType.all,
@@ -217,24 +220,26 @@ class _MainScreenState extends State<MainScreen> {
                         useIndicator: true,
                         indicatorColor: AppColors.primarySoft,
                         indicatorShape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
+                          borderRadius: BorderRadius.circular(
+                            AppRadius.control,
+                          ),
                         ),
                         selectedIconTheme: IconThemeData(
                           color: AppColors.primary,
-                          size: largeUi ? 31 : 28,
+                          size: compactRail ? 31 : (largeUi ? 38 : 34),
                         ),
                         unselectedIconTheme: IconThemeData(
                           color: AppColors.textSecondary,
-                          size: largeUi ? 29 : 26,
+                          size: compactRail ? 29 : (largeUi ? 35 : 32),
                         ),
                         selectedLabelTextStyle: TextStyle(
                           color: AppColors.primary,
-                          fontSize: compactRail ? 13 : (largeUi ? 17 : 15),
+                          fontSize: compactRail ? 15 : (largeUi ? 21 : 18),
                           fontWeight: FontWeight.w700,
                         ),
                         unselectedLabelTextStyle: TextStyle(
                           color: AppColors.textSecondary,
-                          fontSize: compactRail ? 13 : (largeUi ? 16 : 14),
+                          fontSize: compactRail ? 15 : (largeUi ? 20 : 18),
                           fontWeight: FontWeight.w600,
                         ),
                         leading: _buildLandscapeBrand(
@@ -302,31 +307,36 @@ class _MainScreenState extends State<MainScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 const MiniPlayer(),
-                NavigationBar(
-                  selectedIndex: _currentIndex,
-                  onDestinationSelected: _selectScreen,
-                  destinations: const [
-                    NavigationDestination(
-                      icon: Icon(Icons.explore_outlined),
-                      selectedIcon: Icon(Icons.explore),
-                      label: '发现',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.search_outlined),
-                      selectedIcon: Icon(Icons.search),
-                      label: '搜索',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.playlist_play_outlined),
-                      selectedIcon: Icon(Icons.playlist_play),
-                      label: '歌单',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.settings_outlined),
-                      selectedIcon: Icon(Icons.settings),
-                      label: '设置',
-                    ),
-                  ],
+                ClipRRect(
+                  borderRadius: BorderRadius.vertical(
+                    top: Radius.circular(AppRadius.panel),
+                  ),
+                  child: NavigationBar(
+                    selectedIndex: _currentIndex,
+                    onDestinationSelected: _selectScreen,
+                    destinations: const [
+                      NavigationDestination(
+                        icon: Icon(Icons.explore_outlined),
+                        selectedIcon: Icon(Icons.explore),
+                        label: '发现',
+                      ),
+                      NavigationDestination(
+                        icon: Icon(Icons.search_outlined),
+                        selectedIcon: Icon(Icons.search),
+                        label: '搜索',
+                      ),
+                      NavigationDestination(
+                        icon: Icon(Icons.playlist_play_outlined),
+                        selectedIcon: Icon(Icons.playlist_play),
+                        label: '歌单',
+                      ),
+                      NavigationDestination(
+                        icon: Icon(Icons.settings_outlined),
+                        selectedIcon: Icon(Icons.settings),
+                        label: '设置',
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -343,11 +353,11 @@ class _MainScreenState extends State<MainScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           ClipRRect(
-            borderRadius: BorderRadius.circular(compact ? 11 : 14),
+            borderRadius: BorderRadius.circular(AppRadius.media),
             child: Image.asset(
               'assets/images/app_logo.png',
-              width: compact ? 42 : (wide ? 54 : 50),
-              height: compact ? 42 : (wide ? 54 : 50),
+              width: compact ? 44 : (wide ? 62 : 56),
+              height: compact ? 44 : (wide ? 62 : 56),
               fit: BoxFit.cover,
             ),
           ),
@@ -358,7 +368,7 @@ class _MainScreenState extends State<MainScreen> {
               maxLines: 1,
               style: TextStyle(
                 color: AppColors.textPrimary,
-                fontSize: wide ? 16 : 14,
+                fontSize: wide ? 20 : 17,
                 fontWeight: FontWeight.w700,
               ),
             ),

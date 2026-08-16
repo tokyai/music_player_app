@@ -18,21 +18,69 @@ class PlaylistScreen extends StatefulWidget {
 }
 
 class _PlaylistScreenState extends State<PlaylistScreen> {
+  static const _pageSize = 20;
   PlaylistInfo? _playlist;
+  MusicPlatform? _platform;
+  List<SongSearchResult>? _qqTrackCache;
+  final ScrollController _trackScrollController = ScrollController();
   bool _loading = false;
+  bool _loadingMore = false;
+  bool _hasMore = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _trackScrollController.addListener(_handleTrackScroll);
+  }
+
+  @override
+  void dispose() {
+    _trackScrollController.dispose();
+    super.dispose();
+  }
+
+  void _handleTrackScroll() {
+    if (!_trackScrollController.hasClients || _loadingMore || !_hasMore) {
+      return;
+    }
+    if (_trackScrollController.position.extentAfter < 520) {
+      _loadMoreTracks();
+    }
+  }
 
   Future<void> _loadPlaylist(MusicPlatform platform, String id) async {
     final player = context.read<PlayerProvider>();
     setState(() {
       _loading = true;
       _error = null;
+      _platform = platform;
+      _playlist = null;
+      _qqTrackCache = null;
+      _hasMore = false;
     });
 
     try {
-      final playlist = platform == MusicPlatform.qq
-          ? await player.api.qqPlaylist(id)
-          : await player.api.neteasePlaylist(id);
+      PlaylistInfo playlist;
+      if (platform == MusicPlatform.qq) {
+        final complete = await player.api.qqPlaylist(id);
+        _qqTrackCache = complete.tracks;
+        final firstPage = complete.tracks.take(_pageSize).toList();
+        playlist = _copyPlaylist(complete, firstPage);
+        _hasMore = firstPage.length < complete.tracks.length;
+      } else {
+        final page = await player.api.neteasePlaylistTracks(
+          id,
+          limit: _pageSize,
+        );
+        playlist = PlaylistInfo(
+          id: id,
+          name: '网易云歌单',
+          trackCount: page.total ?? page.tracks.length,
+          tracks: page.tracks,
+        );
+        _hasMore = page.hasMore(0, _pageSize);
+      }
       if (!mounted) return;
       setState(() {
         _playlist = playlist;
@@ -44,6 +92,68 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
         _error = e.toString();
         _loading = false;
       });
+    }
+  }
+
+  PlaylistInfo _copyPlaylist(
+    PlaylistInfo source,
+    List<SongSearchResult> tracks,
+  ) {
+    return PlaylistInfo(
+      id: source.id,
+      name: source.name,
+      coverUrl: source.coverUrl,
+      creator: source.creator,
+      trackCount: source.trackCount,
+      description: source.description,
+      tracks: tracks,
+    );
+  }
+
+  Future<void> _loadMoreTracks() async {
+    final playlist = _playlist;
+    final platform = _platform;
+    if (playlist == null || platform == null || _loadingMore || !_hasMore) {
+      return;
+    }
+    setState(() => _loadingMore = true);
+    try {
+      final offset = playlist.tracks.length;
+      List<SongSearchResult> nextTracks;
+      int? total;
+      if (platform == MusicPlatform.qq && _qqTrackCache != null) {
+        nextTracks = _qqTrackCache!.skip(offset).take(_pageSize).toList();
+        total = _qqTrackCache!.length;
+      } else {
+        final page = await context
+            .read<PlayerProvider>()
+            .api
+            .neteasePlaylistTracks(
+              playlist.id,
+              limit: _pageSize,
+              offset: offset,
+            );
+        nextTracks = page.tracks;
+        total = page.total;
+      }
+      if (!mounted) return;
+      final combined = [...playlist.tracks, ...nextTracks];
+      setState(() {
+        _playlist = _copyPlaylist(playlist, combined);
+        _hasMore =
+            nextTracks.isNotEmpty &&
+            (total != null
+                ? combined.length < total
+                : nextTracks.length >= _pageSize);
+      });
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('加载更多失败，请稍后重试')));
+      }
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
     }
   }
 
@@ -148,6 +258,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   }
 
   Widget _buildTitleBar({AppLayout? layout}) {
+    final metrics = layout ?? AppLayout.fromContext(context);
     final isLandscape = layout != null;
     final isCompact = layout?.isCompactLandscape ?? false;
     final favoriteButton = Consumer<FavoriteService>(
@@ -198,7 +309,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
             child: Text(
               '我的歌单',
               style: TextStyle(
-                fontSize: layout?.pageTitleSize ?? 24,
+                fontSize: metrics.pageTitleSize,
                 fontWeight: FontWeight.w700,
                 color: AppColors.textPrimary,
               ),
@@ -280,7 +391,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
 
   Widget _buildPlaylistCover(PlaylistInfo p, {double size = 92}) {
     return ClipRRect(
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(AppRadius.media),
       child: SizedBox(
         width: size,
         height: size,
@@ -296,17 +407,16 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   }
 
   Widget _buildPlaylistMetadata(PlaylistInfo p, {AppLayout? layout}) {
-    final isLandscape = layout != null;
-    final isCompact = layout?.isCompactLandscape ?? false;
+    final metrics = layout ?? AppLayout.fromContext(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           p.name,
-          maxLines: isLandscape ? (isCompact ? 2 : 3) : 2,
+          maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
-            fontSize: isLandscape ? layout.sectionTitleSize : 16,
+            fontSize: metrics.sectionTitleSize,
             fontWeight: FontWeight.w700,
             color: AppColors.textPrimary,
           ),
@@ -318,7 +428,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              fontSize: isLandscape ? layout.secondarySize : 12,
+              fontSize: metrics.secondarySize,
               color: AppColors.textSecondary,
             ),
           ),
@@ -327,7 +437,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
         Text(
           '${p.trackCount} 首',
           style: TextStyle(
-            fontSize: isLandscape ? layout.secondarySize : 12,
+            fontSize: metrics.secondarySize,
             color: AppColors.textSecondary,
           ),
         ),
@@ -367,19 +477,35 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   }
 
   Widget _buildTrackList() {
+    final tracks = _playlist!.tracks;
     return ListView.builder(
+      controller: _trackScrollController,
       padding: const EdgeInsets.only(bottom: 16),
-      itemCount: _playlist!.tracks.length,
+      itemCount: tracks.length + (_hasMore || _loadingMore ? 1 : 0),
       itemBuilder: (ctx, i) {
-        final track = _playlist!.tracks[i];
+        if (i >= tracks.length) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 18),
+            child: Center(
+              child: _loadingMore
+                  ? const SizedBox.square(
+                      dimension: 26,
+                      child: CircularProgressIndicator(strokeWidth: 2.5),
+                    )
+                  : TextButton(
+                      key: const ValueKey('playlist-load-more'),
+                      onPressed: _loadMoreTracks,
+                      child: const Text('加载更多'),
+                    ),
+            ),
+          );
+        }
+        final track = tracks[i];
         return SongTile(
           song: track,
           showFavorite: true,
           onTap: () {
-            context.read<PlayerProvider>().playFromPlaylist(
-              _playlist!.tracks,
-              i,
-            );
+            context.read<PlayerProvider>().playFromPlaylist(tracks, i);
           },
           onAddToQueue: () {
             context.read<PlayerProvider>().addToQueue(track);
@@ -396,6 +522,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   }
 
   Widget _buildEmpty({AppLayout? layout}) {
+    final metrics = layout ?? AppLayout.fromContext(context);
     final isLandscape = layout != null;
     final isCompact = layout?.isCompactLandscape ?? false;
     final iconSize = isLandscape ? (isCompact ? 70.0 : 112.0) : 96.0;
@@ -408,7 +535,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
             height: iconSize,
             decoration: BoxDecoration(
               color: AppColors.primarySoft,
-              shape: BoxShape.circle,
+              borderRadius: BorderRadius.circular(AppRadius.panel),
             ),
             child: Icon(
               Icons.playlist_play,
@@ -420,7 +547,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
           Text(
             '导入 QQ音乐 / 网易云歌单',
             style: TextStyle(
-              fontSize: isLandscape ? layout.sectionTitleSize : 16,
+              fontSize: metrics.sectionTitleSize,
               fontWeight: FontWeight.w600,
               color: AppColors.textPrimary,
             ),
@@ -431,7 +558,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
               '支持粘贴歌单链接或输入 ID，一键导入全部歌曲',
               textAlign: TextAlign.center,
               style: TextStyle(
-                fontSize: isLandscape ? layout.secondarySize : 12,
+                fontSize: metrics.secondarySize,
                 color: AppColors.textSecondary,
               ),
             ),

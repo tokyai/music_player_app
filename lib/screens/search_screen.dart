@@ -138,7 +138,7 @@ class _SearchScreenState extends State<SearchScreen>
     return LayoutBuilder(
       builder: (context, constraints) {
         final layout = AppLayout.fromConstraints(context, constraints);
-        final controlWidth = layout.isCompactLandscape ? 136.0 : 244.0;
+        final controlWidth = layout.isCompactLandscape ? 160.0 : 280.0;
         return Column(
           children: [
             _buildLandscapeHeader(layout),
@@ -205,7 +205,7 @@ class _SearchScreenState extends State<SearchScreen>
             '搜索',
             style: TextStyle(
               color: AppColors.textPrimary,
-              fontSize: layout.usesLargeTypography ? 32 : 24,
+              fontSize: layout.pageTitleSize,
               fontWeight: FontWeight.w700,
             ),
           ),
@@ -224,7 +224,7 @@ class _SearchScreenState extends State<SearchScreen>
           Text(
             '搜索',
             style: TextStyle(
-              fontSize: 24,
+              fontSize: AppLayout.fromContext(context).pageTitleSize,
               fontWeight: FontWeight.w700,
               color: AppColors.textPrimary,
             ),
@@ -244,6 +244,7 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Widget _buildSearchField({EdgeInsetsGeometry? padding}) {
+    final layout = AppLayout.fromContext(context);
     return Padding(
       padding: padding ?? const EdgeInsets.fromLTRB(20, 8, 20, 8),
       child: TextField(
@@ -255,13 +256,21 @@ class _SearchScreenState extends State<SearchScreen>
               ? IconButton(
                   icon: Icon(
                     Icons.clear,
-                    size: 20,
+                    size: layout.isCompactLandscape ? 24 : 28,
                     color: AppColors.textSecondary,
                   ),
                   onPressed: _clearSearch,
                 )
               : null,
-          hintStyle: TextStyle(color: AppColors.textHint, fontSize: 16),
+          hintStyle: TextStyle(
+            color: AppColors.textHint,
+            fontSize: layout.bodySize,
+          ),
+        ),
+        style: TextStyle(
+          color: AppColors.textPrimary,
+          fontSize: layout.bodySize,
+          height: 1.2,
         ),
         textInputAction: TextInputAction.search,
         onSubmitted: _search,
@@ -294,6 +303,7 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Widget _buildModeToggle() {
+    final layout = AppLayout.fromContext(context);
     return SizedBox(
       width: double.infinity,
       child: SegmentedButton<bool>(
@@ -306,7 +316,10 @@ class _SearchScreenState extends State<SearchScreen>
         onSelectionChanged: (s) => _switchMode(s.first),
         style: SegmentedButton.styleFrom(
           visualDensity: VisualDensity.compact,
-          textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+          textStyle: TextStyle(
+            fontSize: layout.isCompactLandscape ? 16 : layout.bodySize,
+            fontWeight: FontWeight.w700,
+          ),
         ),
       ),
     );
@@ -325,7 +338,7 @@ class _SearchScreenState extends State<SearchScreen>
                 height: 88,
                 decoration: BoxDecoration(
                   color: AppColors.primarySoft,
-                  shape: BoxShape.circle,
+                  borderRadius: BorderRadius.circular(AppRadius.card),
                 ),
                 child: Icon(Icons.search, size: 40, color: AppColors.primary),
               ),
@@ -333,7 +346,7 @@ class _SearchScreenState extends State<SearchScreen>
               Text(
                 '搜索全网音乐',
                 style: TextStyle(
-                  fontSize: 16,
+                  fontSize: AppLayout.fromContext(context).bodySize,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textPrimary,
                 ),
@@ -342,7 +355,10 @@ class _SearchScreenState extends State<SearchScreen>
               Text(
                 'QQ音乐 · 网易云 · 酷狗',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                style: TextStyle(
+                  fontSize: AppLayout.fromContext(context).secondarySize,
+                  color: AppColors.textSecondary,
+                ),
               ),
             ],
           ),
@@ -440,9 +456,9 @@ class _SearchScreenState extends State<SearchScreen>
     final isLandscape = layout.isLandscape;
     final coverSize = isLandscape
         ? (layout.isCompactLandscape ? 108.0 : 140.0)
-        : 96.0;
+        : 112.0;
     final cardWidth = coverSize;
-    final cardHeight = coverSize + (isLandscape ? 48 : 28);
+    final cardHeight = coverSize + (isLandscape ? 58 : 52);
     final horizontalPadding = isLandscape ? layout.pagePadding : 16.0;
     final platformColor = PlatformColors.of(platform);
     return Column(
@@ -460,7 +476,7 @@ class _SearchScreenState extends State<SearchScreen>
               Text(
                 '相关歌单',
                 style: TextStyle(
-                  fontSize: isLandscape ? layout.sectionTitleSize : 15,
+                  fontSize: layout.sectionTitleSize,
                   fontWeight: FontWeight.w700,
                   color: AppColors.textPrimary,
                 ),
@@ -469,7 +485,7 @@ class _SearchScreenState extends State<SearchScreen>
               Text(
                 '${playlists.length} 个',
                 style: TextStyle(
-                  fontSize: isLandscape ? layout.secondarySize : 12,
+                  fontSize: layout.secondarySize,
                   color: AppColors.textSecondary,
                 ),
               ),
@@ -477,7 +493,7 @@ class _SearchScreenState extends State<SearchScreen>
               Text(
                 '点击查看 >',
                 style: TextStyle(
-                  fontSize: isLandscape ? layout.secondarySize : 12,
+                  fontSize: layout.secondarySize,
                   color: platformColor,
                 ),
               ),
@@ -511,7 +527,9 @@ class _SearchScreenState extends State<SearchScreen>
                       Stack(
                         children: [
                           ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
+                            borderRadius: BorderRadius.circular(
+                              AppRadius.media,
+                            ),
                             child: SizedBox(
                               width: coverSize,
                               height: coverSize,
@@ -556,9 +574,7 @@ class _SearchScreenState extends State<SearchScreen>
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: isLandscape
-                              ? layout.mediaCardTitleSize
-                              : 12,
+                          fontSize: layout.mediaCardTitleSize,
                           fontWeight: isLandscape
                               ? FontWeight.w600
                               : FontWeight.w400,
@@ -598,7 +614,7 @@ class _SearchScreenState extends State<SearchScreen>
     final isLandscape = layout.isLandscape;
     final coverSize = isLandscape
         ? (layout.isCompactLandscape ? 56.0 : 68.0)
-        : 52.0;
+        : layout.songCoverSize;
     final platformColor = PlatformColors.of(platform);
     return ListView.builder(
       padding: EdgeInsets.only(
@@ -609,15 +625,13 @@ class _SearchScreenState extends State<SearchScreen>
       itemBuilder: (ctx, i) {
         final p = list[i];
         return ListTile(
-          minTileHeight: isLandscape
-              ? (layout.isCompactLandscape ? 68 : 84)
-              : null,
+          minTileHeight: layout.songRowHeight,
           contentPadding: EdgeInsets.symmetric(
             horizontal: isLandscape ? layout.pagePadding : 16,
             vertical: isLandscape ? 6 : 2,
           ),
           leading: ClipRRect(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(AppRadius.media),
             child: SizedBox(
               width: coverSize,
               height: coverSize,
@@ -649,7 +663,7 @@ class _SearchScreenState extends State<SearchScreen>
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              fontSize: isLandscape ? layout.songTitleSize : 15,
+              fontSize: layout.songTitleSize,
               fontWeight: isLandscape ? FontWeight.w600 : FontWeight.w500,
               color: AppColors.textPrimary,
             ),
@@ -661,7 +675,7 @@ class _SearchScreenState extends State<SearchScreen>
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              fontSize: isLandscape ? layout.songSubtitleSize : 12,
+              fontSize: layout.songSubtitleSize,
               color: AppColors.textSecondary,
             ),
           ),
@@ -702,7 +716,7 @@ class _SearchScreenState extends State<SearchScreen>
           color: overlay
               ? Colors.black.withValues(alpha: 0.5)
               : Colors.transparent,
-          shape: const CircleBorder(),
+          borderRadius: BorderRadius.circular(AppRadius.small),
           child: IconButton(
             tooltip: isFavorite ? '取消收藏歌单' : '收藏歌单',
             visualDensity: VisualDensity.compact,
@@ -720,7 +734,7 @@ class _SearchScreenState extends State<SearchScreen>
               isFavorite
                   ? Icons.favorite_rounded
                   : Icons.favorite_border_rounded,
-              size: overlay ? 19 : 22,
+              size: overlay ? 24 : 28,
               color: isFavorite
                   ? Colors.redAccent
                   : (overlay ? Colors.white : AppColors.textHint),
@@ -761,7 +775,7 @@ class _SearchScreenState extends State<SearchScreen>
             textAlign: TextAlign.center,
             style: TextStyle(
               color: AppColors.textSecondary,
-              fontSize: layout.isLandscape ? layout.bodySize : 14,
+              fontSize: layout.bodySize,
             ),
           ),
           if (onRetry != null) ...[
@@ -778,6 +792,7 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Widget _buildHotKeywords({bool compact = false}) {
+    final layout = AppLayout.fromContext(context);
     return Padding(
       padding: compact
           ? EdgeInsets.zero
@@ -790,7 +805,7 @@ class _SearchScreenState extends State<SearchScreen>
               Text(
                 '热门搜索',
                 style: TextStyle(
-                  fontSize: compact ? 15 : 18,
+                  fontSize: compact ? 17 : layout.sectionTitleSize,
                   fontWeight: FontWeight.w700,
                   color: AppColors.textPrimary,
                 ),
@@ -820,7 +835,7 @@ class _SearchScreenState extends State<SearchScreen>
                   ),
                   decoration: BoxDecoration(
                     color: AppColors.surface,
-                    borderRadius: BorderRadius.circular(22),
+                    borderRadius: BorderRadius.circular(AppRadius.control),
                     boxShadow: [
                       BoxShadow(
                         color: AppColors.cardShadow,
@@ -832,7 +847,7 @@ class _SearchScreenState extends State<SearchScreen>
                   child: Text(
                     kw,
                     style: TextStyle(
-                      fontSize: compact ? 13 : 15,
+                      fontSize: compact ? 15 : layout.bodySize,
                       color: AppColors.textPrimary,
                       fontWeight: FontWeight.w500,
                     ),
@@ -861,7 +876,7 @@ class _SearchScreenState extends State<SearchScreen>
                 height: 88,
                 decoration: BoxDecoration(
                   color: AppColors.primarySoft,
-                  shape: BoxShape.circle,
+                  borderRadius: BorderRadius.circular(AppRadius.card),
                 ),
                 child: Icon(Icons.search, size: 40, color: AppColors.primary),
               ),
@@ -869,7 +884,7 @@ class _SearchScreenState extends State<SearchScreen>
               Text(
                 '搜索全网音乐',
                 style: TextStyle(
-                  fontSize: 16,
+                  fontSize: AppLayout.fromContext(context).bodySize,
                   fontWeight: FontWeight.w600,
                   color: AppColors.textPrimary,
                 ),
@@ -877,7 +892,10 @@ class _SearchScreenState extends State<SearchScreen>
               const SizedBox(height: 6),
               Text(
                 'QQ音乐 · 网易云 · 酷狗',
-                style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                style: TextStyle(
+                  fontSize: AppLayout.fromContext(context).secondarySize,
+                  color: AppColors.textSecondary,
+                ),
               ),
             ],
           ),

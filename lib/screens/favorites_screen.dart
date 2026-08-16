@@ -198,6 +198,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   Widget _buildOverview(List<SongSearchResult> songs, {AppLayout? layout}) {
+    final metrics = layout ?? AppLayout.fromContext(context);
     final isLandscape = layout != null;
     final isCompact = layout?.isCompactLandscape ?? false;
     final counts = {
@@ -226,7 +227,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                 '${songs.length} 首歌曲',
                 style: TextStyle(
                   color: AppColors.textPrimary,
-                  fontSize: isLandscape ? layout.sectionTitleSize : 17,
+                  fontSize: metrics.sectionTitleSize,
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -252,7 +253,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                   Text(
                     '${platform.label} ${counts[platform]}',
                     style: TextStyle(
-                      fontSize: isLandscape ? layout.secondarySize : 12,
+                      fontSize: metrics.secondarySize,
                       color: AppColors.textSecondary,
                     ),
                   ),
@@ -458,7 +459,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
               '还没有收藏歌曲',
               style: TextStyle(
                 color: AppColors.textSecondary,
-                fontSize: layout.isLandscape ? layout.bodySize : 14,
+                fontSize: layout.bodySize,
               ),
             ),
           ],
@@ -469,7 +470,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
 
   Widget _buildFavoritePlaylistsSection(List<FavoritePlaylist> playlists) {
     final layout = AppLayout.fromContext(context);
-    final cardHeight = layout.mediaCardWidth + 72;
+    final cardHeight = layout.mediaCardWidth + 82;
     return Container(
       key: const ValueKey('favorites-playlists-section'),
       padding: EdgeInsets.only(
@@ -498,7 +499,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                   '收藏歌单',
                   style: TextStyle(
                     color: AppColors.textPrimary,
-                    fontSize: layout.isLandscape ? layout.sectionTitleSize : 18,
+                    fontSize: layout.sectionTitleSize,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
@@ -507,7 +508,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                   '${playlists.length} 个',
                   style: TextStyle(
                     color: AppColors.textSecondary,
-                    fontSize: layout.isLandscape ? layout.secondarySize : 13,
+                    fontSize: layout.secondarySize,
                   ),
                 ),
               ],
@@ -522,7 +523,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                   '在歌单详情或搜索结果中点击收藏按钮',
                   style: TextStyle(
                     color: AppColors.textHint,
-                    fontSize: layout.isLandscape ? layout.bodySize : 13,
+                    fontSize: layout.bodySize,
                   ),
                 ),
               ),
@@ -568,6 +569,10 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     return Material(
       color: AppColors.surface,
       elevation: 6,
+      borderRadius: BorderRadius.vertical(
+        top: Radius.circular(AppRadius.panel),
+      ),
+      clipBehavior: Clip.antiAlias,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: Row(
@@ -601,7 +606,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           child: Material(
             color: AppColors.surface,
             elevation: 12,
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(AppRadius.panel),
             child: SizedBox(
               width: layout.isLandscape
                   ? (layout.isCompactLandscape ? 260 : 360)

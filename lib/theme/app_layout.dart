@@ -46,14 +46,18 @@ class AppLayout {
     );
   }
 
-  /// 在应用根部合并系统字号与大屏阅读补偿。
-  static MediaQueryData adaptiveMediaQueryOf(BuildContext context) {
+  /// 在应用根部合并系统字号、大屏阅读补偿和用户设置的字号比例。
+  static MediaQueryData adaptiveMediaQueryOf(
+    BuildContext context, {
+    double fontScale = 1,
+  }) {
     final mediaQuery = MediaQuery.of(context);
     final layout = AppLayout.fromContext(context);
     final systemTextScale = mediaQuery.textScaler.scale(16) / 16;
+    final userTextScale = fontScale.isFinite ? fontScale : 1.0;
     return mediaQuery.copyWith(
       textScaler: TextScaler.linear(
-        systemTextScale * layout.interfaceTextScale,
+        systemTextScale * layout.interfaceTextScale * userTextScale,
       ),
     );
   }
@@ -86,40 +90,40 @@ class AppLayout {
       physicalWindowSize.width >= 1600 &&
       physicalWindowSize.height >= 900;
 
-  bool get usesLargeTypography =>
-      isWideLandscape || isHighDensityCarDisplay;
+  bool get usesLargeTypography => isWideLandscape || isHighDensityCarDisplay;
 
   /// 对未使用页面尺寸令牌的文字做温和补偿；窄横屏不放大，避免挤压操作入口。
   double get interfaceTextScale {
-    if (usesLargeTypography) return 1.15;
-    if (isLandscape && !isCompactLandscape) return 1.08;
-    if (!isLandscape) return 1.06;
+    if (usesLargeTypography) return 1.18;
+    if (isLandscape && !isCompactLandscape) return 1.12;
+    if (!isLandscape) return 1.1;
     return 1;
   }
 
-  double get pagePadding => usesLargeTypography ? 32 : 20;
+  double get pagePadding =>
+      usesLargeTypography ? 36 : (isCompactLandscape ? 12 : 24);
   double get pageTitleSize =>
-      usesLargeTypography ? 32 : (isCompactLandscape ? 24 : 27);
+      usesLargeTypography ? 36 : (isCompactLandscape ? 27 : 31);
   double get sectionTitleSize =>
-      usesLargeTypography ? 24 : (isCompactLandscape ? 18 : 21);
+      usesLargeTypography ? 28 : (isCompactLandscape ? 21 : 25);
   double get bodySize =>
-      usesLargeTypography ? 18 : (isCompactLandscape ? 14 : 16);
+      usesLargeTypography ? 21 : (isCompactLandscape ? 16 : 19);
   double get secondarySize =>
-      usesLargeTypography ? 16 : (isCompactLandscape ? 13 : 14.5);
+      usesLargeTypography ? 18 : (isCompactLandscape ? 14 : 16.5);
 
   double get songRowHeight =>
-      usesLargeTypography ? 88 : (isCompactLandscape ? 66 : 76);
+      usesLargeTypography ? 100 : (isCompactLandscape ? 70 : 86);
   double get songCoverSize =>
-      usesLargeTypography ? 68 : (isCompactLandscape ? 50 : 58);
+      usesLargeTypography ? 78 : (isCompactLandscape ? 54 : 66);
   double get songTitleSize =>
-      usesLargeTypography ? 20 : (isCompactLandscape ? 16 : 18);
+      usesLargeTypography ? 23 : (isCompactLandscape ? 18 : 21);
   double get songSubtitleSize =>
-      usesLargeTypography ? 16 : (isCompactLandscape ? 13 : 14.5);
+      usesLargeTypography ? 18 : (isCompactLandscape ? 14 : 17);
 
   double get mediaCardWidth =>
-      usesLargeTypography ? 184 : (isCompactLandscape ? 142 : 160);
+      usesLargeTypography ? 210 : (isCompactLandscape ? 150 : 180);
   double get mediaCardTitleSize =>
-      usesLargeTypography ? 18.5 : (isCompactLandscape ? 15 : 16.5);
+      usesLargeTypography ? 21 : (isCompactLandscape ? 16 : 19);
   double get mediaCardSubtitleSize =>
-      usesLargeTypography ? 16 : (isCompactLandscape ? 13 : 14);
+      usesLargeTypography ? 18 : (isCompactLandscape ? 14 : 16);
 }

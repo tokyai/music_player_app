@@ -595,6 +595,22 @@ class PlaylistInfo {
   }
 }
 
+/// 歌单曲目分页结果。
+///
+/// 网易云与酷狗接口支持服务端分页；QQ 接口目前由中转服务返回完整曲目，
+/// API 层仍统一按分页结果向页面提供数据，页面可在滚动时分段展示。
+class PlaylistTrackPage {
+  final List<SongSearchResult> tracks;
+  final int? total;
+
+  const PlaylistTrackPage({required this.tracks, this.total});
+
+  bool hasMore(int offset, int limit) {
+    if (total != null) return offset + tracks.length < total!;
+    return tracks.length >= limit;
+  }
+}
+
 /// 本地收藏的歌单元数据。
 ///
 /// 仅保存打开歌单所需的信息，不持久化完整曲目，进入详情页时仍按平台重新

@@ -151,6 +151,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
   }
 
   Widget _buildTitleBar({AppLayout? layout}) {
+    final metrics = layout ?? AppLayout.fromContext(context);
     final compact = layout?.isCompactLandscape ?? false;
     return Padding(
       padding: EdgeInsets.fromLTRB(
@@ -171,7 +172,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
             child: Text(
               '已缓存歌曲',
               style: TextStyle(
-                fontSize: layout?.pageTitleSize ?? 22,
+                fontSize: metrics.pageTitleSize,
                 fontWeight: FontWeight.w700,
                 color: AppColors.textPrimary,
               ),
@@ -189,6 +190,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
   }
 
   Widget _buildStats(int totalSize, {AppLayout? layout}) {
+    final metrics = layout ?? AppLayout.fromContext(context);
     return Padding(
       padding: EdgeInsets.fromLTRB(
         layout == null ? 20 : (layout.isCompactLandscape ? 12 : 24),
@@ -201,7 +203,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
         child: Text(
           '${_cacheList.length} 首 · ${AudioCacheService.formatSize(totalSize)}',
           style: TextStyle(
-            fontSize: layout?.secondarySize ?? 13,
+            fontSize: metrics.secondarySize,
             color: AppColors.textSecondary,
           ),
         ),
@@ -265,6 +267,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
   }
 
   Widget _buildCacheList({AppLayout? layout}) {
+    final metrics = layout ?? AppLayout.fromContext(context);
     if (_loading) {
       return Center(
         child: SizedBox.square(
@@ -304,9 +307,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
             vertical: layout?.isLandscape == true ? 5 : 2,
           ),
           leading: ClipRRect(
-            borderRadius: BorderRadius.circular(
-              layout?.usesLargeTypography == true ? 12 : 8,
-            ),
+            borderRadius: BorderRadius.circular(AppRadius.media),
             child: Container(
               width: coverSize,
               height: coverSize,
@@ -323,7 +324,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              fontSize: layout?.songTitleSize ?? 14,
+              fontSize: metrics.songTitleSize,
               fontWeight: FontWeight.w600,
               color: AppColors.textPrimary,
             ),
@@ -333,7 +334,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              fontSize: layout?.songSubtitleSize ?? 12,
+              fontSize: metrics.songSubtitleSize,
               color: AppColors.textSecondary,
             ),
           ),
@@ -343,7 +344,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
               Text(
                 AudioCacheService.formatSize(info.fileSize),
                 style: TextStyle(
-                  fontSize: layout?.secondarySize ?? 12,
+                  fontSize: metrics.secondarySize,
                   color: AppColors.textHint,
                 ),
               ),
@@ -365,6 +366,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
   }
 
   Widget _buildEmpty({AppLayout? layout}) {
+    final metrics = layout ?? AppLayout.fromContext(context);
     final isLandscape = layout?.isLandscape == true;
     final isCompact = layout?.isCompactLandscape == true;
     return Center(
@@ -376,7 +378,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
             height: isLandscape ? (isCompact ? 76 : 112) : 80,
             decoration: BoxDecoration(
               color: AppColors.primarySoft,
-              shape: BoxShape.circle,
+              borderRadius: BorderRadius.circular(AppRadius.panel),
             ),
             child: Icon(
               Icons.cached,
@@ -388,7 +390,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
           Text(
             '还没有缓存歌曲',
             style: TextStyle(
-              fontSize: isLandscape ? layout!.sectionTitleSize : 15,
+              fontSize: metrics.sectionTitleSize,
               fontWeight: FontWeight.w600,
               color: AppColors.textPrimary,
             ),
@@ -397,7 +399,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
           Text(
             '播放过的歌曲会自动缓存到本地',
             style: TextStyle(
-              fontSize: isLandscape ? layout!.secondarySize : 12,
+              fontSize: metrics.secondarySize,
               color: AppColors.textSecondary,
             ),
           ),

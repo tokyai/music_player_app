@@ -189,7 +189,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       child: Row(
         children: [
           ClipRRect(
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(AppRadius.media),
             child: Image.asset(
               'assets/images/app_logo.png',
               width: layout.usesLargeTypography ? 60 : 48,
@@ -207,9 +207,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: layout.usesLargeTypography
-                        ? 28
-                        : (layout.isCompactLandscape ? 22 : 24),
+                    fontSize: layout.pageTitleSize,
                     fontWeight: FontWeight.w700,
                     color: AppColors.textPrimary,
                   ),
@@ -220,7 +218,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: layout.usesLargeTypography ? 16 : 13,
+                    fontSize: layout.secondarySize,
                     color: AppColors.textSecondary,
                   ),
                 ),
@@ -265,9 +263,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: layout.usesLargeTypography
-                    ? 22
-                    : (layout.isCompactLandscape ? 18 : 20),
+                fontSize: layout.sectionTitleSize,
                 fontWeight: FontWeight.w700,
                 color: AppColors.textPrimary,
               ),
@@ -281,7 +277,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.end,
                 style: TextStyle(
-                  fontSize: layout.usesLargeTypography ? 16 : 13,
+                  fontSize: layout.secondarySize,
                   color: AppColors.textHint,
                 ),
               ),
@@ -362,7 +358,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     }
 
     return SizedBox(
-      height: layout.usesLargeTypography ? 250 : (compact ? 196 : 218),
+      height:
+          layout.mediaCardWidth +
+          (layout.usesLargeTypography ? 78 : (compact ? 58 : 68)),
       child: ListView.builder(
         key: const ValueKey('home-favorites-carousel'),
         scrollDirection: Axis.horizontal,
@@ -519,7 +517,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     final display = songs.length > 10 ? songs.sublist(0, 10) : songs;
     return Container(
       margin: EdgeInsets.symmetric(
-        horizontal: AppLayout.fromContext(context).usesLargeTypography ? 20 : 12,
+        horizontal: AppLayout.fromContext(context).usesLargeTypography
+            ? 20
+            : 12,
       ),
       decoration: CardStyle.softCard(),
       child: Column(
@@ -562,7 +562,7 @@ class _FavoriteSongCard extends StatelessWidget {
     return InkWell(
       key: ValueKey('home-favorite-${song.platform.code}-${song.id}'),
       onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(AppRadius.card),
       child: Container(
         width: cardSize,
         margin: const EdgeInsets.symmetric(horizontal: 7),
@@ -570,7 +570,7 @@ class _FavoriteSongCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             ClipRRect(
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(AppRadius.media),
               child: SizedBox.square(
                 dimension: cardSize,
                 child: SmartCover(

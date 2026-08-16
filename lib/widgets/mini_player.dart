@@ -26,9 +26,7 @@ class MiniPlayer extends StatelessWidget {
         final platformColor = PlatformColors.of(song.platform);
         final layout = AppLayout.fromContext(context);
         final compact = layout.isCompactLandscape;
-        final coverSize = compact
-            ? 44.0
-            : (layout.usesLargeTypography ? 64.0 : 52.0);
+        final coverSize = layout.songCoverSize;
 
         return GestureDetector(
           onTap: () {
@@ -46,7 +44,7 @@ class MiniPlayer extends StatelessWidget {
             ),
             decoration: BoxDecoration(
               color: AppColors.surface,
-              borderRadius: BorderRadius.circular(compact ? 14 : 18),
+              borderRadius: BorderRadius.circular(AppRadius.card),
               border: Border.all(color: AppColors.outline),
               boxShadow: [
                 BoxShadow(
@@ -62,7 +60,7 @@ class MiniPlayer extends StatelessWidget {
                 // 进度条
                 ClipRRect(
                   borderRadius: const BorderRadius.vertical(
-                    top: Radius.circular(18),
+                    top: Radius.circular(AppRadius.card),
                   ),
                   child: LinearProgressIndicator(
                     value: progress.clamp(0.0, 1.0),
@@ -81,7 +79,7 @@ class MiniPlayer extends StatelessWidget {
                     children: [
                       // 封面
                       ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
+                        borderRadius: BorderRadius.circular(AppRadius.media),
                         child: SizedBox(
                           width: coverSize,
                           height: coverSize,
@@ -108,7 +106,7 @@ class MiniPlayer extends StatelessWidget {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                fontSize: compact ? 15 : 16,
+                                fontSize: layout.songTitleSize,
                                 fontWeight: FontWeight.w600,
                                 color: AppColors.textPrimary,
                               ),
@@ -119,7 +117,7 @@ class MiniPlayer extends StatelessWidget {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                fontSize: compact ? 12 : 13,
+                                fontSize: layout.songSubtitleSize,
                                 color: AppColors.textSecondary,
                               ),
                             ),
@@ -203,6 +201,8 @@ class LandscapeMiniPlayer extends StatelessWidget {
                 : (constraints.maxWidth >= 280 ? 164.0 : 148.0);
             return Material(
               color: AppColors.surface,
+              borderRadius: BorderRadius.circular(AppRadius.panel),
+              clipBehavior: Clip.antiAlias,
               child: InkWell(
                 onTap: () => Navigator.push(
                   ctx,
@@ -221,7 +221,7 @@ class LandscapeMiniPlayer extends StatelessWidget {
                       children: [
                         const Spacer(),
                         ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(AppRadius.media),
                           child: SizedBox(
                             width: coverSize,
                             height: coverSize,
@@ -247,7 +247,7 @@ class LandscapeMiniPlayer extends StatelessWidget {
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: AppColors.textPrimary,
-                            fontSize: compactHeight ? 16 : 18,
+                            fontSize: compactHeight ? 18 : 23,
                             fontWeight: FontWeight.w700,
                           ),
                         ),
@@ -259,7 +259,7 @@ class LandscapeMiniPlayer extends StatelessWidget {
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: AppColors.textSecondary,
-                            fontSize: compactHeight ? 13 : 14,
+                            fontSize: compactHeight ? 14 : 18,
                           ),
                         ),
                         SizedBox(height: compactHeight ? 8 : 16),
@@ -328,7 +328,7 @@ class LandscapeMiniPlayer extends StatelessWidget {
                             '${player.currentIndex + 1} / ${player.queue.length}',
                             style: TextStyle(
                               color: AppColors.textHint,
-                              fontSize: 13,
+                              fontSize: 17,
                             ),
                           ),
                         const Spacer(),
@@ -388,6 +388,7 @@ class _LandscapePlayerActions extends StatelessWidget {
 
 void _showMiniQueue(BuildContext context, PlayerProvider player) {
   final size = MediaQuery.sizeOf(context);
+  final layout = AppLayout.fromContext(context);
   showDialog<void>(
     context: context,
     barrierColor: Colors.black54,
@@ -400,7 +401,7 @@ void _showMiniQueue(BuildContext context, PlayerProvider player) {
           child: Material(
             color: AppColors.surface,
             elevation: 12,
-            borderRadius: BorderRadius.circular(22),
+            borderRadius: BorderRadius.circular(AppRadius.panel),
             clipBehavior: Clip.antiAlias,
             child: SizedBox(
               width: (size.width * 0.36).clamp(340.0, 430.0),
@@ -416,7 +417,7 @@ void _showMiniQueue(BuildContext context, PlayerProvider player) {
                             '播放队列 (${player.queue.length})',
                             style: TextStyle(
                               color: AppColors.textPrimary,
-                              fontSize: 20,
+                              fontSize: layout.sectionTitleSize,
                               fontWeight: FontWeight.w700,
                             ),
                           ),

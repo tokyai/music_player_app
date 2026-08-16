@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/song.dart';
@@ -25,47 +27,150 @@ class PlaylistDetailScreen extends StatefulWidget {
 }
 
 class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
+  static const _pageSize = 20;
   PlaylistInfo? _detail;
+  final List<SongSearchResult> _tracks = <SongSearchResult>[];
+  final ScrollController _trackScrollController = ScrollController();
   bool _loading = false;
+  bool _loadingMore = false;
+  bool _loadingAll = false;
+  bool _hasMore = true;
+  int _nextOffset = 0;
   String? _error;
 
   @override
   void initState() {
     super.initState();
+    _trackScrollController.addListener(_handleTrackScroll);
     _loadDetail();
+  }
+
+  @override
+  void dispose() {
+    _trackScrollController.dispose();
+    super.dispose();
+  }
+
+  void _handleTrackScroll() {
+    if (!_trackScrollController.hasClients || _loadingMore || !_hasMore) {
+      return;
+    }
+    final position = _trackScrollController.position;
+    if (position.extentAfter < 520) {
+      unawaited(_loadMore().then<void>((_) {}));
+    }
   }
 
   Future<void> _loadDetail() async {
     setState(() {
       _loading = true;
       _error = null;
+      _tracks.clear();
+      _nextOffset = 0;
+      _hasMore = true;
     });
     try {
-      final api = context.read<PlayerProvider>().api;
-      PlaylistInfo result;
-      if (widget.platform == MusicPlatform.netease) {
-        result = await api.neteasePlaylist(widget.playlist.id);
-      } else if (widget.platform == MusicPlatform.qq) {
-        result = await api.qqPlaylist(widget.playlist.id);
-      } else if (widget.platform == MusicPlatform.kugou) {
-        final detail = await api.kugouPlaylist(widget.playlist.id);
-        // 酷狗详情接口不带歌单名/封面，用传入的信息补齐
-        result = PlaylistInfo(
-          id: widget.playlist.id,
-          name: widget.playlist.name,
-          coverUrl: widget.playlist.coverUrl,
-          creator: widget.playlist.creator,
-          trackCount: detail.trackCount,
-          tracks: detail.tracks,
-        );
-      } else {
-        result = widget.playlist;
+      final page = await _fetchPage(0);
+      final source = widget.playlist;
+      final total = page.total != null && page.total! > 0
+          ? page.total!
+          : source.trackCount > 0
+          ? source.trackCount
+          : page.tracks.length;
+      final result = PlaylistInfo(
+        id: source.id,
+        name: source.name,
+        coverUrl: source.coverUrl,
+        creator: source.creator,
+        trackCount: total,
+        description: source.description,
+        tracks: page.tracks,
+      );
+      if (mounted) {
+        setState(() {
+          _detail = result;
+          _tracks
+            ..clear()
+            ..addAll(page.tracks);
+          _nextOffset = _tracks.length;
+          _hasMore = _pageHasMore(page, _nextOffset);
+        });
       }
-      if (mounted) setState(() => _detail = result);
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = _friendlyError(e));
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<PlaylistTrackPage> _fetchPage(int offset) {
+    final api = context.read<PlayerProvider>().api;
+    switch (widget.platform) {
+      case MusicPlatform.netease:
+        return api.neteasePlaylistTracks(
+          widget.playlist.id,
+          limit: _pageSize,
+          offset: offset,
+        );
+      case MusicPlatform.qq:
+        return api.qqPlaylistTracks(
+          widget.playlist.id,
+          limit: _pageSize,
+          offset: offset,
+        );
+      case MusicPlatform.kugou:
+        return api.kugouPlaylistTracks(
+          widget.playlist.id,
+          page: offset ~/ _pageSize + 1,
+          limit: _pageSize,
+        );
+    }
+  }
+
+  bool _pageHasMore(PlaylistTrackPage page, int offset) {
+    if (page.total != null && page.total! > 0) return offset < page.total!;
+    return page.tracks.length >= _pageSize;
+  }
+
+  String _friendlyError(Object error) {
+    final message = error.toString();
+    if (message.contains('TimeoutException')) return '网络响应较慢，请稍后重试';
+    if (message.contains('SocketException')) return '网络连接失败，请检查网络后重试';
+    return message;
+  }
+
+  Future<bool> _loadMore() async {
+    if (_loading || _loadingMore || !_hasMore) return false;
+    setState(() => _loadingMore = true);
+    try {
+      final page = await _fetchPage(_nextOffset);
+      if (!mounted) return false;
+      setState(() {
+        _tracks.addAll(page.tracks);
+        _nextOffset = _tracks.length;
+        _hasMore = page.tracks.isNotEmpty && _pageHasMore(page, _nextOffset);
+        if (_detail != null) {
+          _detail = PlaylistInfo(
+            id: _detail!.id,
+            name: _detail!.name,
+            coverUrl: _detail!.coverUrl,
+            creator: _detail!.creator,
+            trackCount: _detail!.trackCount,
+            description: _detail!.description,
+            tracks: List.unmodifiable(_tracks),
+          );
+        }
+      });
+      return page.tracks.isNotEmpty;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('加载更多失败：${_friendlyError(e)}')));
+      }
+      return false;
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
     }
   }
 
@@ -118,6 +223,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   }
 
   Widget _buildDetailHeader({AppLayout? layout}) {
+    final metrics = layout ?? AppLayout.fromContext(context);
     final isLandscape = layout != null;
     final isCompact = layout?.isCompactLandscape ?? false;
     final p = _detail ?? widget.playlist;
@@ -128,9 +234,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               : layout.usesLargeTypography
               ? 230.0
               : 184.0
-        : 100.0;
+        : 108.0;
     final cover = ClipRRect(
-      borderRadius: BorderRadius.circular(isLandscape ? 20 : 14),
+      borderRadius: BorderRadius.circular(AppRadius.media),
       child: SizedBox(
         width: coverSize,
         height: coverSize,
@@ -148,10 +254,10 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       children: [
         Text(
           p.name,
-          maxLines: isLandscape ? (isCompact ? 2 : 3) : 2,
+          maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
-            fontSize: isLandscape ? layout.sectionTitleSize : 17,
+            fontSize: metrics.sectionTitleSize,
             fontWeight: FontWeight.w700,
             color: AppColors.textPrimary,
           ),
@@ -163,7 +269,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
-              fontSize: isLandscape ? layout.secondarySize : 12,
+              fontSize: metrics.secondarySize,
               color: AppColors.textSecondary,
             ),
           ),
@@ -172,22 +278,36 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         Text(
           '${p.trackCount} 首',
           style: TextStyle(
-            fontSize: isLandscape ? layout.secondarySize : 12,
+            fontSize: metrics.secondarySize,
             color: AppColors.textSecondary,
           ),
         ),
       ],
     );
     final canPlay = _detail != null && _detail!.tracks.isNotEmpty;
-    void playAll() {
-      if (!canPlay) return;
-      context.read<PlayerProvider>().playFromPlaylist(_detail!.tracks, 0);
+    Future<void> playAll() async {
+      if (!canPlay || _loadingAll) return;
+      setState(() => _loadingAll = true);
+      try {
+        while (mounted && _hasMore) {
+          final loaded = await _loadMore();
+          // _loadMore handles its own error UI. Stop here when a page could
+          // not be appended so a transient network failure cannot spin the
+          // loop forever while the user is waiting for playback to start.
+          if (!loaded) break;
+        }
+        if (mounted && _tracks.isNotEmpty) {
+          context.read<PlayerProvider>().playFromPlaylist(_tracks, 0);
+        }
+      } finally {
+        if (mounted) setState(() => _loadingAll = false);
+      }
     }
 
     final playButton = canPlay
         ? isLandscape
               ? FilledButton.icon(
-                  onPressed: playAll,
+                  onPressed: _loadingAll ? null : playAll,
                   icon: const Icon(Icons.play_arrow_rounded, size: 24),
                   label: const Text('播放全部'),
                 )
@@ -229,11 +349,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
     return Container(
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [platformColor.withOpacity(0.15), AppColors.background],
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-        ),
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.panel),
+        border: Border.all(color: AppColors.outline),
       ),
       child: isLandscape
           ? ListView(
@@ -321,7 +439,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: Colors.redAccent,
-                  fontSize: layout.isLandscape ? layout.bodySize : 14,
+                  fontSize: layout.bodySize,
                 ),
               ),
               const SizedBox(height: 16),
@@ -331,28 +449,48 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         ),
       );
     }
-    if (_detail == null || _detail!.tracks.isEmpty) {
+    if (_detail == null || _tracks.isEmpty) {
       return Center(
         child: Text(
           '暂无歌曲',
           style: TextStyle(
             color: AppColors.textHint,
-            fontSize: layout.isLandscape ? layout.bodySize : 14,
+            fontSize: layout.bodySize,
           ),
         ),
       );
     }
+    final itemCount = _tracks.length + (_hasMore || _loadingMore ? 1 : 0);
     return ListView.builder(
       key: const PageStorageKey('playlist-detail-tracks'),
+      controller: _trackScrollController,
       padding: const EdgeInsets.only(bottom: 16),
-      itemCount: _detail!.tracks.length,
+      itemCount: itemCount,
       itemBuilder: (ctx, i) {
-        final track = _detail!.tracks[i];
+        if (i >= _tracks.length) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 18),
+            child: Center(
+              child: _loadingMore
+                  ? const SizedBox.square(
+                      dimension: 26,
+                      child: CircularProgressIndicator(strokeWidth: 2.5),
+                    )
+                  : TextButton(
+                      key: const ValueKey('playlist-load-more'),
+                      onPressed: () =>
+                          unawaited(_loadMore().then<void>((_) {})),
+                      child: const Text('加载更多'),
+                    ),
+            ),
+          );
+        }
+        final track = _tracks[i];
         return SongTile(
           song: track,
           showFavorite: true,
           onTap: () {
-            context.read<PlayerProvider>().playFromPlaylist(_detail!.tracks, i);
+            context.read<PlayerProvider>().playFromPlaylist(_tracks, i);
           },
           onAddToQueue: () {
             context.read<PlayerProvider>().addToQueue(track);
@@ -370,7 +508,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
   Widget _coverPlaceholder(Color platformColor) {
     return Container(
-      color: platformColor.withOpacity(0.12),
+      color: AppColors.primarySoft,
       child: Icon(Icons.playlist_play, size: 40, color: platformColor),
     );
   }

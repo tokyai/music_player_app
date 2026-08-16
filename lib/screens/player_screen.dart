@@ -23,13 +23,13 @@ class PlayerScreen extends StatefulWidget {
 
 class _PlayerScreenState extends State<PlayerScreen> {
   static const _lyricFontSizePreferenceKey = 'lyric_font_size';
-  static const _lyricFontSizes = <double>[24, 28, 32, 36, 42];
+  static const _lyricFontSizes = <double>[32, 36, 42, 48, 54, 60];
 
   Color? _dominantColor;
   bool _lyricsAutoScroll = true;
   bool _lyricFontSizeChangedByUser = false;
-  double _lyricFontSize = 32;
-  double _lyricLineExtent = 64;
+  double _lyricFontSize = 42;
+  double _lyricLineExtent = 92;
   final ScrollController _lyricScrollController = ScrollController();
   String? _lastColorSongId;
 
@@ -46,7 +46,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       final rawValue = prefs.get(_lyricFontSizePreferenceKey);
-      final savedSize = rawValue is num ? rawValue.toDouble() : null;
+      final rawSize = rawValue is num ? rawValue.toDouble() : null;
+      // 旧版本的 24/28 档在大屏上过小，平滑迁移到新的最小档 32。
+      final savedSize = rawSize != null && rawSize < 32 ? 32.0 : rawSize;
       if (!mounted ||
           _lyricFontSizeChangedByUser ||
           savedSize == null ||
@@ -55,7 +57,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
       setState(() {
         _lyricFontSize = savedSize;
-        _lyricLineExtent = savedSize + 32;
+        _lyricLineExtent = savedSize + 46;
       });
     } catch (_) {}
   }
@@ -177,7 +179,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           key: const ValueKey('player-artist-search'),
           onTap: () =>
               _openScopedSearch(context, player, song, SearchSubject.artist),
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: BorderRadius.circular(AppRadius.small),
           child: ConstrainedBox(
             constraints: BoxConstraints(minHeight: minHitHeight),
             child: Padding(
@@ -242,7 +244,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     song,
                     SearchSubject.album,
                   ),
-                  borderRadius: BorderRadius.circular(6),
+                  borderRadius: BorderRadius.circular(AppRadius.small),
                   child: ConstrainedBox(
                     constraints: BoxConstraints(minHeight: minHitHeight),
                     child: Padding(
@@ -292,13 +294,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
         });
 
         final baseColor = _dominantColor ?? AppColors.primary;
-        final isDark = baseColor.computeLuminance() < 0.5;
-        // 状态栏图标跟随播放页背景明暗（深色封面用白色图标，避免状态栏发黑看不清）
-        applySystemUi(dark: isDark);
-        // 文字颜色：深色背景用白色，浅色背景用深色
-        final textColor = isDark ? Colors.white : AppColors.textPrimary;
-        final subTextColor = (isDark ? Colors.white : AppColors.textPrimary)
-            .withOpacity(0.6);
+        final darkTheme = Theme.of(ctx).brightness == Brightness.dark;
+        // 背景明暗由当前主题决定，不再直接跟随封面主色。这样浅色封面在
+        // 深色模式下也会先压暗，避免出现浅背景配白字的低对比度组合。
+        applySystemUi(dark: darkTheme);
+        final textColor = darkTheme ? Colors.white : const Color(0xFF171A1F);
+        final subTextColor = darkTheme
+            ? Colors.white.withValues(alpha: 0.74)
+            : const Color(0xFF414750);
         final isLandscape =
             MediaQuery.orientationOf(ctx) == Orientation.landscape;
 
@@ -306,7 +309,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           body: Stack(
             fit: StackFit.expand,
             children: [
-              _buildPlayerBackground(song, baseColor, isDark),
+              _buildPlayerBackground(song, baseColor, darkTheme),
               SafeArea(
                 child: isLandscape
                     ? _buildLandscapePlayer(
@@ -357,15 +360,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget _buildPlayerBackground(
     PlayQueueItem song,
     Color baseColor,
-    bool darkForeground,
+    bool darkTheme,
   ) {
     final cover = song.coverUrl;
-    final scrim = darkForeground
-        ? Colors.black.withValues(alpha: 0.52)
-        : Colors.white.withValues(alpha: 0.72);
-    final lowerScrim = darkForeground
-        ? const Color(0xE61A1C21)
-        : const Color(0xF2F7F8FA);
+    final scrim = darkTheme
+        ? Colors.black.withValues(alpha: 0.7)
+        : Colors.white.withValues(alpha: 0.82);
+    final lowerScrim = darkTheme
+        ? const Color(0xF2131519)
+        : const Color(0xFAF7F8FA);
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -387,6 +390,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ),
         Positioned.fill(
           child: DecoratedBox(
+            key: const ValueKey('player-background-scrim'),
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
@@ -516,7 +520,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
         final compactHeight = constraints.maxHeight < 420 && !largeUi;
         final widthLimit = constraints.maxWidth - (compactHeight ? 28 : 40);
         final largeHeightFactor = layout.isHighDensityCarDisplay ? 0.34 : 0.44;
-        final heightLimit = constraints.maxHeight *
+        final heightLimit =
+            constraints.maxHeight *
             (largeUi ? largeHeightFactor : (compactHeight ? 0.24 : 0.54));
         final rawCoverSize = widthLimit < heightLimit
             ? widthLimit
@@ -565,6 +570,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   subTextColor,
                   compact: true,
                   showLyricFontControl: largeUi,
+                  landscape: true,
                 ),
               ],
             ),
@@ -636,7 +642,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       player,
                       song,
                       textColor,
-                    fontSize: largeUi ? 27 : (layout.isCompactLandscape ? 18 : 20),
+                      fontSize: largeUi
+                          ? 27
+                          : (layout.isCompactLandscape ? 18 : 20),
                     ),
                     const SizedBox(height: 3),
                     _buildArtistAlbumLine(
@@ -644,7 +652,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       player,
                       song,
                       subColor,
-                    fontSize: largeUi ? 17 : (layout.isCompactLandscape ? 13 : 14),
+                      fontSize: largeUi
+                          ? 17
+                          : (layout.isCompactLandscape ? 13 : 14),
                     ),
                     if (selection.$2 != null) ...[
                       const SizedBox(height: 3),
@@ -654,7 +664,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           color: Colors.redAccent,
-                          fontSize: largeUi ? 14 : (layout.isCompactLandscape ? 11 : 12),
+                          fontSize: largeUi
+                              ? 14
+                              : (layout.isCompactLandscape ? 11 : 12),
                         ),
                       ),
                     ],
@@ -705,25 +717,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ),
           );
         }
-        final layout = AppLayout.fromContext(ctx);
-        final lyricView = _buildLyricView(
+        return _buildLyricView(
           ctx,
           player,
           textColor,
           landscape: true,
           toggleOnTap: false,
-        );
-        if (layout.usesLargeTypography) return lyricView;
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            lyricView,
-            Positioned(
-              top: 4,
-              right: 6,
-              child: _buildLyricFontMenu(textColor),
-            ),
-          ],
         );
       },
     );
@@ -741,11 +740,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   List<PopupMenuEntry<double>> _lyricFontMenuItems() => const [
-    PopupMenuItem(value: 24, child: Text('小')),
-    PopupMenuItem(value: 28, child: Text('标准')),
-    PopupMenuItem(value: 32, child: Text('大')),
-    PopupMenuItem(value: 36, child: Text('特大')),
-    PopupMenuItem(value: 42, child: Text('超大')),
+    PopupMenuItem(value: 32, child: Text('小 · 32')),
+    PopupMenuItem(value: 36, child: Text('中 · 36')),
+    PopupMenuItem(value: 42, child: Text('标准 · 42')),
+    PopupMenuItem(value: 48, child: Text('大 · 48')),
+    PopupMenuItem(value: 54, child: Text('特大 · 54')),
+    PopupMenuItem(value: 60, child: Text('最大 · 60')),
   ];
 
   Widget _buildPlayerVisual(
@@ -920,7 +920,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
             const SizedBox(height: 16),
             Text(
               '暂无歌词',
-              style: TextStyle(color: textColor.withOpacity(0.5), fontSize: 16),
+              style: TextStyle(
+                color: textColor.withOpacity(0.5),
+                fontSize: AppLayout.fromContext(ctx).bodySize,
+              ),
             ),
           ],
         ),
@@ -934,9 +937,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
             : _lyricLineExtent * 2;
         final layout = AppLayout.fromContext(ctx);
         final largeUi = landscape && layout.usesLargeTypography;
-        final scaledFontSize = MediaQuery.textScalerOf(ctx).scale(
-          _lyricFontSize,
-        );
+        final scaledFontSize = MediaQuery.textScalerOf(
+          ctx,
+        ).scale(_lyricFontSize);
         final lineExtent = landscape
             ? (scaledFontSize + (largeUi ? 34 : 28)).clamp(
                 largeUi ? 64.0 : 58.0,
@@ -1269,22 +1272,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
                 onPressed: player.playNext,
               ),
-              if (landscape)
-                IconButton(
-                  constraints: BoxConstraints.tightFor(
-                    width: iconButtonWidth,
-                    height: iconButtonHeight,
-                  ),
-                  padding: EdgeInsets.zero,
-                  tooltip: '播放队列',
-                  icon: Icon(
-                    Icons.queue_music_rounded,
-                    color: textColor,
-                    size: largeUi ? 28 : (compact ? 22 : 28),
-                  ),
-                  onPressed: () => _showQueueSheet(ctx, player),
-                )
-              else
+              if (!landscape)
                 IconButton(
                   constraints: BoxConstraints.tightFor(
                     width: iconButtonWidth,
@@ -1314,6 +1302,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     Color subColor, {
     bool compact = false,
     bool showLyricFontControl = false,
+    bool landscape = false,
   }) {
     // 收藏状态跟随 FavoriteService（点击收藏/取消收藏实时刷新）
     final fav = ctx.watch<FavoriteService>();
@@ -1326,17 +1315,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
           padding: EdgeInsets.only(bottom: compact ? 0 : 12),
           child: Row(
             children: [
-              Expanded(
-                child: _playerActionButton(
-                  context: ctx,
-                  compact: compact,
-                  onPressed: player.toggleShowLyric,
-                  icon: Icons.text_snippet_rounded,
-                  label: '歌词',
-                  color: showLyric ? AppColors.primary : subColor,
+              if (!landscape)
+                Expanded(
+                  child: _playerActionButton(
+                    context: ctx,
+                    compact: compact,
+                    onPressed: player.toggleShowLyric,
+                    icon: Icons.text_snippet_rounded,
+                    label: '歌词',
+                    color: showLyric ? AppColors.primary : subColor,
+                  ),
                 ),
-              ),
-              if (showLyricFontControl)
+              if (showLyricFontControl || landscape)
                 Expanded(child: _buildLyricFontAction(ctx, subColor))
               else if (!compact)
                 _buildLyricFontMenu(subColor),
@@ -1425,18 +1415,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final height = largeUi ? 54.0 : (compact ? 36.0 : 50.0);
     final iconSize = largeUi ? 24.0 : (compact ? 18.0 : 22.0);
     final fontSize = largeUi ? 16.0 : (compact ? 13.0 : 16.0);
-    return TextButton.icon(
-      onPressed: onPressed,
-      style: TextButton.styleFrom(
-        padding: EdgeInsets.symmetric(horizontal: largeUi ? 4 : 2),
-        minimumSize: Size(0, height),
-        tapTargetSize: MaterialTapTargetSize.padded,
-      ),
-      icon: Icon(icon, color: color, size: iconSize),
-      label: Text(
-        label,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(color: color, fontSize: fontSize),
+    return Tooltip(
+      message: label == '队列' ? '播放队列' : label,
+      child: TextButton.icon(
+        onPressed: onPressed,
+        style: TextButton.styleFrom(
+          padding: EdgeInsets.symmetric(horizontal: largeUi ? 4 : 2),
+          minimumSize: Size(0, height),
+          tapTargetSize: MaterialTapTargetSize.padded,
+        ),
+        icon: Icon(icon, color: color, size: iconSize),
+        label: Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(color: color, fontSize: fontSize),
+        ),
       ),
     );
   }
@@ -1459,7 +1453,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 child: Material(
                   color: AppColors.surface,
                   elevation: 12,
-                  borderRadius: BorderRadius.circular(20),
+                  borderRadius: BorderRadius.circular(AppRadius.panel),
                   clipBehavior: Clip.antiAlias,
                   child: SizedBox(
                     width: panelWidth,
@@ -1485,7 +1479,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       isScrollControlled: true,
       backgroundColor: AppColors.surface,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(AppRadius.panel),
+        ),
       ),
       builder: (ctx) {
         return DraggableScrollableSheet(
@@ -1553,7 +1549,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
               final isCurrent = i == player.currentIndex;
               return ListTile(
                 leading: ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(AppRadius.media),
                   child: SizedBox(
                     width: 44,
                     height: 44,

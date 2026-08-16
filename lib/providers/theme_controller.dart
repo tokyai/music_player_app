@@ -1,16 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// 主题模式控制器：管理 跟随系统/浅色/深色，并持久化到本地。
+/// 外观控制器：管理主题模式和全局字号比例，并持久化到本地。
 class ThemeController extends ChangeNotifier {
   static const String _prefKey = 'theme_mode';
+  static const String _fontScalePrefKey = 'font_scale';
   static const String _modeSystem = 'system';
   static const String _modeLight = 'light';
   static const String _modeDark = 'dark';
+  static const double minFontScale = 0.8;
+  static const double maxFontScale = 1.3;
+  static const double defaultFontScale = 1;
 
   ThemeMode _mode = ThemeMode.system;
+  double _fontScale = defaultFontScale;
+  bool _fontScaleChangedByUser = false;
 
   ThemeMode get mode => _mode;
+  double get fontScale => _fontScale;
 
   ThemeController() {
     _load();
@@ -29,6 +36,10 @@ class ThemeController extends ChangeNotifier {
           break;
         default:
           _mode = ThemeMode.system;
+      }
+      final rawFontScale = prefs.get(_fontScalePrefKey);
+      if (!_fontScaleChangedByUser && rawFontScale is num) {
+        _fontScale = _normalizeFontScale(rawFontScale.toDouble());
       }
       notifyListeners();
     } catch (_) {}
@@ -53,5 +64,29 @@ class ThemeController extends ChangeNotifier {
       }
       await prefs.setString(_prefKey, store);
     } catch (_) {}
+  }
+
+  /// 拖动过程中只更新界面，避免连续写入本地存储。
+  void previewFontScale(double value) {
+    _fontScaleChangedByUser = true;
+    final normalized = _normalizeFontScale(value);
+    if (_fontScale == normalized) return;
+    _fontScale = normalized;
+    notifyListeners();
+  }
+
+  /// 拖动结束或恢复默认值时保存最终比例。
+  Future<void> setFontScale(double value) async {
+    previewFontScale(value);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_fontScalePrefKey, _fontScale);
+    } catch (_) {}
+  }
+
+  static double _normalizeFontScale(double value) {
+    if (!value.isFinite) return defaultFontScale;
+    final clamped = value.clamp(minFontScale, maxFontScale).toDouble();
+    return ((clamped * 20).round() / 20).toDouble();
   }
 }

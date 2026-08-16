@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/song.dart';
+import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 
 /// 歌单导入对话框（支持 QQ音乐 / 网易云）
@@ -37,6 +38,7 @@ class _PlaylistImportDialogState extends State<PlaylistImportDialog> {
     final size = MediaQuery.sizeOf(context);
     final isLandscape = size.width > size.height;
     final compactLandscape = isLandscape && size.height <= 420;
+    final layout = AppLayout.fromContext(context);
     return AlertDialog(
       scrollable: true,
       insetPadding: EdgeInsets.symmetric(
@@ -73,7 +75,7 @@ class _PlaylistImportDialogState extends State<PlaylistImportDialog> {
                       ? VisualDensity.compact
                       : VisualDensity.standard,
                   textStyle: TextStyle(
-                    fontSize: isLandscape ? 15 : 13,
+                    fontSize: compactLandscape ? 16 : layout.bodySize,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -83,7 +85,7 @@ class _PlaylistImportDialogState extends State<PlaylistImportDialog> {
                 isQQ
                     ? '输入 QQ 歌单链接或 ID\n如: https://y.qq.com/n/ryqq/playlist/8912082986'
                     : '输入网易云歌单 ID\n如: 5202687076',
-                style: TextStyle(fontSize: isLandscape ? 15 : 13, height: 1.4),
+                style: TextStyle(fontSize: layout.bodySize, height: 1.35),
               ),
               const SizedBox(height: 16),
               TextFormField(

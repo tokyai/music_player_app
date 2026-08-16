@@ -39,6 +39,17 @@ class AppColors {
       isDark ? const Color(0xFF30353D) : const Color(0xFFE3E7EC);
 }
 
+/// 全局圆角令牌。圆形播放按钮、头像和状态指示器仍保持圆形，
+/// 其余卡片、面板、输入框与按钮统一采用圆角矩形。
+class AppRadius {
+  static const double control = 16;
+  static const double card = 20;
+  static const double panel = 24;
+  static const double media = 16;
+  static const double small = 12;
+  static const double pill = 999;
+}
+
 /// 平台品牌色
 class PlatformColors {
   static const netease = Color(0xFFE84D3D); // 网易云红
@@ -82,6 +93,7 @@ class AppTheme {
         ? const Color(0xFF9AA0A8)
         : const Color(0xFF646A73);
     final textHint = isDark ? const Color(0xFF6B7075) : const Color(0xFF9AA0A8);
+    final outline = isDark ? const Color(0xFF30353D) : const Color(0xFFE3E7EC);
     final scheme = ColorScheme.fromSeed(
       seedColor: AppColors.primary,
       brightness: brightness,
@@ -94,34 +106,34 @@ class AppTheme {
     final textTheme = baseTypography.copyWith(
       displaySmall: TextStyle(
         color: textPrimary,
-        fontSize: 34,
+        fontSize: 38,
         height: 1.2,
         fontWeight: FontWeight.w700,
       ),
       headlineSmall: TextStyle(
         color: textPrimary,
-        fontSize: 28,
+        fontSize: 32,
         height: 1.24,
         fontWeight: FontWeight.w700,
       ),
       titleLarge: TextStyle(
         color: textPrimary,
-        fontSize: 24,
+        fontSize: 27,
         height: 1.25,
         fontWeight: FontWeight.w700,
       ),
       titleMedium: TextStyle(
         color: textPrimary,
-        fontSize: 19,
+        fontSize: 22,
         height: 1.3,
         fontWeight: FontWeight.w600,
       ),
-      bodyLarge: TextStyle(color: textPrimary, fontSize: 17, height: 1.4),
-      bodyMedium: TextStyle(color: textSecondary, fontSize: 15, height: 1.4),
-      bodySmall: TextStyle(color: textHint, fontSize: 14, height: 1.35),
+      bodyLarge: TextStyle(color: textPrimary, fontSize: 20, height: 1.35),
+      bodyMedium: TextStyle(color: textSecondary, fontSize: 18, height: 1.35),
+      bodySmall: TextStyle(color: textHint, fontSize: 16, height: 1.3),
       labelLarge: TextStyle(
         color: textPrimary,
-        fontSize: 16,
+        fontSize: 19,
         height: 1.2,
         fontWeight: FontWeight.w600,
       ),
@@ -145,15 +157,49 @@ class AppTheme {
       ],
       textTheme: textTheme,
       splashFactory: InkRipple.splashFactory,
+      cardTheme: CardThemeData(
+        color: surface,
+        surfaceTintColor: Colors.transparent,
+        margin: EdgeInsets.zero,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.card),
+          side: BorderSide(color: outline),
+        ),
+      ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: surface,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.panel),
+        ),
+        titleTextStyle: TextStyle(
+          color: textPrimary,
+          fontSize: 26,
+          fontWeight: FontWeight.w700,
+        ),
+        contentTextStyle: TextStyle(
+          color: textSecondary,
+          fontSize: 18,
+          height: 1.4,
+        ),
+      ),
+      popupMenuTheme: PopupMenuThemeData(
+        color: surface,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.control),
+        ),
+        textStyle: TextStyle(color: textPrimary, fontSize: 18),
+      ),
       appBarTheme: AppBarTheme(
         backgroundColor: background,
         elevation: 0,
         scrolledUnderElevation: 0,
         centerTitle: false,
-        toolbarHeight: 64,
+        toolbarHeight: 72,
         titleTextStyle: TextStyle(
           color: textPrimary,
-          fontSize: 24,
+          fontSize: 28,
           fontWeight: FontWeight.w700,
         ),
         iconTheme: IconThemeData(color: textPrimary),
@@ -161,11 +207,11 @@ class AppTheme {
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: surface,
         indicatorColor: primarySoft,
-        height: 72,
+        height: 80,
         labelTextStyle: WidgetStateProperty.resolveWith((states) {
           final selected = states.contains(WidgetState.selected);
           return TextStyle(
-            fontSize: 14,
+            fontSize: 17,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
             color: selected ? AppColors.primary : textSecondary,
           );
@@ -183,31 +229,31 @@ class AppTheme {
         indicatorColor: AppColors.primary,
         indicatorSize: TabBarIndicatorSize.label,
         dividerColor: Colors.transparent,
-        labelStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+        labelStyle: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
         unselectedLabelStyle: const TextStyle(
-          fontSize: 17,
+          fontSize: 19,
           fontWeight: FontWeight.w500,
         ),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: surface,
-        hintStyle: TextStyle(color: textHint, fontSize: 17),
-        labelStyle: TextStyle(color: textSecondary, fontSize: 16),
+        hintStyle: TextStyle(color: textHint, fontSize: 19),
+        labelStyle: TextStyle(color: textSecondary, fontSize: 18),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 18,
           vertical: 15,
         ),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(24),
+          borderRadius: BorderRadius.circular(AppRadius.control),
           borderSide: BorderSide.none,
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(24),
+          borderRadius: BorderRadius.circular(AppRadius.control),
           borderSide: BorderSide.none,
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(24),
+          borderRadius: BorderRadius.circular(AppRadius.control),
           borderSide: const BorderSide(color: AppColors.primary, width: 1.2),
         ),
       ),
@@ -216,44 +262,53 @@ class AppTheme {
           backgroundColor: AppColors.primary,
           foregroundColor: Colors.white,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(AppRadius.control),
           ),
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
           minimumSize: const Size(52, 50),
-          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+          textStyle: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
         ),
       ),
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.control),
+          ),
           minimumSize: const Size(48, 48),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.control),
+          ),
           minimumSize: const Size(52, 50),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
         ),
       ),
       iconButtonTheme: IconButtonThemeData(
         style: IconButton.styleFrom(
           minimumSize: const Size(50, 50),
-          iconSize: 26,
+          iconSize: 30,
         ),
       ),
       listTileTheme: ListTileThemeData(
         iconColor: textSecondary,
         minVerticalPadding: 10,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.card),
+        ),
         titleTextStyle: TextStyle(
           color: textPrimary,
-          fontSize: 18,
+          fontSize: 21,
           fontWeight: FontWeight.w600,
         ),
         subtitleTextStyle: TextStyle(
           color: textSecondary,
-          fontSize: 15,
+          fontSize: 18,
           height: 1.35,
         ),
       ),
@@ -265,17 +320,21 @@ class AppTheme {
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
         backgroundColor: textPrimary,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.control),
+        ),
         contentTextStyle: TextStyle(
           color: isDark ? const Color(0xFF20242B) : Colors.white,
-        fontSize: 16,
+          fontSize: 18,
         ),
       ),
       bottomSheetTheme: BottomSheetThemeData(
         backgroundColor: surface,
         surfaceTintColor: Colors.transparent,
         shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          borderRadius: BorderRadius.vertical(
+            top: Radius.circular(AppRadius.panel),
+          ),
         ),
       ),
     );
@@ -286,7 +345,7 @@ class AppTheme {
 class CardStyle {
   static BoxDecoration softCard() => BoxDecoration(
     color: AppColors.surface,
-    borderRadius: BorderRadius.circular(18),
+    borderRadius: BorderRadius.circular(AppRadius.card),
     border: Border.all(color: AppColors.outline),
     boxShadow: [
       BoxShadow(

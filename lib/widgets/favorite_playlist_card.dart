@@ -32,10 +32,10 @@ class FavoritePlaylistCard extends StatelessWidget {
       width: cardWidth,
       child: Material(
         color: Colors.transparent,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(AppRadius.card),
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(AppRadius.card),
           child: Padding(
             padding: const EdgeInsets.only(bottom: 6),
             child: Column(
@@ -44,7 +44,7 @@ class FavoritePlaylistCard extends StatelessWidget {
                 Stack(
                   children: [
                     ClipRRect(
-                      borderRadius: BorderRadius.circular(16),
+                      borderRadius: BorderRadius.circular(AppRadius.media),
                       child: SizedBox.square(
                         dimension: cardWidth,
                         child:
@@ -63,7 +63,9 @@ class FavoritePlaylistCard extends StatelessWidget {
                       right: 8,
                       child: Material(
                         color: Colors.black.withValues(alpha: 0.54),
-                        shape: const CircleBorder(),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(AppRadius.small),
+                        ),
                         child: IconButton(
                           tooltip: '取消收藏歌单',
                           visualDensity: VisualDensity.compact,

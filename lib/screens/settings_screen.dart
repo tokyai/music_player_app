@@ -232,6 +232,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildPageTitle({bool compact = false, AppLayout? layout}) {
+    final metrics = layout ?? AppLayout.fromContext(context);
     return Padding(
       padding: EdgeInsets.fromLTRB(
         compact ? 16 : 20,
@@ -242,7 +243,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Text(
         '设置',
         style: TextStyle(
-          fontSize: layout?.pageTitleSize ?? (compact ? 24 : 24),
+          fontSize: metrics.pageTitleSize,
           fontWeight: FontWeight.w700,
           color: AppColors.textPrimary,
         ),
@@ -251,13 +252,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildAppearanceCard({bool compact = false}) {
+    final layout = AppLayout.fromContext(context);
     return _buildCard(
       compact: compact,
       children: [
         _buildSectionHeader(icon: Icons.dark_mode_outlined, title: '外观'),
         Consumer<ThemeController>(
           builder: (ctx, themeCtrl, _) {
-            final segments = compact
+            final compactSegments =
+                compact || MediaQuery.sizeOf(ctx).width < 1180;
+            final fontScalePercent = (themeCtrl.fontScale * 100).round();
+            final segments = compactSegments
                 ? const [
                     ButtonSegment<ThemeMode>(
                       value: ThemeMode.system,
@@ -305,7 +310,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   Text(
                     '夜间使用深色配色，保护眼睛',
                     style: TextStyle(
-                      fontSize: 13,
+                      fontSize: layout.secondarySize,
                       color: AppColors.textSecondary,
                     ),
                   ),
@@ -320,10 +325,84 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       style: SegmentedButton.styleFrom(
                         visualDensity: VisualDensity.compact,
                         textStyle: TextStyle(
-                          fontSize: compact ? 13 : 14,
+                          fontSize: compact ? 16 : layout.bodySize,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
+                    ),
+                  ),
+                  const Divider(height: 24),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '整体字号',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: compact ? 16 : layout.bodySize,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textPrimary,
+                          ),
+                        ),
+                      ),
+                      Text(
+                        '$fontScalePercent%',
+                        key: const ValueKey('font-scale-value'),
+                        maxLines: 1,
+                        style: TextStyle(
+                          fontSize: compact ? 15 : layout.secondarySize,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      IconButton(
+                        key: const ValueKey('font-scale-reset'),
+                        tooltip: '恢复默认字号',
+                        onPressed:
+                            themeCtrl.fontScale ==
+                                ThemeController.defaultFontScale
+                            ? null
+                            : () => themeCtrl.setFontScale(
+                                ThemeController.defaultFontScale,
+                              ),
+                        icon: const Icon(Icons.restart_alt_rounded),
+                      ),
+                    ],
+                  ),
+                  Slider(
+                    key: const ValueKey('font-scale-slider'),
+                    value: themeCtrl.fontScale,
+                    min: ThemeController.minFontScale,
+                    max: ThemeController.maxFontScale,
+                    divisions: 10,
+                    label: '$fontScalePercent%',
+                    semanticFormatterCallback: (value) =>
+                        '${(value * 100).round()}%',
+                    onChanged: themeCtrl.previewFontScale,
+                    onChangeEnd: themeCtrl.setFontScale,
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          '80%',
+                          style: TextStyle(
+                            fontSize: layout.secondarySize,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                        Text(
+                          '130%',
+                          style: TextStyle(
+                            fontSize: layout.secondarySize,
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   const Divider(height: 24),
@@ -336,7 +415,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ? '播放时跨 App 悬浮显示（需悬浮窗权限）'
                           : '在任意界面顶部显示播放胶囊',
                       style: TextStyle(
-                        fontSize: 12,
+                        fontSize: layout.secondarySize,
                         color: AppColors.textSecondary,
                       ),
                     ),
@@ -353,6 +432,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildPlaybackCard({bool compact = false}) {
+    final layout = AppLayout.fromContext(context);
     return _buildCard(
       compact: compact,
       children: [
@@ -395,7 +475,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
                         color: Colors.orange.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.circular(AppRadius.control),
                       ),
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -410,7 +490,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             child: Text(
                               '高音质（无损/Hi-Res/母带）加载更慢，部分歌曲可能受版权限制无法播放。',
                               style: TextStyle(
-                                fontSize: 13,
+                                fontSize: layout.secondarySize,
                                 color: Colors.orange[800],
                               ),
                             ),
@@ -567,7 +647,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ListTile(
           dense: compact,
           leading: ClipRRect(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(AppRadius.media),
             child: Image.asset(
               'assets/images/app_logo.png',
               width: 40,
@@ -654,7 +734,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             platform,
             style: TextStyle(
               fontWeight: FontWeight.w600,
-              fontSize: layout.isLandscape ? layout.bodySize : 13,
+              fontSize: layout.bodySize,
               color: AppColors.textPrimary,
             ),
           ),
@@ -663,7 +743,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: Text(
             labels,
             style: TextStyle(
-              fontSize: layout.isLandscape ? layout.secondarySize : 13,
+              fontSize: layout.secondarySize,
               color: AppColors.textSecondary,
             ),
           ),
