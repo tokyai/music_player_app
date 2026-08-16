@@ -7,6 +7,7 @@ import '../providers/player_provider.dart';
 import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
+import '../widgets/favorite_playlist_card.dart';
 import '../widgets/song_tile.dart';
 import '../widgets/smart_cover.dart';
 import 'favorites_screen.dart';
@@ -20,20 +21,11 @@ class DiscoverScreen extends StatefulWidget {
 }
 
 class _DiscoverScreenState extends State<DiscoverScreen> {
-  List<PlaylistInfo> _neteasePlaylists = [];
-  List<PlaylistInfo> _qqPlaylists = [];
   List<SongSearchResult> _kugouDaily = [];
-  List<SongSearchResult> _kugouNewSongs = [];
 
-  bool _loadingNetease = false;
-  bool _loadingQQ = false;
   bool _loadingKugouDaily = false;
-  bool _loadingKugouNew = false;
 
-  String? _errNetease;
-  String? _errQQ;
   String? _errKugouDaily;
-  String? _errKugouNew;
 
   @override
   void initState() {
@@ -43,64 +35,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   }
 
   Future<void> _loadAll() async {
-    if (!mounted) return;
-    setState(() {
-      _loadingQQ = true;
-      _loadingNetease = true;
-      _loadingKugouDaily = true;
-      _loadingKugouNew = true;
-      _errQQ = null;
-      _errNetease = null;
-      _errKugouDaily = null;
-      _errKugouNew = null;
-    });
-
-    // 每列自上而下加载，同时最多保留两个请求，避免启动瞬间压满中转服务。
-    await Future.wait([
-      () async {
-        await _loadQQ();
-        if (mounted) await _loadNetease();
-      }(),
-      () async {
-        await _loadKugouDaily();
-        if (mounted) await _loadKugouNew();
-      }(),
-    ]);
-  }
-
-  Future<void> _loadNetease() async {
-    setState(() {
-      _loadingNetease = true;
-      _errNetease = null;
-    });
-    try {
-      final list = await context.read<PlayerProvider>().api.neteaseHotPlaylists(
-        limit: 12,
-      );
-      if (mounted) setState(() => _neteasePlaylists = list);
-    } catch (e) {
-      if (mounted) setState(() => _errNetease = e.toString());
-    } finally {
-      if (mounted) setState(() => _loadingNetease = false);
-    }
-  }
-
-  Future<void> _loadQQ() async {
-    setState(() {
-      _loadingQQ = true;
-      _errQQ = null;
-    });
-    try {
-      final list = await context
-          .read<PlayerProvider>()
-          .api
-          .qqRecommendPlaylists();
-      if (mounted) setState(() => _qqPlaylists = list);
-    } catch (e) {
-      if (mounted) setState(() => _errQQ = e.toString());
-    } finally {
-      if (mounted) setState(() => _loadingQQ = false);
-    }
+    await _loadKugouDaily();
   }
 
   Future<void> _loadKugouDaily() async {
@@ -120,25 +55,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     }
   }
 
-  Future<void> _loadKugouNew() async {
-    setState(() {
-      _loadingKugouNew = true;
-      _errKugouNew = null;
-    });
-    try {
-      final list = await context.read<PlayerProvider>().api.kugouNewSongs(
-        pagesize: 12,
-      );
-      if (mounted) setState(() => _kugouNewSongs = list);
-    } catch (e) {
-      if (mounted) setState(() => _errKugouNew = e.toString());
-    } finally {
-      if (mounted) setState(() => _loadingKugouNew = false);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
     final isLandscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
     return Scaffold(
@@ -159,36 +78,14 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
           _buildHeader(),
           _buildFavoritesBlock(),
           const SizedBox(height: 12),
-          _buildSectionHeader('QQ音乐推荐歌单', PlatformColors.qq, 'QQ 音乐编辑推荐'),
-          _buildPlaylistSection(
-            _qqPlaylists,
-            _loadingQQ,
-            _errQQ,
-            MusicPlatform.qq,
-          ),
+          _buildFavoritePlaylistsBlock(),
           const SizedBox(height: 12),
-          _buildSectionHeader('网易云热门歌单', PlatformColors.netease, '为你精选全网好听的歌单'),
-          _buildPlaylistSection(
-            _neteasePlaylists,
-            _loadingNetease,
-            _errNetease,
-            MusicPlatform.netease,
-          ),
-          const SizedBox(height: 12),
-          _buildSectionHeader('酷狗每日推荐', PlatformColors.kugou, '每天为你精选 20 首'),
+          _buildSectionHeader('每日推荐', PlatformColors.kugou, '每天为你精选好音乐'),
           _buildSongSection(
             _kugouDaily,
             _loadingKugouDaily,
             _errKugouDaily,
             onRetry: _loadKugouDaily,
-          ),
-          const SizedBox(height: 12),
-          _buildSectionHeader('酷狗新歌速递', PlatformColors.kugou, '最新上架的热门歌曲'),
-          _buildSongSection(
-            _kugouNewSongs,
-            _loadingKugouNew,
-            _errKugouNew,
-            onRetry: _loadKugouNew,
           ),
         ],
       ),
@@ -205,37 +102,13 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
           children: [
             Expanded(
               child: _buildLandscapeColumn(
-                key: const PageStorageKey('discover-landscape-playlists'),
+                key: const PageStorageKey('discover-landscape-library'),
                 compact: compact,
                 children: [
                   _buildHeader(),
                   _buildFavoritesBlock(compact: compact),
                   const SizedBox(height: 12),
-                  _buildSectionHeader(
-                    'QQ音乐推荐歌单',
-                    PlatformColors.qq,
-                    'QQ 音乐编辑推荐',
-                    compact: compact,
-                  ),
-                  _buildPlaylistSection(
-                    _qqPlaylists,
-                    _loadingQQ,
-                    _errQQ,
-                    MusicPlatform.qq,
-                  ),
-                  const SizedBox(height: 12),
-                  _buildSectionHeader(
-                    '网易云热门歌单',
-                    PlatformColors.netease,
-                    '为你精选全网好听的歌单',
-                    compact: compact,
-                  ),
-                  _buildPlaylistSection(
-                    _neteasePlaylists,
-                    _loadingNetease,
-                    _errNetease,
-                    MusicPlatform.netease,
-                  ),
+                  _buildFavoritePlaylistsBlock(compact: compact),
                   const SizedBox(height: 24),
                 ],
               ),
@@ -252,9 +125,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                 children: [
                   const SizedBox(height: 16),
                   _buildSectionHeader(
-                    '酷狗每日推荐',
+                    '每日推荐',
                     PlatformColors.kugou,
-                    '每天为你精选 20 首',
+                    '每天为你精选好音乐',
                     compact: compact,
                   ),
                   _buildSongSection(
@@ -262,19 +135,6 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                     _loadingKugouDaily,
                     _errKugouDaily,
                     onRetry: _loadKugouDaily,
-                  ),
-                  const SizedBox(height: 12),
-                  _buildSectionHeader(
-                    '酷狗新歌速递',
-                    PlatformColors.kugou,
-                    '最新上架的热门歌曲',
-                    compact: compact,
-                  ),
-                  _buildSongSection(
-                    _kugouNewSongs,
-                    _loadingKugouNew,
-                    _errKugouNew,
-                    onRetry: _loadKugouNew,
                   ),
                   const SizedBox(height: 24),
                 ],
@@ -301,7 +161,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         padding: EdgeInsets.only(
           bottom: compact
               ? 16
-              : (AppLayout.fromContext(context).isWideLandscape ? 32 : 24),
+              : (AppLayout.fromContext(context).usesLargeTypography ? 32 : 24),
         ),
         children: children,
       ),
@@ -321,9 +181,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         : '晚上好';
     return Container(
       margin: EdgeInsets.fromLTRB(
-        layout.isWideLandscape ? 28 : 20,
+        layout.usesLargeTypography ? 28 : 20,
         layout.isCompactLandscape ? 10 : 18,
-        layout.isWideLandscape ? 28 : 20,
+        layout.usesLargeTypography ? 28 : 20,
         10,
       ),
       child: Row(
@@ -332,8 +192,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
             borderRadius: BorderRadius.circular(14),
             child: Image.asset(
               'assets/images/app_logo.png',
-              width: layout.isWideLandscape ? 56 : 48,
-              height: layout.isWideLandscape ? 56 : 48,
+              width: layout.usesLargeTypography ? 60 : 48,
+              height: layout.usesLargeTypography ? 60 : 48,
               fit: BoxFit.cover,
             ),
           ),
@@ -347,7 +207,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: layout.isWideLandscape
+                    fontSize: layout.usesLargeTypography
                         ? 28
                         : (layout.isCompactLandscape ? 22 : 24),
                     fontWeight: FontWeight.w700,
@@ -360,7 +220,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: layout.isWideLandscape ? 15 : 13,
+                    fontSize: layout.usesLargeTypography ? 16 : 13,
                     color: AppColors.textSecondary,
                   ),
                 ),
@@ -383,16 +243,16 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     final layout = AppLayout.fromContext(context);
     final content = Container(
       padding: EdgeInsets.fromLTRB(
-        layout.isWideLandscape ? 28 : (layout.isCompactLandscape ? 14 : 20),
-        layout.isWideLandscape ? 18 : 12,
-        layout.isWideLandscape ? 28 : (layout.isCompactLandscape ? 14 : 20),
+        layout.usesLargeTypography ? 28 : (layout.isCompactLandscape ? 14 : 20),
+        layout.usesLargeTypography ? 18 : 12,
+        layout.usesLargeTypography ? 28 : (layout.isCompactLandscape ? 14 : 20),
         10,
       ),
       child: Row(
         children: [
           Container(
             width: 4,
-            height: layout.isWideLandscape ? 24 : 20,
+            height: layout.usesLargeTypography ? 26 : 20,
             decoration: BoxDecoration(
               color: color,
               borderRadius: BorderRadius.circular(2),
@@ -405,7 +265,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: layout.isWideLandscape
+                fontSize: layout.usesLargeTypography
                     ? 22
                     : (layout.isCompactLandscape ? 18 : 20),
                 fontWeight: FontWeight.w700,
@@ -421,7 +281,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.end,
                 style: TextStyle(
-                  fontSize: layout.isWideLandscape ? 14 : 13,
+                  fontSize: layout.usesLargeTypography ? 16 : 13,
                   color: AppColors.textHint,
                 ),
               ),
@@ -453,7 +313,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _buildSectionHeader(
-              '我的收藏',
+              '收藏歌曲',
               Colors.redAccent,
               '${songs.length} 首',
               compact: compact,
@@ -474,7 +334,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     final layout = AppLayout.fromContext(context);
     if (!favorites.loaded) {
       return SizedBox(
-        height: layout.isWideLandscape ? 150 : (compact ? 108 : 128),
+        height: layout.usesLargeTypography ? 160 : (compact ? 108 : 128),
         child: Center(
           child: SizedBox.square(
             dimension: 24,
@@ -490,7 +350,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     final songs = favorites.favorites;
     if (songs.isEmpty) {
       return SizedBox(
-        height: layout.isWideLandscape ? 126 : (compact ? 92 : 112),
+        height: layout.usesLargeTypography ? 136 : (compact ? 92 : 112),
         child: Center(
           child: TextButton.icon(
             onPressed: _openFavorites,
@@ -502,7 +362,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     }
 
     return SizedBox(
-      height: layout.isWideLandscape ? 238 : (compact ? 196 : 218),
+      height: layout.usesLargeTypography ? 250 : (compact ? 196 : 218),
       child: ListView.builder(
         key: const ValueKey('home-favorites-carousel'),
         scrollDirection: Axis.horizontal,
@@ -526,19 +386,39 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     );
   }
 
-  Widget _buildPlaylistSection(
-    List<PlaylistInfo> playlists,
-    bool loading,
-    String? error,
-    MusicPlatform platform,
-  ) {
+  Widget _buildFavoritePlaylistsBlock({bool compact = false}) {
+    return Consumer<FavoriteService>(
+      builder: (context, favorites, _) {
+        final playlists = favorites.favoritePlaylists;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildSectionHeader(
+              '收藏歌单',
+              AppColors.primary,
+              '${playlists.length} 个',
+              compact: compact,
+              key: const ValueKey('home-favorite-playlists-header'),
+              onTap: _openFavorites,
+            ),
+            _buildFavoritePlaylistSection(favorites, compact: compact),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildFavoritePlaylistSection(
+    FavoriteService favorites, {
+    bool compact = false,
+  }) {
     final layout = AppLayout.fromContext(context);
-    final cardHeight = layout.isWideLandscape
-        ? 246.0
-        : (layout.isCompactLandscape ? 208.0 : 224.0);
-    if (loading) {
+    final sectionHeight =
+        layout.mediaCardWidth +
+        (layout.usesLargeTypography ? 76 : (compact ? 66 : 68));
+    if (!favorites.loaded) {
       return SizedBox(
-        height: cardHeight,
+        height: sectionHeight,
         child: Center(
           child: CircularProgressIndicator(
             strokeWidth: 2.5,
@@ -547,55 +427,44 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         ),
       );
     }
-    if (error != null) {
+    final playlists = favorites.favoritePlaylists;
+    if (playlists.isEmpty) {
       return SizedBox(
-        height: 90,
+        height: layout.usesLargeTypography ? 136 : (compact ? 92 : 112),
         child: Center(
           child: TextButton.icon(
-            onPressed: () {
-              if (platform == MusicPlatform.netease) {
-                _loadNetease();
-              } else {
-                _loadQQ();
-              }
-            },
-            icon: Icon(Icons.refresh, size: 18, color: AppColors.primary),
-            label: Text(
-              '加载失败，点击重试',
-              style: TextStyle(color: AppColors.textSecondary),
-            ),
+            onPressed: _openFavorites,
+            icon: const Icon(Icons.playlist_add_rounded, size: 22),
+            label: const Text('还没有收藏歌单'),
           ),
         ),
       );
     }
-    if (playlists.isEmpty) {
-      return SizedBox(
-        height: 90,
-        child: Center(
-          child: Text('暂无数据', style: TextStyle(color: AppColors.textHint)),
-        ),
-      );
-    }
     return SizedBox(
-      height: cardHeight,
+      height: sectionHeight,
       child: ListView.builder(
+        key: const ValueKey('home-favorite-playlists-carousel'),
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 16),
         itemCount: playlists.length,
         itemBuilder: (ctx, i) {
-          final p = playlists[i];
-          return _PlaylistCard(
-            playlist: p,
-            platform: platform,
-            onTap: () {
-              Navigator.push(
+          final favorite = playlists[i];
+          return Padding(
+            padding: const EdgeInsets.only(right: 14),
+            child: FavoritePlaylistCard(
+              favorite: favorite,
+              onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) =>
-                      PlaylistDetailScreen(playlist: p, platform: platform),
+                  builder: (_) => PlaylistDetailScreen(
+                    playlist: favorite.playlist,
+                    platform: favorite.platform,
+                  ),
                 ),
-              );
-            },
+              ),
+              onFavoritePressed: () =>
+                  favorites.removePlaylist(favorite.platform, favorite.id),
+            ),
           );
         },
       ),
@@ -609,7 +478,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     Future<void> Function()? onRetry,
   }) {
     final layout = AppLayout.fromContext(context);
-    final listHeight = layout.isWideLandscape
+    final listHeight = layout.usesLargeTypography
         ? 520.0
         : (layout.isCompactLandscape ? 360.0 : 420.0);
     if (loading) {
@@ -650,7 +519,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     final display = songs.length > 10 ? songs.sublist(0, 10) : songs;
     return Container(
       margin: EdgeInsets.symmetric(
-        horizontal: AppLayout.fromContext(context).isWideLandscape ? 20 : 12,
+        horizontal: AppLayout.fromContext(context).usesLargeTypography ? 20 : 12,
       ),
       decoration: CardStyle.softCard(),
       child: Column(
@@ -686,6 +555,7 @@ class _FavoriteSongCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
     final layout = AppLayout.fromContext(context);
     final cardSize = layout.mediaCardWidth;
     final platformColor = PlatformColors.of(song.platform);
@@ -741,121 +611,6 @@ class _FavoriteSongCard extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-/// 歌单卡片
-class _PlaylistCard extends StatelessWidget {
-  final PlaylistInfo playlist;
-  final MusicPlatform platform;
-  final VoidCallback onTap;
-
-  const _PlaylistCard({
-    required this.playlist,
-    required this.platform,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final layout = AppLayout.fromContext(context);
-    final cardSize = layout.mediaCardWidth;
-    final platformColor = PlatformColors.of(platform);
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: cardSize,
-        margin: const EdgeInsets.symmetric(horizontal: 7),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Stack(
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(14),
-                  child: SizedBox(
-                    width: cardSize,
-                    height: cardSize,
-                    child:
-                        playlist.coverUrl != null &&
-                            playlist.coverUrl!.isNotEmpty
-                        ? SmartCover(
-                            url: playlist.coverUrl,
-                            fit: BoxFit.cover,
-                            placeholder: () => _coverPlaceholder(platformColor),
-                          )
-                        : _coverPlaceholder(platformColor),
-                  ),
-                ),
-                // 播放数/角标
-                Positioned(
-                  right: 6,
-                  bottom: 6,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 3,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.45),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(
-                          Icons.play_arrow_rounded,
-                          size: 12,
-                          color: Colors.white,
-                        ),
-                        Text(
-                          '${playlist.trackCount}',
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(
-              playlist.name,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: layout.mediaCardTitleSize,
-                fontWeight: FontWeight.w500,
-                color: AppColors.textPrimary,
-                height: 1.3,
-              ),
-            ),
-            if (playlist.creator != null) ...[
-              const SizedBox(height: 2),
-              Text(
-                playlist.creator!,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: layout.mediaCardSubtitleSize,
-                  color: AppColors.textHint,
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _coverPlaceholder(Color platformColor) {
-    return Container(
-      color: platformColor.withOpacity(0.12),
-      child: Icon(Icons.playlist_play, size: 40, color: platformColor),
     );
   }
 }

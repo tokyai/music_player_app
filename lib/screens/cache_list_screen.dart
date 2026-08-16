@@ -93,6 +93,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
     final totalSize = _cacheList.fold<int>(0, (sum, e) => sum + e.fileSize);
     final isLandscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
@@ -124,7 +125,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
         final layout = AppLayout.fromConstraints(context, constraints);
         final overviewWidth = layout.isCompactLandscape
             ? 210.0
-            : layout.isWideLandscape
+            : layout.usesLargeTypography
             ? 320.0
             : (constraints.maxWidth * 0.28).clamp(250.0, 300.0);
         return Row(
@@ -277,7 +278,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
     }
     if (_cacheList.isEmpty) return _buildEmpty(layout: layout);
     final compact = layout?.isCompactLandscape ?? false;
-    final coverSize = layout?.isWideLandscape == true
+    final coverSize = layout?.usesLargeTypography == true
         ? 68.0
         : compact
         ? 54.0
@@ -297,14 +298,14 @@ class _CacheListScreenState extends State<CacheListScreen> {
         return ListTile(
           minTileHeight: layout?.songRowHeight ?? 64,
           contentPadding: EdgeInsets.symmetric(
-            horizontal: layout?.isWideLandscape == true
+            horizontal: layout?.usesLargeTypography == true
                 ? 20
                 : (layout?.isLandscape == true ? 14 : 16),
             vertical: layout?.isLandscape == true ? 5 : 2,
           ),
           leading: ClipRRect(
             borderRadius: BorderRadius.circular(
-              layout?.isWideLandscape == true ? 12 : 8,
+              layout?.usesLargeTypography == true ? 12 : 8,
             ),
             child: Container(
               width: coverSize,

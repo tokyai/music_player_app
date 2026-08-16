@@ -17,6 +17,7 @@ import 'package:music_player_app/screens/playlist_screen.dart';
 import 'package:music_player_app/screens/search_screen.dart';
 import 'package:music_player_app/screens/settings_screen.dart';
 import 'package:music_player_app/services/favorite_service.dart';
+import 'package:music_player_app/theme/app_layout.dart';
 import 'package:music_player_app/theme/app_theme.dart';
 import 'package:music_player_app/utils/lyric_parser.dart';
 import 'package:music_player_app/widgets/mini_player.dart';
@@ -469,8 +470,20 @@ void main() {
         album: '收藏专辑',
       ),
     ];
+    final favoritePlaylist = FavoritePlaylist(
+      platform: MusicPlatform.qq,
+      playlist: PlaylistInfo(
+        id: 'favorite-playlist-1',
+        name: '收藏歌单一',
+        coverUrl: 'https://example.com/playlist.jpg',
+        creator: '歌单作者',
+        trackCount: 12,
+        tracks: const [],
+      ),
+    );
     SharedPreferences.setMockInitialValues({
       'favorites': jsonEncode(favorites.map((song) => song.toJson()).toList()),
+      'favorite_playlists': jsonEncode([favoritePlaylist.toJson()]),
     });
 
     await http.runWithClient(() async {
@@ -498,6 +511,19 @@ void main() {
       expect(carousel.scrollDirection, Axis.horizontal);
       expect(find.text('收藏歌曲一'), findsOneWidget);
       expect(find.text('收藏歌手一'), findsOneWidget);
+      expect(find.text('收藏歌单'), findsOneWidget);
+      expect(find.text('收藏歌单一'), findsOneWidget);
+      expect(find.text('QQ音乐推荐歌单'), findsNothing);
+      expect(find.text('网易云热门歌单'), findsNothing);
+      expect(find.text('酷狗新歌速递'), findsNothing);
+      expect(
+        tester
+            .widget<ListView>(
+              find.byKey(const ValueKey('home-favorite-playlists-carousel')),
+            )
+            .scrollDirection,
+        Axis.horizontal,
+      );
       expect(
         find.byKey(const ValueKey('home-favorites-header')).hitTestable(),
         findsOneWidget,
@@ -509,6 +535,83 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.byType(FavoritesScreen), findsOneWidget);
+      _expectNoException(tester);
+    }, _mockClient);
+  });
+
+  testWidgets('playlist details can save a playlist to the favorites section', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final player = PlayerProvider();
+    final theme = ThemeController();
+    final favorites = FavoriteService();
+    final playlist = PlaylistInfo(
+      id: 'detail-favorite-playlist',
+      name: '详情收藏歌单',
+      creator: '歌单作者',
+      trackCount: 8,
+      tracks: const [],
+    );
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      player.dispose();
+      theme.dispose();
+      favorites.dispose();
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    await http.runWithClient(() async {
+      _setViewSize(tester, const Size(640, 360));
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+            ChangeNotifierProvider<ThemeController>.value(value: theme),
+            ChangeNotifierProvider<FavoriteService>.value(value: favorites),
+          ],
+          child: MaterialApp(
+            theme: AppTheme.light(),
+            home: PlaylistDetailScreen(
+              playlist: playlist,
+              platform: MusicPlatform.qq,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('playlist-favorite-button')).hitTestable(),
+        findsOneWidget,
+      );
+      await tester.tap(
+        find.byKey(const ValueKey('playlist-favorite-button')).hitTestable(),
+      );
+      await tester.pumpAndSettle();
+      expect(favorites.favoritePlaylists, hasLength(1));
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+            ChangeNotifierProvider<ThemeController>.value(value: theme),
+            ChangeNotifierProvider<FavoriteService>.value(value: favorites),
+          ],
+          child: MaterialApp(
+            theme: AppTheme.light(),
+            home: const FavoritesScreen(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(VerticalDivider), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('favorites-playlists-section')),
+        findsOneWidget,
+      );
+      expect(find.text('详情收藏歌单'), findsOneWidget);
+      expect(find.byTooltip('取消收藏歌单'), findsOneWidget);
       _expectNoException(tester);
     }, _mockClient);
   });
@@ -560,7 +663,7 @@ void main() {
       await tester.tap(find.text('大').last);
       await tester.pumpAndSettle();
       final enlargedLyric = tester.widget<Text>(find.text('第一句歌词'));
-      expect(enlargedLyric.style?.fontSize, 20);
+      expect(enlargedLyric.style?.fontSize, 32);
 
       _setViewSize(tester, const Size(1125, 651));
       await tester.pumpAndSettle();
@@ -570,6 +673,60 @@ void main() {
       await tester.tap(find.byTooltip('播放队列'));
       await tester.pumpAndSettle();
       expect(find.text('播放队列 (1)'), findsOneWidget);
+      _expectNoException(tester);
+    }, _mockClient);
+  });
+
+  testWidgets('lyric font size persists for every song and player screen', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      SharedPreferences.setMockInitialValues({});
+      final firstPlayer = _PlayerWithLyrics();
+      final secondPlayer = _SecondPlayerWithLyrics();
+      final theme = ThemeController();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        firstPlayer.dispose();
+        secondPlayer.dispose();
+        theme.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      await _pumpScreen(
+        tester,
+        const PlayerScreen(),
+        firstPlayer,
+        theme,
+        const Size(1280, 800),
+      );
+      await tester.tap(find.byTooltip('歌词字号'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('超大').last);
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<Text>(find.text('第一句歌词')).style?.fontSize,
+        42,
+      );
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getDouble('lyric_font_size'), 42);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      await _pumpScreen(
+        tester,
+        const PlayerScreen(),
+        secondPlayer,
+        theme,
+        const Size(640, 360),
+      );
+      expect(find.text('另一首横屏测试歌曲'), findsOneWidget);
+      expect(
+        tester.widget<Text>(find.text('第一句歌词')).style?.fontSize,
+        42,
+      );
+      expect(find.text('收藏').hitTestable(), findsOneWidget);
       _expectNoException(tester);
     }, _mockClient);
   });
@@ -845,8 +1002,23 @@ void main() {
       expect(coverRect.width, greaterThanOrEqualTo(380));
       expect(find.text('第一句歌词'), findsOneWidget);
       final lyric = tester.widget<Text>(find.text('第一句歌词'));
-      expect(lyric.style?.fontSize, 22);
-      expect(lyric.style?.height, 1.2);
+      expect(lyric.style?.fontSize, 32);
+      expect(lyric.style?.height, 1.25);
+      final firstLyricRect = tester.getRect(find.text('第一句歌词'));
+      final secondLyricRect = tester.getRect(find.text('第二句歌词'));
+      expect(secondLyricRect.top - firstLyricRect.top, greaterThanOrEqualTo(64));
+      expect(
+        tester.getRect(find.byKey(const ValueKey('player-artist-search'))).height,
+        greaterThanOrEqualTo(52),
+      );
+      expect(
+        tester.getRect(find.byKey(const ValueKey('player-album-search'))).height,
+        greaterThanOrEqualTo(48),
+      );
+      expect(
+        tester.getRect(find.byKey(const ValueKey('player-lyric-font-action'))).left,
+        lessThan(lyricsRect.left),
+      );
       expect(find.text('收藏').hitTestable(), findsOneWidget);
       expect(find.byTooltip('歌词字号').hitTestable(), findsOneWidget);
       _expectNoException(tester);
@@ -879,6 +1051,10 @@ void main() {
         find.byType(MediaQuery).first,
       );
       expect(mediaQuery.data.size, const Size(960, 540));
+      expect(
+        MediaQuery.textScalerOf(tester.element(find.byType(MainScreen))).scale(16),
+        closeTo(18.4, 0.1),
+      );
       expect(find.byType(NavigationRail), findsOneWidget);
       expect(find.byType(MiniPlayer), findsOneWidget);
       expect(find.text('发现'), findsWidgets);
@@ -892,9 +1068,21 @@ void main() {
         const Size(1920, 1080),
         devicePixelRatio: 2,
       );
+      final playerLayout = AppLayout.fromContext(
+        tester.element(find.byType(PlayerScreen)),
+      );
+      expect(playerLayout.isHighDensityCarDisplay, isTrue);
+      expect(playerLayout.usesLargeTypography, isTrue);
       expect(find.text('第一句歌词'), findsOneWidget);
       expect(find.text('收藏').hitTestable(), findsOneWidget);
       expect(find.byTooltip('歌词字号').hitTestable(), findsOneWidget);
+      expect(
+        tester.getRect(find.byKey(const ValueKey('player-lyric-font-action'))).height,
+        greaterThanOrEqualTo(54),
+      );
+      final carFirstLyric = tester.getRect(find.text('第一句歌词'));
+      final carSecondLyric = tester.getRect(find.text('第二句歌词'));
+      expect(carSecondLyric.top - carFirstLyric.top, greaterThanOrEqualTo(64));
       expect(
         tester
             .getRect(find.byKey(const ValueKey('landscape-player-controls')))
@@ -908,6 +1096,165 @@ void main() {
       _expectNoException(tester);
     }, _mockClient);
   });
+
+  testWidgets('wide landscape custom surfaces follow live theme changes', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final player = _PlayerWithLyrics();
+    final theme = ThemeController();
+    await theme.setMode(ThemeMode.light);
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      player.dispose();
+      theme.dispose();
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    _setViewSize(tester, const Size(1920, 1080));
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<PlayerProvider>.value(value: player),
+          ChangeNotifierProvider(create: (_) => SearchSession()),
+          ChangeNotifierProvider<ThemeController>.value(value: theme),
+          ChangeNotifierProvider(create: (_) => FavoriteService()),
+        ],
+        child: Consumer<ThemeController>(
+          builder: (context, controller, _) {
+            return MaterialApp(
+              theme: AppTheme.light(),
+              darkTheme: AppTheme.dark(),
+              themeMode: controller.mode,
+              builder: (context, child) {
+                AppColors.isDark =
+                    Theme.of(context).brightness == Brightness.dark;
+                return child!;
+              },
+              home: const MainScreen(),
+            );
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('设置').hitTestable());
+    await tester.pumpAndSettle();
+
+    expect(
+      _decoratedSurfaceCount(tester, const Color(0xFFFFFFFF)),
+      greaterThan(0),
+    );
+    expect(
+      _playerSurfaceCount(tester, const Color(0xFFFFFFFF)),
+      greaterThan(0),
+    );
+
+    await theme.setMode(ThemeMode.dark);
+    await tester.pumpAndSettle();
+
+    expect(
+      Theme.of(tester.element(find.byType(SettingsScreen))).brightness,
+      Brightness.dark,
+    );
+    expect(
+      _decoratedSurfaceCount(tester, const Color(0xFF181B20)),
+      greaterThan(0),
+    );
+    expect(_decoratedSurfaceCount(tester, const Color(0xFFFFFFFF)), 0);
+    expect(
+      _playerSurfaceCount(tester, const Color(0xFF181B20)),
+      greaterThan(0),
+    );
+    expect(_playerSurfaceCount(tester, const Color(0xFFFFFFFF)), 0);
+    _expectNoException(tester);
+  });
+
+  testWidgets('portrait custom surfaces follow live theme changes', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final player = _PlayerWithLyrics();
+    final theme = ThemeController();
+    await theme.setMode(ThemeMode.light);
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      player.dispose();
+      theme.dispose();
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    _setViewSize(tester, const Size(390, 844));
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<PlayerProvider>.value(value: player),
+          ChangeNotifierProvider(create: (_) => SearchSession()),
+          ChangeNotifierProvider<ThemeController>.value(value: theme),
+          ChangeNotifierProvider(create: (_) => FavoriteService()),
+        ],
+        child: Consumer<ThemeController>(
+          builder: (context, controller, _) => MaterialApp(
+            theme: AppTheme.light(),
+            darkTheme: AppTheme.dark(),
+            themeMode: controller.mode,
+            builder: (context, child) {
+              AppColors.syncWithTheme(context);
+              return child!;
+            },
+            home: const MainScreen(),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('设置').hitTestable());
+    await tester.pumpAndSettle();
+    expect(
+      _decoratedSurfaceCount(tester, const Color(0xFFFFFFFF)),
+      greaterThan(0),
+    );
+
+    await theme.setMode(ThemeMode.dark);
+    await tester.pumpAndSettle();
+    expect(
+      _decoratedSurfaceCount(tester, const Color(0xFF181B20)),
+      greaterThan(0),
+    );
+    expect(_decoratedSurfaceCount(tester, const Color(0xFFFFFFFF)), 0);
+
+    await theme.setMode(ThemeMode.light);
+    await tester.pumpAndSettle();
+    expect(
+      _decoratedSurfaceCount(tester, const Color(0xFFFFFFFF)),
+      greaterThan(0),
+    );
+    expect(_decoratedSurfaceCount(tester, const Color(0xFF181B20)), 0);
+    _expectNoException(tester);
+  });
+}
+
+int _decoratedSurfaceCount(WidgetTester tester, Color color) {
+  return tester.widgetList<Container>(find.byType(Container)).where((
+    container,
+  ) {
+    final decoration = container.decoration;
+    return decoration is BoxDecoration && decoration.color == color;
+  }).length;
+}
+
+int _playerSurfaceCount(WidgetTester tester, Color color) {
+  return tester
+      .widgetList<Material>(
+        find.descendant(
+          of: find.byType(LandscapeMiniPlayer),
+          matching: find.byType(Material),
+        ),
+      )
+      .where((material) => material.color == color)
+      .length;
 }
 
 Future<void> _pumpScreen(
@@ -927,7 +1274,14 @@ Future<void> _pumpScreen(
         ChangeNotifierProvider<ThemeController>.value(value: theme),
         ChangeNotifierProvider(create: (_) => FavoriteService()),
       ],
-      child: MaterialApp(theme: AppTheme.light(), home: screen),
+      child: MaterialApp(
+        theme: AppTheme.light(),
+        builder: (context, child) => MediaQuery(
+          data: AppLayout.adaptiveMediaQueryOf(context),
+          child: child!,
+        ),
+        home: screen,
+      ),
     ),
   );
   await tester.pumpAndSettle();
@@ -981,6 +1335,22 @@ class _PlayerWithLyrics extends PlayerProvider {
 
   @override
   List<LyricLine> get lyrics => _testLyrics;
+}
+
+class _SecondPlayerWithLyrics extends _PlayerWithLyrics {
+  final PlayQueueItem _secondSong = PlayQueueItem(
+    platform: MusicPlatform.qq,
+    id: 'second-song',
+    name: '另一首横屏测试歌曲',
+    artist: '另一位歌手',
+    album: '另一张专辑',
+  );
+
+  @override
+  PlayQueueItem? get currentSong => _secondSong;
+
+  @override
+  List<PlayQueueItem> get queue => [_secondSong];
 }
 
 class _ControllablePlayer extends PlayerProvider {

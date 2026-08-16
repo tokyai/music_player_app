@@ -11,8 +11,10 @@ import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../utils/song_source_matcher.dart';
+import '../widgets/favorite_playlist_card.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/song_tile.dart';
+import 'playlist_detail_screen.dart';
 
 enum _FavoriteMenuAction { importBackup, exportBackup }
 
@@ -51,8 +53,10 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
     final favorites = context.watch<FavoriteService>();
     final songs = favorites.favorites;
+    final playlists = favorites.favoritePlaylists;
     final isLandscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
 
@@ -60,14 +64,10 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       appBar: _buildAppBar(songs),
       body: Stack(
         children: [
-          if (songs.isEmpty)
-            _buildEmpty(
-              layout: isLandscape ? AppLayout.fromContext(context) : null,
-            )
-          else if (isLandscape)
-            _buildLandscapeBody(songs)
+          if (isLandscape)
+            _buildLandscapeBody(songs, playlists)
           else
-            _buildPortraitBody(songs),
+            _buildPortraitBody(songs, playlists),
           if (_switchingSources) _buildSwitchProgress(),
         ],
       ),
@@ -149,22 +149,28 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     );
   }
 
-  Widget _buildPortraitBody(List<SongSearchResult> songs) {
+  Widget _buildPortraitBody(
+    List<SongSearchResult> songs,
+    List<FavoritePlaylist> playlists,
+  ) {
     return Column(
       children: [
         _buildOverview(songs),
-        Expanded(child: _buildSongList(songs)),
+        Expanded(child: _buildCollectionList(songs, playlists)),
       ],
     );
   }
 
-  Widget _buildLandscapeBody(List<SongSearchResult> songs) {
+  Widget _buildLandscapeBody(
+    List<SongSearchResult> songs,
+    List<FavoritePlaylist> playlists,
+  ) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final layout = AppLayout.fromConstraints(context, constraints);
         final overviewWidth = layout.isCompactLandscape
             ? 210.0
-            : layout.isWideLandscape
+            : layout.usesLargeTypography
             ? 340.0
             : (constraints.maxWidth * 0.3).clamp(260.0, 320.0);
         return Row(
@@ -184,7 +190,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
               thickness: 1,
               color: AppColors.surfaceSoft,
             ),
-            Expanded(child: _buildSongList(songs)),
+            Expanded(child: _buildCollectionList(songs, playlists)),
           ],
         );
       },
@@ -258,8 +264,12 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
-              onPressed: () =>
-                  context.read<PlayerProvider>().playFromPlaylist(songs, 0),
+              onPressed: songs.isEmpty
+                  ? null
+                  : () => context.read<PlayerProvider>().playFromPlaylist(
+                      songs,
+                      0,
+                    ),
               icon: Icon(Icons.play_arrow_rounded, size: isLandscape ? 24 : 20),
               label: const Text('播放全部'),
             ),
@@ -384,27 +394,172 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       key: const PageStorageKey('favorite-songs'),
       padding: const EdgeInsets.only(top: 4, bottom: 16),
       itemCount: songs.length,
-      itemBuilder: (context, index) {
-        final song = songs[index];
-        final key = FavoriteService.keyOf(song);
-        return SongTile(
-          song: song,
-          showPlatformTag: true,
-          showFavorite: !_selecting,
-          selectionMode: _selecting,
-          selected: _selectedKeys.contains(key),
-          onSelectionChanged: (selected) => _setSelected(key, selected),
-          onLongPress: () => _startSelection(key),
-          onTap: () =>
-              context.read<PlayerProvider>().playFromPlaylist(songs, index),
-          onAddToQueue: () {
-            context.read<PlayerProvider>().addToQueue(song);
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text('已添加: ${song.name}')));
-          },
-        );
+      itemBuilder: (context, index) => _buildSongTile(songs, index),
+    );
+  }
+
+  Widget _buildCollectionList(
+    List<SongSearchResult> songs,
+    List<FavoritePlaylist> playlists,
+  ) {
+    if (_selecting) return _buildSongList(songs);
+    return CustomScrollView(
+      key: const PageStorageKey('favorite-library'),
+      slivers: [
+        if (songs.isEmpty)
+          SliverToBoxAdapter(child: _buildEmptySongs())
+        else
+          SliverList.builder(
+            itemCount: songs.length,
+            itemBuilder: (context, index) => _buildSongTile(songs, index),
+          ),
+        SliverToBoxAdapter(child: _buildFavoritePlaylistsSection(playlists)),
+      ],
+    );
+  }
+
+  Widget _buildSongTile(List<SongSearchResult> songs, int index) {
+    final song = songs[index];
+    final key = FavoriteService.keyOf(song);
+    return SongTile(
+      song: song,
+      showPlatformTag: true,
+      showFavorite: !_selecting,
+      selectionMode: _selecting,
+      selected: _selectedKeys.contains(key),
+      onSelectionChanged: (selected) => _setSelected(key, selected),
+      onLongPress: () => _startSelection(key),
+      onTap: () =>
+          context.read<PlayerProvider>().playFromPlaylist(songs, index),
+      onAddToQueue: () {
+        context.read<PlayerProvider>().addToQueue(song);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('已添加: ${song.name}')));
       },
+    );
+  }
+
+  Widget _buildEmptySongs() {
+    final layout = AppLayout.fromContext(context);
+    return SizedBox(
+      height: layout.isLandscape ? 156 : 132,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.favorite_border_rounded,
+              color: AppColors.textHint,
+              size: layout.isLandscape ? 42 : 36,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '还没有收藏歌曲',
+              style: TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: layout.isLandscape ? layout.bodySize : 14,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFavoritePlaylistsSection(List<FavoritePlaylist> playlists) {
+    final layout = AppLayout.fromContext(context);
+    final cardHeight = layout.mediaCardWidth + 72;
+    return Container(
+      key: const ValueKey('favorites-playlists-section'),
+      padding: EdgeInsets.only(
+        top: layout.isLandscape ? 18 : 14,
+        bottom: layout.isLandscape ? 24 : 18,
+      ),
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: AppColors.surfaceSoft)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: layout.isLandscape ? layout.pagePadding : 20,
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.queue_music_rounded,
+                  color: AppColors.primary,
+                  size: layout.isLandscape ? 26 : 22,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '收藏歌单',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: layout.isLandscape ? layout.sectionTitleSize : 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '${playlists.length} 个',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: layout.isLandscape ? layout.secondarySize : 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (playlists.isEmpty)
+            SizedBox(
+              height: layout.isLandscape ? 94 : 82,
+              child: Center(
+                child: Text(
+                  '在歌单详情或搜索结果中点击收藏按钮',
+                  style: TextStyle(
+                    color: AppColors.textHint,
+                    fontSize: layout.isLandscape ? layout.bodySize : 13,
+                  ),
+                ),
+              ),
+            )
+          else
+            SizedBox(
+              key: const ValueKey('favorites-playlists-carousel'),
+              height: cardHeight,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: EdgeInsets.symmetric(
+                  horizontal: layout.isLandscape ? layout.pagePadding : 20,
+                ),
+                itemCount: playlists.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 14),
+                itemBuilder: (context, index) {
+                  final favorite = playlists[index];
+                  return FavoritePlaylistCard(
+                    favorite: favorite,
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => PlaylistDetailScreen(
+                          playlist: favorite.playlist,
+                          platform: favorite.platform,
+                        ),
+                      ),
+                    ),
+                    onFavoritePressed: () => context
+                        .read<FavoriteService>()
+                        .removePlaylist(favorite.platform, favorite.id),
+                  );
+                },
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -824,48 +979,6 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                 Navigator.pop(dialogContext, FavoriteImportMode.merge),
             child: const Text('合并'),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildEmpty({AppLayout? layout}) {
-    final isLandscape = layout != null;
-    final isCompact = layout?.isCompactLandscape ?? false;
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            width: isLandscape ? (isCompact ? 76 : 112) : 88,
-            height: isLandscape ? (isCompact ? 76 : 112) : 88,
-            decoration: BoxDecoration(
-              color: AppColors.primarySoft,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              Icons.favorite_border,
-              size: isLandscape ? (isCompact ? 34 : 52) : 40,
-              color: AppColors.primary,
-            ),
-          ),
-          SizedBox(height: isCompact ? 10 : 16),
-          Text(
-            '还没有收藏歌曲',
-            style: TextStyle(
-              fontSize: isLandscape ? layout.sectionTitleSize : 16,
-              fontWeight: FontWeight.w600,
-              color: AppColors.textPrimary,
-            ),
-          ),
-          if (isLandscape) ...[
-            const SizedBox(height: 18),
-            FilledButton.icon(
-              onPressed: () => unawaited(_importFavorites()),
-              icon: const Icon(Icons.file_open_outlined),
-              label: const Text('导入收藏'),
-            ),
-          ],
         ],
       ),
     );

@@ -118,6 +118,41 @@ void main() {
     );
     expect(service.favorites.single.id, 'qq-1');
   });
+
+  test(
+    'playlist favorites toggle, deduplicate and persist separately',
+    () async {
+      final playlist = PlaylistInfo(
+        id: 'playlist-1',
+        name: 'Favorite Playlist',
+        coverUrl: 'https://example.com/cover.jpg',
+        creator: 'Creator',
+        trackCount: 18,
+        tracks: const [],
+      );
+      final service = FavoriteService();
+
+      expect(await service.togglePlaylist(MusicPlatform.qq, playlist), isTrue);
+      expect(service.favoritePlaylists, hasLength(1));
+      expect(service.isPlaylistFavorite(MusicPlatform.qq, playlist.id), isTrue);
+
+      final restored = FavoriteService();
+      await restored.load();
+      expect(restored.favoritePlaylists, hasLength(1));
+      expect(
+        restored.favoritePlaylists.single.playlist.name,
+        'Favorite Playlist',
+      );
+      expect(restored.favoritePlaylists.single.platform, MusicPlatform.qq);
+      expect(restored.favorites, isEmpty);
+
+      expect(
+        await restored.togglePlaylist(MusicPlatform.qq, playlist),
+        isFalse,
+      );
+      expect(restored.favoritePlaylists, isEmpty);
+    },
+  );
 }
 
 SongSearchResult _song(

@@ -146,6 +146,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
     final isLandscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
     return Scaffold(
@@ -437,7 +438,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             dense: compact,
             leading: const Icon(Icons.favorite, color: Colors.redAccent),
             title: const Text('我的收藏'),
-            subtitle: Text('${favorites.favorites.length} 首已收藏歌曲'),
+            subtitle: Text(
+              '${favorites.favorites.length} 首歌曲 · '
+              '${favorites.favoritePlaylists.length} 个歌单',
+            ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(
               context,
@@ -595,10 +599,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final layout = AppLayout.fromContext(context);
     return Container(
       margin: EdgeInsets.fromLTRB(
-        layout.isWideLandscape ? 16 : (compact ? 8 : 16),
-        layout.isWideLandscape ? 12 : 8,
-        layout.isWideLandscape ? 16 : (compact ? 8 : 16),
-        layout.isWideLandscape ? 12 : 8,
+        layout.usesLargeTypography ? 20 : (compact ? 8 : 16),
+        layout.usesLargeTypography ? 14 : 8,
+        layout.usesLargeTypography ? 20 : (compact ? 8 : 16),
+        layout.usesLargeTypography ? 14 : 8,
       ),
       decoration: CardStyle.softCard(),
       child: Column(children: children),
@@ -610,16 +614,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final layout = AppLayout.fromContext(context);
     return Padding(
       padding: EdgeInsets.fromLTRB(
-        layout.isWideLandscape ? 24 : (layout.isCompactLandscape ? 12 : 16),
-        layout.isWideLandscape ? 18 : (layout.isCompactLandscape ? 12 : 14),
-        layout.isWideLandscape ? 24 : (layout.isCompactLandscape ? 12 : 16),
-        layout.isWideLandscape ? 8 : 6,
+        layout.usesLargeTypography ? 28 : (layout.isCompactLandscape ? 12 : 16),
+        layout.usesLargeTypography ? 20 : (layout.isCompactLandscape ? 12 : 14),
+        layout.usesLargeTypography ? 28 : (layout.isCompactLandscape ? 12 : 16),
+        layout.usesLargeTypography ? 10 : 6,
       ),
       child: Row(
         children: [
           Icon(
             icon,
-            size: layout.isWideLandscape
+            size: layout.usesLargeTypography
                 ? 24
                 : (layout.isCompactLandscape ? 22 : 20),
             color: AppColors.primary,

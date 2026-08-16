@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
+import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../widgets/mini_player.dart';
@@ -70,6 +71,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
     final isLandscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
     return Scaffold(
@@ -93,7 +95,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         final layout = AppLayout.fromConstraints(context, constraints);
         final infoWidth = layout.isCompactLandscape
             ? 210.0
-            : layout.isWideLandscape
+            : layout.usesLargeTypography
             ? 370.0
             : (constraints.maxWidth * 0.36).clamp(290.0, 340.0);
         return Row(
@@ -123,7 +125,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     final coverSize = isLandscape
         ? isCompact
               ? 104.0
-              : layout.isWideLandscape
+              : layout.usesLargeTypography
               ? 230.0
               : 184.0
         : 100.0;
@@ -199,6 +201,31 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                   tooltip: '播放全部',
                 )
         : const SizedBox.shrink();
+    final favoriteButton = Consumer<FavoriteService>(
+      builder: (context, favorites, _) {
+        final isFavorite = favorites.isPlaylistFavorite(widget.platform, p.id);
+        return IconButton(
+          key: const ValueKey('playlist-favorite-button'),
+          tooltip: isFavorite ? '取消收藏歌单' : '收藏歌单',
+          style: IconButton.styleFrom(
+            backgroundColor: isFavorite
+                ? Colors.redAccent.withValues(alpha: 0.14)
+                : AppColors.surfaceSoft,
+          ),
+          onPressed: () async {
+            final added = await favorites.togglePlaylist(widget.platform, p);
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(added ? '已收藏歌单: ${p.name}' : '已取消收藏歌单')),
+            );
+          },
+          icon: Icon(
+            isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+            color: isFavorite ? Colors.redAccent : AppColors.textSecondary,
+          ),
+        );
+      },
+    );
 
     return Container(
       decoration: BoxDecoration(
@@ -239,6 +266,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                         ),
                       ),
                     ),
+                    favoriteButton,
                   ],
                 ),
                 SizedBox(height: isCompact ? 4 : 18),
@@ -263,6 +291,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                   const SizedBox(width: 16),
                   Expanded(child: metadata),
                   playButton,
+                  const SizedBox(width: 6),
+                  favoriteButton,
                 ],
               ),
             ),

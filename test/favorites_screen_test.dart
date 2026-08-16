@@ -20,6 +20,18 @@ void main() {
         _song(MusicPlatform.qq, 'qq-1', 'Favorite One').toJson(),
         _song(MusicPlatform.netease, '163-2', 'Favorite Two').toJson(),
       ]),
+      'favorite_playlists': jsonEncode([
+        FavoritePlaylist(
+          platform: MusicPlatform.qq,
+          playlist: PlaylistInfo(
+            id: 'playlist-1',
+            name: 'Favorite Playlist',
+            creator: 'Playlist Creator',
+            trackCount: 20,
+            tracks: const [],
+          ),
+        ).toJson(),
+      ]),
     });
   });
 
@@ -56,6 +68,9 @@ void main() {
     expect(find.text('2 首歌曲'), findsOneWidget);
     expect(find.text('Favorite One'), findsOneWidget);
     expect(find.text('Favorite Two'), findsOneWidget);
+    expect(find.text('收藏歌单'), findsOneWidget);
+    expect(find.text('Favorite Playlist'), findsOneWidget);
+    expect(find.byTooltip('取消收藏歌单'), findsOneWidget);
     expect(find.byTooltip('取消收藏'), findsNWidgets(2));
     expect(tester.takeException(), isNull);
 

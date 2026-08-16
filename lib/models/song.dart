@@ -595,6 +595,63 @@ class PlaylistInfo {
   }
 }
 
+/// 本地收藏的歌单元数据。
+///
+/// 仅保存打开歌单所需的信息，不持久化完整曲目，进入详情页时仍按平台重新
+/// 获取最新歌曲列表。
+class FavoritePlaylist {
+  final MusicPlatform platform;
+  final PlaylistInfo playlist;
+
+  const FavoritePlaylist({required this.platform, required this.playlist});
+
+  String get id => playlist.id;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'platform': platform.code,
+      'id': playlist.id,
+      'name': playlist.name,
+      'coverUrl': playlist.coverUrl,
+      'creator': playlist.creator,
+      'trackCount': playlist.trackCount,
+      'description': playlist.description,
+    };
+  }
+
+  factory FavoritePlaylist.fromJson(Map<String, dynamic> json) {
+    final platformCode = json['platform']?.toString();
+    MusicPlatform? platform;
+    for (final candidate in MusicPlatform.values) {
+      if (candidate.code == platformCode) {
+        platform = candidate;
+        break;
+      }
+    }
+    final id = json['id']?.toString().trim() ?? '';
+    final name = json['name']?.toString().trim() ?? '';
+    if (platform == null || id.isEmpty || name.isEmpty) {
+      throw const FormatException('收藏歌单数据不完整');
+    }
+    final rawTrackCount = json['trackCount'];
+    final trackCount = rawTrackCount is num
+        ? rawTrackCount.toInt()
+        : int.tryParse(rawTrackCount?.toString() ?? '') ?? 0;
+    return FavoritePlaylist(
+      platform: platform,
+      playlist: PlaylistInfo(
+        id: id,
+        name: name,
+        coverUrl: json['coverUrl']?.toString(),
+        creator: json['creator']?.toString(),
+        trackCount: trackCount,
+        description: json['description']?.toString(),
+        tracks: const [],
+      ),
+    );
+  }
+}
+
 /// 播放队列中的歌曲（包含元信息 + 运行时信息）
 class PlayQueueItem {
   final MusicPlatform platform;

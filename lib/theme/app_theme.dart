@@ -6,6 +6,14 @@ class AppColors {
   /// 全局亮暗标志（由 AppTheme.light()/dark() 同步），颜色常量随主题变化
   static bool isDark = false;
 
+  /// 让使用静态颜色令牌的组件订阅当前主题，并同步实际亮暗状态。
+  ///
+  /// 在 build 开头调用后，运行时切换主题会触发组件重建，避免 Material
+  /// 默认组件已换色，而自定义容器仍保留上一个主题的颜色。
+  static void syncWithTheme(BuildContext context) {
+    isDark = Theme.of(context).brightness == Brightness.dark;
+  }
+
   // 主色：标准蓝（Material 默认蓝系），亮暗通用
   static const primary = Color(0xFF2196F3);
   static const primaryDark = Color(0xFF1976D2);
@@ -86,34 +94,34 @@ class AppTheme {
     final textTheme = baseTypography.copyWith(
       displaySmall: TextStyle(
         color: textPrimary,
-        fontSize: 32,
+        fontSize: 34,
         height: 1.2,
         fontWeight: FontWeight.w700,
       ),
       headlineSmall: TextStyle(
         color: textPrimary,
-        fontSize: 26,
+        fontSize: 28,
         height: 1.24,
         fontWeight: FontWeight.w700,
       ),
       titleLarge: TextStyle(
         color: textPrimary,
-        fontSize: 22,
+        fontSize: 24,
         height: 1.25,
         fontWeight: FontWeight.w700,
       ),
       titleMedium: TextStyle(
         color: textPrimary,
-        fontSize: 17,
+        fontSize: 19,
         height: 1.3,
         fontWeight: FontWeight.w600,
       ),
-      bodyLarge: TextStyle(color: textPrimary, fontSize: 16, height: 1.4),
-      bodyMedium: TextStyle(color: textSecondary, fontSize: 14, height: 1.4),
-      bodySmall: TextStyle(color: textHint, fontSize: 13, height: 1.35),
+      bodyLarge: TextStyle(color: textPrimary, fontSize: 17, height: 1.4),
+      bodyMedium: TextStyle(color: textSecondary, fontSize: 15, height: 1.4),
+      bodySmall: TextStyle(color: textHint, fontSize: 14, height: 1.35),
       labelLarge: TextStyle(
         color: textPrimary,
-        fontSize: 15,
+        fontSize: 16,
         height: 1.2,
         fontWeight: FontWeight.w600,
       ),
@@ -145,7 +153,7 @@ class AppTheme {
         toolbarHeight: 64,
         titleTextStyle: TextStyle(
           color: textPrimary,
-          fontSize: 22,
+          fontSize: 24,
           fontWeight: FontWeight.w700,
         ),
         iconTheme: IconThemeData(color: textPrimary),
@@ -157,7 +165,7 @@ class AppTheme {
         labelTextStyle: WidgetStateProperty.resolveWith((states) {
           final selected = states.contains(WidgetState.selected);
           return TextStyle(
-            fontSize: 13,
+            fontSize: 14,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
             color: selected ? AppColors.primary : textSecondary,
           );
@@ -175,17 +183,17 @@ class AppTheme {
         indicatorColor: AppColors.primary,
         indicatorSize: TabBarIndicatorSize.label,
         dividerColor: Colors.transparent,
-        labelStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+        labelStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
         unselectedLabelStyle: const TextStyle(
-          fontSize: 16,
+          fontSize: 17,
           fontWeight: FontWeight.w500,
         ),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: surface,
-        hintStyle: TextStyle(color: textHint, fontSize: 16),
-        labelStyle: TextStyle(color: textSecondary, fontSize: 15),
+        hintStyle: TextStyle(color: textHint, fontSize: 17),
+        labelStyle: TextStyle(color: textSecondary, fontSize: 16),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 18,
           vertical: 15,
@@ -211,8 +219,28 @@ class AppTheme {
             borderRadius: BorderRadius.circular(20),
           ),
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-          minimumSize: const Size(48, 46),
-          textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+          minimumSize: const Size(52, 50),
+          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          minimumSize: const Size(48, 48),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          minimumSize: const Size(52, 50),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+        ),
+      ),
+      iconButtonTheme: IconButtonThemeData(
+        style: IconButton.styleFrom(
+          minimumSize: const Size(50, 50),
+          iconSize: 26,
         ),
       ),
       listTileTheme: ListTileThemeData(
@@ -220,12 +248,12 @@ class AppTheme {
         minVerticalPadding: 10,
         titleTextStyle: TextStyle(
           color: textPrimary,
-          fontSize: 17,
+          fontSize: 18,
           fontWeight: FontWeight.w600,
         ),
         subtitleTextStyle: TextStyle(
           color: textSecondary,
-          fontSize: 14,
+          fontSize: 15,
           height: 1.35,
         ),
       ),
@@ -240,7 +268,7 @@ class AppTheme {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         contentTextStyle: TextStyle(
           color: isDark ? const Color(0xFF20242B) : Colors.white,
-          fontSize: 15,
+        fontSize: 16,
         ),
       ),
       bottomSheetTheme: BottomSheetThemeData(

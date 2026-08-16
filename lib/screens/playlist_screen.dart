@@ -49,6 +49,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
     final isLandscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
     return Scaffold(
@@ -82,7 +83,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
         final layout = AppLayout.fromConstraints(context, constraints);
         final infoWidth = layout.isCompactLandscape
             ? 210.0
-            : layout.isWideLandscape
+            : layout.usesLargeTypography
             ? 340.0
             : (constraints.maxWidth * 0.35).clamp(280.0, 320.0);
         return Row(
@@ -239,7 +240,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     final isCompact = layout?.isCompactLandscape ?? false;
     final coverSize = isCompact
         ? 112.0
-        : layout?.isWideLandscape == true
+        : layout?.usesLargeTypography == true
         ? 210.0
         : 176.0;
     return Container(

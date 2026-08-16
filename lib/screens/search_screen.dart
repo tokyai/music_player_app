@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../providers/search_session.dart';
+import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../widgets/smart_cover.dart';
@@ -108,6 +109,7 @@ class _SearchScreenState extends State<SearchScreen>
 
   @override
   Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
     final hasSearched = _session.keyword.isNotEmpty;
     final isLandscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
@@ -203,7 +205,7 @@ class _SearchScreenState extends State<SearchScreen>
             '搜索',
             style: TextStyle(
               color: AppColors.textPrimary,
-              fontSize: layout.isWideLandscape ? 30 : 24,
+              fontSize: layout.usesLargeTypography ? 32 : 24,
               fontWeight: FontWeight.w700,
             ),
           ),
@@ -506,33 +508,47 @@ class _SearchScreenState extends State<SearchScreen>
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
-                        child: SizedBox(
-                          width: coverSize,
-                          height: coverSize,
-                          child: p.coverUrl != null && p.coverUrl!.isNotEmpty
-                              ? SmartCover(
-                                  url: p.coverUrl,
-                                  fit: BoxFit.cover,
-                                  placeholder: () => Container(
-                                    color: platformColor.withOpacity(0.12),
-                                    child: Icon(
-                                      Icons.queue_music,
-                                      size: isLandscape ? 36 : 30,
-                                      color: platformColor,
+                      Stack(
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: SizedBox(
+                              width: coverSize,
+                              height: coverSize,
+                              child:
+                                  p.coverUrl != null && p.coverUrl!.isNotEmpty
+                                  ? SmartCover(
+                                      url: p.coverUrl,
+                                      fit: BoxFit.cover,
+                                      placeholder: () => Container(
+                                        color: platformColor.withOpacity(0.12),
+                                        child: Icon(
+                                          Icons.queue_music,
+                                          size: isLandscape ? 36 : 30,
+                                          color: platformColor,
+                                        ),
+                                      ),
+                                    )
+                                  : Container(
+                                      color: platformColor.withOpacity(0.12),
+                                      child: Icon(
+                                        Icons.queue_music,
+                                        size: isLandscape ? 36 : 30,
+                                        color: platformColor,
+                                      ),
                                     ),
-                                  ),
-                                )
-                              : Container(
-                                  color: platformColor.withOpacity(0.12),
-                                  child: Icon(
-                                    Icons.queue_music,
-                                    size: isLandscape ? 36 : 30,
-                                    color: platformColor,
-                                  ),
-                                ),
-                        ),
+                            ),
+                          ),
+                          Positioned(
+                            top: 4,
+                            right: 4,
+                            child: _buildPlaylistFavoriteButton(
+                              platform,
+                              p,
+                              overlay: true,
+                            ),
+                          ),
+                        ],
                       ),
                       SizedBox(height: isLandscape ? 8 : 4),
                       Text(
@@ -649,10 +665,16 @@ class _SearchScreenState extends State<SearchScreen>
               color: AppColors.textSecondary,
             ),
           ),
-          trailing: Icon(
-            Icons.chevron_right,
-            size: isLandscape ? 26 : 20,
-            color: AppColors.textHint,
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildPlaylistFavoriteButton(platform, p),
+              Icon(
+                Icons.chevron_right,
+                size: isLandscape ? 26 : 20,
+                color: AppColors.textHint,
+              ),
+            ],
           ),
           onTap: () {
             Navigator.push(
@@ -663,6 +685,47 @@ class _SearchScreenState extends State<SearchScreen>
               ),
             );
           },
+        );
+      },
+    );
+  }
+
+  Widget _buildPlaylistFavoriteButton(
+    MusicPlatform platform,
+    PlaylistInfo playlist, {
+    bool overlay = false,
+  }) {
+    return Consumer<FavoriteService>(
+      builder: (context, favorites, _) {
+        final isFavorite = favorites.isPlaylistFavorite(platform, playlist.id);
+        return Material(
+          color: overlay
+              ? Colors.black.withValues(alpha: 0.5)
+              : Colors.transparent,
+          shape: const CircleBorder(),
+          child: IconButton(
+            tooltip: isFavorite ? '取消收藏歌单' : '收藏歌单',
+            visualDensity: VisualDensity.compact,
+            onPressed: () async {
+              final added = await favorites.togglePlaylist(platform, playlist);
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(added ? '已收藏歌单: ${playlist.name}' : '已取消收藏歌单'),
+                  duration: const Duration(seconds: 1),
+                ),
+              );
+            },
+            icon: Icon(
+              isFavorite
+                  ? Icons.favorite_rounded
+                  : Icons.favorite_border_rounded,
+              size: overlay ? 19 : 22,
+              color: isFavorite
+                  ? Colors.redAccent
+                  : (overlay ? Colors.white : AppColors.textHint),
+            ),
+          ),
         );
       },
     );

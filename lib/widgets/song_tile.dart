@@ -36,6 +36,7 @@ class SongTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
     final playerState = context
         .select<PlayerProvider, (String?, MusicPlatform?, bool)>(
           (player) => (
@@ -54,7 +55,7 @@ class SongTile extends StatelessWidget {
         final veryCompact = constraints.maxWidth < 180;
         final narrowPane = constraints.maxWidth < 380;
         final coverSize = layout.songCoverSize;
-        final actionIconSize = layout.isWideLandscape ? 24.0 : 22.0;
+        final actionIconSize = layout.usesLargeTypography ? 26.0 : 22.0;
         return ListTile(
           minTileHeight: layout.songRowHeight,
           tileColor: isCurrent
@@ -65,14 +66,14 @@ class SongTile extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
           ),
           contentPadding: EdgeInsets.symmetric(
-            horizontal: veryCompact ? 8 : (layout.isWideLandscape ? 20 : 14),
-            vertical: layout.isWideLandscape ? 6 : 4,
+            horizontal: veryCompact ? 8 : (layout.usesLargeTypography ? 20 : 14),
+            vertical: layout.usesLargeTypography ? 8 : 4,
           ),
           leading: veryCompact
               ? null
               : ClipRRect(
                   borderRadius: BorderRadius.circular(
-                    layout.isWideLandscape ? 14 : 12,
+                    layout.usesLargeTypography ? 16 : 12,
                   ),
                   child: SizedBox(
                     width: coverSize,
@@ -177,7 +178,7 @@ class SongTile extends StatelessWidget {
                         child: Text(
                           song.platform.label,
                           style: TextStyle(
-                            fontSize: layout.isWideLandscape ? 13 : 12,
+                            fontSize: layout.usesLargeTypography ? 14 : 12,
                             color: platformColor,
                             fontWeight: FontWeight.w600,
                           ),

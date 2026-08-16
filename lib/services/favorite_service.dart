@@ -22,13 +22,17 @@ class FavoriteImportResult {
 /// 收藏管理（本地持久化，SharedPreferences 存 JSON）。
 class FavoriteService extends ChangeNotifier {
   static const String _prefsKey = 'favorites';
+  static const String _playlistPrefsKey = 'favorite_playlists';
   static const String exportFormat = 'kuzai_music_favorites';
   static const int exportVersion = 1;
 
   final List<SongSearchResult> _favorites = [];
+  final List<FavoritePlaylist> _favoritePlaylists = [];
   bool _loaded = false;
 
   List<SongSearchResult> get favorites => List.unmodifiable(_favorites);
+  List<FavoritePlaylist> get favoritePlaylists =>
+      List.unmodifiable(_favoritePlaylists);
   bool get loaded => _loaded;
 
   static String songKey(MusicPlatform platform, String id) {
@@ -37,6 +41,14 @@ class FavoriteService extends ChangeNotifier {
 
   static String keyOf(SongSearchResult song) {
     return songKey(song.platform, song.id);
+  }
+
+  static String playlistKey(MusicPlatform platform, String id) {
+    return '${platform.code}\u001f$id';
+  }
+
+  static String playlistKeyOf(FavoritePlaylist playlist) {
+    return playlistKey(playlist.platform, playlist.id);
   }
 
   /// 启动时加载一次，继续兼容上游使用的纯歌曲数组格式。
@@ -51,8 +63,15 @@ class FavoriteService extends ChangeNotifier {
           ..clear()
           ..addAll(decoded.songs);
       }
+      final playlistRaw = prefs.getString(_playlistPrefsKey);
+      if (playlistRaw != null && playlistRaw.isNotEmpty) {
+        _favoritePlaylists
+          ..clear()
+          ..addAll(_decodePlaylists(playlistRaw));
+      }
     } catch (_) {
       _favorites.clear();
+      _favoritePlaylists.clear();
     }
     _loaded = true;
     notifyListeners();
@@ -61,6 +80,11 @@ class FavoriteService extends ChangeNotifier {
   bool isFavorite(MusicPlatform platform, String id) {
     final key = songKey(platform, id);
     return _favorites.any((song) => keyOf(song) == key);
+  }
+
+  bool isPlaylistFavorite(MusicPlatform platform, String id) {
+    final key = playlistKey(platform, id);
+    return _favoritePlaylists.any((playlist) => playlistKeyOf(playlist) == key);
   }
 
   /// 切换收藏状态，返回操作后是否已收藏。
@@ -79,6 +103,45 @@ class FavoriteService extends ChangeNotifier {
     notifyListeners();
     await _save();
     return true;
+  }
+
+  /// 切换歌单收藏状态，返回操作后是否已收藏。
+  Future<bool> togglePlaylist(
+    MusicPlatform platform,
+    PlaylistInfo playlist,
+  ) async {
+    await load();
+    final key = playlistKey(platform, playlist.id);
+    final index = _favoritePlaylists.indexWhere(
+      (item) => playlistKeyOf(item) == key,
+    );
+    if (index >= 0) {
+      _favoritePlaylists.removeAt(index);
+      notifyListeners();
+      await _savePlaylists();
+      return false;
+    }
+
+    _favoritePlaylists.insert(
+      0,
+      FavoritePlaylist(platform: platform, playlist: playlist),
+    );
+    notifyListeners();
+    await _savePlaylists();
+    return true;
+  }
+
+  Future<void> removePlaylist(MusicPlatform platform, String id) async {
+    await load();
+    final key = playlistKey(platform, id);
+    final before = _favoritePlaylists.length;
+    _favoritePlaylists.removeWhere(
+      (playlist) => playlistKeyOf(playlist) == key,
+    );
+    if (_favoritePlaylists.length != before) {
+      notifyListeners();
+      await _savePlaylists();
+    }
   }
 
   Future<void> remove(MusicPlatform platform, String id) async {
@@ -252,11 +315,40 @@ class FavoriteService extends ChangeNotifier {
     return null;
   }
 
+  static List<FavoritePlaylist> _decodePlaylists(String raw) {
+    final dynamic decoded = jsonDecode(raw);
+    if (decoded is! List) return const [];
+    final playlists = <FavoritePlaylist>[];
+    final seen = <String>{};
+    for (final entry in decoded) {
+      if (entry is! Map) continue;
+      try {
+        final playlist = FavoritePlaylist.fromJson(
+          Map<String, dynamic>.from(entry),
+        );
+        if (seen.add(playlistKeyOf(playlist))) playlists.add(playlist);
+      } on FormatException {
+        continue;
+      }
+    }
+    return playlists;
+  }
+
   Future<void> _save() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
       _prefsKey,
       jsonEncode(_favorites.map((song) => song.toJson()).toList()),
+    );
+  }
+
+  Future<void> _savePlaylists() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _playlistPrefsKey,
+      jsonEncode(
+        _favoritePlaylists.map((playlist) => playlist.toJson()).toList(),
+      ),
     );
   }
 }

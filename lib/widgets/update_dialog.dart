@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/update_service.dart';
+import '../theme/app_theme.dart';
 
 /// 弹出更新提示对话框（仿 momo 的更新体验）。
 /// [info] 为服务器返回的新版本信息。
@@ -59,6 +60,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
     final info = widget.info;
     return AlertDialog(
       title: Text('发现新版本 v${info.versionName}'),

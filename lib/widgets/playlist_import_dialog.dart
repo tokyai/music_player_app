@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/song.dart';
+import '../theme/app_theme.dart';
 
 /// 歌单导入对话框（支持 QQ音乐 / 网易云）
 class PlaylistImportDialog extends StatefulWidget {
@@ -31,6 +32,7 @@ class _PlaylistImportDialogState extends State<PlaylistImportDialog> {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
     final isQQ = _platform == MusicPlatform.qq;
     final size = MediaQuery.sizeOf(context);
     final isLandscape = size.width > size.height;

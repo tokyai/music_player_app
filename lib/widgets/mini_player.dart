@@ -14,6 +14,7 @@ class MiniPlayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
     return Consumer<PlayerProvider>(
       builder: (ctx, player, _) {
         final song = player.currentSong;
@@ -27,7 +28,7 @@ class MiniPlayer extends StatelessWidget {
         final compact = layout.isCompactLandscape;
         final coverSize = compact
             ? 44.0
-            : (layout.isWideLandscape ? 56.0 : 50.0);
+            : (layout.usesLargeTypography ? 64.0 : 52.0);
 
         return GestureDetector(
           onTap: () {
@@ -183,6 +184,7 @@ class LandscapeMiniPlayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
     return Consumer<PlayerProvider>(
       builder: (ctx, player, _) {
         final song = player.currentSong;
@@ -358,6 +360,7 @@ class _LandscapePlayerActions extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
     final favorites = context.watch<FavoriteService>();
     final isFavorite = favorites.isFavorite(song.platform, song.id);
     return Row(

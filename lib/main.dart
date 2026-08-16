@@ -69,8 +69,7 @@ class MusicPlayerApp extends StatelessWidget {
             themeMode: themeCtrl.mode,
             // 按实际生效的主题同步全局亮暗标志 + 系统栏样式（状态栏不黑条、图标跟随主题）
             builder: (context, child) {
-              AppColors.isDark =
-                  Theme.of(context).brightness == Brightness.dark;
+              AppColors.syncWithTheme(context);
               applySystemUi(dark: AppColors.isDark);
               // 注入系统悬浮窗胶囊回调（仅一次）
               if (FloatingCapsuleService.onPlayPauseTap == null) {
@@ -83,7 +82,12 @@ class MusicPlayerApp extends StatelessWidget {
                   );
                 };
               }
-              return child!;
+              // 在车机大屏上统一放大未显式使用 AppLayout 尺寸令牌的文字，
+              // 同时保留系统无障碍字号设置。
+              return MediaQuery(
+                data: AppLayout.adaptiveMediaQueryOf(context),
+                child: child!,
+              );
             },
             home: const MainScreen(),
           );
@@ -153,6 +157,7 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
     return Selector<PlayerProvider, ({bool hasSong, String? error})>(
       selector: (_, player) =>
           (hasSong: player.currentSong != null, error: player.lastError),
@@ -187,6 +192,7 @@ class _MainScreenState extends State<MainScreen> {
           return LayoutBuilder(
             builder: (context, constraints) {
               final layout = AppLayout.fromConstraints(context, constraints);
+              final largeUi = layout.usesLargeTypography;
               final compactRail = constraints.maxHeight < 480;
               final showPlayerPane =
                   hasCurrentSong &&
@@ -201,7 +207,9 @@ class _MainScreenState extends State<MainScreen> {
                         key: const ValueKey('landscape-navigation'),
                         minWidth: compactRail
                             ? 84
-                            : (layout.isWideLandscape ? 112 : 96),
+                            : (largeUi
+                                  ? (layout.isHighDensityCarDisplay ? 120 : 112)
+                                  : 100),
                         selectedIndex: _currentIndex,
                         onDestinationSelected: _selectScreen,
                         labelType: NavigationRailLabelType.all,
@@ -211,27 +219,27 @@ class _MainScreenState extends State<MainScreen> {
                         indicatorShape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(16),
                         ),
-                        selectedIconTheme: const IconThemeData(
+                        selectedIconTheme: IconThemeData(
                           color: AppColors.primary,
-                          size: 27,
+                          size: largeUi ? 31 : 28,
                         ),
                         unselectedIconTheme: IconThemeData(
                           color: AppColors.textSecondary,
-                          size: 25,
+                          size: largeUi ? 29 : 26,
                         ),
                         selectedLabelTextStyle: TextStyle(
                           color: AppColors.primary,
-                          fontSize: compactRail ? 13 : 15,
+                          fontSize: compactRail ? 13 : (largeUi ? 17 : 15),
                           fontWeight: FontWeight.w700,
                         ),
                         unselectedLabelTextStyle: TextStyle(
                           color: AppColors.textSecondary,
-                          fontSize: compactRail ? 13 : 14,
+                          fontSize: compactRail ? 13 : (largeUi ? 16 : 14),
                           fontWeight: FontWeight.w600,
                         ),
                         leading: _buildLandscapeBrand(
                           compact: compactRail,
-                          wide: layout.isWideLandscape,
+                          wide: largeUi,
                         ),
                         destinations: const [
                           NavigationRailDestination(
