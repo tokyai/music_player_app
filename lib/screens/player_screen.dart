@@ -7,6 +7,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../providers/search_session.dart';
+import '../services/api_service.dart';
+import '../services/external_media_service.dart';
 import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
@@ -37,6 +39,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   double _lyricLineExtent = 92;
   double _landscapeLeftRatio = _defaultLandscapeLeftRatio;
   bool _landscapeSplitChangedByUser = false;
+  bool _mvOpening = false;
   final ScrollController _lyricScrollController = ScrollController();
   String? _lastColorSongId;
 
@@ -164,8 +167,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     PlayQueueItem song,
     SearchSubject subject,
   ) {
-    final keyword = (subject == SearchSubject.artist ? song.artist : song.album)
-        .trim();
+    final keyword = switch (subject) {
+      SearchSubject.title => song.name,
+      SearchSubject.artist => song.artist,
+      SearchSubject.album => song.album,
+      SearchSubject.general => song.name,
+    }.trim();
     if (!_isSearchableMetadata(keyword)) return;
     unawaited(
       context.read<SearchSession>().openScopedSearch(
@@ -178,9 +185,45 @@ class _PlayerScreenState extends State<PlayerScreen> {
     Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
+  Future<void> _openMusicVideo(
+    BuildContext context,
+    PlayerProvider player,
+    PlayQueueItem song,
+  ) async {
+    if (_mvOpening) return;
+    setState(() => _mvOpening = true);
+    try {
+      final url = await player.api.musicVideoUrl(
+        platform: song.platform,
+        songId: song.id,
+        songName: song.name,
+        artist: song.artist,
+      );
+      if (!context.mounted) return;
+      final opened = await ExternalMediaService.playVideo(url);
+      if (!context.mounted) return;
+      if (!opened) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('系统没有可用的视频播放器')));
+        return;
+      }
+      if (player.isPlaying) unawaited(player.pause());
+    } catch (error) {
+      if (!context.mounted) return;
+      final message = error is ApiException ? error.message : 'MV 加载失败，请稍后重试';
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    } finally {
+      if (mounted) setState(() => _mvOpening = false);
+    }
+  }
+
   bool _isSearchableMetadata(String value) {
     final normalized = value.trim();
     return normalized.isNotEmpty &&
+        normalized != '未知歌曲' &&
         normalized != '未知歌手' &&
         normalized != '未知专辑';
   }
@@ -210,15 +253,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
         fontWeight: FontWeight.bold,
       ),
     );
-    if (!_isSearchableMetadata(song.artist)) return text;
+    if (!_isSearchableMetadata(song.name)) return text;
     return Tooltip(
-      message: '搜索 ${song.artist} 的歌曲',
+      message: '搜索歌曲 ${song.name}',
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          key: const ValueKey('player-artist-search'),
+          key: const ValueKey('player-song-search'),
           onTap: () =>
-              _openScopedSearch(context, player, song, SearchSubject.artist),
+              _openScopedSearch(context, player, song, SearchSubject.title),
           borderRadius: BorderRadius.circular(AppRadius.small),
           child: ConstrainedBox(
             constraints: BoxConstraints(minHeight: minHitHeight),
@@ -248,10 +291,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final layout = AppLayout.fromContext(context);
     final minHitHeight = layout.isLandscape
         ? (layout.usesLargeTypography
-              ? 48.0
+              ? 52.0
               : (layout.isCompactLandscape ? 28.0 : 42.0))
         : 42.0;
+    final hasArtist = _isSearchableMetadata(song.artist);
     final hasAlbum = _isSearchableMetadata(song.album);
+    final artistText = Text(
+      song.artist,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(color: color, fontSize: fontSize),
+    );
     return Row(
       mainAxisSize: MainAxisSize.min,
       mainAxisAlignment: centered
@@ -259,12 +309,34 @@ class _PlayerScreenState extends State<PlayerScreen> {
           : MainAxisAlignment.start,
       children: [
         Flexible(
-          child: Text(
-            song.artist,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: color, fontSize: fontSize),
-          ),
+          child: hasArtist
+              ? Tooltip(
+                  message: '搜索 ${song.artist} 的歌曲',
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      key: const ValueKey('player-artist-search'),
+                      onTap: () => _openScopedSearch(
+                        context,
+                        player,
+                        song,
+                        SearchSubject.artist,
+                      ),
+                      borderRadius: BorderRadius.circular(AppRadius.small),
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(minHeight: minHitHeight),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                          child: Align(
+                            alignment: Alignment.center,
+                            child: artistText,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                )
+              : artistText,
         ),
         if (hasAlbum) ...[
           Text(
@@ -644,7 +716,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         final largeUi = layout.usesLargeTypography;
         final compactHeight = constraints.maxHeight < 420 && !largeUi;
         final widthLimit = constraints.maxWidth - (compactHeight ? 28 : 40);
-        final largeHeightFactor = layout.isHighDensityCarDisplay ? 0.34 : 0.44;
+        final largeHeightFactor = layout.isHighDensityCarDisplay ? 0.27 : 0.44;
         final heightLimit =
             constraints.maxHeight *
             (largeUi ? largeHeightFactor : (compactHeight ? 0.24 : 0.54));
@@ -652,7 +724,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ? widthLimit
             : heightLimit;
         final coverSize = rawCoverSize.clamp(
-          compactHeight ? 72.0 : 160.0,
+          layout.isHighDensityCarDisplay
+              ? 128.0
+              : (compactHeight ? 72.0 : 160.0),
           largeUi ? 400.0 : 320.0,
         );
         final verticalPadding = largeUi ? 6.0 : (compactHeight ? 4.0 : 10.0);
@@ -694,7 +768,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   player,
                   subTextColor,
                   compact: true,
-                  showLyricFontControl: largeUi,
                   landscape: true,
                 ),
               ],
@@ -752,17 +825,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
         return Padding(
           padding: EdgeInsets.fromLTRB(
             largeUi ? 14 : 16,
-            largeUi ? 2 : 2,
-            8,
+            2,
+            largeUi ? 14 : 16,
             0,
           ),
-          child: Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildSongNameLink(
+              Stack(
+                alignment: Alignment.center,
+                children: [
+                  SizedBox(
+                    width: double.infinity,
+                    child: _buildSongNameLink(
                       ctx,
                       player,
                       song,
@@ -770,46 +845,45 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       fontSize: largeUi
                           ? 27
                           : (layout.isCompactLandscape ? 18 : 20),
-                    ),
-                    const SizedBox(height: 3),
-                    _buildArtistAlbumLine(
-                      ctx,
-                      player,
-                      song,
-                      subColor,
-                      fontSize: largeUi
-                          ? 17
-                          : (layout.isCompactLandscape ? 13 : 14),
-                    ),
-                    if (selection.$2 != null) ...[
-                      const SizedBox(height: 3),
-                      Text(
-                        selection.$2!,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: Colors.redAccent,
-                          fontSize: largeUi
-                              ? 14
-                              : (layout.isCompactLandscape ? 11 : 12),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              if (selection.$1)
-                Padding(
-                  padding: const EdgeInsets.only(left: 8),
-                  child: SizedBox(
-                    width: largeUi ? 22 : 18,
-                    height: largeUi ? 22 : 18,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: AppColors.primary,
+                      textAlign: TextAlign.center,
                     ),
                   ),
+                  if (selection.$1)
+                    Positioned(
+                      right: 0,
+                      child: SizedBox(
+                        width: largeUi ? 22 : 18,
+                        height: largeUi ? 22 : 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 3),
+              _buildArtistAlbumLine(
+                ctx,
+                player,
+                song,
+                subColor,
+                fontSize: largeUi ? 20 : (layout.isCompactLandscape ? 15 : 17),
+              ),
+              if (selection.$2 != null) ...[
+                const SizedBox(height: 3),
+                Text(
+                  selection.$2!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.redAccent,
+                    fontSize: largeUi
+                        ? 14
+                        : (layout.isCompactLandscape ? 11 : 12),
+                  ),
                 ),
+              ],
             ],
           ),
         );
@@ -854,14 +928,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  Widget _buildLyricFontMenu(Color color) {
-    return PopupMenuButton<double>(
-      tooltip: '歌词字号',
-      initialValue: _lyricFontSize,
-      position: PopupMenuPosition.under,
-      icon: Icon(Icons.format_size_rounded, color: color, size: 30),
-      onSelected: _selectLyricFontSize,
-      itemBuilder: (_) => _lyricFontMenuItems(),
+  Widget _buildLyricFontControlButton(
+    Color color, {
+    required double width,
+    required double height,
+    required double iconSize,
+  }) {
+    return SizedBox(
+      key: const ValueKey('player-lyric-font-action'),
+      width: width,
+      height: height,
+      child: PopupMenuButton<double>(
+        tooltip: '歌词字号',
+        initialValue: _lyricFontSize,
+        position: PopupMenuPosition.under,
+        padding: EdgeInsets.zero,
+        icon: Icon(Icons.format_size_rounded, color: color, size: iconSize),
+        onSelected: _selectLyricFontSize,
+        itemBuilder: (_) => _lyricFontMenuItems(),
+      ),
     );
   }
 
@@ -1181,7 +1266,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 player,
                 song,
                 subColor,
-                fontSize: largeUi ? 17 : (compact ? 15 : 16),
+                fontSize: largeUi ? 20 : (compact ? 17 : 18),
                 centered: true,
               ),
               if (isLoading) ...[
@@ -1311,13 +1396,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     bool compact = false,
     bool landscape = false,
   }) {
-    // 仅监听播放状态/模式/歌词开关，避免随播放进度重建
-    return Selector<PlayerProvider, (bool, PlayMode, bool)>(
-      selector: (_, p) => (p.isPlaying, p.playMode, p.showLyric),
+    // 仅监听播放状态和模式，避免随播放进度重建
+    return Selector<PlayerProvider, (bool, PlayMode)>(
+      selector: (_, p) => (p.isPlaying, p.playMode),
       builder: (ctx, sel, _) {
         final isPlaying = sel.$1;
         final playMode = sel.$2;
-        final showLyric = sel.$3;
         final layout = AppLayout.fromContext(ctx);
         final largeUi = landscape && layout.usesLargeTypography;
         final iconButtonWidth = largeUi ? 58.0 : (compact ? 46.0 : 54.0);
@@ -1334,6 +1418,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             children: [
               // 播放模式
               IconButton(
+                key: const ValueKey('player-next-track'),
                 constraints: BoxConstraints.tightFor(
                   width: iconButtonWidth,
                   height: iconButtonHeight,
@@ -1406,23 +1491,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
                 onPressed: player.playNext,
               ),
-              if (!landscape)
-                IconButton(
-                  constraints: BoxConstraints.tightFor(
-                    width: iconButtonWidth,
-                    height: iconButtonHeight,
-                  ),
-                  padding: EdgeInsets.zero,
-                  tooltip: '歌词',
-                  icon: Icon(
-                    Icons.lyrics_rounded,
-                    color: showLyric
-                        ? AppColors.primary
-                        : textColor.withOpacity(0.5),
-                    size: 24,
-                  ),
-                  onPressed: player.toggleShowLyric,
-                ),
+              // 字号只保留图标，紧跟在下一首右侧。
+              _buildLyricFontControlButton(
+                textColor,
+                width: iconButtonWidth,
+                height: iconButtonHeight,
+                iconSize: largeUi ? 30 : (compact ? 24 : 28),
+              ),
             ],
           ),
         );
@@ -1435,7 +1510,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     PlayerProvider player,
     Color subColor, {
     bool compact = false,
-    bool showLyricFontControl = false,
     bool landscape = false,
   }) {
     // 收藏状态跟随 FavoriteService（点击收藏/取消收藏实时刷新）
@@ -1460,10 +1534,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     color: showLyric ? AppColors.primary : subColor,
                   ),
                 ),
-              if (showLyricFontControl || landscape)
-                Expanded(child: _buildLyricFontAction(ctx, subColor))
-              else if (!compact)
-                _buildLyricFontMenu(subColor),
+              Expanded(
+                child: _playerActionButton(
+                  key: const ValueKey('player-mv-action'),
+                  context: ctx,
+                  compact: compact,
+                  onPressed: song == null || _mvOpening
+                      ? null
+                      : () => _openMusicVideo(ctx, player, song),
+                  icon: Icons.ondemand_video_rounded,
+                  label: 'MV',
+                  color: subColor,
+                ),
+              ),
               Expanded(
                 child: _playerActionButton(
                   context: ctx,
@@ -1504,42 +1587,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  Widget _buildLyricFontAction(BuildContext context, Color color) {
-    final layout = AppLayout.fromContext(context);
-    final largeUi = layout.usesLargeTypography;
-    final iconSize = largeUi ? 24.0 : 20.0;
-    final fontSize = largeUi ? 16.0 : 14.0;
-    return PopupMenuButton<double>(
-      key: const ValueKey('player-lyric-font-action'),
-      tooltip: '歌词字号',
-      initialValue: _lyricFontSize,
-      position: PopupMenuPosition.under,
-      onSelected: _selectLyricFontSize,
-      itemBuilder: (_) => _lyricFontMenuItems(),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(minHeight: largeUi ? 54 : 46),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.format_size_rounded, color: color, size: iconSize),
-            const SizedBox(width: 5),
-            Flexible(
-              child: Text(
-                '字号',
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: color, fontSize: fontSize),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _playerActionButton({
+    Key? key,
     required BuildContext context,
     required bool compact,
-    required VoidCallback onPressed,
+    required VoidCallback? onPressed,
     required IconData icon,
     required String label,
     required Color color,
@@ -1550,6 +1602,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final iconSize = largeUi ? 24.0 : (compact ? 18.0 : 22.0);
     final fontSize = largeUi ? 16.0 : (compact ? 13.0 : 16.0);
     return Tooltip(
+      key: key,
       message: label == '队列' ? '播放队列' : label,
       child: TextButton.icon(
         onPressed: onPressed,

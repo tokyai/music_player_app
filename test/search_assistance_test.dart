@@ -108,6 +108,101 @@ void main() {
         }, () => _searchClient(suggestionQueries));
       },
     );
+
+    testWidgets(
+      'related playlist action switches to cached playlists at ${size.width.toInt()}x${size.height.toInt()}',
+      (tester) async {
+        var requestCount = 0;
+        await http.runWithClient(
+          () async {
+            final player = PlayerProvider();
+            final session = SearchSession();
+            final favorites = FavoriteService();
+            try {
+              await _pumpSearch(
+                tester,
+                player: player,
+                session: session,
+                favorites: favorites,
+                size: size,
+              );
+              await tester.enterText(
+                find.byKey(const ValueKey('search-field')),
+                '测试',
+              );
+              await tester.testTextInput.receiveAction(TextInputAction.search);
+              await tester.pumpAndSettle();
+
+              final action = find.byKey(
+                const ValueKey('search-related-playlists-action'),
+              );
+              expect(action.hitTestable(), findsOneWidget);
+              expect(find.text('相关测试歌单'), findsOneWidget);
+              expect(requestCount, 2);
+
+              await tester.tap(action.hitTestable());
+              await tester.pumpAndSettle();
+
+              expect(session.playlistMode, isTrue);
+              expect(find.text('相关测试歌单'), findsOneWidget);
+              expect(requestCount, 2);
+              expect(tester.takeException(), isNull);
+            } finally {
+              await tester.pumpWidget(const SizedBox.shrink());
+              player.dispose();
+              session.dispose();
+              favorites.dispose();
+              tester.view.resetPhysicalSize();
+              tester.view.resetDevicePixelRatio();
+            }
+          },
+          () {
+            return MockClient((request) async {
+              requestCount++;
+              final payload = jsonDecode(request.body) as Map<String, dynamic>;
+              final req = payload['req_1'] as Map<String, dynamic>;
+              final params = req['param'] as Map<String, dynamic>;
+              final playlistMode = params['search_type'] == 3;
+              return _jsonResponse({
+                'req_1': {
+                  'code': 0,
+                  'data': {
+                    'body': {
+                      'song': {
+                        'list': playlistMode
+                            ? <Object>[]
+                            : [
+                                {
+                                  'mid': 'related-song',
+                                  'name': '相关测试歌曲',
+                                  'singer': [
+                                    {'name': '测试歌手'},
+                                  ],
+                                  'album': {'name': '测试专辑'},
+                                },
+                              ],
+                      },
+                      'songlist': {
+                        'list': playlistMode
+                            ? [
+                                {
+                                  'dissid': 'related-playlist',
+                                  'dissname': '相关测试歌单',
+                                  'song_count': 30,
+                                  'creator': {'name': '测试用户'},
+                                },
+                              ]
+                            : <Object>[],
+                      },
+                    },
+                  },
+                },
+              });
+            });
+          },
+        );
+      },
+    );
   }
 }
 
@@ -135,44 +230,61 @@ Future<void> _pumpSearch(
 
 http.Client _searchClient(List<String> suggestionQueries) {
   return MockClient((request) async {
-    if (request.url.path != '/api-qq/search') {
+    if (request.url.host != 'u.y.qq.com') {
       return _jsonResponse(<String, dynamic>{});
     }
-    if (request.url.queryParameters['t'] == '2') {
+    final payload = jsonDecode(request.body) as Map<String, dynamic>;
+    final req = payload['req_1'] as Map<String, dynamic>;
+    final params = req['param'] as Map<String, dynamic>;
+    if (params['search_type'] == 3) {
       return _jsonResponse({
-        'data': {'list': <Object>[]},
+        'req_1': {
+          'code': 0,
+          'data': {
+            'body': {
+              'songlist': {'list': <Object>[]},
+            },
+          },
+        },
       });
     }
-    final keyword = request.url.queryParameters['key'] ?? '';
+    final keyword = params['query']?.toString() ?? '';
     suggestionQueries.add(keyword);
     return _jsonResponse({
-      'data': {
-        'list': [
-          {
-            'songmid': 'weekend',
-            'songname': '周末',
-            'singer': [
-              {'name': '周杰伦'},
-            ],
-            'albumname': '测试专辑',
+      'req_1': {
+        'code': 0,
+        'data': {
+          'body': {
+            'song': {
+              'list': [
+                {
+                  'mid': 'weekend',
+                  'name': '周末',
+                  'singer': [
+                    {'name': '周杰伦'},
+                  ],
+                  'album': {'name': '测试专辑'},
+                },
+                {
+                  'mid': 'sunny',
+                  'name': '晴天',
+                  'singer': [
+                    {'name': '周深'},
+                  ],
+                  'album': {'name': '测试专辑'},
+                },
+                {
+                  'mid': 'unrelated',
+                  'name': '不相关',
+                  'singer': [
+                    {'name': '其他歌手'},
+                  ],
+                  'album': {'name': '测试专辑'},
+                },
+              ],
+            },
           },
-          {
-            'songmid': 'sunny',
-            'songname': '晴天',
-            'singer': [
-              {'name': '周深'},
-            ],
-            'albumname': '测试专辑',
-          },
-          {
-            'songmid': 'unrelated',
-            'songname': '不相关',
-            'singer': [
-              {'name': '其他歌手'},
-            ],
-            'albumname': '测试专辑',
-          },
-        ],
+        },
       },
     });
   });

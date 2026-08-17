@@ -19,6 +19,7 @@ class MainActivity : AudioServiceActivity() {
         const val CHANNEL = "music_player/floating_capsule"
         const val INSTALL_CHANNEL = "music_player/install"
         const val FAVORITES_FILE_CHANNEL = "music_player/favorites_file"
+        const val EXTERNAL_MEDIA_CHANNEL = "music_player/external_media"
         const val REQUEST_IMPORT_FAVORITES = 4101
         const val REQUEST_EXPORT_FAVORITES = 4102
     }
@@ -52,6 +53,14 @@ class MainActivity : AudioServiceActivity() {
                         call.argument<String>("fileName"),
                         result
                     )
+                    else -> result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, EXTERNAL_MEDIA_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "playVideo" -> openExternalVideo(call.argument<String>("url"), result)
                     else -> result.notImplemented()
                 }
             }
@@ -129,6 +138,36 @@ class MainActivity : AudioServiceActivity() {
         } catch (_: ActivityNotFoundException) {
             pendingFileResult = null
             result.error("UNSUPPORTED", "系统没有可用的文件选择器", null)
+        }
+    }
+
+    private fun openExternalVideo(url: String?, result: MethodChannel.Result) {
+        val uri = try {
+            Uri.parse(url ?: "")
+        } catch (_: Exception) {
+            null
+        }
+        if (uri == null || (uri.scheme != "http" && uri.scheme != "https")) {
+            result.error("BAD_VIDEO_URL", "MV 播放地址无效", null)
+            return
+        }
+
+        val videoIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "video/*")
+        }
+        val browserIntent = Intent(Intent.ACTION_VIEW, uri)
+        runOnUiThread {
+            try {
+                startActivity(videoIntent)
+                result.success(true)
+            } catch (_: ActivityNotFoundException) {
+                try {
+                    startActivity(browserIntent)
+                    result.success(true)
+                } catch (_: ActivityNotFoundException) {
+                    result.success(false)
+                }
+            }
         }
     }
 

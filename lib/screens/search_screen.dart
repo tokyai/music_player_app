@@ -675,12 +675,16 @@ class _SearchScreenState extends State<SearchScreen>
                 ),
               ),
               const Spacer(),
-              Text(
-                '点击查看 >',
-                style: TextStyle(
-                  fontSize: layout.secondarySize,
-                  color: platformColor,
+              TextButton(
+                key: const ValueKey('search-related-playlists-action'),
+                onPressed: () => _switchMode(true),
+                style: TextButton.styleFrom(
+                  foregroundColor: platformColor,
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  textStyle: TextStyle(fontSize: layout.secondarySize),
                 ),
+                child: const Text('点击查看 >'),
               ),
             ],
           ),

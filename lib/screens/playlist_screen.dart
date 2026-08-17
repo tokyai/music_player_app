@@ -21,7 +21,6 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   static const _pageSize = 20;
   PlaylistInfo? _playlist;
   MusicPlatform? _platform;
-  List<SongSearchResult>? _qqTrackCache;
   final ScrollController _trackScrollController = ScrollController();
   bool _loading = false;
   bool _loadingMore = false;
@@ -56,18 +55,14 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
       _error = null;
       _platform = platform;
       _playlist = null;
-      _qqTrackCache = null;
       _hasMore = false;
     });
 
     try {
       PlaylistInfo playlist;
       if (platform == MusicPlatform.qq) {
-        final complete = await player.api.qqPlaylist(id);
-        _qqTrackCache = complete.tracks;
-        final firstPage = complete.tracks.take(_pageSize).toList();
-        playlist = _copyPlaylist(complete, firstPage);
-        _hasMore = firstPage.length < complete.tracks.length;
+        playlist = await player.api.qqPlaylist(id);
+        _hasMore = playlist.tracks.length < playlist.trackCount;
       } else {
         final page = await player.api.neteasePlaylistTracks(
           id,
@@ -119,23 +114,20 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     setState(() => _loadingMore = true);
     try {
       final offset = playlist.tracks.length;
-      List<SongSearchResult> nextTracks;
-      int? total;
-      if (platform == MusicPlatform.qq && _qqTrackCache != null) {
-        nextTracks = _qqTrackCache!.skip(offset).take(_pageSize).toList();
-        total = _qqTrackCache!.length;
-      } else {
-        final page = await context
-            .read<PlayerProvider>()
-            .api
-            .neteasePlaylistTracks(
+      final api = context.read<PlayerProvider>().api;
+      final page = platform == MusicPlatform.qq
+          ? await api.qqPlaylistTracks(
+              playlist.id,
+              limit: _pageSize,
+              offset: offset,
+            )
+          : await api.neteasePlaylistTracks(
               playlist.id,
               limit: _pageSize,
               offset: offset,
             );
-        nextTracks = page.tracks;
-        total = page.total;
-      }
+      final nextTracks = page.tracks;
+      final total = page.total;
       if (!mounted) return;
       final combined = [...playlist.tracks, ...nextTracks];
       setState(() {

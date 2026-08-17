@@ -181,6 +181,41 @@ class SongSearchResult {
     );
   }
 
+  /// QQ 音乐官方 musicu 搜索/歌单接口返回的歌曲结构。
+  ///
+  /// 与旧的 jsososo 结构字段不同，但两者都保留了 mid、歌名、歌手和
+  /// 专辑信息；统一在模型层转换，避免页面为不同目录接口分支处理。
+  factory SongSearchResult.fromQQMusicu(Map<String, dynamic> json) {
+    final rawSinger = json['singer'];
+    final artist = rawSinger is List
+        ? rawSinger
+              .whereType<Map>()
+              .map((item) => item['name']?.toString() ?? '')
+              .where((name) => name.isNotEmpty)
+              .join(' / ')
+        : rawSinger?.toString() ?? '';
+    final album = json['album'];
+    final albumName = album is Map
+        ? (album['name'] ?? album['title'] ?? '').toString()
+        : (json['albumname'] ?? '').toString();
+    final albumMid = album is Map
+        ? (album['mid'] ?? album['pmid'])?.toString()
+        : json['albummid']?.toString();
+    final interval = json['interval'];
+    return SongSearchResult(
+      platform: MusicPlatform.qq,
+      id: (json['mid'] ?? json['songmid'] ?? json['id'] ?? '').toString(),
+      name: (json['name'] ?? json['title'] ?? json['songname'] ?? '未知歌曲')
+          .toString(),
+      artist: artist.isEmpty ? '未知歌手' : artist,
+      album: albumName,
+      coverUrl: CoverHelper.fromQQAlbumMid(albumMid),
+      duration: interval is num
+          ? interval.toInt()
+          : int.tryParse(interval?.toString() ?? ''),
+    );
+  }
+
   factory SongSearchResult.fromKugou(Map<String, dynamic> json) {
     return SongSearchResult(
       platform: MusicPlatform.kugou,
@@ -609,8 +644,7 @@ class PlaylistInfo {
 
 /// 歌单曲目分页结果。
 ///
-/// 网易云与酷狗接口支持服务端分页；QQ 接口目前由中转服务返回完整曲目，
-/// API 层仍统一按分页结果向页面提供数据，页面可在滚动时分段展示。
+/// 三个平台均由 API 层按页返回，页面可在滚动时继续追加下一页。
 class PlaylistTrackPage {
   final List<SongSearchResult> tracks;
   final int? total;

@@ -5,30 +5,40 @@ import 'package:http/http.dart' as http;
 import '../models/song.dart';
 
 /// 音乐 API 服务层
-/// - 网易云: http://60.204.152.87:3000 (NeteaseCloudMusicApi)
-/// - 酷狗: mobilecdn.kugou.com 官方接口搜索/推荐
-/// - QQ音乐: http://101.34.65.200:3500 (jsososo) 搜索/推荐
+/// - 网易云: interface.music.163.com 官方公开目录接口
+/// - 酷狗: mobilecdn.kugou.com 官方公开目录接口
+/// - QQ音乐: u.y.qq.com musicu 官方公开目录接口
 /// - 三平台播放地址解析: ChKSz API（经 nginx 中转）
 ///
-/// 说明：上述直连域名在部分手机网络下不稳定（如 music.126.net 封面、
-/// mobilecdn.kugou.com 歌单），故统一经服务器 161.118.252.183 的 nginx
-/// 反代中转（/api-netease /api-qq /api-kugou-search /api-kugou）。
+/// 目录列表优先直连平台接口，旧 nginx 反代仅在直连失败时兜底，避免反代
+/// 延迟阻塞每日推荐、搜索和歌单分页。播放解析仍按用户在设置中的音源选择。
 class ApiService {
-  // 分页请求体积更小；给移动网络保留少量余量，仍以两次尝试快速失败。
+  // 播放解析等请求保留一次重试；目录直连使用更短的单次超时后快速降级。
   static const _requestTimeout = Duration(seconds: 10);
+  static const _catalogTimeout = Duration(seconds: 5);
+  static const _catalogFallbackTimeout = Duration(seconds: 8);
   static const _retryDelay = Duration(milliseconds: 350);
+  static const _catalogUserAgent =
+      'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
+      'Chrome/120 Mobile Safari/537.36';
 
   // ChKSz API 经服务器中转，避免移动网络直连 HTTPS 不稳定。
   static const String _chkszUrl = 'http://161.118.252.183/api-chksz';
   static const String _qingMusicUrl =
       'https://musicserver.haitangw.cc/v1/music/resolve-url';
-  // API 中转入口（服务器反代到各平台，规避手机直连不稳定）
+  // 官方公开目录入口。
+  static const String _neteaseCatalogUrl = 'https://interface.music.163.com';
+  static const String _qqCatalogUrl = 'https://u.y.qq.com/cgi-bin/musicu.fcg';
+  static const String _kugouCatalogUrl = 'http://mobilecdn.kugou.com';
+
+  // 旧 API 中转仅作网络兼容兜底。
   static const String neteaseBaseUrl = 'http://161.118.252.183/api-netease';
   static const String kugouSearchBase =
       'http://161.118.252.183/api-kugou-search';
   static const String qqBaseUrl = 'http://161.118.252.183/api-qq';
 
   final http.Client _client = http.Client();
+  final Map<String, Future<_NeteasePlaylistIndex>> _neteasePlaylistIndexes = {};
   String apiKey;
 
   ApiService({required this.apiKey});
@@ -39,21 +49,34 @@ class ApiService {
 
   void close() => _client.close();
 
-  Future<http.Response> _get(Uri uri) async {
+  Future<http.Response> _get(
+    Uri uri, {
+    Duration timeout = _requestTimeout,
+    int maxAttempts = 2,
+    Map<String, String> headers = const {},
+  }) async {
     Exception? lastError;
-    for (var attempt = 0; attempt < 2; attempt++) {
+    final attempts = maxAttempts < 1 ? 1 : maxAttempts;
+    for (var attempt = 0; attempt < attempts; attempt++) {
       try {
         final response = await _client
-            .get(uri, headers: const {'Accept': 'application/json'})
-            .timeout(_requestTimeout);
-        if (attempt == 0 && response.statusCode >= 500) {
+            .get(
+              uri,
+              headers: {
+                'Accept': 'application/json',
+                'User-Agent': _catalogUserAgent,
+                ...headers,
+              },
+            )
+            .timeout(timeout);
+        if (attempt < attempts - 1 && response.statusCode >= 500) {
           await Future<void>.delayed(_retryDelay);
           continue;
         }
         return response;
       } on Exception catch (error) {
         lastError = error;
-        if (attempt == 0) {
+        if (attempt < attempts - 1) {
           await Future<void>.delayed(_retryDelay);
           continue;
         }
@@ -62,28 +85,37 @@ class ApiService {
     throw lastError ?? StateError('请求失败');
   }
 
-  Future<http.Response> _postJson(Uri uri, Map<String, dynamic> body) async {
+  Future<http.Response> _postJson(
+    Uri uri,
+    Map<String, dynamic> body, {
+    Map<String, String> headers = const {},
+    Duration timeout = _requestTimeout,
+    int maxAttempts = 2,
+  }) async {
     Exception? lastError;
-    for (var attempt = 0; attempt < 2; attempt++) {
+    final attempts = maxAttempts < 1 ? 1 : maxAttempts;
+    for (var attempt = 0; attempt < attempts; attempt++) {
       try {
         final response = await _client
             .post(
               uri,
-              headers: const {
+              headers: {
                 'Accept': 'application/json',
                 'Content-Type': 'application/json',
+                'User-Agent': _catalogUserAgent,
+                ...headers,
               },
               body: jsonEncode(body),
             )
-            .timeout(_requestTimeout);
-        if (attempt == 0 && response.statusCode >= 500) {
+            .timeout(timeout);
+        if (attempt < attempts - 1 && response.statusCode >= 500) {
           await Future<void>.delayed(_retryDelay);
           continue;
         }
         return response;
       } on Exception catch (error) {
         lastError = error;
-        if (attempt == 0) {
+        if (attempt < attempts - 1) {
           await Future<void>.delayed(_retryDelay);
           continue;
         }
@@ -220,16 +252,257 @@ class ApiService {
     }
   }
 
+  /// 查找并解析当前平台中与歌曲对应的 MV 播放地址。
+  ///
+  /// 播放队列只保留了歌曲 id，因此用户点击 MV 时才按需查询
+  /// 对应的 vid/mvid/mvhash，不让每次普通播放都额外请求 MV 数据。
+  Future<String> musicVideoUrl({
+    required MusicPlatform platform,
+    required String songId,
+    required String songName,
+    required String artist,
+  }) async {
+    return switch (platform) {
+      MusicPlatform.qq => _qqMusicVideoUrl(songId, songName, artist),
+      MusicPlatform.netease => _neteaseMusicVideoUrl(songId),
+      MusicPlatform.kugou => _kugouMusicVideoUrl(songId, songName, artist),
+    };
+  }
+
+  Future<String> _neteaseMusicVideoUrl(String songId) async {
+    final detail = await _httpGet(neteaseBaseUrl, '/song/detail', {
+      'ids': songId,
+    });
+    final songs = detail['songs'] as List? ?? const [];
+    final mappedSongs = songs.whereType<Map>();
+    final song = mappedSongs.isEmpty ? null : mappedSongs.first;
+    final mvId = _usableIdentifier(song?['mv'] ?? song?['mvid']);
+    if (mvId == null) {
+      throw ApiException('MV_NOT_FOUND', '网易云暂未提供这首歌的 MV');
+    }
+
+    for (final resolution in const [1080, 720, 480]) {
+      final response = await _httpGet(neteaseBaseUrl, '/mv/url', {
+        'id': mvId,
+        'r': resolution,
+      });
+      final url = response['data']?['url']?.toString().trim() ?? '';
+      if (url.isNotEmpty) return url;
+    }
+    throw ApiException('MV_UNAVAILABLE', '网易云中的该 MV 暂时无法播放');
+  }
+
+  Future<String> _qqMusicVideoUrl(
+    String songId,
+    String songName,
+    String artist,
+  ) async {
+    final search = await _httpGet(qqBaseUrl, '/search', {
+      'key': '$songName $artist',
+    });
+    final rows = search['data']?['list'] as List? ?? const [];
+    Map? matched;
+    for (final row in rows.whereType<Map>()) {
+      if (row['songmid']?.toString() == songId) {
+        matched = row;
+        break;
+      }
+    }
+    matched ??= _matchSongMetadata(
+      rows,
+      songName: songName,
+      artist: artist,
+      nameKey: 'songname',
+      artistKey: 'singer',
+    );
+    final vid = _usableIdentifier(matched?['vid']);
+    if (vid == null) {
+      throw ApiException('MV_NOT_FOUND', 'QQ音乐暂未提供这首歌的 MV');
+    }
+
+    final response = await _postJson(
+      Uri.parse('https://u.y.qq.com/cgi-bin/musicu.fcg'),
+      {
+        'getMvUrl': {
+          'module': 'gosrf.Stream.MvUrlProxy',
+          'method': 'GetMvUrls',
+          'param': {
+            'vids': [vid],
+            'request_type': 10001,
+            'addrtype': 3,
+            'format': 264,
+          },
+        },
+        'comm': {'ct': 24, 'cv': 4747474},
+      },
+      headers: const {
+        'Referer': 'https://y.qq.com/',
+        'User-Agent':
+            'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Safari/537.36',
+      },
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(
+        'QQ_MV_HTTP_${response.statusCode}',
+        'QQ音乐 MV 服务暂时不可用',
+      );
+    }
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(utf8.decode(response.bodyBytes));
+    } on FormatException {
+      throw ApiException('QQ_MV_INVALID_RESPONSE', 'QQ音乐 MV 返回了无效数据');
+    }
+    dynamic rawQualities;
+    if (decoded is Map) {
+      final getMvUrl = decoded['getMvUrl'];
+      final data = getMvUrl is Map ? getMvUrl['data'] : null;
+      final mv = data is Map ? data[vid] : null;
+      rawQualities = mv is Map ? mv['mp4'] : null;
+    }
+    if (rawQualities is List) {
+      for (final quality in rawQualities.reversed.whereType<Map>()) {
+        for (final key in const ['freeflow_url', 'comm_url']) {
+          final urls = quality[key];
+          if (urls is! List) continue;
+          for (final rawUrl in urls) {
+            final url = rawUrl?.toString().trim() ?? '';
+            if (url.startsWith('http://') || url.startsWith('https://')) {
+              return url;
+            }
+          }
+        }
+      }
+    }
+    throw ApiException('MV_UNAVAILABLE', 'QQ音乐中的该 MV 暂时无法播放');
+  }
+
+  Future<String> _kugouMusicVideoUrl(
+    String songId,
+    String songName,
+    String artist,
+  ) async {
+    final search = await _httpGet(kugouSearchBase, '/api/v3/search/song', {
+      'keyword': '$songName $artist',
+      'page': 1,
+      'pagesize': 30,
+    });
+    final rows = search['data']?['info'] as List? ?? const [];
+    Map? matched;
+    for (final row in rows.whereType<Map>()) {
+      if (row['hash']?.toString().toLowerCase() == songId.toLowerCase()) {
+        matched = row;
+        break;
+      }
+    }
+    matched ??= _matchSongMetadata(
+      rows,
+      songName: songName,
+      artist: artist,
+      nameKey: 'songname',
+      artistKey: 'singername',
+    );
+    final mvHash = _usableIdentifier(matched?['mvhash']);
+    if (mvHash == null) {
+      throw ApiException('MV_NOT_FOUND', '酷狗音乐暂未提供这首歌的 MV');
+    }
+
+    final uri = Uri.parse('https://m.kugou.com/app/i/mv.php').replace(
+      queryParameters: {
+        'cmd': '100',
+        'hash': mvHash,
+        'ismp3': '1',
+        'ext': 'mp4',
+      },
+    );
+    final response = await _get(uri);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(
+        'KUGOU_MV_HTTP_${response.statusCode}',
+        '酷狗音乐 MV 服务暂时不可用',
+      );
+    }
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(utf8.decode(response.bodyBytes));
+    } on FormatException {
+      throw ApiException('KUGOU_MV_INVALID_RESPONSE', '酷狗音乐 MV 返回了无效数据');
+    }
+    final mvData = decoded is Map ? decoded['mvdata'] : null;
+    if (mvData is Map) {
+      // 优先选择适合 1080p 车机的高清档，再向下兼容。
+      for (final quality in const ['sq', 'hd', 'sd', 'le', 'rq']) {
+        final data = mvData[quality];
+        if (data is! Map) continue;
+        final direct = data['downurl']?.toString().trim() ?? '';
+        if (direct.isNotEmpty) return direct;
+        final backups = data['backupdownurl'];
+        if (backups is List) {
+          for (final rawUrl in backups) {
+            final url = rawUrl?.toString().trim() ?? '';
+            if (url.isNotEmpty) return url;
+          }
+        }
+      }
+    }
+    throw ApiException('MV_UNAVAILABLE', '酷狗音乐中的该 MV 暂时无法播放');
+  }
+
+  static Map? _matchSongMetadata(
+    List rows, {
+    required String songName,
+    required String artist,
+    required String nameKey,
+    required String artistKey,
+  }) {
+    final expectedName = _normalizeMatchText(songName);
+    final expectedArtist = _normalizeMatchText(artist);
+    for (final row in rows.whereType<Map>()) {
+      final name = _normalizeMatchText(row[nameKey]?.toString() ?? '');
+      final rawArtist = row[artistKey];
+      final artistText = rawArtist is List
+          ? rawArtist
+                .whereType<Map>()
+                .map((item) => item['name']?.toString() ?? '')
+                .join('/')
+          : rawArtist?.toString() ?? '';
+      final candidateArtist = _normalizeMatchText(artistText);
+      if (name == expectedName &&
+          (expectedArtist.isEmpty ||
+              candidateArtist.contains(expectedArtist) ||
+              expectedArtist.contains(candidateArtist))) {
+        return row;
+      }
+    }
+    return null;
+  }
+
+  static String _normalizeMatchText(String value) =>
+      value.toLowerCase().replaceAll(RegExp(r'[\s/\u3001，,&·・-]+'), '');
+
+  static String? _usableIdentifier(dynamic value) {
+    final result = value?.toString().trim() ?? '';
+    return result.isEmpty || result == '0' ? null : result;
+  }
+
   // ---- 通用 HTTP GET ----
   Future<Map<String, dynamic>> _httpGet(
     String baseUrl,
     String path,
-    Map<String, dynamic> params,
-  ) async {
+    Map<String, dynamic> params, {
+    Duration timeout = _requestTimeout,
+    int maxAttempts = 2,
+    Map<String, String> headers = const {},
+  }) async {
     final uri = Uri.parse(
       '$baseUrl$path',
     ).replace(queryParameters: params.map((k, v) => MapEntry(k, v.toString())));
-    final res = await _get(uri);
+    final res = await _get(
+      uri,
+      timeout: timeout,
+      maxAttempts: maxAttempts,
+      headers: headers,
+    );
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw ApiException('HTTP_${res.statusCode}', '服务暂时不可用');
     }
@@ -246,6 +519,95 @@ class ApiService {
     return body;
   }
 
+  Future<Map<String, dynamic>> _catalogGet({
+    required String directBaseUrl,
+    required String directPath,
+    required String fallbackBaseUrl,
+    required String fallbackPath,
+    required Map<String, dynamic> params,
+    Map<String, dynamic>? fallbackParams,
+  }) async {
+    try {
+      return await _httpGet(
+        directBaseUrl,
+        directPath,
+        params,
+        timeout: _catalogTimeout,
+        maxAttempts: 1,
+      );
+    } catch (error) {
+      debugPrint('目录直连失败，切换兼容线路: $error');
+      return _httpGet(
+        fallbackBaseUrl,
+        fallbackPath,
+        fallbackParams ?? params,
+        timeout: _catalogFallbackTimeout,
+        maxAttempts: 1,
+      );
+    }
+  }
+
+  Future<Map<String, dynamic>> _qqMusicu(Map<String, dynamic> payload) async {
+    final response = await _postJson(
+      Uri.parse(_qqCatalogUrl),
+      payload,
+      headers: const {
+        'Referer': 'https://y.qq.com/',
+        'Origin': 'https://y.qq.com',
+      },
+      timeout: _catalogTimeout,
+      maxAttempts: 1,
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException('QQ_HTTP_${response.statusCode}', 'QQ 音乐目录服务暂时不可用');
+    }
+    final dynamic body;
+    try {
+      body = jsonDecode(utf8.decode(response.bodyBytes));
+    } on FormatException {
+      throw ApiException('QQ_INVALID_RESPONSE', 'QQ 音乐返回了无效数据');
+    }
+    if (body is! Map) {
+      throw ApiException('QQ_INVALID_RESPONSE', 'QQ 音乐返回格式错误');
+    }
+    return Map<String, dynamic>.from(body);
+  }
+
+  Map<String, dynamic> _qqResponseData(
+    Map<String, dynamic> response,
+    String requestKey,
+  ) {
+    final rawRequest = response[requestKey];
+    if (rawRequest is! Map) {
+      throw ApiException('QQ_INVALID_RESPONSE', 'QQ 音乐目录数据缺失');
+    }
+    final request = Map<String, dynamic>.from(rawRequest);
+    if (request['code'] != null && request['code'].toString() != '0') {
+      throw ApiException(
+        'QQ_${request['code']}',
+        request['message']?.toString() ?? 'QQ 音乐目录请求失败',
+      );
+    }
+    final rawData = request['data'];
+    if (rawData is! Map) {
+      throw ApiException('QQ_INVALID_RESPONSE', 'QQ 音乐目录内容为空');
+    }
+    return Map<String, dynamic>.from(rawData);
+  }
+
+  Future<Map<String, dynamic>> _kugouCatalogGet(
+    String path,
+    Map<String, dynamic> params,
+  ) {
+    return _catalogGet(
+      directBaseUrl: _kugouCatalogUrl,
+      directPath: path,
+      fallbackBaseUrl: kugouSearchBase,
+      fallbackPath: path,
+      params: params,
+    );
+  }
+
   // ======================== 网易云 (直连) ========================
 
   /// 搜索网易云歌曲
@@ -253,10 +615,20 @@ class ApiService {
     String keyword, {
     int limit = 20,
   }) async {
-    final json = await _httpGet(neteaseBaseUrl, '/search', {
-      'keywords': keyword,
-      'limit': limit,
-    });
+    final json = await _catalogGet(
+      directBaseUrl: _neteaseCatalogUrl,
+      directPath: '/api/search/get/web',
+      fallbackBaseUrl: neteaseBaseUrl,
+      fallbackPath: '/search',
+      params: {
+        's': keyword,
+        'type': 1,
+        'limit': limit,
+        'offset': 0,
+        'total': true,
+      },
+      fallbackParams: {'keywords': keyword, 'limit': limit},
+    );
     final list = json['result']?['songs'] as List? ?? [];
     final songs = list
         .map((e) => SongSearchResult.fromNetease(e as Map<String, dynamic>))
@@ -271,11 +643,20 @@ class ApiService {
     String keyword, {
     int limit = 20,
   }) async {
-    final json = await _httpGet(neteaseBaseUrl, '/search', {
-      'keywords': keyword,
-      'type': 1000,
-      'limit': limit,
-    });
+    final json = await _catalogGet(
+      directBaseUrl: _neteaseCatalogUrl,
+      directPath: '/api/search/get/web',
+      fallbackBaseUrl: neteaseBaseUrl,
+      fallbackPath: '/search',
+      params: {
+        's': keyword,
+        'type': 1000,
+        'limit': limit,
+        'offset': 0,
+        'total': true,
+      },
+      fallbackParams: {'keywords': keyword, 'type': 1000, 'limit': limit},
+    );
     final list = json['result']?['playlists'] as List? ?? [];
     return list
         .map((e) => PlaylistInfo.fromNeteaseList(e as Map<String, dynamic>))
@@ -290,11 +671,8 @@ class ApiService {
         .toList();
     if (missing.isEmpty) return;
     try {
-      final ids = missing.map((s) => s.id).join(',');
-      final json = await _httpGet(neteaseBaseUrl, '/song/detail', {'ids': ids});
-      final details = json['songs'] as List? ?? [];
+      final details = await _neteaseSongDetails(missing.map((song) => song.id));
       for (final d in details) {
-        if (d is! Map<String, dynamic>) continue;
         final id = d['id']?.toString();
         final picUrl = CoverHelper.normalize(d['al']?['picUrl']?.toString());
         if (id == null || picUrl == null) continue;
@@ -315,6 +693,30 @@ class ApiService {
       // 封面补充失败不影响列表展示
       debugPrint('补网易云封面失败: $e');
     }
+  }
+
+  Future<List<Map<String, dynamic>>> _neteaseSongDetails(
+    Iterable<String> songIds,
+  ) async {
+    final ids = songIds.where((id) => id.isNotEmpty).toList(growable: false);
+    if (ids.isEmpty) return const [];
+    final officialIds = jsonEncode(ids);
+    final songParams = ids
+        .map((id) => <String, dynamic>{'id': int.tryParse(id) ?? id})
+        .toList(growable: false);
+    final json = await _catalogGet(
+      directBaseUrl: _neteaseCatalogUrl,
+      directPath: '/api/song/detail',
+      fallbackBaseUrl: neteaseBaseUrl,
+      fallbackPath: '/song/detail',
+      params: {'ids': officialIds, 'c': jsonEncode(songParams)},
+      fallbackParams: {'ids': ids.join(',')},
+    );
+    final rows = json['songs'] as List? ?? const [];
+    return rows
+        .whereType<Map>()
+        .map((row) => Map<String, dynamic>.from(row))
+        .toList(growable: false);
   }
 
   /// 解析网易云歌曲播放地址 (ChKSz API /api/163_music)
@@ -391,8 +793,8 @@ class ApiService {
 
   /// 网易云歌单曲目分页。
   ///
-  /// `/playlist/detail` 会把最多 1000 首歌曲一起返回，容易在车机网络下
-  /// 超时；曲目页改用官方分页接口，每次只取一页。
+  /// 首次只从官方详情取得轻量曲目 ID，并缓存本次会话的索引；每一页再按
+  /// 20 个 ID 批量获取歌曲详情，避免重复下载或解析完整歌曲对象。
   Future<PlaylistTrackPage> neteasePlaylistTracks(
     String id, {
     int limit = 20,
@@ -400,24 +802,71 @@ class ApiService {
   }) async {
     final safeLimit = limit.clamp(1, 100);
     final safeOffset = offset < 0 ? 0 : offset;
-    final json = await _httpGet(neteaseBaseUrl, '/playlist/track/all', {
-      'id': id,
-      'limit': safeLimit,
-      'offset': safeOffset,
-    });
-    final rawSongs = json['songs'] as List? ?? const [];
-    final tracks = rawSongs
+    final index = await _neteasePlaylistIndex(id);
+    final selectedIds = index.trackIds
+        .skip(safeOffset)
+        .take(safeLimit)
+        .toList(growable: false);
+    final details = await _neteaseSongDetails(selectedIds);
+    final byId = <String, Map<String, dynamic>>{
+      for (final detail in details)
+        if (detail['id'] != null) detail['id'].toString(): detail,
+    };
+    final tracks = selectedIds
+        .map((songId) => byId[songId])
+        .whereType<Map<String, dynamic>>()
+        .map(SongSearchResult.fromNetease)
+        .toList(growable: false);
+    return PlaylistTrackPage(tracks: tracks, total: index.total);
+  }
+
+  Future<_NeteasePlaylistIndex> _neteasePlaylistIndex(String id) async {
+    final existing = _neteasePlaylistIndexes[id];
+    if (existing != null) return existing;
+    final request = _loadNeteasePlaylistIndex(id);
+    _neteasePlaylistIndexes[id] = request;
+    try {
+      return await request;
+    } catch (_) {
+      if (identical(_neteasePlaylistIndexes[id], request)) {
+        _neteasePlaylistIndexes.remove(id);
+      }
+      rethrow;
+    }
+  }
+
+  Future<_NeteasePlaylistIndex> _loadNeteasePlaylistIndex(String id) async {
+    final json = await _catalogGet(
+      directBaseUrl: _neteaseCatalogUrl,
+      directPath: '/api/v6/playlist/detail',
+      fallbackBaseUrl: neteaseBaseUrl,
+      fallbackPath: '/playlist/detail',
+      params: {'id': id, 'n': 100000, 's': 0},
+      fallbackParams: {'id': id},
+    );
+    final rawPlaylist = json['playlist'];
+    final playlist = rawPlaylist is Map
+        ? Map<String, dynamic>.from(rawPlaylist)
+        : <String, dynamic>{};
+    final trackIds = (playlist['trackIds'] as List? ?? const [])
         .whereType<Map>()
-        .map(
-          (song) =>
-              SongSearchResult.fromNetease(Map<String, dynamic>.from(song)),
-        )
+        .map((row) => row['id']?.toString() ?? '')
+        .where((trackId) => trackId.isNotEmpty)
         .toList();
-    final rawTotal = json['total'] ?? json['trackCount'];
+    if (trackIds.isEmpty) {
+      final embedded = playlist['tracks'] as List? ?? const [];
+      trackIds.addAll(
+        embedded
+            .whereType<Map>()
+            .map((row) => row['id']?.toString() ?? '')
+            .where((trackId) => trackId.isNotEmpty),
+      );
+    }
+    final rawTotal = playlist['trackCount'];
     final total = rawTotal is num
         ? rawTotal.toInt()
-        : int.tryParse(rawTotal?.toString() ?? '');
-    return PlaylistTrackPage(tracks: tracks, total: total);
+        : int.tryParse(rawTotal?.toString() ?? '') ?? trackIds.length;
+    return _NeteasePlaylistIndex(trackIds: trackIds, total: total);
   }
 
   // ======================== 酷狗 (mobilecdn 官方接口, ChKSz解析) ========================
@@ -429,7 +878,7 @@ class ApiService {
     int page = 1,
     int pagesize = 20,
   }) async {
-    final json = await _httpGet(kugouSearchBase, '/api/v3/search/song', {
+    final json = await _kugouCatalogGet('/api/v3/search/song', {
       'keyword': keyword,
       'page': page,
       'pagesize': pagesize,
@@ -448,7 +897,7 @@ class ApiService {
     int page = 1,
     int pagesize = 30,
   }) async {
-    final json = await _httpGet(kugouSearchBase, '/api/v3/rank/song', {
+    final json = await _kugouCatalogGet('/api/v3/rank/song', {
       'rankid': '74534',
       'page': page,
       'pagesize': pagesize,
@@ -465,7 +914,7 @@ class ApiService {
   Future<List<SongSearchResult>> kugouDailyRecommend({
     int pagesize = 20,
   }) async {
-    final json = await _httpGet(kugouSearchBase, '/api/v3/rank/song', {
+    final json = await _kugouCatalogGet('/api/v3/rank/song', {
       'rankid': '6666',
       'page': 1,
       'pagesize': pagesize,
@@ -510,13 +959,46 @@ class ApiService {
 
   // ======================== QQ音乐 (直连搜索/推荐, ChKSz解析) ========================
 
-  /// 搜索QQ音乐 (jsososo)
+  /// 搜索 QQ 音乐（官方 musicu，旧中转仅作失败兜底）。
   Future<List<SongSearchResult>> qqSearch(String keyword) async {
-    final json = await _httpGet(qqBaseUrl, '/search', {'key': keyword});
-    final list = json['data']?['list'] as List? ?? [];
-    return list
-        .map((e) => SongSearchResult.fromQQDirect(e as Map<String, dynamic>))
-        .toList();
+    try {
+      final response = await _qqMusicu({
+        'req_1': {
+          'method': 'DoSearchForQQMusicDesktop',
+          'module': 'music.search.SearchCgiService',
+          'param': {
+            'num_per_page': 20,
+            'page_num': 1,
+            'query': keyword,
+            'search_type': 0,
+          },
+        },
+      });
+      final data = _qqResponseData(response, 'req_1');
+      final body = data['body'];
+      final song = body is Map ? body['song'] : null;
+      final rows = song is Map ? song['list'] as List? ?? const [] : const [];
+      return rows
+          .whereType<Map>()
+          .map(
+            (row) =>
+                SongSearchResult.fromQQMusicu(Map<String, dynamic>.from(row)),
+          )
+          .toList(growable: false);
+    } catch (error) {
+      debugPrint('QQ 官方搜索失败，切换兼容线路: $error');
+      final json = await _httpGet(
+        qqBaseUrl,
+        '/search',
+        {'key': keyword},
+        timeout: _catalogFallbackTimeout,
+        maxAttempts: 1,
+      );
+      final list = json['data']?['list'] as List? ?? [];
+      return list
+          .map((e) => SongSearchResult.fromQQDirect(e as Map<String, dynamic>))
+          .toList();
+    }
   }
 
   /// QQ推荐歌单
@@ -528,13 +1010,48 @@ class ApiService {
         .toList();
   }
 
-  /// QQ音乐歌单搜索 (jsososo /search?t=2)
+  /// QQ 音乐歌单搜索（官方 musicu）。
   Future<List<PlaylistInfo>> qqSearchPlaylists(String keyword) async {
-    final json = await _httpGet(qqBaseUrl, '/search', {'key': keyword, 't': 2});
-    final list = json['data']?['list'] as List? ?? [];
-    return list
-        .map((e) => PlaylistInfo.fromQQSearchList(e as Map<String, dynamic>))
-        .toList();
+    try {
+      final response = await _qqMusicu({
+        'req_1': {
+          'method': 'DoSearchForQQMusicDesktop',
+          'module': 'music.search.SearchCgiService',
+          'param': {
+            'num_per_page': 20,
+            'page_num': 1,
+            'query': keyword,
+            'search_type': 3,
+          },
+        },
+      });
+      final data = _qqResponseData(response, 'req_1');
+      final body = data['body'];
+      final songlist = body is Map ? body['songlist'] : null;
+      final rows = songlist is Map
+          ? songlist['list'] as List? ?? const []
+          : const [];
+      return rows
+          .whereType<Map>()
+          .map(
+            (row) =>
+                PlaylistInfo.fromQQSearchList(Map<String, dynamic>.from(row)),
+          )
+          .toList(growable: false);
+    } catch (error) {
+      debugPrint('QQ 官方歌单搜索失败，切换兼容线路: $error');
+      final json = await _httpGet(
+        qqBaseUrl,
+        '/search',
+        {'key': keyword, 't': 2},
+        timeout: _catalogFallbackTimeout,
+        maxAttempts: 1,
+      );
+      final list = json['data']?['list'] as List? ?? [];
+      return list
+          .map((e) => PlaylistInfo.fromQQSearchList(e as Map<String, dynamic>))
+          .toList();
+    }
   }
 
   /// 酷狗歌单搜索 (mobilecdn /api/v3/search/special)
@@ -543,7 +1060,7 @@ class ApiService {
     int page = 1,
     int pagesize = 20,
   }) async {
-    final json = await _httpGet(kugouSearchBase, '/api/v3/search/special', {
+    final json = await _kugouCatalogGet('/api/v3/search/special', {
       'keyword': keyword,
       'page': page,
       'pagesize': pagesize,
@@ -560,7 +1077,7 @@ class ApiService {
     int page = 1,
     int pagesize = 200,
   }) async {
-    final json = await _httpGet(kugouSearchBase, '/api/v3/special/song', {
+    final json = await _kugouCatalogGet('/api/v3/special/song', {
       'specialid': specialid,
       'page': page,
       'pagesize': pagesize,
@@ -588,7 +1105,7 @@ class ApiService {
   }) async {
     final safePage = page < 1 ? 1 : page;
     final safeLimit = limit.clamp(1, 100);
-    final json = await _httpGet(kugouSearchBase, '/api/v3/special/song', {
+    final json = await _kugouCatalogGet('/api/v3/special/song', {
       'specialid': specialid,
       'page': safePage,
       'pagesize': safeLimit,
@@ -610,18 +1127,55 @@ class ApiService {
     return PlaylistTrackPage(tracks: tracks, total: total);
   }
 
-  /// QQ歌单详情
+  /// QQ 歌单详情首屏；官方接口只返回当前 20 首，不再下载完整大歌单。
   Future<PlaylistInfo> qqPlaylist(String tid) async {
-    final json = await _httpGet(qqBaseUrl, '/songlist', {'id': tid});
-    final data = json['data'] ?? json;
-    return PlaylistInfo.fromQQDetail(data as Map<String, dynamic>);
+    try {
+      final data = await _qqPlaylistData(tid, limit: 20, offset: 0);
+      final rawDirInfo = data['dirinfo'];
+      final dirInfo = rawDirInfo is Map
+          ? Map<String, dynamic>.from(rawDirInfo)
+          : <String, dynamic>{};
+      final rows = data['songlist'] as List? ?? const [];
+      final tracks = rows
+          .whereType<Map>()
+          .map(
+            (row) =>
+                SongSearchResult.fromQQMusicu(Map<String, dynamic>.from(row)),
+          )
+          .toList(growable: false);
+      final rawCreator = dirInfo['creator'];
+      final creator = dirInfo['host_nick']?.toString().trim();
+      final rawTotal = dirInfo['songnum'];
+      return PlaylistInfo(
+        id: (dirInfo['id'] ?? tid).toString(),
+        name: dirInfo['title']?.toString() ?? 'QQ歌单',
+        coverUrl: CoverHelper.normalize(dirInfo['picurl']?.toString()),
+        creator: creator != null && creator.isNotEmpty
+            ? creator
+            : rawCreator is Map
+            ? rawCreator['nick']?.toString()
+            : null,
+        trackCount: rawTotal is num
+            ? rawTotal.toInt()
+            : int.tryParse(rawTotal?.toString() ?? '') ?? tracks.length,
+        description: dirInfo['desc']?.toString(),
+        tracks: tracks,
+      );
+    } catch (error) {
+      debugPrint('QQ 官方歌单详情失败，切换兼容线路: $error');
+      final json = await _httpGet(
+        qqBaseUrl,
+        '/songlist',
+        {'id': tid},
+        timeout: _catalogFallbackTimeout,
+        maxAttempts: 1,
+      );
+      final data = json['data'] ?? json;
+      return PlaylistInfo.fromQQDetail(data as Map<String, dynamic>);
+    }
   }
 
-  /// QQ 歌单曲目分页兼容层。
-  ///
-  /// jsososo 的 `/songlist` 路由目前没有把 offset 透传给 QQ 上游，
-  /// 因此先传递分页参数（便于未来中转服务支持），收到完整列表时在本地
-  /// 截取当前页，避免页面一次创建数百个条目。
+  /// QQ 官方歌单曲目分页；每次网络响应只包含当前页。
   Future<PlaylistTrackPage> qqPlaylistTracks(
     String tid, {
     int limit = 20,
@@ -629,33 +1183,81 @@ class ApiService {
   }) async {
     final safeLimit = limit.clamp(1, 100);
     final safeOffset = offset < 0 ? 0 : offset;
-    final json = await _httpGet(qqBaseUrl, '/songlist', {
-      'id': tid,
-      'song_begin': safeOffset,
-      'song_num': safeLimit,
+    try {
+      final data = await _qqPlaylistData(
+        tid,
+        limit: safeLimit,
+        offset: safeOffset,
+      );
+      final rawList = data['songlist'] as List? ?? const [];
+      final tracks = rawList
+          .whereType<Map>()
+          .map(
+            (song) =>
+                SongSearchResult.fromQQMusicu(Map<String, dynamic>.from(song)),
+          )
+          .toList(growable: false);
+      final dirInfo = data['dirinfo'];
+      final rawTotal = dirInfo is Map ? dirInfo['songnum'] : null;
+      final total = rawTotal is num
+          ? rawTotal.toInt()
+          : int.tryParse(rawTotal?.toString() ?? '');
+      return PlaylistTrackPage(tracks: tracks, total: total);
+    } catch (error) {
+      debugPrint('QQ 官方歌单分页失败，切换兼容线路: $error');
+      final json = await _httpGet(
+        qqBaseUrl,
+        '/songlist',
+        {'id': tid, 'song_begin': safeOffset, 'song_num': safeLimit},
+        timeout: _catalogFallbackTimeout,
+        maxAttempts: 1,
+      );
+      final rawData = json['data'] ?? json;
+      final data = rawData is Map
+          ? Map<String, dynamic>.from(rawData)
+          : <String, dynamic>{};
+      final rawList = data['songlist'] as List? ?? const [];
+      final allTracks = rawList
+          .whereType<Map>()
+          .map(
+            (song) =>
+                SongSearchResult.fromQQDirect(Map<String, dynamic>.from(song)),
+          )
+          .toList();
+      final rawTotal = data['songnum'] ?? data['total_song_num'];
+      final parsedTotal = rawTotal is num
+          ? rawTotal.toInt()
+          : int.tryParse(rawTotal?.toString() ?? '');
+      final total = parsedTotal ?? allTracks.length;
+      final tracks = allTracks.length > safeLimit
+          ? allTracks.skip(safeOffset).take(safeLimit).toList()
+          : allTracks;
+      return PlaylistTrackPage(tracks: tracks, total: total);
+    }
+  }
+
+  Future<Map<String, dynamic>> _qqPlaylistData(
+    String tid, {
+    required int limit,
+    required int offset,
+  }) async {
+    final response = await _qqMusicu({
+      'comm': {'ct': 24, 'cv': 0},
+      'req_0': {
+        'module': 'music.srfDissInfo.aiDissInfo',
+        'method': 'uniform_get_Dissinfo',
+        'param': {
+          'disstid': int.tryParse(tid) ?? tid,
+          'enc_host_uin': '',
+          'tag': 1,
+          'userinfo': 1,
+          'song_begin': offset,
+          'song_num': limit,
+          'onlysonglist': 0,
+        },
+      },
     });
-    final rawData = json['data'] ?? json;
-    final data = rawData is Map
-        ? Map<String, dynamic>.from(rawData)
-        : <String, dynamic>{};
-    final rawList = data['songlist'] as List? ?? const [];
-    final allTracks = rawList
-        .whereType<Map>()
-        .map(
-          (song) =>
-              SongSearchResult.fromQQDirect(Map<String, dynamic>.from(song)),
-        )
-        .toList();
-    final rawTotal = data['songnum'] ?? data['total_song_num'];
-    final parsedTotal = rawTotal is num
-        ? rawTotal.toInt()
-        : int.tryParse(rawTotal?.toString() ?? '');
-    final total = parsedTotal ?? allTracks.length;
-    // 若中转层已实现分页，返回值长度不会超过 limit；否则从完整列表切页。
-    final tracks = allTracks.length > safeLimit
-        ? allTracks.skip(safeOffset).take(safeLimit).toList()
-        : allTracks;
-    return PlaylistTrackPage(tracks: tracks, total: total);
+    return _qqResponseData(response, 'req_0');
   }
 
   /// QQ歌词
@@ -714,6 +1316,13 @@ class ApiService {
     // 酷狗歌词随解析接口返回
     return null;
   }
+}
+
+class _NeteasePlaylistIndex {
+  final List<String> trackIds;
+  final int total;
+
+  const _NeteasePlaylistIndex({required this.trackIds, required this.total});
 }
 
 class ApiException implements Exception {

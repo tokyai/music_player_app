@@ -737,6 +737,8 @@ class PlayerProvider extends ChangeNotifier {
     }
   }
 
+  Future<void> pause() => _audioPlayer.pause();
+
   Future<void> playNext() async {
     if (_queue.isEmpty) return;
     if (_playMode == PlayMode.shuffle) {

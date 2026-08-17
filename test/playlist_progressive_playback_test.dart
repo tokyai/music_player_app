@@ -145,11 +145,26 @@ http.Client _playlistClient(
   required Completer<http.Response> delayedPage,
 }) {
   return MockClient((request) async {
-    if (request.url.path != '/api-netease/playlist/track/all') {
+    if (request.url.path == '/api/v6/playlist/detail') {
+      return http.Response(
+        jsonEncode({
+          'code': 200,
+          'playlist': {
+            'trackCount': 45,
+            'trackIds': List.generate(45, (index) => {'id': index + 1}),
+          },
+        }),
+        200,
+        headers: const {'content-type': 'application/json; charset=utf-8'},
+      );
+    }
+    if (request.url.path != '/api/song/detail') {
       return http.Response('{}', 200);
     }
-    final offset =
-        int.tryParse(request.url.queryParameters['offset'] ?? '0') ?? 0;
+    final ids = (jsonDecode(request.url.queryParameters['ids']!) as List)
+        .map((id) => int.parse(id.toString()))
+        .toList();
+    final offset = ids.first - 1;
     offsets.add(offset);
     if (offset == 20) return delayedPage.future;
     return _playlistPage(offset: offset, total: 45);
@@ -170,7 +185,7 @@ http.Response _playlistPage({required int offset, required int total}) {
     },
   );
   return http.Response(
-    jsonEncode({'code': 200, 'songs': songs, 'total': total}),
+    jsonEncode({'code': 200, 'songs': songs}),
     200,
     headers: const {'content-type': 'application/json; charset=utf-8'},
   );

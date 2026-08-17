@@ -39,7 +39,7 @@ void main() {
   });
 
   test('requests twenty-song Netease pages with an offset', () async {
-    Uri? requested;
+    final requested = <Uri>[];
     await http.runWithClient(
       () async {
         final api = ApiService(apiKey: '');
@@ -56,12 +56,25 @@ void main() {
         }
       },
       () => MockClient((request) async {
-        requested = request.url;
+        requested.add(request.url);
+        if (request.url.path == '/api/v6/playlist/detail') {
+          return http.Response.bytes(
+            utf8.encode(
+              jsonEncode({
+                'code': 200,
+                'playlist': {
+                  'trackCount': 41,
+                  'trackIds': List.generate(41, (index) => {'id': index + 1}),
+                },
+              }),
+            ),
+            200,
+          );
+        }
         return http.Response.bytes(
           utf8.encode(
             jsonEncode({
               'code': 200,
-              'total': 41,
               'songs': [
                 {
                   'id': 41,
@@ -78,8 +91,15 @@ void main() {
         );
       }),
     );
-    expect(requested?.queryParameters['limit'], '20');
-    expect(requested?.queryParameters['offset'], '40');
+    expect(requested.map((uri) => uri.path), [
+      '/api/v6/playlist/detail',
+      '/api/song/detail',
+    ]);
+    expect(
+      requested.every((uri) => uri.host == 'interface.music.163.com'),
+      isTrue,
+    );
+    expect(requested.last.queryParameters['ids'], contains('41'));
   });
 
   test('requests native Kugou pages', () async {
@@ -118,10 +138,12 @@ void main() {
     );
     expect(requested?.queryParameters['page'], '3');
     expect(requested?.queryParameters['pagesize'], '20');
+    expect(requested?.host, 'mobilecdn.kugou.com');
   });
 
-  test('locally slices a complete QQ response into pages', () async {
-    Uri? requested;
+  test('requests a real twenty-song QQ page from musicu', () async {
+    Map<String, dynamic>? requestedBody;
+    Uri? requestedUrl;
     await http.runWithClient(
       () async {
         final api = ApiService(apiKey: '');
@@ -139,23 +161,26 @@ void main() {
         }
       },
       () => MockClient((request) async {
-        requested = request.url;
+        requestedUrl = request.url;
+        requestedBody = jsonDecode(request.body) as Map<String, dynamic>;
         return http.Response.bytes(
           utf8.encode(
             jsonEncode({
-              'data': {
-                'songnum': 21,
-                'songlist': List.generate(
-                  21,
-                  (index) => {
-                    'songmid': 'mid-${index + 1}',
-                    'songname': '歌曲 ${index + 1}',
-                    'singer': [
-                      {'name': '歌手'},
-                    ],
-                    'albumname': '专辑',
-                  },
-                ),
+              'req_0': {
+                'code': 0,
+                'data': {
+                  'dirinfo': {'songnum': 21},
+                  'songlist': [
+                    {
+                      'mid': 'mid-21',
+                      'name': '歌曲 21',
+                      'singer': [
+                        {'name': '歌手'},
+                      ],
+                      'album': {'name': '专辑', 'mid': 'album-mid'},
+                    },
+                  ],
+                },
               },
             }),
           ),
@@ -163,8 +188,11 @@ void main() {
         );
       }),
     );
-    expect(requested?.queryParameters['song_begin'], '20');
-    expect(requested?.queryParameters['song_num'], '20');
+    final req = requestedBody!['req_0'] as Map<String, dynamic>;
+    final params = req['param'] as Map<String, dynamic>;
+    expect(requestedUrl?.host, 'u.y.qq.com');
+    expect(params['song_begin'], 20);
+    expect(params['song_num'], 20);
   });
 
   test('maps all three platforms to the QingMusic resolver contract', () async {
@@ -225,4 +253,127 @@ void main() {
       {'source': 'kg', 'rid': 'kg-hash', 'level': 'clear'},
     ]);
   });
+
+  test('resolves platform-specific MV URLs for all three platforms', () async {
+    final requests = <Uri>[];
+    await http.runWithClient(
+      () async {
+        final api = ApiService(apiKey: '');
+        try {
+          expect(
+            await api.musicVideoUrl(
+              platform: MusicPlatform.qq,
+              songId: 'qq-mid',
+              songName: 'QQ测试歌',
+              artist: 'QQ歌手',
+            ),
+            'https://video.test/qq-1080.mp4',
+          );
+          expect(
+            await api.musicVideoUrl(
+              platform: MusicPlatform.netease,
+              songId: '163-id',
+              songName: '网易测试歌',
+              artist: '网易歌手',
+            ),
+            'https://video.test/netease-1080.mp4',
+          );
+          expect(
+            await api.musicVideoUrl(
+              platform: MusicPlatform.kugou,
+              songId: 'kg-hash',
+              songName: '酷狗测试歌',
+              artist: '酷狗歌手',
+            ),
+            'http://video.test/kugou-1080.mp4',
+          );
+        } finally {
+          api.close();
+        }
+      },
+      () => MockClient((request) async {
+        requests.add(request.url);
+        if (request.url.path == '/api-qq/search') {
+          return _jsonResponse({
+            'data': {
+              'list': [
+                {
+                  'songmid': 'qq-mid',
+                  'songname': 'QQ测试歌',
+                  'singer': [
+                    {'name': 'QQ歌手'},
+                  ],
+                  'vid': 'qq-vid',
+                },
+              ],
+            },
+          });
+        }
+        if (request.url.host == 'u.y.qq.com') {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          expect(body['getMvUrl']['param']['vids'], ['qq-vid']);
+          return _jsonResponse({
+            'getMvUrl': {
+              'data': {
+                'qq-vid': {
+                  'mp4': [
+                    {
+                      'freeflow_url': ['https://video.test/qq-720.mp4'],
+                    },
+                    {
+                      'freeflow_url': ['https://video.test/qq-1080.mp4'],
+                    },
+                  ],
+                },
+              },
+            },
+          });
+        }
+        if (request.url.path == '/api-netease/song/detail') {
+          return _jsonResponse({
+            'songs': [
+              {'id': '163-id', 'mv': 163001},
+            ],
+          });
+        }
+        if (request.url.path == '/api-netease/mv/url') {
+          expect(request.url.queryParameters['r'], '1080');
+          return _jsonResponse({
+            'data': {'url': 'https://video.test/netease-1080.mp4'},
+          });
+        }
+        if (request.url.path == '/api-kugou-search/api/v3/search/song') {
+          return _jsonResponse({
+            'data': {
+              'info': [
+                {
+                  'hash': 'kg-hash',
+                  'songname': '酷狗测试歌',
+                  'singername': '酷狗歌手',
+                  'mvhash': 'kg-mv-hash',
+                },
+              ],
+            },
+          });
+        }
+        if (request.url.host == 'm.kugou.com') {
+          expect(request.url.queryParameters['hash'], 'kg-mv-hash');
+          return _jsonResponse({
+            'mvdata': {
+              'sq': {'downurl': 'http://video.test/kugou-1080.mp4'},
+            },
+          });
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+
+    expect(requests, hasLength(6));
+  });
 }
+
+http.Response _jsonResponse(Map<String, dynamic> body) => http.Response(
+  jsonEncode(body),
+  200,
+  headers: const {'content-type': 'application/json; charset=utf-8'},
+);

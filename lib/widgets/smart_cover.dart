@@ -74,8 +74,8 @@ class _SmartCoverState extends State<SmartCover> {
   void _initUrls() {
     final proxy = CoverProxy.toProxy(widget.url);
     final list = <String?>[
-      if (proxy != null && proxy != widget.url) proxy,
       widget.url,
+      if (proxy != null && proxy != widget.url) proxy,
     ];
     _urls = list;
     _attempt = 0;

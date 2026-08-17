@@ -6,7 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
 import '../services/api_service.dart';
 
-enum SearchSubject { general, artist, album }
+enum SearchSubject { general, title, artist, album }
 
 /// 应用级搜索会话。搜索页面即使因路由或横竖屏切换重建，也能恢复完整结果。
 class SearchSession extends ChangeNotifier {
@@ -125,13 +125,27 @@ class SearchSession extends ChangeNotifier {
 
   Future<void> setPlaylistMode(ApiService api, bool playlistMode) async {
     if (_playlistMode == playlistMode) return;
+    _requestId++;
     _playlistMode = playlistMode;
     _subject = SearchSubject.general;
     if (_keyword.isEmpty) {
       _notify();
       return;
     }
-    await search(api, _keyword);
+    _loadedPlatforms.clear();
+    for (final platform in musicPlatformDisplayOrder) {
+      _loading[platform] = false;
+      _errors[platform] = null;
+      final hasCachedTarget = playlistMode
+          ? (_playlistResults[platform]?.isNotEmpty ?? false)
+          : (_results[platform]?.isNotEmpty ?? false);
+      if (hasCachedTarget) _loadedPlatforms.add(platform);
+    }
+    _notify();
+    await ensurePlatformLoaded(
+      api,
+      musicPlatformDisplayOrder[_selectedPlatformIndex],
+    );
   }
 
   Future<void> ensurePlatformLoaded(
@@ -277,7 +291,12 @@ class SearchSession extends ChangeNotifier {
     if (subject == SearchSubject.general) return songs;
     final expected = _normalize(keyword);
     final matches = songs.where((song) {
-      final value = subject == SearchSubject.artist ? song.artist : song.album;
+      final value = switch (subject) {
+        SearchSubject.title => song.name,
+        SearchSubject.artist => song.artist,
+        SearchSubject.album => song.album,
+        SearchSubject.general => '',
+      };
       final normalizedValue = _normalize(value);
       return normalizedValue.isNotEmpty &&
           (normalizedValue.contains(expected) ||

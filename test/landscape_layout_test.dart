@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -255,29 +256,21 @@ void main() {
         _expectNoException(tester);
       },
       () => MockClient((request) async {
-        final isQqSongSearch =
-            request.url.path == '/api-qq/search' &&
-            request.url.queryParameters['t'] != '2';
-        final body = isQqSongSearch
-            ? {
-                'data': {
-                  'list': [
-                    {
-                      'songmid': 'preserved-song',
-                      'songname': '保留结果',
-                      'singer': [
-                        {'name': '测试歌手'},
-                      ],
-                      'albumname': '测试专辑',
-                    },
-                  ],
-                },
-              }
-            : <String, dynamic>{};
-        return http.Response(
-          jsonEncode(body),
-          200,
-          headers: const {'content-type': 'application/json; charset=utf-8'},
+        final params = _qqSearchParams(request);
+        if (params == null) return http.Response('{}', 200);
+        return _qqSearchResponse(
+          songs: params['search_type'] == 0
+              ? [
+                  {
+                    'songmid': 'preserved-song',
+                    'songname': '保留结果',
+                    'singer': [
+                      {'name': '测试歌手'},
+                    ],
+                    'albumname': '测试专辑',
+                  },
+                ]
+              : const [],
         );
       }),
     );
@@ -320,32 +313,27 @@ void main() {
         _expectNoException(tester);
       },
       () => MockClient((request) async {
-        final body = request.url.path == '/api-qq/search'
-            ? {
-                'data': {
-                  'list': [
-                    {
-                      'songmid': 'clear-result',
-                      'songname': '保留结果',
-                      'singer': [
-                        {'name': '测试歌手'},
-                      ],
-                      'albumname': '测试专辑',
-                    },
-                  ],
-                },
-              }
-            : <String, dynamic>{};
-        return http.Response(
-          jsonEncode(body),
-          200,
-          headers: const {'content-type': 'application/json; charset=utf-8'},
+        final params = _qqSearchParams(request);
+        if (params == null) return http.Response('{}', 200);
+        return _qqSearchResponse(
+          songs: params['search_type'] == 0
+              ? [
+                  {
+                    'songmid': 'clear-result',
+                    'songname': '保留结果',
+                    'singer': [
+                      {'name': '测试歌手'},
+                    ],
+                    'albumname': '测试专辑',
+                  },
+                ]
+              : const [],
         );
       }),
     );
   });
 
-  testWidgets('landscape player opens artist and album searches', (
+  testWidgets('landscape player opens song, artist and album searches', (
     tester,
   ) async {
     final requestedKeywords = <String>[];
@@ -371,6 +359,10 @@ void main() {
         await tester.tap(find.byType(MiniPlayer));
         await tester.pumpAndSettle();
         expect(
+          find.byKey(const ValueKey('player-song-search')).hitTestable(),
+          findsOneWidget,
+        );
+        expect(
           find.byKey(const ValueKey('player-artist-search')).hitTestable(),
           findsOneWidget,
         );
@@ -379,6 +371,20 @@ void main() {
           findsOneWidget,
         );
 
+        await tester.tap(
+          find.byKey(const ValueKey('player-song-search')).hitTestable(),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(SearchScreen), findsOneWidget);
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller?.text,
+          '首次播放测试歌曲',
+        );
+        expect(find.text('首次播放测试歌曲 (Live)'), findsOneWidget);
+        expect(find.text('不相关曲目'), findsNothing);
+
+        await tester.tap(find.byType(MiniPlayer));
+        await tester.pumpAndSettle();
         await tester.tap(
           find.byKey(const ValueKey('player-artist-search')).hitTestable(),
         );
@@ -402,15 +408,45 @@ void main() {
         expect(find.text('专辑曲目一'), findsOneWidget);
         expect(find.text('专辑曲目二'), findsOneWidget);
         expect(find.text('其他专辑曲目'), findsNothing);
-        expect(requestedKeywords, containsAllInOrder(['测试歌手', '测试专辑']));
+        expect(
+          requestedKeywords,
+          containsAllInOrder(['首次播放测试歌曲', '测试歌手', '测试专辑']),
+        );
         _expectNoException(tester);
       },
       () => MockClient((request) async {
-        final keyword = request.url.queryParameters['key'];
-        Map<String, dynamic> body = {};
-        if (request.url.path == '/api-qq/search' && keyword != null) {
+        final params = _qqSearchParams(request);
+        final keyword = params?['query']?.toString();
+        if (params != null && params['search_type'] == 0 && keyword != null) {
           requestedKeywords.add(keyword);
-          final songs = keyword == '测试专辑'
+          final songs = keyword == '首次播放测试歌曲'
+              ? [
+                  {
+                    'songmid': 'title-track-1',
+                    'songname': '首次播放测试歌曲',
+                    'singer': [
+                      {'name': '测试歌手'},
+                    ],
+                    'albumname': '测试专辑',
+                  },
+                  {
+                    'songmid': 'title-track-2',
+                    'songname': '首次播放测试歌曲 (Live)',
+                    'singer': [
+                      {'name': '测试歌手'},
+                    ],
+                    'albumname': '现场专辑',
+                  },
+                  {
+                    'songmid': 'unrelated-title',
+                    'songname': '不相关曲目',
+                    'singer': [
+                      {'name': '测试歌手'},
+                    ],
+                    'albumname': '测试专辑',
+                  },
+                ]
+              : keyword == '测试专辑'
               ? [
                   {
                     'songmid': 'album-track-1',
@@ -438,18 +474,119 @@ void main() {
                   },
                 ]
               : <Map<String, dynamic>>[];
-          body = {
-            'data': {'list': songs},
-          };
+          return _qqSearchResponse(songs: songs);
         }
-        return http.Response(
-          jsonEncode(body),
-          200,
-          headers: const {'content-type': 'application/json; charset=utf-8'},
-        );
+        return http.Response('{}', 200);
       }),
     );
   });
+
+  testWidgets(
+    'landscape MV action resolves and opens the current platform MV',
+    (tester) async {
+      const channel = MethodChannel('music_player/external_media');
+      String? openedUrl;
+      final requestedUrls = <Uri>[];
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+        call,
+      ) async {
+        expect(call.method, 'playVideo');
+        openedUrl = (call.arguments as Map)['url']?.toString();
+        return true;
+      });
+      addTearDown(() {
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          channel,
+          null,
+        );
+      });
+
+      await http.runWithClient(
+        () async {
+          final player = _ControllablePlayer()..showSong();
+          final theme = ThemeController();
+          addTearDown(() async {
+            await tester.pumpWidget(const SizedBox.shrink());
+            player.dispose();
+            theme.dispose();
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          });
+
+          await _pumpScreen(
+            tester,
+            const PlayerScreen(),
+            player,
+            theme,
+            const Size(640, 360),
+          );
+          expect(find.text('MV').hitTestable(), findsOneWidget);
+          await tester.tap(find.text('MV').hitTestable());
+          await tester.pumpAndSettle();
+
+          expect(
+            requestedUrls.map((url) => url.host),
+            containsAllInOrder(['161.118.252.183', 'u.y.qq.com']),
+          );
+          expect(openedUrl, 'https://video.test/current-song.mp4');
+          _expectNoException(tester);
+        },
+        () => MockClient((request) async {
+          requestedUrls.add(request.url);
+          if (request.url.path == '/api-qq/search') {
+            return http.Response(
+              jsonEncode({
+                'data': {
+                  'list': [
+                    {
+                      'songmid': 'first-song',
+                      'songname': '首次播放测试歌曲',
+                      'singer': [
+                        {'name': '测试歌手'},
+                      ],
+                      'vid': 'current-vid',
+                    },
+                  ],
+                },
+              }),
+              200,
+              headers: const {
+                'content-type': 'application/json; charset=utf-8',
+              },
+            );
+          }
+          if (request.url.host == 'u.y.qq.com') {
+            return http.Response(
+              jsonEncode({
+                'getMvUrl': {
+                  'data': {
+                    'current-vid': {
+                      'mp4': [
+                        {
+                          'freeflow_url': [
+                            'https://video.test/current-song.mp4',
+                          ],
+                        },
+                      ],
+                    },
+                  },
+                },
+              }),
+              200,
+              headers: const {
+                'content-type': 'application/json; charset=utf-8',
+              },
+            );
+          }
+          return http.Response('{}', 200);
+        }),
+      );
+      expect(
+        requestedUrls.map((url) => url.host),
+        containsAllInOrder(['161.118.252.183', 'u.y.qq.com']),
+      );
+    },
+  );
 
   testWidgets('home favorites is a landscape carousel and opens its page', (
     tester,
@@ -640,6 +777,9 @@ void main() {
       expect(find.text('正在播放'), findsOneWidget);
       expect(find.text('第一句歌词'), findsOneWidget);
       expect(find.text('收藏').hitTestable(), findsOneWidget);
+      expect(find.text('MV').hitTestable(), findsOneWidget);
+      expect(find.text('字号'), findsNothing);
+      expect(find.byTooltip('歌词字号').hitTestable(), findsOneWidget);
       expect(find.byType(CircularProgressIndicator), findsNothing);
       expect(
         find.byKey(const ValueKey('landscape-player-divider')).hitTestable(),
@@ -662,8 +802,19 @@ void main() {
       final buttonsRect = tester.getRect(
         find.byKey(const ValueKey('landscape-player-buttons')),
       );
+      final nextRect = tester.getRect(
+        find.byKey(const ValueKey('player-next-track')),
+      );
+      final fontRect = tester.getRect(
+        find.byKey(const ValueKey('player-lyric-font-action')),
+      );
+      final songNameRect = tester.getRect(
+        find.byKey(const ValueKey('player-song-search')),
+      );
       expect(controlsRect.right, lessThanOrEqualTo(lyricsRect.left));
+      expect(songNameRect.center.dx, closeTo(controlsRect.center.dx, 1));
       expect(coverRect.bottom, lessThanOrEqualTo(buttonsRect.top));
+      expect(fontRect.left, greaterThanOrEqualTo(nextRect.right - 1));
       _expectNoException(tester);
 
       await tester.tap(find.byTooltip('歌词字号'));
@@ -739,6 +890,19 @@ void main() {
         const Size(1280, 800),
       );
       expect(tester.getSize(controls).width, closeTo(resizedWidth, 1));
+      expect(find.text('MV').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('歌词字号').hitTestable(), findsOneWidget);
+      expect(
+        tester
+            .getRect(find.byKey(const ValueKey('player-lyric-font-action')))
+            .left,
+        greaterThanOrEqualTo(
+          tester
+                  .getRect(find.byKey(const ValueKey('player-next-track')))
+                  .right -
+              1,
+        ),
+      );
 
       _setViewSize(tester, const Size(640, 360));
       await tester.pumpAndSettle();
@@ -898,8 +1062,8 @@ void main() {
     }, _mockClient);
   });
 
-  testWidgets('search loads platforms on demand', (tester) async {
-    final requestedPaths = <String>[];
+  testWidgets('search loads official platforms on demand', (tester) async {
+    final requestedUrls = <Uri>[];
     await http.runWithClient(
       () async {
         final player = PlayerProvider();
@@ -924,15 +1088,15 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(
-          requestedPaths.where((path) => path.startsWith('/api-qq/')).length,
+          requestedUrls.where((url) => url.host == 'u.y.qq.com').length,
           2,
         );
         expect(
-          requestedPaths.any((path) => path.startsWith('/api-netease/')),
+          requestedUrls.any((url) => url.host == 'interface.music.163.com'),
           isFalse,
         );
         expect(
-          requestedPaths.any((path) => path.startsWith('/api-kugou-search/')),
+          requestedUrls.any((url) => url.host == 'mobilecdn.kugou.com'),
           isFalse,
         );
 
@@ -940,20 +1104,22 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(
-          requestedPaths
-              .where((path) => path.startsWith('/api-netease/'))
+          requestedUrls
+              .where((url) => url.host == 'interface.music.163.com')
               .length,
           2,
         );
         expect(
-          requestedPaths.any((path) => path.startsWith('/api-kugou-search/')),
+          requestedUrls.any((url) => url.host == 'mobilecdn.kugou.com'),
           isFalse,
         );
         _expectNoException(tester);
       },
       () {
         return MockClient((request) async {
-          requestedPaths.add(request.url.path);
+          requestedUrls.add(request.url);
+          final qqParams = _qqSearchParams(request);
+          if (qqParams != null) return _qqSearchResponse();
           return http.Response(
             '{}',
             200,
@@ -1227,7 +1393,11 @@ void main() {
       final coverRect = tester.getRect(
         find.byKey(const ValueKey('landscape-player-cover')),
       );
+      final songNameRect = tester.getRect(
+        find.byKey(const ValueKey('player-song-search')),
+      );
       expect(controlsRect.right, lessThanOrEqualTo(lyricsRect.left));
+      expect(songNameRect.center.dx, closeTo(controlsRect.center.dx, 1));
       expect(coverRect.width, greaterThanOrEqualTo(300));
       expect(find.text('第一句歌词'), findsOneWidget);
       final lyric = tester.widget<Text>(find.text('第一句歌词'));
@@ -1238,6 +1408,10 @@ void main() {
       expect(
         secondLyricRect.top - firstLyricRect.top,
         greaterThanOrEqualTo(64),
+      );
+      expect(
+        tester.getRect(find.byKey(const ValueKey('player-song-search'))).height,
+        greaterThanOrEqualTo(52),
       );
       expect(
         tester
@@ -1251,6 +1425,20 @@ void main() {
             .height,
         greaterThanOrEqualTo(48),
       );
+      final artistText = tester.widget<Text>(
+        find.descendant(
+          of: find.byKey(const ValueKey('player-artist-search')),
+          matching: find.text('测试歌手'),
+        ),
+      );
+      final albumText = tester.widget<Text>(
+        find.descendant(
+          of: find.byKey(const ValueKey('player-album-search')),
+          matching: find.text('测试专辑'),
+        ),
+      );
+      expect(artistText.style?.fontSize, 20);
+      expect(albumText.style?.fontSize, 20);
       expect(
         tester
             .getRect(find.byKey(const ValueKey('player-lyric-font-action')))
@@ -1258,6 +1446,8 @@ void main() {
         lessThan(lyricsRect.left),
       );
       expect(find.text('收藏').hitTestable(), findsOneWidget);
+      expect(find.text('MV').hitTestable(), findsOneWidget);
+      expect(find.text('字号'), findsNothing);
       expect(find.byTooltip('歌词字号').hitTestable(), findsOneWidget);
       expect(find.text('歌词').hitTestable(), findsNothing);
       _expectNoException(tester);
@@ -1316,6 +1506,7 @@ void main() {
       expect(playerLayout.usesLargeTypography, isTrue);
       expect(find.text('第一句歌词'), findsOneWidget);
       expect(find.text('收藏').hitTestable(), findsOneWidget);
+      expect(find.text('MV').hitTestable(), findsOneWidget);
       expect(find.byTooltip('歌词字号').hitTestable(), findsOneWidget);
       expect(
         tester
@@ -1530,27 +1721,41 @@ void main() {
         _expectNoException(tester);
       },
       () => MockClient((request) async {
-        if (request.url.path != '/api-netease/playlist/track/all') {
+        if (request.url.path == '/api/v6/playlist/detail') {
+          return http.Response(
+            jsonEncode({
+              'code': 200,
+              'playlist': {
+                'trackCount': 45,
+                'trackIds': List.generate(45, (index) => {'id': index + 1}),
+              },
+            }),
+            200,
+            headers: const {'content-type': 'application/json; charset=utf-8'},
+          );
+        }
+        if (request.url.path != '/api/song/detail') {
           return http.Response('{}', 200);
         }
-        final offset =
-            int.tryParse(request.url.queryParameters['offset'] ?? '0') ?? 0;
-        final limit =
-            int.tryParse(request.url.queryParameters['limit'] ?? '20') ?? 20;
+        final ids = (jsonDecode(request.url.queryParameters['ids']!) as List)
+            .map((id) => int.parse(id.toString()))
+            .toList();
+        final offset = ids.first - 1;
         offsets.add(offset);
-        final songs = List.generate(
-          (45 - offset).clamp(0, limit).toInt(),
-          (index) => {
-            'id': offset + index + 1,
-            'name': '分页歌曲 ${offset + index + 1}',
-            'ar': [
-              {'name': '分页歌手'},
-            ],
-            'al': {'name': '分页专辑'},
-          },
-        );
+        final songs = ids
+            .map(
+              (id) => {
+                'id': id,
+                'name': '分页歌曲 $id',
+                'ar': [
+                  {'name': '分页歌手'},
+                ],
+                'al': {'name': '分页专辑'},
+              },
+            )
+            .toList();
         return http.Response(
-          jsonEncode({'code': 200, 'songs': songs, 'total': 45}),
+          jsonEncode({'code': 200, 'songs': songs}),
           200,
           headers: const {'content-type': 'application/json; charset=utf-8'},
         );
@@ -1671,6 +1876,38 @@ void _setViewSize(
 }) {
   tester.view.devicePixelRatio = devicePixelRatio;
   tester.view.physicalSize = size;
+}
+
+Map<String, dynamic>? _qqSearchParams(http.Request request) {
+  if (request.url.host != 'u.y.qq.com' || request.method != 'POST') {
+    return null;
+  }
+  final payload = jsonDecode(request.body) as Map<String, dynamic>;
+  final rawRequest = payload['req_1'];
+  if (rawRequest is! Map) return null;
+  final rawParams = rawRequest['param'];
+  return rawParams is Map ? Map<String, dynamic>.from(rawParams) : null;
+}
+
+http.Response _qqSearchResponse({
+  List<Map<String, dynamic>> songs = const [],
+  List<Map<String, dynamic>> playlists = const [],
+}) {
+  return http.Response(
+    jsonEncode({
+      'req_1': {
+        'code': 0,
+        'data': {
+          'body': {
+            'song': {'list': songs},
+            'songlist': {'list': playlists},
+          },
+        },
+      },
+    }),
+    200,
+    headers: const {'content-type': 'application/json; charset=utf-8'},
+  );
 }
 
 http.Client _mockClient() {
