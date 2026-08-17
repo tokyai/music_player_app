@@ -48,6 +48,7 @@ class PlayerProvider extends ChangeNotifier {
   PlaybackSource _neteasePlaybackSource = PlaybackSource.chksz;
   PlaybackSource _qqPlaybackSource = PlaybackSource.chksz;
   PlaybackSource _kugouPlaybackSource = PlaybackSource.chksz;
+  VideoPlayerMode _videoPlayerMode = VideoPlayerMode.automatic;
 
   // API Key
   String _apiKey = '';
@@ -98,6 +99,8 @@ class PlayerProvider extends ChangeNotifier {
       MusicPlatform.kugou => _kugouPlaybackSource,
     };
   }
+
+  VideoPlayerMode get videoPlayerMode => _videoPlayerMode;
 
   String get apiKey => _apiKey;
   AudioPlayer get audioPlayer => _audioPlayer;
@@ -185,6 +188,12 @@ class PlayerProvider extends ChangeNotifier {
       _kugouPlaybackSource = _readPlaybackSource(
         prefs.getString(_playbackSourcePreferenceKey(MusicPlatform.kugou)),
       );
+      final savedVideoPlayerMode = prefs.getString('video_player_mode');
+      _videoPlayerMode = VideoPlayerMode.values.firstWhere(
+        (mode) => mode.value == savedVideoPlayerMode,
+        // 旧版的 built_in/system 都迁移到不依赖系统播放器的自动兼容模式。
+        orElse: () => VideoPlayerMode.automatic,
+      );
     } catch (e) {
       debugPrint('读取播放器设置失败: $e');
     }
@@ -241,6 +250,77 @@ class PlayerProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_playbackSourcePreferenceKey(platform), source.value);
     notifyListeners();
+  }
+
+  Future<void> setVideoPlayerMode(VideoPlayerMode mode) async {
+    await settingsReady;
+    if (_disposed || _videoPlayerMode == mode) return;
+    _videoPlayerMode = mode;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('video_player_mode', mode.value);
+    notifyListeners();
+  }
+
+  Future<List<SongSearchResult>> searchLyricCandidates(String keyword) async {
+    final song = currentSong;
+    final query = keyword.trim();
+    if (song == null || query.isEmpty) return const [];
+    final results = await _api.searchLyricCandidates(
+      platform: song.platform,
+      keyword: query,
+      currentName: song.name,
+      currentArtist: song.artist,
+      currentAlbum: song.album,
+    );
+    final current = currentSong;
+    if (current == null ||
+        current.platform != song.platform ||
+        current.id != song.id) {
+      throw const ApiException('SONG_CHANGED', '当前歌曲已切换，请重新查找歌词');
+    }
+    return results;
+  }
+
+  Future<void> applyLyricCandidate(SongSearchResult candidate) async {
+    final song = currentSong;
+    if (song == null) {
+      throw const ApiException('NO_CURRENT_SONG', '当前没有正在播放的歌曲');
+    }
+    if (candidate.platform != song.platform) {
+      throw const ApiException('LYRIC_PLATFORM_MISMATCH', '歌词来源与当前歌曲平台不一致');
+    }
+
+    _lyricsLoading = true;
+    notifyListeners();
+    try {
+      final data = await _api.getLyric(candidate.platform, candidate.id);
+      final resolved = data == null ? null : _resolveLyricData(data);
+      if (resolved == null || resolved.lines.isEmpty) {
+        throw const ApiException('LYRIC_EMPTY', '这个版本没有可用歌词');
+      }
+      final current = currentSong;
+      if (current == null ||
+          current.platform != song.platform ||
+          current.id != song.id) {
+        throw const ApiException('SONG_CHANGED', '当前歌曲已切换，请重新查找歌词');
+      }
+
+      _lyrics = resolved.lines;
+      _currentLyricIndex = LyricParser.findCurrentIndex(_lyrics, _position);
+      _lyricsLoading = false;
+      _lyricCache[_itemKey(current)] = resolved;
+      _queue[_currentIndex] = current.copyWith(lyric: resolved.rawText);
+      notifyListeners();
+    } catch (_) {
+      final current = currentSong;
+      if (current != null &&
+          current.platform == song.platform &&
+          current.id == song.id) {
+        _lyricsLoading = false;
+        notifyListeners();
+      }
+      rethrow;
+    }
   }
 
   static String _playbackSourcePreferenceKey(MusicPlatform platform) =>
@@ -545,34 +625,17 @@ class PlayerProvider extends ChangeNotifier {
   Future<_ResolvedLyrics?>? _fetchIndependentLyrics(PlayQueueItem item) {
     switch (item.platform) {
       case MusicPlatform.netease:
-        return _fetchNeteaseLyrics(
-          item.id,
-          usePublicApi:
-              playbackSourceFor(item.platform) == PlaybackSource.qingMusic,
-        );
+        return _fetchNeteaseLyrics(item.id);
       case MusicPlatform.qq:
         return _fetchQqLyrics(item.id);
       case MusicPlatform.kugou:
-        return playbackSourceFor(item.platform) == PlaybackSource.qingMusic
-            ? _fetchKugouLyrics(item.id)
-            : null;
+        return _fetchKugouLyrics(item.id);
     }
   }
 
-  Future<_ResolvedLyrics?> _fetchNeteaseLyrics(
-    String id, {
-    required bool usePublicApi,
-  }) async {
+  Future<_ResolvedLyrics?> _fetchNeteaseLyrics(String id) async {
     try {
-      final data = usePublicApi
-          ? await _api.neteasePublicLyric(id)
-          : await _api.neteaseLyric(id);
-      final original = LyricParser.parse(data.original);
-      final translated = LyricParser.parse(data.translated);
-      return _ResolvedLyrics(
-        rawText: data.original,
-        lines: LyricParser.mergeTranslation(original, translated),
-      );
+      return _resolveLyricData(await _api.neteaseLyric(id));
     } catch (_) {
       return null;
     }
@@ -580,8 +643,7 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<_ResolvedLyrics?> _fetchQqLyrics(String id) async {
     try {
-      final data = await _api.qqLyric(id);
-      return _ResolvedLyrics.fromPlainText(data.original);
+      return _resolveLyricData(await _api.qqLyric(id));
     } catch (_) {
       return null;
     }
@@ -589,11 +651,20 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<_ResolvedLyrics?> _fetchKugouLyrics(String id) async {
     try {
-      final data = await _api.kugouPublicLyric(id);
-      return _ResolvedLyrics.fromPlainText(data.original);
+      return _resolveLyricData(await _api.kugouPublicLyric(id));
     } catch (_) {
       return null;
     }
+  }
+
+  _ResolvedLyrics? _resolveLyricData(LyricData data) {
+    final original = LyricParser.parse(data.original);
+    if (original.isEmpty) return null;
+    final translated = LyricParser.parse(data.translated);
+    return _ResolvedLyrics(
+      rawText: data.original,
+      lines: LyricParser.mergeTranslation(original, translated),
+    );
   }
 
   Future<void> _completeLyrics(

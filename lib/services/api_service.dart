@@ -8,10 +8,10 @@ import '../models/song.dart';
 /// - 网易云: interface.music.163.com 官方公开目录接口
 /// - 酷狗: mobilecdn.kugou.com 官方公开目录接口
 /// - QQ音乐: u.y.qq.com musicu 官方公开目录接口
-/// - 三平台播放地址解析: ChKSz API（经 nginx 中转）
+/// - 三平台播放地址解析: 按用户选择使用 ChKSz 或 QingMusic
 ///
-/// 目录列表优先直连平台接口，旧 nginx 反代仅在直连失败时兜底，避免反代
-/// 延迟阻塞每日推荐、搜索和歌单分页。播放解析仍按用户在设置中的音源选择。
+/// 搜索、歌单、歌词、MV 等功能优先直连平台接口，旧 nginx 反代仅在直连
+/// 失败时兜底。播放地址解析不参与自动切换，仍按设置中的音源选择。
 class ApiService {
   // 播放解析等请求保留一次重试；目录直连使用更短的单次超时后快速降级。
   static const _requestTimeout = Duration(seconds: 10);
@@ -28,8 +28,14 @@ class ApiService {
       'https://musicserver.haitangw.cc/v1/music/resolve-url';
   // 官方公开目录入口。
   static const String _neteaseCatalogUrl = 'https://interface.music.163.com';
+  static const String _neteaseLyricUrl = 'https://interface3.music.163.com';
   static const String _qqCatalogUrl = 'https://u.y.qq.com/cgi-bin/musicu.fcg';
+  static const String _qqWebUrl = 'https://c.y.qq.com';
   static const String _kugouCatalogUrl = 'http://mobilecdn.kugou.com';
+  static const Map<String, String> _qqHeaders = {
+    'Referer': 'https://y.qq.com/',
+    'Origin': 'https://y.qq.com',
+  };
 
   // 旧 API 中转仅作网络兼容兜底。
   static const String neteaseBaseUrl = 'http://161.118.252.183/api-netease';
@@ -270,10 +276,26 @@ class ApiService {
   }
 
   Future<String> _neteaseMusicVideoUrl(String songId) async {
-    final detail = await _httpGet(neteaseBaseUrl, '/song/detail', {
-      'ids': songId,
-    });
-    final songs = detail['songs'] as List? ?? const [];
+    List<Map<String, dynamic>> songs;
+    try {
+      songs = await _neteaseSongDetails([songId]);
+      if (songs.isEmpty) {
+        throw const ApiException('NETEASE_MV_METADATA_EMPTY', '网易云歌曲信息为空');
+      }
+    } catch (error) {
+      debugPrint('网易云 MV 元数据直连失败，切换兼容线路: $error');
+      final detail = await _httpGet(
+        neteaseBaseUrl,
+        '/song/detail',
+        {'ids': songId},
+        timeout: _catalogFallbackTimeout,
+        maxAttempts: 1,
+      );
+      songs = (detail['songs'] as List? ?? const [])
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList(growable: false);
+    }
     final mappedSongs = songs.whereType<Map>();
     final song = mappedSongs.isEmpty ? null : mappedSongs.first;
     final mvId = _usableIdentifier(song?['mv'] ?? song?['mvid']);
@@ -282,12 +304,29 @@ class ApiService {
     }
 
     for (final resolution in const [1080, 720, 480]) {
-      final response = await _httpGet(neteaseBaseUrl, '/mv/url', {
-        'id': mvId,
-        'r': resolution,
-      });
-      final url = response['data']?['url']?.toString().trim() ?? '';
-      if (url.isNotEmpty) return url;
+      try {
+        final response = await _httpGet(
+          _neteaseCatalogUrl,
+          '/api/song/enhance/play/mv/url',
+          {'id': mvId, 'r': resolution},
+          timeout: _catalogTimeout,
+          maxAttempts: 1,
+        );
+        final url = response['data']?['url']?.toString().trim() ?? '';
+        if (url.isNotEmpty) return url;
+        throw const ApiException('NETEASE_MV_URL_EMPTY', '网易云 MV 地址为空');
+      } catch (error) {
+        debugPrint('网易云 MV 地址直连失败，切换兼容线路: $error');
+        final response = await _httpGet(
+          neteaseBaseUrl,
+          '/mv/url',
+          {'id': mvId, 'r': resolution},
+          timeout: _catalogFallbackTimeout,
+          maxAttempts: 1,
+        );
+        final url = response['data']?['url']?.toString().trim() ?? '';
+        if (url.isNotEmpty) return url;
+      }
     }
     throw ApiException('MV_UNAVAILABLE', '网易云中的该 MV 暂时无法播放');
   }
@@ -297,13 +336,41 @@ class ApiService {
     String songName,
     String artist,
   ) async {
-    final search = await _httpGet(qqBaseUrl, '/search', {
-      'key': '$songName $artist',
-    });
-    final rows = search['data']?['list'] as List? ?? const [];
+    List rows;
+    try {
+      final response = await _qqMusicu({
+        'req_1': {
+          'method': 'DoSearchForQQMusicDesktop',
+          'module': 'music.search.SearchCgiService',
+          'param': {
+            'num_per_page': 30,
+            'page_num': 1,
+            'query': '$songName $artist',
+            'search_type': 0,
+          },
+        },
+      });
+      final data = _qqResponseData(response, 'req_1');
+      final body = data['body'];
+      final song = body is Map ? body['song'] : null;
+      rows = song is Map ? song['list'] as List? ?? const [] : const [];
+      if (rows.isEmpty) {
+        throw const ApiException('QQ_MV_METADATA_EMPTY', 'QQ 音乐歌曲信息为空');
+      }
+    } catch (error) {
+      debugPrint('QQ MV 元数据直连失败，切换兼容线路: $error');
+      final search = await _httpGet(
+        qqBaseUrl,
+        '/search',
+        {'key': '$songName $artist'},
+        timeout: _catalogFallbackTimeout,
+        maxAttempts: 1,
+      );
+      rows = search['data']?['list'] as List? ?? const [];
+    }
     Map? matched;
     for (final row in rows.whereType<Map>()) {
-      if (row['songmid']?.toString() == songId) {
+      if ((row['mid'] ?? row['songmid'])?.toString() == songId) {
         matched = row;
         break;
       }
@@ -312,10 +379,13 @@ class ApiService {
       rows,
       songName: songName,
       artist: artist,
-      nameKey: 'songname',
+      nameKeys: const ['name', 'title', 'songname'],
       artistKey: 'singer',
     );
-    final vid = _usableIdentifier(matched?['vid']);
+    final mv = matched?['mv'];
+    final vid = _usableIdentifier(
+      matched?['vid'] ?? (mv is Map ? mv['vid'] : null),
+    );
     if (vid == null) {
       throw ApiException('MV_NOT_FOUND', 'QQ音乐暂未提供这首歌的 MV');
     }
@@ -382,7 +452,7 @@ class ApiService {
     String songName,
     String artist,
   ) async {
-    final search = await _httpGet(kugouSearchBase, '/api/v3/search/song', {
+    final search = await _kugouCatalogGet('/api/v3/search/song', {
       'keyword': '$songName $artist',
       'page': 1,
       'pagesize': 30,
@@ -399,10 +469,10 @@ class ApiService {
       rows,
       songName: songName,
       artist: artist,
-      nameKey: 'songname',
+      nameKeys: const ['songname', 'filename'],
       artistKey: 'singername',
     );
-    final mvHash = _usableIdentifier(matched?['mvhash']);
+    final mvHash = _usableIdentifier(matched?['mvhash'] ?? matched?['MvHash']);
     if (mvHash == null) {
       throw ApiException('MV_NOT_FOUND', '酷狗音乐暂未提供这首歌的 MV');
     }
@@ -452,13 +522,16 @@ class ApiService {
     List rows, {
     required String songName,
     required String artist,
-    required String nameKey,
+    required List<String> nameKeys,
     required String artistKey,
   }) {
     final expectedName = _normalizeMatchText(songName);
     final expectedArtist = _normalizeMatchText(artist);
     for (final row in rows.whereType<Map>()) {
-      final name = _normalizeMatchText(row[nameKey]?.toString() ?? '');
+      final rawName = nameKeys
+          .map((key) => row[key]?.toString() ?? '')
+          .firstWhere((value) => value.isNotEmpty, orElse: () => '');
+      final name = _normalizeMatchText(rawName);
       final rawArtist = row[artistKey];
       final artistText = rawArtist is List
           ? rawArtist
@@ -747,44 +820,93 @@ class ApiService {
     );
   }
 
-  /// 获取网易云歌词 (ChKSz API /api/163_lyric)
-  Future<LyricData> neteaseLyric(String id) async {
-    final json = await _chkszGet('/api/163_lyric', {'id': id});
-    return LyricData(
-      original: json['lrc']?.toString() ?? json['data']?['lrc']?.toString(),
-      translated:
-          json['tlyric']?.toString() ?? json['data']?['tlyric']?.toString(),
-      romaji:
-          json['romalrc']?.toString() ?? json['data']?['romalrc']?.toString(),
-    );
+  /// 获取网易云歌词。官方公开接口直连失败后才使用旧中转。
+  Future<LyricData> neteaseLyric(String id) => neteasePublicLyric(id);
+
+  Future<LyricData> neteasePublicLyric(String id) async {
+    try {
+      final json = await _httpGet(
+        _neteaseLyricUrl,
+        '/api/song/lyric',
+        {
+          'id': id,
+          'cp': false,
+          'lv': -1,
+          'tv': -1,
+          'rv': -1,
+          'kv': -1,
+          'yv': -1,
+          'ytv': -1,
+          'yrv': -1,
+        },
+        timeout: _catalogTimeout,
+        maxAttempts: 1,
+      );
+      final result = _neteaseLyricData(json);
+      if (!_hasTimedLyric(result.original)) {
+        throw const ApiException('NETEASE_LYRIC_EMPTY', '网易云歌词内容为空');
+      }
+      return result;
+    } catch (error) {
+      debugPrint('网易云歌词直连失败，切换兼容线路: $error');
+      final json = await _httpGet(
+        neteaseBaseUrl,
+        '/lyric',
+        {'id': id},
+        timeout: _catalogFallbackTimeout,
+        maxAttempts: 1,
+      );
+      return _neteaseLyricData(json);
+    }
   }
 
-  /// 备用源使用网易云公开歌词接口，不依赖 ChKSz API Key。
-  Future<LyricData> neteasePublicLyric(String id) async {
-    final json = await _httpGet(neteaseBaseUrl, '/lyric', {'id': id});
+  static LyricData _neteaseLyricData(Map<String, dynamic> json) {
+    final rawData = json['data'];
+    final data = rawData is Map ? rawData : json;
+    final rawLrc = data['lrc'];
+    final rawTranslated = data['tlyric'];
+    final rawRomaji = data['romalrc'];
     return LyricData(
-      original: json['lrc']?['lyric']?.toString(),
-      translated: json['tlyric']?['lyric']?.toString(),
-      romaji: json['romalrc']?['lyric']?.toString(),
+      original: rawLrc is Map
+          ? rawLrc['lyric']?.toString()
+          : rawLrc?.toString(),
+      translated: rawTranslated is Map
+          ? rawTranslated['lyric']?.toString()
+          : rawTranslated?.toString(),
+      romaji: rawRomaji is Map
+          ? rawRomaji['lyric']?.toString()
+          : rawRomaji?.toString(),
     );
   }
 
   /// 网易云热门歌单
   Future<List<PlaylistInfo>> neteaseHotPlaylists({int limit = 20}) async {
-    final json = await _httpGet(neteaseBaseUrl, '/top/playlist', {
-      'limit': limit,
-      'order': 'hot',
-    });
+    final json = await _catalogGet(
+      directBaseUrl: _neteaseCatalogUrl,
+      directPath: '/api/playlist/list',
+      fallbackBaseUrl: neteaseBaseUrl,
+      fallbackPath: '/top/playlist',
+      params: {'cat': '全部', 'limit': limit, 'offset': 0, 'order': 'hot'},
+      fallbackParams: {'limit': limit, 'order': 'hot'},
+    );
     final list = json['playlists'] as List? ?? [];
     return list
         .map((e) => PlaylistInfo.fromNeteaseList(e as Map<String, dynamic>))
         .toList();
   }
 
-  /// 获取网易云歌单详情 (ChKSz API /api/163_playlist)
+  /// 获取网易云歌单详情，官方接口直连优先。
   Future<PlaylistInfo> neteasePlaylist(String id) async {
-    final json = await _chkszGet('/api/163_playlist', {'id': id});
-    final data = json['data'] as Map<String, dynamic>? ?? json;
+    final json = await _catalogGet(
+      directBaseUrl: _neteaseCatalogUrl,
+      directPath: '/api/v6/playlist/detail',
+      fallbackBaseUrl: neteaseBaseUrl,
+      fallbackPath: '/playlist/detail',
+      params: {'id': id, 'n': 1000, 's': 0},
+      fallbackParams: {'id': id},
+    );
+    final rawData = json['playlist'] ?? json['data'];
+    final data = rawData is Map ? Map<String, dynamic>.from(rawData) : json;
     final result = PlaylistInfo.fromJson(data);
     // 歌单详情曲目也补充封面
     await _fillNeteaseCovers(result.tracks);
@@ -1003,11 +1125,45 @@ class ApiService {
 
   /// QQ推荐歌单
   Future<List<PlaylistInfo>> qqRecommendPlaylists() async {
-    final json = await _httpGet(qqBaseUrl, '/recommend/playlist', {});
-    final list = json['data']?['list'] as List? ?? [];
-    return list
-        .map((e) => PlaylistInfo.fromQQList(e as Map<String, dynamic>))
-        .toList();
+    try {
+      final response = await _qqMusicu({
+        'comm': {'ct': 24, 'cv': 0},
+        'req_0': {
+          'module': 'playlist.HotRecommendServer',
+          'method': 'get_hot_recommend',
+          'param': {'async': 1, 'cmd': 2},
+        },
+      });
+      final data = _qqResponseData(response, 'req_0');
+      final list = data['v_hot'] as List? ?? const [];
+      return list
+          .whereType<Map>()
+          .map((row) {
+            return PlaylistInfo(
+              id: row['content_id']?.toString() ?? '',
+              name: row['title']?.toString() ?? '未知歌单',
+              coverUrl: CoverHelper.normalize(row['cover']?.toString()),
+              creator: row['username']?.toString(),
+              trackCount: 0,
+              tracks: const [],
+            );
+          })
+          .toList(growable: false);
+    } catch (error) {
+      debugPrint('QQ 推荐歌单直连失败，切换兼容线路: $error');
+      final json = await _httpGet(
+        qqBaseUrl,
+        '/recommend/playlist',
+        const {},
+        timeout: _catalogFallbackTimeout,
+        maxAttempts: 1,
+      );
+      final list = json['data']?['list'] as List? ?? const [];
+      return list
+          .whereType<Map>()
+          .map((row) => PlaylistInfo.fromQQList(Map<String, dynamic>.from(row)))
+          .toList(growable: false);
+    }
   }
 
   /// QQ 音乐歌单搜索（官方 musicu）。
@@ -1260,11 +1416,86 @@ class ApiService {
     return _qqResponseData(response, 'req_0');
   }
 
-  /// QQ歌词
+  /// QQ 歌词。官方歌词接口直连失败后才使用旧中转。
   Future<LyricData> qqLyric(String songmid) async {
-    final json = await _httpGet(qqBaseUrl, '/lyric', {'songmid': songmid});
-    final data = json['data'] ?? json;
-    return LyricData(original: data['lyric'], translated: data['trans']);
+    try {
+      final json = await _httpGet(
+        _qqWebUrl,
+        '/lyric/fcgi-bin/fcg_query_lyric_new.fcg',
+        {
+          'songmid': songmid,
+          'format': 'json',
+          'nobase64': 1,
+          'g_tk': 5381,
+          'loginUin': 0,
+          'hostUin': 0,
+          'inCharset': 'utf8',
+          'outCharset': 'utf-8',
+          'notice': 0,
+          'platform': 'yqq.json',
+          'needNewCode': 0,
+        },
+        timeout: _catalogTimeout,
+        maxAttempts: 1,
+        headers: _qqHeaders,
+      );
+      final result = _qqLyricData(json);
+      if (!_hasTimedLyric(result.original)) {
+        throw const ApiException('QQ_LYRIC_EMPTY', 'QQ 音乐歌词内容为空');
+      }
+      return result;
+    } catch (error) {
+      debugPrint('QQ 歌词直连失败，切换兼容线路: $error');
+      final json = await _httpGet(
+        qqBaseUrl,
+        '/lyric',
+        {'songmid': songmid},
+        timeout: _catalogFallbackTimeout,
+        maxAttempts: 1,
+      );
+      return _qqLyricData(json);
+    }
+  }
+
+  static LyricData _qqLyricData(Map<String, dynamic> json) {
+    final rawData = json['data'];
+    final data = rawData is Map ? rawData : json;
+    return LyricData(
+      original: _decodeQqLyricText(data['lyric']),
+      translated: _decodeQqLyricText(data['trans']),
+    );
+  }
+
+  static String? _decodeQqLyricText(dynamic value) {
+    var text = value?.toString() ?? '';
+    if (text.isEmpty) return null;
+    if (!text.contains('[')) {
+      try {
+        final decoded = utf8.decode(base64Decode(text));
+        if (decoded.contains('[')) text = decoded;
+      } on FormatException {
+        // nobase64=1 正常返回明文；不是 Base64 时保持原值。
+      }
+    }
+    text = text.replaceAllMapped(RegExp(r'&#(x?[0-9A-Fa-f]+);'), (match) {
+      final raw = match.group(1)!;
+      final radix = raw.startsWith('x') || raw.startsWith('X') ? 16 : 10;
+      final digits = radix == 16 ? raw.substring(1) : raw;
+      final codePoint = int.tryParse(digits, radix: radix);
+      return codePoint == null
+          ? match.group(0)!
+          : String.fromCharCode(codePoint);
+    });
+    return text
+        .replaceAll('&quot;', '"')
+        .replaceAll('&apos;', "'")
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&amp;', '&');
+  }
+
+  static bool _hasTimedLyric(String? value) {
+    return value != null && RegExp(r'\[\d{1,3}:\d{2}').hasMatch(value);
   }
 
   /// 解析QQ音乐播放地址 (ChKSz 兜底)
@@ -1294,6 +1525,86 @@ class ApiService {
     }
   }
 
+  /// 搜索可替换的歌词版本，并结合当前歌曲元数据按相关性降序排列。
+  Future<List<SongSearchResult>> searchLyricCandidates({
+    required MusicPlatform platform,
+    required String keyword,
+    required String currentName,
+    required String currentArtist,
+    required String currentAlbum,
+  }) async {
+    final results = await search(platform, keyword.trim());
+    final ranked = <({SongSearchResult song, int score, int index})>[];
+    for (var index = 0; index < results.length; index++) {
+      final song = results[index];
+      ranked.add((
+        song: song,
+        score: _lyricMatchScore(
+          song,
+          keyword: keyword,
+          currentName: currentName,
+          currentArtist: currentArtist,
+          currentAlbum: currentAlbum,
+        ),
+        index: index,
+      ));
+    }
+    ranked.sort((a, b) {
+      final byScore = b.score.compareTo(a.score);
+      return byScore != 0 ? byScore : a.index.compareTo(b.index);
+    });
+    return ranked.map((item) => item.song).toList(growable: false);
+  }
+
+  static int _lyricMatchScore(
+    SongSearchResult song, {
+    required String keyword,
+    required String currentName,
+    required String currentArtist,
+    required String currentAlbum,
+  }) {
+    final query = _normalizeMatchText(keyword);
+    final expectedName = _normalizeMatchText(currentName);
+    final expectedArtist = _normalizeMatchText(currentArtist);
+    final expectedAlbum = _normalizeMatchText(currentAlbum);
+    final name = _normalizeMatchText(song.name);
+    final artist = _normalizeMatchText(song.artist);
+    final album = _normalizeMatchText(song.album);
+    var score = 0;
+
+    if (query.isNotEmpty) {
+      if (name == query) {
+        score += 1200;
+      } else if (name.startsWith(query)) {
+        score += 900;
+      } else if (name.contains(query)) {
+        score += 700;
+      } else if (query.contains(name) && name.isNotEmpty) {
+        score += 450;
+      }
+    }
+
+    if (expectedName.isNotEmpty) {
+      if (name == expectedName) {
+        score += 500;
+      } else if (name.contains(expectedName) || expectedName.contains(name)) {
+        score += 220;
+      }
+    }
+    if (expectedArtist.isNotEmpty) {
+      if (artist == expectedArtist) {
+        score += 320;
+      } else if (artist.contains(expectedArtist) ||
+          expectedArtist.contains(artist)) {
+        score += 140;
+      }
+    }
+    if (album.isNotEmpty && album == expectedAlbum) {
+      score += 180;
+    }
+    return score;
+  }
+
   /// 解析播放地址
   Future<SongDetail> resolve(MusicPlatform platform, String id) {
     switch (platform) {
@@ -1308,13 +1619,11 @@ class ApiService {
 
   /// 获取歌词
   Future<LyricData?> getLyric(MusicPlatform platform, String id) async {
-    if (platform == MusicPlatform.netease) {
-      return neteaseLyric(id);
-    } else if (platform == MusicPlatform.qq) {
-      return qqLyric(id);
-    }
-    // 酷狗歌词随解析接口返回
-    return null;
+    return switch (platform) {
+      MusicPlatform.netease => neteaseLyric(id),
+      MusicPlatform.qq => qqLyric(id),
+      MusicPlatform.kugou => kugouPublicLyric(id),
+    };
   }
 }
 
@@ -1328,7 +1637,7 @@ class _NeteasePlaylistIndex {
 class ApiException implements Exception {
   final String code;
   final String message;
-  ApiException(this.code, this.message);
+  const ApiException(this.code, this.message);
 
   @override
   String toString() => '[$code] $message';

@@ -17,6 +17,7 @@ import 'package:music_player_app/screens/playlist_detail_screen.dart';
 import 'package:music_player_app/screens/playlist_screen.dart';
 import 'package:music_player_app/screens/search_screen.dart';
 import 'package:music_player_app/screens/settings_screen.dart';
+import 'package:music_player_app/screens/video_player_screen.dart';
 import 'package:music_player_app/services/favorite_service.dart';
 import 'package:music_player_app/theme/app_layout.dart';
 import 'package:music_player_app/theme/app_theme.dart';
@@ -526,36 +527,44 @@ void main() {
 
           expect(
             requestedUrls.map((url) => url.host),
-            containsAllInOrder(['161.118.252.183', 'u.y.qq.com']),
+            containsAllInOrder(['u.y.qq.com', 'u.y.qq.com']),
           );
           expect(openedUrl, 'https://video.test/current-song.mp4');
           _expectNoException(tester);
         },
         () => MockClient((request) async {
           requestedUrls.add(request.url);
-          if (request.url.path == '/api-qq/search') {
-            return http.Response(
-              jsonEncode({
-                'data': {
-                  'list': [
-                    {
-                      'songmid': 'first-song',
-                      'songname': '首次播放测试歌曲',
-                      'singer': [
-                        {'name': '测试歌手'},
-                      ],
-                      'vid': 'current-vid',
-                    },
-                  ],
-                },
-              }),
-              200,
-              headers: const {
-                'content-type': 'application/json; charset=utf-8',
-              },
-            );
-          }
           if (request.url.host == 'u.y.qq.com') {
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            if (body.containsKey('req_1')) {
+              return http.Response(
+                jsonEncode({
+                  'req_1': {
+                    'code': 0,
+                    'data': {
+                      'body': {
+                        'song': {
+                          'list': [
+                            {
+                              'mid': 'first-song',
+                              'name': '首次播放测试歌曲',
+                              'singer': [
+                                {'name': '测试歌手'},
+                              ],
+                              'mv': {'vid': 'current-vid'},
+                            },
+                          ],
+                        },
+                      },
+                    },
+                  },
+                }),
+                200,
+                headers: const {
+                  'content-type': 'application/json; charset=utf-8',
+                },
+              );
+            }
             return http.Response(
               jsonEncode({
                 'getMvUrl': {
@@ -583,7 +592,7 @@ void main() {
       );
       expect(
         requestedUrls.map((url) => url.host),
-        containsAllInOrder(['161.118.252.183', 'u.y.qq.com']),
+        containsAllInOrder(['u.y.qq.com', 'u.y.qq.com']),
       );
     },
   );
@@ -779,7 +788,7 @@ void main() {
       expect(find.text('收藏').hitTestable(), findsOneWidget);
       expect(find.text('MV').hitTestable(), findsOneWidget);
       expect(find.text('字号'), findsNothing);
-      expect(find.byTooltip('歌词字号').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('歌词字号和间距').hitTestable(), findsOneWidget);
       expect(find.byType(CircularProgressIndicator), findsNothing);
       expect(
         find.byKey(const ValueKey('landscape-player-divider')).hitTestable(),
@@ -817,12 +826,20 @@ void main() {
       expect(fontRect.left, greaterThanOrEqualTo(nextRect.right - 1));
       _expectNoException(tester);
 
-      await tester.tap(find.byTooltip('歌词字号'));
+      await tester.tap(find.byTooltip('歌词字号和间距'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('大 · 48').last);
+      expect(
+        find.byKey(const ValueKey('lyric-line-spacing-slider')).hitTestable(),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const ValueKey('lyric-font-size-48')));
       await tester.pumpAndSettle();
       final enlargedLyric = tester.widget<Text>(find.text('第一句歌词'));
       expect(enlargedLyric.style?.fontSize, 48);
+      await tester.tap(
+        find.byKey(const ValueKey('lyric-display-settings-close')),
+      );
+      await tester.pumpAndSettle();
 
       _setViewSize(tester, const Size(1125, 651));
       await tester.pumpAndSettle();
@@ -891,7 +908,7 @@ void main() {
       );
       expect(tester.getSize(controls).width, closeTo(resizedWidth, 1));
       expect(find.text('MV').hitTestable(), findsOneWidget);
-      expect(find.byTooltip('歌词字号').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('歌词字号和间距').hitTestable(), findsOneWidget);
       expect(
         tester
             .getRect(find.byKey(const ValueKey('player-lyric-font-action')))
@@ -914,6 +931,95 @@ void main() {
       );
       _expectNoException(tester);
     }, _mockClient);
+  });
+
+  testWidgets('lyric search is usable in narrow and wide landscape', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      final player = _PlayerWithLyrics();
+      final theme = ThemeController();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        player.dispose();
+        theme.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      await _pumpScreen(
+        tester,
+        const PlayerScreen(),
+        player,
+        theme,
+        const Size(640, 360),
+      );
+      final action = find.byTooltip('查找歌词');
+      expect(action.hitTestable(), findsOneWidget);
+      await tester.tap(action);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('lyric-search-dialog')), findsOneWidget);
+      expect(find.text('歌词候选歌曲'), findsOneWidget);
+      expect(find.text('候选歌手 · 候选专辑'), findsOneWidget);
+      await tester.enterText(
+        find.byKey(const ValueKey('lyric-search-field')),
+        '编辑后的歌名',
+      );
+      await tester.tap(find.byTooltip('搜索歌词'));
+      await tester.pumpAndSettle();
+      expect(player.lastLyricQuery, '编辑后的歌名');
+
+      await tester.tap(
+        find.byKey(const ValueKey('lyric-search-result-163-lyric-candidate')),
+      );
+      await tester.pumpAndSettle();
+      expect(player.appliedLyricId, 'lyric-candidate');
+      expect(find.byKey(const ValueKey('lyric-search-dialog')), findsNothing);
+      _expectNoException(tester);
+
+      _setViewSize(tester, const Size(1280, 800));
+      await tester.pumpAndSettle();
+      expect(action.hitTestable(), findsOneWidget);
+      _expectNoException(tester);
+    }, _mockClient);
+  });
+
+  testWidgets('built-in MV player keeps controls usable in both landscapes', (
+    tester,
+  ) async {
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    _setViewSize(tester, const Size(640, 360));
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: VideoPlayerScreen(
+          url: 'https://video.invalid/test.mp4',
+          title: '横屏 MV 测试歌曲',
+          artist: '测试歌手',
+          platform: MusicPlatform.qq,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.byKey(const ValueKey('built-in-mv-player')), findsOneWidget);
+    expect(find.byKey(const ValueKey('mv-player-back')), findsOneWidget);
+    expect(find.text('横屏 MV 测试歌曲'), findsOneWidget);
+    _expectNoException(tester);
+
+    _setViewSize(tester, const Size(1280, 800));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('built-in-mv-player')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('mv-player-back')).hitTestable(),
+      findsOneWidget,
+    );
+    _expectNoException(tester);
   });
 
   testWidgets('lyric font size persists for every song and player screen', (
@@ -940,13 +1046,20 @@ void main() {
         theme,
         const Size(1280, 800),
       );
-      await tester.tap(find.byTooltip('歌词字号'));
+      await tester.tap(find.byTooltip('歌词字号和间距'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('最大 · 60').last);
+      await tester.tap(find.byKey(const ValueKey('lyric-font-size-60')));
       await tester.pumpAndSettle();
       expect(tester.widget<Text>(find.text('第一句歌词')).style?.fontSize, 60);
+      final spacingSlider = tester.widget<Slider>(
+        find.byKey(const ValueKey('lyric-line-spacing-slider')),
+      );
+      spacingSlider.onChanged!(64);
+      spacingSlider.onChangeEnd!(64);
+      await tester.pumpAndSettle();
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getDouble('lyric_font_size'), 60);
+      expect(prefs.getDouble('lyric_line_spacing'), 64);
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
@@ -959,6 +1072,10 @@ void main() {
       );
       expect(find.text('另一首横屏测试歌曲'), findsOneWidget);
       expect(tester.widget<Text>(find.text('第一句歌词')).style?.fontSize, 60);
+      expect(
+        tester.getSize(find.byKey(const ValueKey('lyric-line-0'))).height,
+        greaterThan(120),
+      );
       expect(find.text('收藏').hitTestable(), findsOneWidget);
       _expectNoException(tester);
     }, _mockClient);
@@ -1169,6 +1286,7 @@ void main() {
     await http.runWithClient(() async {
       SharedPreferences.setMockInitialValues({
         'playback_source_qq': PlaybackSource.qingMusic.value,
+        'video_player_mode': 'system',
       });
       final player = PlayerProvider();
       final theme = ThemeController();
@@ -1189,6 +1307,7 @@ void main() {
         player.playbackSourceFor(MusicPlatform.netease),
         PlaybackSource.chksz,
       );
+      expect(player.videoPlayerMode, VideoPlayerMode.automatic);
 
       await _pumpScreen(
         tester,
@@ -1207,6 +1326,15 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('playback-source-qq-chksz')));
       await tester.pumpAndSettle();
       expect(player.playbackSourceFor(MusicPlatform.qq), PlaybackSource.chksz);
+      final mvPlayerMode = find.byKey(const ValueKey('mv-player-mode'));
+      await tester.ensureVisible(mvPlayerMode);
+      await tester.pumpAndSettle();
+      expect(mvPlayerMode.hitTestable(), findsOneWidget);
+      await tester.tap(mvPlayerMode);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('mv-player-mode-mpv')));
+      await tester.pumpAndSettle();
+      expect(player.videoPlayerMode, VideoPlayerMode.mpv);
       _expectNoException(tester);
 
       await _pumpScreen(
@@ -1233,6 +1361,7 @@ void main() {
       expect(prefs.getString('playback_source_qq'), 'chksz');
       expect(prefs.getString('playback_source_netease'), 'qing_music');
       expect(prefs.getString('playback_source_kugou'), isNull);
+      expect(prefs.getString('video_player_mode'), 'mpv');
       _expectNoException(tester);
     }, _mockClient);
   });
@@ -1448,7 +1577,7 @@ void main() {
       expect(find.text('收藏').hitTestable(), findsOneWidget);
       expect(find.text('MV').hitTestable(), findsOneWidget);
       expect(find.text('字号'), findsNothing);
-      expect(find.byTooltip('歌词字号').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('歌词字号和间距').hitTestable(), findsOneWidget);
       expect(find.text('歌词').hitTestable(), findsNothing);
       _expectNoException(tester);
     }, _mockClient);
@@ -1507,7 +1636,7 @@ void main() {
       expect(find.text('第一句歌词'), findsOneWidget);
       expect(find.text('收藏').hitTestable(), findsOneWidget);
       expect(find.text('MV').hitTestable(), findsOneWidget);
-      expect(find.byTooltip('歌词字号').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('歌词字号和间距').hitTestable(), findsOneWidget);
       expect(
         tester
             .getRect(find.byKey(const ValueKey('player-lyric-font-action')))
@@ -1925,6 +2054,9 @@ void _expectNoException(WidgetTester tester) {
 }
 
 class _PlayerWithLyrics extends PlayerProvider {
+  String? lastLyricQuery;
+  String? appliedLyricId;
+
   final PlayQueueItem _song = PlayQueueItem(
     platform: MusicPlatform.netease,
     id: '1',
@@ -1949,6 +2081,25 @@ class _PlayerWithLyrics extends PlayerProvider {
 
   @override
   List<LyricLine> get lyrics => _testLyrics;
+
+  @override
+  Future<List<SongSearchResult>> searchLyricCandidates(String keyword) async {
+    lastLyricQuery = keyword;
+    return [
+      SongSearchResult(
+        platform: MusicPlatform.netease,
+        id: 'lyric-candidate',
+        name: '歌词候选歌曲',
+        artist: '候选歌手',
+        album: '候选专辑',
+      ),
+    ];
+  }
+
+  @override
+  Future<void> applyLyricCandidate(SongSearchResult candidate) async {
+    appliedLyricId = candidate.id;
+  }
 }
 
 class _SecondPlayerWithLyrics extends _PlayerWithLyrics {
@@ -1969,6 +2120,9 @@ class _SecondPlayerWithLyrics extends _PlayerWithLyrics {
 
 class _ControllablePlayer extends PlayerProvider {
   PlayQueueItem? _currentSong;
+
+  @override
+  VideoPlayerMode get videoPlayerMode => VideoPlayerMode.exo;
 
   void showSong() {
     _currentSong = PlayQueueItem(

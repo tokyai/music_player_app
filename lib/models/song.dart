@@ -26,6 +26,17 @@ enum PlaybackSource {
   const PlaybackSource(this.label, this.value);
 }
 
+/// MV 播放方式。音频始终由应用内播放器处理。
+enum VideoPlayerMode {
+  automatic('自动兼容', 'automatic'),
+  mpv('MPV', 'mpv'),
+  exo('ExoPlayer', 'exo');
+
+  final String label;
+  final String value;
+  const VideoPlayerMode(this.label, this.value);
+}
+
 /// 封面 URL 工具
 class CoverHelper {
   /// 网易云封面 URL 统一转 https（接口有时返回 http://）

@@ -502,6 +502,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         _showPlaybackSourcePicker(ctx, player, platform),
                   );
                 }),
+                const Divider(height: 1),
+                ListTile(
+                  key: const ValueKey('mv-player-mode'),
+                  dense: compact,
+                  leading: const Icon(Icons.ondemand_video_rounded),
+                  title: const Text(
+                    'MV 播放器',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    switch (player.videoPlayerMode) {
+                      VideoPlayerMode.automatic => '自动兼容 · Exo 失败后切换 MPV',
+                      VideoPlayerMode.mpv => 'MPV · 更广的格式和车机兼容性',
+                      VideoPlayerMode.exo => 'ExoPlayer · Android 原生内核',
+                    },
+                    maxLines: compact ? 1 : 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => _showVideoPlayerModePicker(ctx, player),
+                ),
                 ExpansionTile(
                   tilePadding: compact
                       ? const EdgeInsets.symmetric(horizontal: 8)
@@ -872,6 +894,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: (selected) async {
               if (selected == null) return;
               await player.setPlaybackSource(platform, selected);
+              if (!dialogContext.mounted) return;
+              Navigator.pop(dialogContext);
+            },
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  void _showVideoPlayerModePicker(BuildContext context, PlayerProvider player) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('默认 MV 播放器'),
+        children: VideoPlayerMode.values.map((mode) {
+          final description = switch (mode) {
+            VideoPlayerMode.automatic => '优先使用 ExoPlayer，失败时自动切换 MPV',
+            VideoPlayerMode.mpv => '直接使用 libmpv，支持更多格式和协议',
+            VideoPlayerMode.exo => '直接使用 Android Media3 ExoPlayer',
+          };
+          return RadioListTile<VideoPlayerMode>(
+            key: ValueKey('mv-player-mode-${mode.value}'),
+            value: mode,
+            groupValue: player.videoPlayerMode,
+            title: Text(mode.label),
+            subtitle: Text(description),
+            onChanged: (selected) async {
+              if (selected == null) return;
+              await player.setVideoPlayerMode(selected);
               if (!dialogContext.mounted) return;
               Navigator.pop(dialogContext);
             },

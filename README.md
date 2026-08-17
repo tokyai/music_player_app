@@ -2,7 +2,7 @@
 
 一款支持 **QQ音乐 / 网易云音乐 / 酷狗音乐** 三大平台聚合搜索与播放的 Flutter 音乐播放器。
 
-> 当前版本：**v2.6.1**（`2.6.1+2601`）
+> 当前版本：**v2.8.0**（`2.8.0+2800`）
 
 > 📌 **项目来源**：本项目基于 [ChKSz](https://linux.do/u/chksz) 作者的 API 项目对接开发，感谢作者的无私分享。API 文档：https://api.chksz.com/ · 社区：[LINUX DO](https://linux.do/)
 
@@ -10,11 +10,11 @@
 
 ### 搜索与播放
 - **三平台聚合搜索**：同时搜索 QQ / 网易云 / 酷狗，Tab 切换查看结果
-- **目录直连**：搜索、每日推荐和歌单分页优先调用三平台公开接口，旧反代仅作失败兜底
+- **直连优先**：搜索、推荐、歌单、歌词、MV 与封面优先调用平台公开接口，旧反代仅作失败兜底
 - **高品质播放**：无损 / Hi-Res / 母带等音质可选，按平台自定义音质等级
 - **多播放源**：QQ / 网易云 / 酷狗可分别选择 ChKSz 或 QingMusic 解析，手动切换后持久记忆
-- **MV 播放**：播放页按需解析当前平台的歌曲 MV，并交给系统视频播放器打开
-- **歌词同步**：LRC 歌词逐行高亮滚动，支持翻译歌词合并显示，点击歌词跳转
+- **MV 播放**：内置 ExoPlayer 与 libmpv 双内核，默认自动回退，也可在设置中指定内核
+- **歌词同步**：LRC 歌词逐行高亮滚动，支持查找匹配版本以及可记忆的字号、行间距调节
 - **歌单导入**：支持 **QQ音乐 + 网易云** 双平台，粘贴歌单链接或 ID 即可导入（自动提取 ID）
 
 ### 播放体验
@@ -54,6 +54,7 @@ lib/
 ├── screens/
 │   ├── search_screen.dart       # 搜索页（三平台 Tab）
 │   ├── player_screen.dart       # 全屏播放器页
+│   ├── video_player_screen.dart # 应用内 ExoPlayer / MPV 双内核 MV 播放页
 │   ├── playlist_screen.dart     # 歌单页
 │   ├── backup_restore_screen.dart # 文件 / WebDAV / 局域网备份页
 │   └── settings_screen.dart     # 设置页
@@ -103,7 +104,7 @@ flutter run
 flutter build apk --release
 ```
 
-> 注意：App 内音乐 API 与封面请求通过 `http://161.118.252.183` 服务器中转（手机直连各平台域名不稳定），服务器 nginx 反向代理到各平台源站。
+> 注意：除用户选择的播放解析源外，平台请求和封面均默认直连；只有直连失败时才使用 `http://161.118.252.183` 的兼容线路。
 
 ## 🛠 技术栈
 
@@ -111,6 +112,7 @@ flutter build apk --release
 |------|------|
 | UI 框架 | Flutter / Material 3 |
 | 音频播放 | just_audio + just_audio_background（系统媒体通知） |
+| MV 播放 | video_player（Media3 ExoPlayer）+ media_kit（libmpv） |
 | 状态管理 | Provider |
 | 网络 | dio / http |
 | 图片 | cached_network_image + palette_generator（封面主色） |

@@ -8,13 +8,13 @@ import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../providers/search_session.dart';
 import '../services/api_service.dart';
-import '../services/external_media_service.dart';
 import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../utils/color_extractor.dart';
 import '../utils/system_ui.dart';
 import '../widgets/smart_cover.dart';
+import 'video_player_screen.dart';
 
 class PlayerScreen extends StatefulWidget {
   const PlayerScreen({super.key});
@@ -23,11 +23,409 @@ class PlayerScreen extends StatefulWidget {
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
+class _LyricSearchDialog extends StatefulWidget {
+  final PlayerProvider player;
+  final PlayQueueItem song;
+
+  const _LyricSearchDialog({required this.player, required this.song});
+
+  @override
+  State<_LyricSearchDialog> createState() => _LyricSearchDialogState();
+}
+
+class _LyricSearchDialogState extends State<_LyricSearchDialog> {
+  late final TextEditingController _queryController;
+  List<SongSearchResult> _results = const [];
+  bool _loading = false;
+  String? _applyingId;
+  String? _error;
+  int _requestId = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _queryController = TextEditingController(text: widget.song.name);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _search());
+  }
+
+  @override
+  void dispose() {
+    _requestId++;
+    _queryController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _search() async {
+    final query = _queryController.text.trim();
+    if (query.isEmpty) {
+      setState(() {
+        _results = const [];
+        _error = '请输入歌曲名';
+      });
+      return;
+    }
+    final requestId = ++_requestId;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final results = await widget.player.searchLyricCandidates(query);
+      if (!mounted || requestId != _requestId) return;
+      setState(() {
+        _results = results;
+        _loading = false;
+      });
+    } catch (error) {
+      if (!mounted || requestId != _requestId) return;
+      setState(() {
+        _loading = false;
+        _results = const [];
+        _error = error is ApiException ? error.message : '歌词搜索失败，请稍后重试';
+      });
+    }
+  }
+
+  Future<void> _apply(SongSearchResult result) async {
+    if (_applyingId != null) return;
+    setState(() {
+      _applyingId = result.id;
+      _error = null;
+    });
+    try {
+      await widget.player.applyLyricCandidate(result);
+      if (!mounted) return;
+      Navigator.pop(context, result.name);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _applyingId = null;
+        _error = error is ApiException ? error.message : '歌词加载失败，请选择其他版本';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    final compact = size.height < 480;
+    final dialogWidth = (size.width - 24).clamp(296.0, 900.0);
+    final dialogHeight = (size.height - 24).clamp(280.0, 620.0);
+    return Dialog(
+      key: const ValueKey('lyric-search-dialog'),
+      insetPadding: const EdgeInsets.all(12),
+      clipBehavior: Clip.antiAlias,
+      child: SizedBox(
+        width: dialogWidth,
+        height: dialogHeight,
+        child: Column(
+          children: [
+            Padding(
+              padding: EdgeInsets.fromLTRB(
+                compact ? 14 : 20,
+                compact ? 8 : 14,
+                compact ? 6 : 10,
+                compact ? 4 : 8,
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.lyrics_rounded,
+                    color: AppColors.primary,
+                    size: compact ? 25 : 30,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      '查找歌词',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: compact ? 19 : 23,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    key: const ValueKey('lyric-search-close'),
+                    tooltip: '关闭',
+                    onPressed: _applyingId == null
+                        ? () => Navigator.pop(context)
+                        : null,
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: EdgeInsets.symmetric(
+                horizontal: compact ? 14 : 20,
+                vertical: compact ? 2 : 6,
+              ),
+              child: TextField(
+                key: const ValueKey('lyric-search-field'),
+                controller: _queryController,
+                autofocus: false,
+                textInputAction: TextInputAction.search,
+                enabled: _applyingId == null,
+                onSubmitted: (_) => _search(),
+                decoration: InputDecoration(
+                  hintText: '歌曲名',
+                  prefixIcon: const Icon(Icons.search_rounded),
+                  suffixIcon: IconButton(
+                    key: const ValueKey('lyric-search-submit'),
+                    tooltip: '搜索歌词',
+                    onPressed: _loading || _applyingId != null ? null : _search,
+                    icon: const Icon(Icons.arrow_forward_rounded),
+                  ),
+                ),
+              ),
+            ),
+            if (_error != null)
+              Padding(
+                padding: EdgeInsets.fromLTRB(
+                  compact ? 14 : 20,
+                  compact ? 4 : 6,
+                  compact ? 14 : 20,
+                  0,
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.info_outline_rounded,
+                      color: Colors.redAccent,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _error!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Colors.redAccent),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            Expanded(child: _buildResults(compact)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildResults(bool compact) {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_results.isEmpty) {
+      return Center(
+        child: Text(
+          _error == null ? '没有找到匹配歌曲' : '',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
+      );
+    }
+    return ListView.separated(
+      key: const ValueKey('lyric-search-results'),
+      padding: EdgeInsets.fromLTRB(
+        compact ? 6 : 12,
+        compact ? 4 : 8,
+        compact ? 6 : 12,
+        compact ? 8 : 14,
+      ),
+      itemCount: _results.length,
+      separatorBuilder: (_, __) => const Divider(height: 1),
+      itemBuilder: (context, index) {
+        final result = _results[index];
+        final applying = _applyingId == result.id;
+        final album = result.album.trim().isEmpty ? '未知专辑' : result.album;
+        return ListTile(
+          key: ValueKey(
+            'lyric-search-result-${result.platform.code}-${result.id}',
+          ),
+          dense: compact,
+          enabled: _applyingId == null,
+          leading: CircleAvatar(
+            radius: compact ? 19 : 22,
+            backgroundColor: PlatformColors.of(
+              result.platform,
+            ).withValues(alpha: 0.14),
+            child: Icon(
+              Icons.music_note_rounded,
+              color: PlatformColors.of(result.platform),
+              size: compact ? 21 : 24,
+            ),
+          ),
+          title: Text(
+            result.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w600,
+              fontSize: compact ? 16 : 18,
+            ),
+          ),
+          subtitle: Text(
+            '${result.artist} · $album',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: compact ? 13 : 15,
+            ),
+          ),
+          trailing: applying
+              ? const SizedBox.square(
+                  dimension: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.chevron_right_rounded),
+          onTap: () => _apply(result),
+        );
+      },
+    );
+  }
+}
+
+class _LyricDisplaySettingsDialog extends StatefulWidget {
+  final double fontSize;
+  final double lineSpacing;
+  final List<double> fontSizes;
+  final ValueChanged<double> onFontSizeChanged;
+  final ValueChanged<double> onLineSpacingChanged;
+  final ValueChanged<double> onLineSpacingChangeEnd;
+
+  const _LyricDisplaySettingsDialog({
+    required this.fontSize,
+    required this.lineSpacing,
+    required this.fontSizes,
+    required this.onFontSizeChanged,
+    required this.onLineSpacingChanged,
+    required this.onLineSpacingChangeEnd,
+  });
+
+  @override
+  State<_LyricDisplaySettingsDialog> createState() =>
+      _LyricDisplaySettingsDialogState();
+}
+
+class _LyricDisplaySettingsDialogState
+    extends State<_LyricDisplaySettingsDialog> {
+  late double _fontSize = widget.fontSize;
+  late double _lineSpacing = widget.lineSpacing;
+
+  @override
+  Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    final compact = size.height < 480;
+    return Dialog(
+      key: const ValueKey('lyric-display-settings-dialog'),
+      insetPadding: const EdgeInsets.all(12),
+      clipBehavior: Clip.antiAlias,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: 560, maxHeight: size.height - 24),
+        child: SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(
+            compact ? 16 : 22,
+            compact ? 10 : 16,
+            compact ? 16 : 22,
+            compact ? 10 : 16,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '歌词显示',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  IconButton(
+                    key: const ValueKey('lyric-display-settings-close'),
+                    tooltip: '关闭',
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+              SizedBox(height: compact ? 2 : 8),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8, right: 12),
+                    child: Text(
+                      '字号',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                  Expanded(
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: widget.fontSizes.map((size) {
+                        return ChoiceChip(
+                          key: ValueKey('lyric-font-size-${size.round()}'),
+                          label: Text('${size.round()}'),
+                          selected: _fontSize == size,
+                          onSelected: (_) {
+                            setState(() => _fontSize = size);
+                            widget.onFontSizeChanged(size);
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                ],
+              ),
+              SizedBox(height: compact ? 8 : 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '上下间距',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                  Text('${_lineSpacing.round()} px'),
+                ],
+              ),
+              Slider(
+                key: const ValueKey('lyric-line-spacing-slider'),
+                value: _lineSpacing,
+                min: _PlayerScreenState._minimumLyricLineSpacing,
+                max: _PlayerScreenState._maximumLyricLineSpacing,
+                divisions: 15,
+                label: '${_lineSpacing.round()} px',
+                onChanged: (value) {
+                  setState(() => _lineSpacing = value);
+                  widget.onLineSpacingChanged(value);
+                },
+                onChangeEnd: widget.onLineSpacingChangeEnd,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _PlayerScreenState extends State<PlayerScreen> {
   static const _lyricFontSizePreferenceKey = 'lyric_font_size';
+  static const _lyricLineSpacingPreferenceKey = 'lyric_line_spacing';
   static const _landscapeSplitRatioPreferenceKey =
       'player_landscape_split_ratio';
   static const _lyricFontSizes = <double>[32, 36, 42, 48, 54, 60];
+  static const _minimumLyricLineSpacing = 20.0;
+  static const _maximumLyricLineSpacing = 80.0;
   static const _defaultLandscapeLeftRatio = 0.42;
   static const _minimumLandscapeLeftRatio = 0.32;
   static const _maximumLandscapeLeftRatio = 0.62;
@@ -35,40 +433,51 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Color? _dominantColor;
   bool _lyricsAutoScroll = true;
   bool _lyricFontSizeChangedByUser = false;
+  bool _lyricLineSpacingChangedByUser = false;
   double _lyricFontSize = 42;
-  double _lyricLineExtent = 92;
+  double _lyricLineSpacing = 44;
+  double _lyricLineExtent = 86;
   double _landscapeLeftRatio = _defaultLandscapeLeftRatio;
   bool _landscapeSplitChangedByUser = false;
   bool _mvOpening = false;
+  bool _lyricSearchDialogOpen = false;
   final ScrollController _lyricScrollController = ScrollController();
   String? _lastColorSongId;
 
   @override
   void initState() {
     super.initState();
-    unawaited(_loadLyricFontSize());
+    unawaited(_loadLyricDisplaySettings());
     unawaited(_loadLandscapeSplitRatio());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _updateColor(context.read<PlayerProvider>().currentSong);
     });
   }
 
-  Future<void> _loadLyricFontSize() async {
+  Future<void> _loadLyricDisplaySettings() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final rawValue = prefs.get(_lyricFontSizePreferenceKey);
       final rawSize = rawValue is num ? rawValue.toDouble() : null;
+      final rawSpacingValue = prefs.get(_lyricLineSpacingPreferenceKey);
+      final savedSpacing = rawSpacingValue is num
+          ? rawSpacingValue.toDouble().clamp(
+              _minimumLyricLineSpacing,
+              _maximumLyricLineSpacing,
+            )
+          : null;
       // 旧版本的 24/28 档在大屏上过小，平滑迁移到新的最小档 32。
       final savedSize = rawSize != null && rawSize < 32 ? 32.0 : rawSize;
-      if (!mounted ||
-          _lyricFontSizeChangedByUser ||
-          savedSize == null ||
-          !_lyricFontSizes.contains(savedSize)) {
-        return;
-      }
+      if (!mounted) return;
       setState(() {
-        _lyricFontSize = savedSize;
-        _lyricLineExtent = savedSize + 46;
+        if (!_lyricFontSizeChangedByUser &&
+            savedSize != null &&
+            _lyricFontSizes.contains(savedSize)) {
+          _lyricFontSize = savedSize;
+        }
+        if (!_lyricLineSpacingChangedByUser && savedSpacing != null) {
+          _lyricLineSpacing = savedSpacing;
+        }
       });
     } catch (_) {}
   }
@@ -86,6 +495,29 @@ class _PlayerScreenState extends State<PlayerScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setDouble(_lyricFontSizePreferenceKey, size);
+    } catch (_) {}
+  }
+
+  void _previewLyricLineSpacing(double spacing) {
+    _lyricLineSpacingChangedByUser = true;
+    final next = spacing.clamp(
+      _minimumLyricLineSpacing,
+      _maximumLyricLineSpacing,
+    );
+    if (_lyricLineSpacing != next) {
+      setState(() => _lyricLineSpacing = next);
+    }
+  }
+
+  void _commitLyricLineSpacing(double spacing) {
+    _previewLyricLineSpacing(spacing);
+    unawaited(_saveLyricLineSpacing(_lyricLineSpacing));
+  }
+
+  Future<void> _saveLyricLineSpacing(double spacing) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_lyricLineSpacingPreferenceKey, spacing);
     } catch (_) {}
   }
 
@@ -137,10 +569,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (_dominantColor != null) setState(() => _dominantColor = null);
       return;
     }
-    // SmartCover 会优先使用中转地址；主色提取复用相同的缓存键，避免进入
-    // 播放页后又从原始封面地址下载一次图片。
-    final cachedCover = CoverProxy.toProxy(cover) ?? cover;
-    extractDominantColor(cachedCover).then((color) {
+    extractDominantColor(
+      cover,
+      fallbackImageUrl: CoverProxy.toProxy(cover),
+    ).then((color) {
       if (mounted && color != null && id == _lastColorSongId) {
         setState(() => _dominantColor = color);
       }
@@ -200,15 +632,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
         artist: song.artist,
       );
       if (!context.mounted) return;
-      final opened = await ExternalMediaService.playVideo(url);
+      if (player.isPlaying) await player.pause();
       if (!context.mounted) return;
-      if (!opened) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('系统没有可用的视频播放器')));
-        return;
-      }
-      if (player.isPlaying) unawaited(player.pause());
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => VideoPlayerScreen(
+            url: url,
+            title: song.name,
+            artist: song.artist,
+            platform: song.platform,
+            mode: player.videoPlayerMode,
+          ),
+        ),
+      );
     } catch (error) {
       if (!context.mounted) return;
       final message = error is ApiException ? error.message : 'MV 加载失败，请稍后重试';
@@ -217,6 +653,29 @@ class _PlayerScreenState extends State<PlayerScreen> {
       ).showSnackBar(SnackBar(content: Text(message)));
     } finally {
       if (mounted) setState(() => _mvOpening = false);
+    }
+  }
+
+  Future<void> _openLyricSearch(
+    BuildContext context,
+    PlayerProvider player,
+    PlayQueueItem song,
+  ) async {
+    if (_lyricSearchDialogOpen) return;
+    _lyricSearchDialogOpen = true;
+    try {
+      final selected = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _LyricSearchDialog(player: player, song: song),
+      );
+      if (!context.mounted || selected == null) return;
+      setState(() => _lyricsAutoScroll = true);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已使用《$selected》的歌词')));
+    } finally {
+      _lyricSearchDialogOpen = false;
     }
   }
 
@@ -905,19 +1364,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             _scrollToLyric(selection.$2);
           });
         }
-        if (selection.$1 == 0 && selection.$3) {
-          return Center(
-            child: SizedBox(
-              width: 28,
-              height: 28,
-              child: CircularProgressIndicator(
-                strokeWidth: 2.5,
-                color: AppColors.primary,
-              ),
-            ),
-          );
-        }
-        return _buildLyricView(
+        return _buildLyricPane(
           ctx,
           player,
           textColor,
@@ -925,6 +1372,45 @@ class _PlayerScreenState extends State<PlayerScreen> {
           toggleOnTap: false,
         );
       },
+    );
+  }
+
+  Widget _buildLyricPane(
+    BuildContext ctx,
+    PlayerProvider player,
+    Color textColor, {
+    required bool landscape,
+    bool toggleOnTap = true,
+  }) {
+    final song = player.currentSong;
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: _buildLyricView(
+            ctx,
+            player,
+            textColor,
+            landscape: landscape,
+            toggleOnTap: toggleOnTap,
+          ),
+        ),
+        if (song != null)
+          Positioned(
+            top: landscape ? 0 : 6,
+            right: landscape ? 0 : 8,
+            child: IconButton(
+              key: const ValueKey('player-lyric-search-action'),
+              tooltip: '查找歌词',
+              onPressed: () => _openLyricSearch(ctx, player, song),
+              icon: Icon(Icons.manage_search_rounded, color: textColor),
+              iconSize: landscape ? 30 : 28,
+              style: IconButton.styleFrom(
+                minimumSize: Size.square(landscape ? 48 : 44),
+                backgroundColor: Colors.black.withValues(alpha: 0.12),
+              ),
+            ),
+          ),
+      ],
     );
   }
 
@@ -938,26 +1424,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
       key: const ValueKey('player-lyric-font-action'),
       width: width,
       height: height,
-      child: PopupMenuButton<double>(
-        tooltip: '歌词字号',
-        initialValue: _lyricFontSize,
-        position: PopupMenuPosition.under,
+      child: IconButton(
+        tooltip: '歌词字号和间距',
         padding: EdgeInsets.zero,
+        onPressed: () => showDialog<void>(
+          context: context,
+          builder: (_) => _LyricDisplaySettingsDialog(
+            fontSize: _lyricFontSize,
+            lineSpacing: _lyricLineSpacing,
+            fontSizes: _lyricFontSizes,
+            onFontSizeChanged: _selectLyricFontSize,
+            onLineSpacingChanged: _previewLyricLineSpacing,
+            onLineSpacingChangeEnd: _commitLyricLineSpacing,
+          ),
+        ),
         icon: Icon(Icons.format_size_rounded, color: color, size: iconSize),
-        onSelected: _selectLyricFontSize,
-        itemBuilder: (_) => _lyricFontMenuItems(),
       ),
     );
   }
-
-  List<PopupMenuEntry<double>> _lyricFontMenuItems() => const [
-    PopupMenuItem(value: 32, child: Text('小 · 32')),
-    PopupMenuItem(value: 36, child: Text('中 · 36')),
-    PopupMenuItem(value: 42, child: Text('标准 · 42')),
-    PopupMenuItem(value: 48, child: Text('大 · 48')),
-    PopupMenuItem(value: 54, child: Text('特大 · 54')),
-    PopupMenuItem(value: 60, child: Text('最大 · 60')),
-  ];
 
   Widget _buildPlayerVisual(
     BuildContext ctx,
@@ -967,14 +1451,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
     Color textColor, {
     bool landscape = false,
   }) {
-    return Selector<PlayerProvider, (bool, int, int)>(
-      selector: (_, p) => (p.showLyric, p.currentLyricIndex, p.lyrics.length),
+    return Selector<PlayerProvider, (bool, int, int, bool)>(
+      selector: (_, p) =>
+          (p.showLyric, p.currentLyricIndex, p.lyrics.length, p.lyricsLoading),
       builder: (ctx, sel, _) {
         if (sel.$1) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _scrollToLyric(sel.$2);
           });
-          return _buildLyricView(ctx, player, textColor, landscape: landscape);
+          return _buildLyricPane(ctx, player, textColor, landscape: landscape);
         }
         return _buildCoverArt(
           ctx,
@@ -1163,12 +1648,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
         final scaledFontSize = MediaQuery.textScalerOf(
           ctx,
         ).scale(_lyricFontSize);
-        final lineExtent = landscape
-            ? (scaledFontSize + (largeUi ? 34 : 28)).clamp(
-                largeUi ? 64.0 : 58.0,
-                largeUi ? 92.0 : 82.0,
-              )
-            : (scaledFontSize + 30).clamp(60.0, 86.0);
+        final lineExtent = (scaledFontSize + _lyricLineSpacing).clamp(
+          52.0,
+          scaledFontSize + _maximumLyricLineSpacing,
+        );
         _lyricLineExtent = lineExtent;
         final landscapePadding = availableHeight <= 20
             ? 0.0
@@ -1195,6 +1678,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   setState(() => _lyricsAutoScroll = true);
                 },
                 child: SizedBox(
+                  key: ValueKey('lyric-line-$i'),
                   height: lineExtent,
                   child: Align(
                     alignment: Alignment.center,
@@ -1215,7 +1699,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           fontWeight: isCurrent
                               ? FontWeight.w700
                               : FontWeight.w500,
-                          height: 1.25,
+                          height: 1.18,
                         ),
                       ),
                     ),

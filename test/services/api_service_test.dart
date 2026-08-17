@@ -7,36 +7,44 @@ import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/services/api_service.dart';
 
 void main() {
-  test('retries one server error and returns the recovered response', () async {
-    var requestCount = 0;
+  test(
+    'falls back when the official QQ recommendation request fails',
+    () async {
+      var requestCount = 0;
+      final requestedHosts = <String>[];
 
-    await http.runWithClient(
-      () async {
-        final api = ApiService(apiKey: '');
-        try {
-          final playlists = await api.qqRecommendPlaylists();
-          expect(playlists, isEmpty);
-        } finally {
-          api.close();
-        }
-      },
-      () {
-        return MockClient((request) async {
-          requestCount++;
-          if (requestCount == 1) {
-            return http.Response('temporarily unavailable', 503);
+      await http.runWithClient(
+        () async {
+          final api = ApiService(apiKey: '');
+          try {
+            final playlists = await api.qqRecommendPlaylists();
+            expect(playlists, isEmpty);
+          } finally {
+            api.close();
           }
-          return http.Response(
-            '{"data":{"list":[]}}',
-            200,
-            headers: const {'content-type': 'application/json; charset=utf-8'},
-          );
-        });
-      },
-    );
+        },
+        () {
+          return MockClient((request) async {
+            requestCount++;
+            requestedHosts.add(request.url.host);
+            if (requestCount == 1) {
+              return http.Response('temporarily unavailable', 503);
+            }
+            return http.Response(
+              '{"data":{"list":[]}}',
+              200,
+              headers: const {
+                'content-type': 'application/json; charset=utf-8',
+              },
+            );
+          });
+        },
+      );
 
-    expect(requestCount, 2);
-  });
+      expect(requestCount, 2);
+      expect(requestedHosts, ['u.y.qq.com', '161.118.252.183']);
+    },
+  );
 
   test('requests twenty-song Netease pages with an offset', () async {
     final requested = <Uri>[];
@@ -254,6 +262,166 @@ void main() {
     ]);
   });
 
+  test('lyrics use platform endpoints without touching the proxy', () async {
+    final requests = <Uri>[];
+    await http.runWithClient(
+      () async {
+        final api = ApiService(apiKey: 'not-needed');
+        try {
+          final netease = await api.neteaseLyric('163-id');
+          final qq = await api.qqLyric('qq-mid');
+          final kugou = await api.getLyric(MusicPlatform.kugou, 'kg-hash');
+
+          expect(netease.original, contains('网易直连歌词'));
+          expect(qq.original, contains('QQ & 直连歌词'));
+          expect(kugou?.original, contains('酷狗直连歌词'));
+        } finally {
+          api.close();
+        }
+      },
+      () => MockClient((request) async {
+        requests.add(request.url);
+        if (request.url.host == 'interface3.music.163.com') {
+          return _jsonResponse({
+            'code': 200,
+            'lrc': {'lyric': '[00:01.00]网易直连歌词'},
+            'tlyric': {'lyric': '[00:01.00]Netease translation'},
+          });
+        }
+        if (request.url.host == 'c.y.qq.com') {
+          return _jsonResponse({
+            'code': 0,
+            'lyric': '[00:01.00]QQ &#38; 直连歌词',
+            'trans': '',
+          });
+        }
+        if (request.url.host == 'm.kugou.com') {
+          return http.Response.bytes(utf8.encode('[00:01.00]酷狗直连歌词'), 200);
+        }
+        return http.Response('unexpected proxy request', 500);
+      }),
+    );
+
+    expect(requests.map((request) => request.host), [
+      'interface3.music.163.com',
+      'c.y.qq.com',
+      'm.kugou.com',
+    ]);
+    expect(
+      requests.any((request) => request.host == '161.118.252.183'),
+      isFalse,
+    );
+  });
+
+  test(
+    'Netease and QQ lyrics use the proxy only after direct failure',
+    () async {
+      final requests = <Uri>[];
+      await http.runWithClient(
+        () async {
+          final api = ApiService(apiKey: 'not-needed');
+          try {
+            expect(
+              (await api.neteaseLyric('163-id')).original,
+              contains('网易兜底歌词'),
+            );
+            expect((await api.qqLyric('qq-mid')).original, contains('QQ兜底歌词'));
+          } finally {
+            api.close();
+          }
+        },
+        () => MockClient((request) async {
+          requests.add(request.url);
+          if (request.url.host != '161.118.252.183') {
+            return http.Response('direct unavailable', 503);
+          }
+          if (request.url.path == '/api-netease/lyric') {
+            return _jsonResponse({
+              'lrc': {'lyric': '[00:01.00]网易兜底歌词'},
+            });
+          }
+          if (request.url.path == '/api-qq/lyric') {
+            return _jsonResponse({
+              'data': {'lyric': '[00:01.00]QQ兜底歌词', 'trans': ''},
+            });
+          }
+          return http.Response('not found', 404);
+        }),
+      );
+
+      expect(requests.map((request) => request.host), [
+        'interface3.music.163.com',
+        '161.118.252.183',
+        'c.y.qq.com',
+        '161.118.252.183',
+      ]);
+    },
+  );
+
+  test('lyric candidates are sorted by metadata relevance', () async {
+    await http.runWithClient(
+      () async {
+        final api = ApiService(apiKey: '');
+        try {
+          final results = await api.searchLyricCandidates(
+            platform: MusicPlatform.qq,
+            keyword: '晴天',
+            currentName: '晴天',
+            currentArtist: '周杰伦',
+            currentAlbum: '叶惠美',
+          );
+          expect(results.map((song) => song.id), [
+            'exact-current',
+            'exact-other',
+            'live-version',
+          ]);
+        } finally {
+          api.close();
+        }
+      },
+      () => MockClient((request) async {
+        expect(request.url.host, 'u.y.qq.com');
+        return _jsonResponse({
+          'req_1': {
+            'code': 0,
+            'data': {
+              'body': {
+                'song': {
+                  'list': [
+                    {
+                      'mid': 'live-version',
+                      'name': '晴天 (Live)',
+                      'singer': [
+                        {'name': '其他歌手'},
+                      ],
+                      'album': {'name': '现场专辑'},
+                    },
+                    {
+                      'mid': 'exact-other',
+                      'name': '晴天',
+                      'singer': [
+                        {'name': '其他歌手'},
+                      ],
+                      'album': {'name': '其他专辑'},
+                    },
+                    {
+                      'mid': 'exact-current',
+                      'name': '晴天',
+                      'singer': [
+                        {'name': '周杰伦'},
+                      ],
+                      'album': {'name': '叶惠美'},
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        });
+      }),
+    );
+  });
+
   test('resolves platform-specific MV URLs for all three platforms', () async {
     final requests = <Uri>[];
     await http.runWithClient(
@@ -293,24 +461,31 @@ void main() {
       },
       () => MockClient((request) async {
         requests.add(request.url);
-        if (request.url.path == '/api-qq/search') {
-          return _jsonResponse({
-            'data': {
-              'list': [
-                {
-                  'songmid': 'qq-mid',
-                  'songname': 'QQ测试歌',
-                  'singer': [
-                    {'name': 'QQ歌手'},
-                  ],
-                  'vid': 'qq-vid',
-                },
-              ],
-            },
-          });
-        }
         if (request.url.host == 'u.y.qq.com') {
           final body = jsonDecode(request.body) as Map<String, dynamic>;
+          if (body.containsKey('req_1')) {
+            return _jsonResponse({
+              'req_1': {
+                'code': 0,
+                'data': {
+                  'body': {
+                    'song': {
+                      'list': [
+                        {
+                          'mid': 'qq-mid',
+                          'name': 'QQ测试歌',
+                          'singer': [
+                            {'name': 'QQ歌手'},
+                          ],
+                          'mv': {'vid': 'qq-vid'},
+                        },
+                      ],
+                    },
+                  },
+                },
+              },
+            });
+          }
           expect(body['getMvUrl']['param']['vids'], ['qq-vid']);
           return _jsonResponse({
             'getMvUrl': {
@@ -329,20 +504,23 @@ void main() {
             },
           });
         }
-        if (request.url.path == '/api-netease/song/detail') {
+        if (request.url.host == 'interface.music.163.com' &&
+            request.url.path == '/api/song/detail') {
           return _jsonResponse({
             'songs': [
               {'id': '163-id', 'mv': 163001},
             ],
           });
         }
-        if (request.url.path == '/api-netease/mv/url') {
+        if (request.url.host == 'interface.music.163.com' &&
+            request.url.path == '/api/song/enhance/play/mv/url') {
           expect(request.url.queryParameters['r'], '1080');
           return _jsonResponse({
             'data': {'url': 'https://video.test/netease-1080.mp4'},
           });
         }
-        if (request.url.path == '/api-kugou-search/api/v3/search/song') {
+        if (request.url.host == 'mobilecdn.kugou.com' &&
+            request.url.path == '/api/v3/search/song') {
           return _jsonResponse({
             'data': {
               'info': [
@@ -369,6 +547,10 @@ void main() {
     );
 
     expect(requests, hasLength(6));
+    expect(
+      requests.any((request) => request.host == '161.118.252.183'),
+      isFalse,
+    );
   });
 }
 
