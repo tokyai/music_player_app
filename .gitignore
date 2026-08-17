@@ -9,6 +9,8 @@ build_c/
 .packages
 .pub-cache/
 .pub/
+__pycache__/
+*.pyc
 
 # IntelliJ / Android Studio
 *.iml

@@ -22,6 +22,65 @@ void main() {
 
   for (final size in const [Size(640, 360), Size(1280, 800)]) {
     testWidgets(
+      'deleting the query returns to the initial view at ${size.width.toInt()}x${size.height.toInt()}',
+      (tester) async {
+        await http.runWithClient(() async {
+          final player = PlayerProvider();
+          final session = SearchSession();
+          final favorites = FavoriteService();
+          try {
+            await _pumpSearch(
+              tester,
+              player: player,
+              session: session,
+              favorites: favorites,
+              size: size,
+            );
+
+            final field = find.byKey(const ValueKey('search-field'));
+            await tester.enterText(field, '周');
+            await tester.testTextInput.receiveAction(TextInputAction.search);
+            await tester.pumpAndSettle();
+
+            expect(session.keyword, '周');
+            expect(find.text('周末'), findsOneWidget);
+
+            await tester.enterText(field, '');
+            await tester.pumpAndSettle();
+
+            expect(session.keyword, isEmpty);
+            expect(find.text('周末'), findsNothing);
+            expect(
+              find.byKey(const PageStorageKey('search-welcome-results')),
+              findsOneWidget,
+            );
+            expect(find.text('热门搜索'), findsOneWidget);
+            await tester.scrollUntilVisible(
+              find.byKey(const ValueKey('search-history-section')),
+              100,
+              scrollable: find.descendant(
+                of: find.byKey(
+                  const PageStorageKey('search-landscape-controls'),
+                ),
+                matching: find.byType(Scrollable),
+              ),
+            );
+            expect(find.text('搜索历史'), findsOneWidget);
+            expect(session.searchHistory, ['周']);
+            expect(tester.takeException(), isNull);
+          } finally {
+            await tester.pumpWidget(const SizedBox.shrink());
+            player.dispose();
+            session.dispose();
+            favorites.dispose();
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          }
+        }, () => _searchClient(<String>[]));
+      },
+    );
+
+    testWidgets(
       'search suggestions and removable history work at ${size.width.toInt()}x${size.height.toInt()}',
       (tester) async {
         final suggestionQueries = <String>[];

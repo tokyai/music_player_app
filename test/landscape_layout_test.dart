@@ -277,7 +277,7 @@ void main() {
     );
   });
 
-  testWidgets('clearing the query keeps the current search results', (
+  testWidgets('clearing the query returns to the initial search view', (
     tester,
   ) async {
     await http.runWithClient(
@@ -310,7 +310,21 @@ void main() {
           tester.widget<TextField>(find.byType(TextField)).controller?.text,
           isEmpty,
         );
-        expect(find.text('保留结果'), findsOneWidget);
+        expect(find.text('保留结果'), findsNothing);
+        expect(
+          find.byKey(const PageStorageKey('search-welcome-results')),
+          findsOneWidget,
+        );
+        expect(find.text('热门搜索'), findsOneWidget);
+        await tester.scrollUntilVisible(
+          find.byKey(const ValueKey('search-history-section')),
+          100,
+          scrollable: find.descendant(
+            of: find.byKey(const PageStorageKey('search-landscape-controls')),
+            matching: find.byType(Scrollable),
+          ),
+        );
+        expect(find.text('搜索历史'), findsOneWidget);
         _expectNoException(tester);
       },
       () => MockClient((request) async {

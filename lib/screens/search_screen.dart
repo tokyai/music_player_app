@@ -167,8 +167,15 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   void _clearSearch() {
-    // 清空仅用于重新输入，已有搜索会话和结果必须继续保留。
     _controller.clear();
+    _session.clear();
+  }
+
+  void _handleQueryChanged(String value) {
+    if (value.trim().isEmpty && _session.keyword.isNotEmpty) {
+      _session.clear();
+      return;
+    }
     setState(() {});
   }
 
@@ -378,7 +385,7 @@ class _SearchScreenState extends State<SearchScreen>
             ),
             textInputAction: TextInputAction.search,
             onSubmitted: (value) => unawaited(_search(value)),
-            onChanged: (_) => setState(() {}),
+            onChanged: _handleQueryChanged,
             onTapOutside: (_) => focusNode.unfocus(),
           );
         },
