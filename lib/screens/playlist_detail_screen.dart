@@ -31,6 +31,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   PlaylistInfo? _detail;
   final List<SongSearchResult> _tracks = <SongSearchResult>[];
   final ScrollController _trackScrollController = ScrollController();
+  Future<List<SongSearchResult>>? _loadMoreFuture;
   bool _loading = false;
   bool _loadingMore = false;
   bool _loadingAll = false;
@@ -57,11 +58,12 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     }
     final position = _trackScrollController.position;
     if (position.extentAfter < 520) {
-      unawaited(_loadMore().then<void>((_) {}));
+      unawaited(_loadMore(context.read<PlayerProvider>()));
     }
   }
 
   Future<void> _loadDetail() async {
+    final player = context.read<PlayerProvider>();
     setState(() {
       _loading = true;
       _error = null;
@@ -70,7 +72,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       _hasMore = true;
     });
     try {
-      final page = await _fetchPage(0);
+      final page = await _fetchPage(player, 0);
       final source = widget.playlist;
       final total = page.total != null && page.total! > 0
           ? page.total!
@@ -103,8 +105,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     }
   }
 
-  Future<PlaylistTrackPage> _fetchPage(int offset) {
-    final api = context.read<PlayerProvider>().api;
+  Future<PlaylistTrackPage> _fetchPage(PlayerProvider player, int offset) {
+    final api = player.api;
     switch (widget.platform) {
       case MusicPlatform.netease:
         return api.neteasePlaylistTracks(
@@ -139,16 +141,34 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     return message;
   }
 
-  Future<bool> _loadMore() async {
-    if (_loading || _loadingMore || !_hasMore) return false;
-    setState(() => _loadingMore = true);
+  Future<List<SongSearchResult>> _loadMore(PlayerProvider player) {
+    final pending = _loadMoreFuture;
+    if (pending != null) return pending;
+    if (_loading || !_hasMore) {
+      return Future.value(const <SongSearchResult>[]);
+    }
+
+    late final Future<List<SongSearchResult>> operation;
+    operation = _loadMorePage(player).whenComplete(() {
+      if (identical(_loadMoreFuture, operation)) {
+        _loadMoreFuture = null;
+      }
+    });
+    _loadMoreFuture = operation;
+    return operation;
+  }
+
+  Future<List<SongSearchResult>> _loadMorePage(PlayerProvider player) async {
+    final offset = _nextOffset;
+    _loadingMore = true;
+    if (mounted) setState(() {});
     try {
-      final page = await _fetchPage(_nextOffset);
-      if (!mounted) return false;
-      setState(() {
-        _tracks.addAll(page.tracks);
-        _nextOffset = _tracks.length;
-        _hasMore = page.tracks.isNotEmpty && _pageHasMore(page, _nextOffset);
+      final page = await _fetchPage(player, offset);
+      final nextTracks = List<SongSearchResult>.of(page.tracks);
+      void appendPage() {
+        _tracks.addAll(nextTracks);
+        _nextOffset = offset + nextTracks.length;
+        _hasMore = nextTracks.isNotEmpty && _pageHasMore(page, _nextOffset);
         if (_detail != null) {
           _detail = PlaylistInfo(
             id: _detail!.id,
@@ -160,17 +180,24 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             tracks: List.unmodifiable(_tracks),
           );
         }
-      });
-      return page.tracks.isNotEmpty;
+      }
+
+      if (mounted) {
+        setState(appendPage);
+      } else {
+        appendPage();
+      }
+      return nextTracks;
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('加载更多失败：${_friendlyError(e)}')));
       }
-      return false;
+      return const <SongSearchResult>[];
     } finally {
-      if (mounted) setState(() => _loadingMore = false);
+      _loadingMore = false;
+      if (mounted) setState(() {});
     }
   }
 
@@ -287,38 +314,57 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     final canPlay = _detail != null && _detail!.tracks.isNotEmpty;
     Future<void> playAll() async {
       if (!canPlay || _loadingAll) return;
+      final player = context.read<PlayerProvider>();
+      final initialTracks = List<SongSearchResult>.of(_tracks);
       setState(() => _loadingAll = true);
+      final playback = player.playFromPlaylist(initialTracks, 0);
+      final queueSessionId = player.queueSessionId;
+      unawaited(playback);
       try {
-        while (mounted && _hasMore) {
-          final loaded = await _loadMore();
-          // _loadMore handles its own error UI. Stop here when a page could
-          // not be appended so a transient network failure cannot spin the
-          // loop forever while the user is waiting for playback to start.
-          if (!loaded) break;
-        }
-        if (mounted && _tracks.isNotEmpty) {
-          context.read<PlayerProvider>().playFromPlaylist(_tracks, 0);
+        while (_hasMore && player.queueSessionId == queueSessionId) {
+          final nextTracks = await _loadMore(player);
+          if (nextTracks.isEmpty ||
+              !player.addTracksToQueue(
+                nextTracks,
+                expectedQueueSessionId: queueSessionId,
+              )) {
+            break;
+          }
         }
       } finally {
         if (mounted) setState(() => _loadingAll = false);
       }
     }
 
+    final loadingIcon = SizedBox.square(
+      dimension: 22,
+      child: CircularProgressIndicator(
+        strokeWidth: 2.4,
+        color: isLandscape ? null : Colors.white,
+      ),
+    );
+    final loadingLabel = p.trackCount > 0
+        ? '加载中 ${_tracks.length}/${p.trackCount}'
+        : '加载中';
     final playButton = canPlay
         ? isLandscape
               ? FilledButton.icon(
                   onPressed: _loadingAll ? null : playAll,
-                  icon: const Icon(Icons.play_arrow_rounded, size: 24),
-                  label: const Text('播放全部'),
+                  icon: _loadingAll
+                      ? loadingIcon
+                      : const Icon(Icons.play_arrow_rounded, size: 24),
+                  label: Text(_loadingAll ? loadingLabel : '播放全部'),
                 )
               : IconButton.filled(
-                  onPressed: playAll,
+                  onPressed: _loadingAll ? null : playAll,
                   style: IconButton.styleFrom(
                     backgroundColor: AppColors.primary,
                     foregroundColor: Colors.white,
                   ),
-                  icon: const Icon(Icons.play_arrow_rounded, size: 28),
-                  tooltip: '播放全部',
+                  icon: _loadingAll
+                      ? loadingIcon
+                      : const Icon(Icons.play_arrow_rounded, size: 28),
+                  tooltip: _loadingAll ? loadingLabel : '播放全部',
                 )
         : const SizedBox.shrink();
     final favoriteButton = Consumer<FavoriteService>(
@@ -479,7 +525,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                   : TextButton(
                       key: const ValueKey('playlist-load-more'),
                       onPressed: () =>
-                          unawaited(_loadMore().then<void>((_) {})),
+                          unawaited(_loadMore(context.read<PlayerProvider>())),
                       child: const Text('加载更多'),
                     ),
             ),

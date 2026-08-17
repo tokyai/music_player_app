@@ -10,6 +10,7 @@ import '../services/favorite_service.dart';
 import '../services/floating_capsule_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
+import 'backup_restore_screen.dart';
 import 'cache_list_screen.dart';
 import 'favorites_screen.dart';
 
@@ -260,7 +261,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         Consumer<ThemeController>(
           builder: (ctx, themeCtrl, _) {
             final compactSegments =
-                compact || MediaQuery.sizeOf(ctx).width < 1180;
+                compact ||
+                (themeCtrl.fontScale > ThemeController.defaultFontScale &&
+                    MediaQuery.sizeOf(ctx).width < 1180);
             final fontScalePercent = (themeCtrl.fontScale * 100).round();
             final segments = compactSegments
                 ? const [
@@ -457,6 +460,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => _showCommonLevelPicker(ctx, player),
                 ),
+                const Divider(height: 1),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '平台播放源',
+                      style: TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: compact ? 16 : layout.bodySize,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+                ...musicPlatformDisplayOrder.map((platform) {
+                  final source = player.playbackSourceFor(platform);
+                  return ListTile(
+                    key: ValueKey('playback-source-${platform.code}'),
+                    dense: compact,
+                    leading: Icon(
+                      source == PlaybackSource.chksz
+                          ? Icons.key_outlined
+                          : Icons.cloud_outlined,
+                    ),
+                    title: Text(
+                      '${platform.label}播放源',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      source == PlaybackSource.chksz
+                          ? 'ChKSz · 需要 API Key'
+                          : 'QingMusic · 第三方备用解析',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () =>
+                        _showPlaybackSourcePicker(ctx, player, platform),
+                  );
+                }),
                 ExpansionTile(
                   tilePadding: compact
                       ? const EdgeInsets.symmetric(horizontal: 8)
@@ -532,6 +577,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const Divider(height: 1),
         ListTile(
           dense: compact,
+          leading: const Icon(Icons.cloud_sync_outlined),
+          title: const Text('备份与还原'),
+          subtitle: const Text('文件、WebDAV 或手机局域网传输'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const BackupRestoreScreen()),
+          ),
+        ),
+        const Divider(height: 1),
+        ListTile(
+          dense: compact,
           leading: const Icon(Icons.download_done_outlined),
           title: const Text('已缓存歌曲'),
           subtitle: Text(
@@ -584,7 +641,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               const SizedBox(height: 4),
               Text(
-                '用于网易云 / QQ / 酷狗播放地址解析',
+                '仅用于选择 ChKSz 播放源的平台；QingMusic 备用源不使用此 Key',
                 style: TextStyle(
                   fontSize: layout.secondarySize,
                   color: AppColors.textSecondary,
@@ -785,6 +842,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: (v) {
               player.setCommonLevel(level);
               Navigator.pop(ctx);
+            },
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  void _showPlaybackSourcePicker(
+    BuildContext context,
+    PlayerProvider player,
+    MusicPlatform platform,
+  ) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: Text('${platform.label}播放源'),
+        children: PlaybackSource.values.map((source) {
+          return RadioListTile<PlaybackSource>(
+            key: ValueKey('playback-source-${platform.code}-${source.value}'),
+            value: source,
+            groupValue: player.playbackSourceFor(platform),
+            title: Text(source.label),
+            subtitle: Text(
+              source == PlaybackSource.chksz
+                  ? '现有解析服务，需要已配置的 API Key'
+                  : 'QingMusic 第三方备用解析，不使用 ChKSz API Key',
+            ),
+            onChanged: (selected) async {
+              if (selected == null) return;
+              await player.setPlaybackSource(platform, selected);
+              if (!dialogContext.mounted) return;
+              Navigator.pop(dialogContext);
             },
           );
         }).toList(),

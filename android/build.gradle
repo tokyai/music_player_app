@@ -17,7 +17,7 @@ allprojects {
     }
 }
 
-rootProject.buildDir = "../build"
+rootProject.buildDir = "../build_c"
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
 }

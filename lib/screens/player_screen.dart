@@ -23,13 +23,20 @@ class PlayerScreen extends StatefulWidget {
 
 class _PlayerScreenState extends State<PlayerScreen> {
   static const _lyricFontSizePreferenceKey = 'lyric_font_size';
+  static const _landscapeSplitRatioPreferenceKey =
+      'player_landscape_split_ratio';
   static const _lyricFontSizes = <double>[32, 36, 42, 48, 54, 60];
+  static const _defaultLandscapeLeftRatio = 0.42;
+  static const _minimumLandscapeLeftRatio = 0.32;
+  static const _maximumLandscapeLeftRatio = 0.62;
 
   Color? _dominantColor;
   bool _lyricsAutoScroll = true;
   bool _lyricFontSizeChangedByUser = false;
   double _lyricFontSize = 42;
   double _lyricLineExtent = 92;
+  double _landscapeLeftRatio = _defaultLandscapeLeftRatio;
+  bool _landscapeSplitChangedByUser = false;
   final ScrollController _lyricScrollController = ScrollController();
   String? _lastColorSongId;
 
@@ -37,6 +44,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void initState() {
     super.initState();
     unawaited(_loadLyricFontSize());
+    unawaited(_loadLandscapeSplitRatio());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _updateColor(context.read<PlayerProvider>().currentSong);
     });
@@ -78,6 +86,35 @@ class _PlayerScreenState extends State<PlayerScreen> {
     } catch (_) {}
   }
 
+  Future<void> _loadLandscapeSplitRatio() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getDouble(_landscapeSplitRatioPreferenceKey);
+      if (!mounted ||
+          _landscapeSplitChangedByUser ||
+          saved == null ||
+          !saved.isFinite) {
+        return;
+      }
+      setState(() {
+        _landscapeLeftRatio = saved.clamp(
+          _minimumLandscapeLeftRatio,
+          _maximumLandscapeLeftRatio,
+        );
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _saveLandscapeSplitRatio() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(
+        _landscapeSplitRatioPreferenceKey,
+        _landscapeLeftRatio,
+      );
+    } catch (_) {}
+  }
+
   @override
   void dispose() {
     // 离开播放页后恢复全局状态栏样式（跟随主题）
@@ -97,7 +134,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (_dominantColor != null) setState(() => _dominantColor = null);
       return;
     }
-    extractDominantColor(cover).then((color) {
+    // SmartCover 会优先使用中转地址；主色提取复用相同的缓存键，避免进入
+    // 播放页后又从原始封面地址下载一次图片。
+    final cachedCover = CoverProxy.toProxy(cover) ?? cover;
+    extractDominantColor(cachedCover).then((color) {
       if (mounted && color != null && id == _lastColorSongId) {
         setState(() => _dominantColor = color);
       }
@@ -466,42 +506,127 @@ class _PlayerScreenState extends State<PlayerScreen> {
               largeUi ? 28 : 8,
               largeUi ? 18 : 4,
             ),
-            child: Row(
-              children: [
-                Expanded(
-                  flex: largeUi ? 10 : 9,
-                  child: KeyedSubtree(
-                    key: const ValueKey('landscape-player-controls'),
-                    child: _buildLandscapeControlPane(
-                      ctx,
-                      player,
-                      song,
-                      baseColor,
-                      textColor,
-                      subTextColor,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final compact = layout.isCompactLandscape;
+                final dividerWidth = largeUi ? 30.0 : (compact ? 20.0 : 24.0);
+                final panesWidth = (constraints.maxWidth - dividerWidth).clamp(
+                  1.0,
+                  double.infinity,
+                );
+                final minimumLeftWidth = largeUi
+                    ? 360.0
+                    : (compact ? 220.0 : 300.0);
+                final minimumRightWidth = largeUi
+                    ? 390.0
+                    : (compact ? 250.0 : 320.0);
+                final minimumRatio = (minimumLeftWidth / panesWidth).clamp(
+                  _minimumLandscapeLeftRatio,
+                  _maximumLandscapeLeftRatio,
+                );
+                final maximumRatio =
+                    ((panesWidth - minimumRightWidth) / panesWidth).clamp(
+                      _minimumLandscapeLeftRatio,
+                      _maximumLandscapeLeftRatio,
+                    );
+                final lower = minimumRatio <= maximumRatio ? minimumRatio : 0.5;
+                final upper = minimumRatio <= maximumRatio ? maximumRatio : 0.5;
+                final effectiveRatio = _landscapeLeftRatio.clamp(lower, upper);
+                final leftWidth = panesWidth * effectiveRatio;
+
+                void updateRatio(double delta) {
+                  final next = (effectiveRatio + delta / panesWidth).clamp(
+                    lower,
+                    upper,
+                  );
+                  _landscapeSplitChangedByUser = true;
+                  if (next != _landscapeLeftRatio) {
+                    setState(() => _landscapeLeftRatio = next);
+                  }
+                }
+
+                return Row(
+                  children: [
+                    SizedBox(
+                      width: leftWidth,
+                      child: KeyedSubtree(
+                        key: const ValueKey('landscape-player-controls'),
+                        child: _buildLandscapeControlPane(
+                          ctx,
+                          player,
+                          song,
+                          baseColor,
+                          textColor,
+                          subTextColor,
+                        ),
+                      ),
                     ),
-                  ),
-                ),
+                    _buildLandscapeDivider(
+                      width: dividerWidth,
+                      color: subTextColor,
+                      ratio: effectiveRatio,
+                      onDragUpdate: updateRatio,
+                      onDragEnd: () {
+                        unawaited(_saveLandscapeSplitRatio());
+                      },
+                    ),
+                    Expanded(
+                      child: KeyedSubtree(
+                        key: const ValueKey('landscape-player-lyrics'),
+                        child: _buildLandscapeLyrics(ctx, player, textColor),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLandscapeDivider({
+    required double width,
+    required Color color,
+    required double ratio,
+    required ValueChanged<double> onDragUpdate,
+    required VoidCallback onDragEnd,
+  }) {
+    return Semantics(
+      label: '播放页左右分栏比例',
+      value: '左侧 ${(ratio * 100).round()}%',
+      child: MouseRegion(
+        cursor: SystemMouseCursors.resizeColumn,
+        child: GestureDetector(
+          key: const ValueKey('landscape-player-divider'),
+          behavior: HitTestBehavior.opaque,
+          onHorizontalDragUpdate: (details) => onDragUpdate(details.delta.dx),
+          onHorizontalDragEnd: (_) => onDragEnd(),
+          onHorizontalDragCancel: onDragEnd,
+          child: SizedBox(
+            width: width,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
                 Container(
                   width: 1,
-                  margin: EdgeInsets.symmetric(
-                    vertical: largeUi ? 18 : 8,
-                    horizontal: largeUi ? 12 : 4,
-                  ),
-                  color: subTextColor.withOpacity(0.16),
+                  margin: const EdgeInsets.symmetric(vertical: 8),
+                  color: color.withValues(alpha: 0.16),
                 ),
-                Expanded(
-                  flex: largeUi ? 11 : 12,
-                  child: KeyedSubtree(
-                    key: const ValueKey('landscape-player-lyrics'),
-                    child: _buildLandscapeLyrics(ctx, player, textColor),
+                Container(
+                  width: 5,
+                  height: 58,
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.32),
+                    borderRadius: BorderRadius.circular(3),
                   ),
                 ),
               ],
             ),
           ),
         ),
-      ],
+      ),
     );
   }
 
@@ -698,7 +823,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     Color textColor,
   ) {
     return Selector<PlayerProvider, (int, int, bool)>(
-      selector: (_, p) => (p.lyrics.length, p.currentLyricIndex, p.isLoading),
+      selector: (_, p) =>
+          (p.lyrics.length, p.currentLyricIndex, p.lyricsLoading),
       builder: (ctx, selection, _) {
         if (selection.$1 > 0) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -907,6 +1033,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
     bool landscape = false,
     bool toggleOnTap = true,
   }) {
+    if (player.lyrics.isEmpty && player.lyricsLoading) {
+      return Center(
+        child: SizedBox(
+          width: 28,
+          height: 28,
+          child: CircularProgressIndicator(
+            strokeWidth: 2.5,
+            color: AppColors.primary,
+          ),
+        ),
+      );
+    }
     if (player.lyrics.isEmpty) {
       return Center(
         child: Column(
@@ -974,16 +1112,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 child: SizedBox(
                   height: lineExtent,
                   child: Align(
-                    alignment: landscape
-                        ? Alignment.centerLeft
-                        : Alignment.center,
+                    alignment: Alignment.center,
                     child: SizedBox(
                       width: double.infinity,
                       child: Text(
                         lyric.text,
-                        textAlign: landscape
-                            ? TextAlign.left
-                            : TextAlign.center,
+                        textAlign: TextAlign.center,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(

@@ -148,7 +148,7 @@ class MainActivity : AudioServiceActivity() {
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "application/json"
-            putExtra(Intent.EXTRA_TITLE, fileName ?: "kuzai-music-favorites.json")
+            putExtra(Intent.EXTRA_TITLE, fileName ?: "kuzai-music-backup.json")
         }
         try {
             pendingFileResult = result

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/services/api_service.dart';
 
 void main() {
@@ -164,5 +165,64 @@ void main() {
     );
     expect(requested?.queryParameters['song_begin'], '20');
     expect(requested?.queryParameters['song_num'], '20');
+  });
+
+  test('maps all three platforms to the QingMusic resolver contract', () async {
+    final requests = <Map<String, dynamic>>[];
+    await http.runWithClient(
+      () async {
+        final api = ApiService(apiKey: 'unused-by-qing');
+        try {
+          final qq = await api.qingMusic(
+            MusicPlatform.qq,
+            'qq-mid',
+            quality: 'hires',
+          );
+          final netease = await api.qingMusic(
+            MusicPlatform.netease,
+            '163-id',
+            quality: 'jymaster',
+          );
+          final kugou = await api.qingMusic(
+            MusicPlatform.kugou,
+            'kg-hash',
+            quality: 'master',
+          );
+
+          expect(qq.url, 'https://audio.test/song.flac');
+          expect(qq.playbackHeaders, {'Referer': 'https://player.test/'});
+          expect(netease.url, isNotEmpty);
+          expect(kugou.url, isNotEmpty);
+        } finally {
+          api.close();
+        }
+      },
+      () => MockClient((request) async {
+        expect(
+          request.url.toString(),
+          'https://musicserver.haitangw.cc/v1/music/resolve-url',
+        );
+        expect(request.method, 'POST');
+        requests.add(jsonDecode(request.body) as Map<String, dynamic>);
+        return http.Response(
+          jsonEncode({
+            'code': 0,
+            'message': 'ok',
+            'data': {
+              'url': 'https://audio.test/song.flac',
+              'playbackHeaders': {'Referer': 'https://player.test/'},
+            },
+          }),
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    expect(requests, [
+      {'source': 'tx', 'rid': 'qq-mid', 'level': 'lossless'},
+      {'source': 'wy', 'rid': '163-id', 'level': 'jymaster'},
+      {'source': 'kg', 'rid': 'kg-hash', 'level': 'clear'},
+    ]);
   });
 }

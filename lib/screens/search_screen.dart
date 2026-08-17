@@ -21,18 +21,22 @@ class SearchScreen extends StatefulWidget {
 
 class _SearchScreenState extends State<SearchScreen>
     with SingleTickerProviderStateMixin {
+  static const _suggestionDebounce = Duration(milliseconds: 350);
+  static const _suggestionTimeout = Duration(seconds: 3);
+  static const List<_SearchSuggestion> _hotSearches = [
+    _SearchSuggestion('周杰伦', _SearchSuggestionKind.artist),
+    _SearchSuggestion('海阔天空', _SearchSuggestionKind.track, detail: 'Beyond'),
+    _SearchSuggestion('晴天', _SearchSuggestionKind.track, detail: '周杰伦'),
+    _SearchSuggestion('邓紫棋', _SearchSuggestionKind.artist),
+    _SearchSuggestion('Beyond', _SearchSuggestionKind.artist),
+    _SearchSuggestion('告白气球', _SearchSuggestionKind.track, detail: '周杰伦'),
+  ];
+
   late final TextEditingController _controller;
+  late final FocusNode _searchFocusNode;
   late TabController _tabController;
   late final SearchSession _session;
   late String _observedSessionKeyword;
-  final List<String> _hotKeywords = [
-    '周杰伦',
-    '海阔天空',
-    '晴天',
-    '邓紫棋',
-    'Beyond',
-    '告白气球',
-  ];
 
   @override
   void initState() {
@@ -40,6 +44,7 @@ class _SearchScreenState extends State<SearchScreen>
     _session = context.read<SearchSession>();
     _observedSessionKeyword = _session.keyword;
     _controller = TextEditingController(text: _session.keyword);
+    _searchFocusNode = FocusNode();
     _tabController = TabController(
       length: musicPlatformDisplayOrder.length,
       initialIndex: _session.selectedPlatformIndex,
@@ -54,12 +59,97 @@ class _SearchScreenState extends State<SearchScreen>
     _session.removeListener(_handleSessionChanged);
     _tabController.removeListener(_handleTabChanged);
     _controller.dispose();
+    _searchFocusNode.dispose();
     _tabController.dispose();
     super.dispose();
   }
 
   Future<void> _search(String keyword) async {
-    await _session.search(context.read<PlayerProvider>().api, keyword);
+    final normalized = keyword.trim();
+    if (normalized.isEmpty) return;
+    _searchFocusNode.unfocus();
+    if (_controller.text != normalized) {
+      _controller.value = TextEditingValue(
+        text: normalized,
+        selection: TextSelection.collapsed(offset: normalized.length),
+      );
+    }
+    await _session.search(context.read<PlayerProvider>().api, normalized);
+  }
+
+  Future<Iterable<_SearchSuggestion>> _buildSearchSuggestions(
+    TextEditingValue value,
+  ) async {
+    final keyword = value.text.trim();
+    if (keyword.isEmpty || !_searchFocusNode.hasFocus) {
+      return const <_SearchSuggestion>[];
+    }
+    final api = context.read<PlayerProvider>().api;
+    await Future<void>.delayed(_suggestionDebounce);
+    if (!mounted ||
+        !_searchFocusNode.hasFocus ||
+        _controller.text.trim() != keyword) {
+      return const <_SearchSuggestion>[];
+    }
+
+    final suggestions = <_SearchSuggestion>[];
+    final seen = <String>{};
+    void addSuggestion(_SearchSuggestion suggestion) {
+      if (!_containsKeyword(suggestion.keyword, keyword)) return;
+      final key =
+          '${suggestion.kind.name}:${_normalizeSuggestionText(suggestion.keyword)}';
+      if (seen.add(key)) suggestions.add(suggestion);
+    }
+
+    for (final suggestion in _hotSearches) {
+      addSuggestion(suggestion);
+    }
+    try {
+      final songs = await api
+          .search(MusicPlatform.qq, keyword)
+          .timeout(_suggestionTimeout);
+      if (!mounted ||
+          !_searchFocusNode.hasFocus ||
+          _controller.text.trim() != keyword) {
+        return const <_SearchSuggestion>[];
+      }
+      for (final song in songs) {
+        for (final artist in _splitArtists(song.artist)) {
+          addSuggestion(
+            _SearchSuggestion(artist, _SearchSuggestionKind.artist),
+          );
+        }
+        addSuggestion(
+          _SearchSuggestion(
+            song.name,
+            _SearchSuggestionKind.track,
+            detail: song.artist,
+          ),
+        );
+        if (suggestions.length >= 8) break;
+      }
+    } catch (_) {
+      // 本地热门匹配仍可作为网络失败时的联想结果。
+    }
+    return suggestions.take(8).toList(growable: false);
+  }
+
+  bool _containsKeyword(String value, String keyword) {
+    return _normalizeSuggestionText(
+      value,
+    ).contains(_normalizeSuggestionText(keyword));
+  }
+
+  String _normalizeSuggestionText(String value) {
+    return value.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+  }
+
+  Iterable<String> _splitArtists(String artists) sync* {
+    final seen = <String>{};
+    for (final raw in artists.split(RegExp(r'\s+/\s+|、|，|,\s*|\s+&\s+'))) {
+      final artist = raw.trim();
+      if (artist.isNotEmpty && seen.add(artist.toLowerCase())) yield artist;
+    }
   }
 
   void _handleTabChanged() {
@@ -160,6 +250,8 @@ class _SearchScreenState extends State<SearchScreen>
                         _buildModeToggle(),
                         SizedBox(height: layout.isCompactLandscape ? 10 : 18),
                         _buildHotKeywords(compact: layout.isCompactLandscape),
+                        SizedBox(height: layout.isCompactLandscape ? 16 : 24),
+                        _buildSearchHistory(compact: layout.isCompactLandscape),
                       ],
                     ),
                   ),
@@ -247,34 +339,127 @@ class _SearchScreenState extends State<SearchScreen>
     final layout = AppLayout.fromContext(context);
     return Padding(
       padding: padding ?? const EdgeInsets.fromLTRB(20, 8, 20, 8),
-      child: TextField(
-        controller: _controller,
-        decoration: InputDecoration(
-          hintText: '搜索歌曲、歌手...',
-          prefixIcon: Icon(Icons.search, color: AppColors.textSecondary),
-          suffixIcon: _controller.text.isNotEmpty
-              ? IconButton(
-                  icon: Icon(
-                    Icons.clear,
-                    size: layout.isCompactLandscape ? 24 : 28,
+      child: RawAutocomplete<_SearchSuggestion>(
+        textEditingController: _controller,
+        focusNode: _searchFocusNode,
+        displayStringForOption: (option) => option.keyword,
+        optionsBuilder: _buildSearchSuggestions,
+        onSelected: (option) => unawaited(_search(option.keyword)),
+        optionsViewOpenDirection: OptionsViewOpenDirection.mostSpace,
+        optionsViewBuilder: _buildSuggestionOptions,
+        fieldViewBuilder: (context, textController, focusNode, _) {
+          return TextField(
+            key: const ValueKey('search-field'),
+            controller: textController,
+            focusNode: focusNode,
+            decoration: InputDecoration(
+              hintText: '搜索歌曲、歌手...',
+              prefixIcon: Icon(Icons.search, color: AppColors.textSecondary),
+              suffixIcon: textController.text.isNotEmpty
+                  ? IconButton(
+                      tooltip: '清空输入',
+                      icon: Icon(
+                        Icons.clear,
+                        size: layout.isCompactLandscape ? 24 : 28,
+                        color: AppColors.textSecondary,
+                      ),
+                      onPressed: _clearSearch,
+                    )
+                  : null,
+              hintStyle: TextStyle(
+                color: AppColors.textHint,
+                fontSize: layout.bodySize,
+              ),
+            ),
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: layout.bodySize,
+              height: 1.2,
+            ),
+            textInputAction: TextInputAction.search,
+            onSubmitted: (value) => unawaited(_search(value)),
+            onChanged: (_) => setState(() {}),
+            onTapOutside: (_) => focusNode.unfocus(),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildSuggestionOptions(
+    BuildContext context,
+    AutocompleteOnSelected<_SearchSuggestion> onSelected,
+    Iterable<_SearchSuggestion> options,
+  ) {
+    final layout = AppLayout.fromContext(context);
+    final optionList = options.toList(growable: false);
+    final highlightedIndex = AutocompleteHighlightedOption.of(context);
+    return Material(
+      key: const ValueKey('search-suggestions'),
+      color: AppColors.surface,
+      elevation: 8,
+      shadowColor: AppColors.cardShadow,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.control),
+        side: BorderSide(color: AppColors.outline),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: layout.isCompactLandscape ? 220 : 320,
+        ),
+        child: ListView.separated(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          shrinkWrap: true,
+          itemCount: optionList.length,
+          separatorBuilder: (_, _) =>
+              Divider(height: 1, thickness: 1, color: AppColors.outline),
+          itemBuilder: (context, index) {
+            final option = optionList[index];
+            final isHighlighted = index == highlightedIndex;
+            final isArtist = option.kind == _SearchSuggestionKind.artist;
+            final subtitle = isArtist
+                ? '歌手'
+                : option.detail == null || option.detail!.isEmpty
+                ? '曲目'
+                : '曲目 · ${option.detail}';
+            return Material(
+              color: isHighlighted ? AppColors.primarySoft : Colors.transparent,
+              child: ListTile(
+                key: ValueKey(
+                  'search-suggestion-${option.kind.name}-${option.keyword}',
+                ),
+                dense: layout.isCompactLandscape,
+                minTileHeight: layout.isCompactLandscape ? 48 : 58,
+                leading: Icon(
+                  isArtist ? Icons.person_rounded : Icons.music_note_rounded,
+                  size: layout.isCompactLandscape ? 24 : 28,
+                  color: isArtist ? PlatformColors.qq : AppColors.primary,
+                ),
+                title: Text(
+                  option.keyword,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: layout.bodySize,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                subtitle: Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: layout.secondarySize,
                     color: AppColors.textSecondary,
                   ),
-                  onPressed: _clearSearch,
-                )
-              : null,
-          hintStyle: TextStyle(
-            color: AppColors.textHint,
-            fontSize: layout.bodySize,
-          ),
+                ),
+                onTap: () => onSelected(option),
+              ),
+            );
+          },
         ),
-        style: TextStyle(
-          color: AppColors.textPrimary,
-          fontSize: layout.bodySize,
-          height: 1.2,
-        ),
-        textInputAction: TextInputAction.search,
-        onSubmitted: _search,
-        onChanged: (_) => setState(() {}),
       ),
     );
   }
@@ -822,12 +1007,9 @@ class _SearchScreenState extends State<SearchScreen>
           Wrap(
             spacing: 8,
             runSpacing: 8,
-            children: _hotKeywords.map((kw) {
+            children: _hotSearches.map((suggestion) {
               return GestureDetector(
-                onTap: () {
-                  _controller.text = kw;
-                  _search(kw);
-                },
+                onTap: () => unawaited(_search(suggestion.keyword)),
                 child: Container(
                   padding: EdgeInsets.symmetric(
                     horizontal: compact ? 9 : 13,
@@ -845,7 +1027,7 @@ class _SearchScreenState extends State<SearchScreen>
                     ],
                   ),
                   child: Text(
-                    kw,
+                    suggestion.keyword,
                     style: TextStyle(
                       fontSize: compact ? 15 : layout.bodySize,
                       color: AppColors.textPrimary,
@@ -861,12 +1043,113 @@ class _SearchScreenState extends State<SearchScreen>
     );
   }
 
+  Widget _buildSearchHistory({bool compact = false}) {
+    final layout = AppLayout.fromContext(context);
+    final history = _session.searchHistory;
+    return Padding(
+      key: const ValueKey('search-history-section'),
+      padding: compact
+          ? EdgeInsets.zero
+          : const EdgeInsets.fromLTRB(20, 12, 20, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                '搜索历史',
+                style: TextStyle(
+                  fontSize: compact ? 17 : layout.sectionTitleSize,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Icon(
+                Icons.history_rounded,
+                size: compact ? 18 : 22,
+                color: AppColors.textSecondary,
+              ),
+            ],
+          ),
+          SizedBox(height: compact ? 8 : 12),
+          if (history.isEmpty)
+            Text(
+              '暂无搜索记录',
+              style: TextStyle(
+                fontSize: compact ? 14 : layout.secondarySize,
+                color: AppColors.textHint,
+              ),
+            )
+          else
+            ...history.map(
+              (keyword) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Material(
+                  key: ValueKey('search-history-item-$keyword'),
+                  color: AppColors.surface,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppRadius.control),
+                    side: BorderSide(color: AppColors.outline),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: InkWell(
+                          onTap: () => unawaited(_search(keyword)),
+                          child: Padding(
+                            padding: EdgeInsets.fromLTRB(
+                              compact ? 10 : 14,
+                              compact ? 10 : 12,
+                              6,
+                              compact ? 10 : 12,
+                            ),
+                            child: Text(
+                              keyword,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: compact ? 15 : layout.bodySize,
+                                color: AppColors.textPrimary,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        key: ValueKey('delete-search-history-$keyword'),
+                        tooltip: '删除 $keyword',
+                        visualDensity: compact
+                            ? VisualDensity.compact
+                            : VisualDensity.standard,
+                        onPressed: () =>
+                            unawaited(_session.removeSearchHistory(keyword)),
+                        icon: Icon(
+                          Icons.close_rounded,
+                          size: compact ? 20 : 24,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   /// 未搜索时的欢迎页 + 热门关键词
   Widget _buildWelcome() {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
       children: [
         _buildHotKeywords(),
+        const SizedBox(height: 20),
+        _buildSearchHistory(),
         const SizedBox(height: 40),
         Center(
           child: Column(
@@ -903,4 +1186,14 @@ class _SearchScreenState extends State<SearchScreen>
       ],
     );
   }
+}
+
+enum _SearchSuggestionKind { artist, track }
+
+class _SearchSuggestion {
+  final String keyword;
+  final _SearchSuggestionKind kind;
+  final String? detail;
+
+  const _SearchSuggestion(this.keyword, this.kind, {this.detail});
 }

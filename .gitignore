@@ -1,5 +1,6 @@
 # Flutter
 build/
+build_c/
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies

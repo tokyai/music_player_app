@@ -641,6 +641,14 @@ void main() {
       expect(find.text('第一句歌词'), findsOneWidget);
       expect(find.text('收藏').hitTestable(), findsOneWidget);
       expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(
+        find.byKey(const ValueKey('landscape-player-divider')).hitTestable(),
+        findsOneWidget,
+      );
+      expect(
+        tester.widget<Text>(find.text('第一句歌词')).textAlign,
+        TextAlign.center,
+      );
 
       final controlsRect = tester.getRect(
         find.byKey(const ValueKey('landscape-player-controls')),
@@ -673,6 +681,73 @@ void main() {
       await tester.tap(find.byTooltip('播放队列'));
       await tester.pumpAndSettle();
       expect(find.text('播放队列 (1)'), findsOneWidget);
+      _expectNoException(tester);
+    }, _mockClient);
+  });
+
+  testWidgets('landscape player split resizes and persists safely', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      SharedPreferences.setMockInitialValues({
+        'player_landscape_split_ratio': 0.5,
+      });
+      final player = _PlayerWithLyrics();
+      final theme = ThemeController();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        player.dispose();
+        theme.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      await _pumpScreen(
+        tester,
+        const PlayerScreen(),
+        player,
+        theme,
+        const Size(1280, 800),
+      );
+      final divider = find.byKey(const ValueKey('landscape-player-divider'));
+      final controls = find.byKey(const ValueKey('landscape-player-controls'));
+      final initialWidth = tester.getSize(controls).width;
+
+      await tester.drag(divider, const Offset(-110, 0));
+      await tester.pumpAndSettle();
+      final resizedWidth = tester.getSize(controls).width;
+      expect(resizedWidth, lessThan(initialWidth - 80));
+      expect(
+        tester.widget<Text>(find.text('第一句歌词')).textAlign,
+        TextAlign.center,
+      );
+      expect(tester.widget<Text>(find.text('横屏测试歌曲')).maxLines, 1);
+      _expectNoException(tester);
+
+      final prefs = await SharedPreferences.getInstance();
+      final savedRatio = prefs.getDouble('player_landscape_split_ratio');
+      expect(savedRatio, isNotNull);
+      expect(savedRatio!, lessThan(0.5));
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      await _pumpScreen(
+        tester,
+        const PlayerScreen(),
+        player,
+        theme,
+        const Size(1280, 800),
+      );
+      expect(tester.getSize(controls).width, closeTo(resizedWidth, 1));
+
+      _setViewSize(tester, const Size(640, 360));
+      await tester.pumpAndSettle();
+      expect(divider.hitTestable(), findsOneWidget);
+      expect(tester.widget<Text>(find.text('第一句歌词')).maxLines, 1);
+      expect(
+        tester.widget<Text>(find.text('第一句歌词')).textAlign,
+        TextAlign.center,
+      );
       _expectNoException(tester);
     }, _mockClient);
   });
@@ -922,6 +997,80 @@ void main() {
     }, _mockClient);
   });
 
+  testWidgets('per-platform playback sources persist in both landscapes', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      SharedPreferences.setMockInitialValues({
+        'playback_source_qq': PlaybackSource.qingMusic.value,
+      });
+      final player = PlayerProvider();
+      final theme = ThemeController();
+      await player.settingsReady;
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        player.dispose();
+        theme.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      expect(
+        player.playbackSourceFor(MusicPlatform.qq),
+        PlaybackSource.qingMusic,
+      );
+      expect(
+        player.playbackSourceFor(MusicPlatform.netease),
+        PlaybackSource.chksz,
+      );
+
+      await _pumpScreen(
+        tester,
+        const SettingsScreen(),
+        player,
+        theme,
+        const Size(640, 360),
+      );
+      final qqSource = find.byKey(const ValueKey('playback-source-qq'));
+      await tester.ensureVisible(qqSource);
+      await tester.pumpAndSettle();
+      expect(qqSource.hitTestable(), findsOneWidget);
+      expect(tester.widget<Text>(find.text('QQ音乐播放源')).maxLines, 1);
+      await tester.tap(qqSource);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('playback-source-qq-chksz')));
+      await tester.pumpAndSettle();
+      expect(player.playbackSourceFor(MusicPlatform.qq), PlaybackSource.chksz);
+      _expectNoException(tester);
+
+      await _pumpScreen(
+        tester,
+        const SettingsScreen(),
+        player,
+        theme,
+        const Size(1280, 800),
+      );
+      final neteaseSource = find.byKey(const ValueKey('playback-source-163'));
+      await tester.ensureVisible(neteaseSource);
+      await tester.tap(neteaseSource);
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('playback-source-163-qing_music')),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        player.playbackSourceFor(MusicPlatform.netease),
+        PlaybackSource.qingMusic,
+      );
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('playback_source_qq'), 'chksz');
+      expect(prefs.getString('playback_source_netease'), 'qing_music');
+      expect(prefs.getString('playback_source_kugou'), isNull);
+      _expectNoException(tester);
+    }, _mockClient);
+  });
+
   testWidgets(
     'global font scale is live, persistent, and usable in landscape',
     (tester) async {
@@ -949,11 +1098,9 @@ void main() {
         expect(theme.fontScale, ThemeController.defaultFontScale);
         expect(find.text('100%'), findsOneWidget);
 
-        final slider = tester.widget<Slider>(
-          find.byKey(const ValueKey('font-scale-slider')),
-        );
-        slider.onChanged!(ThemeController.maxFontScale);
-        slider.onChangeEnd!(ThemeController.maxFontScale);
+        final sliderFinder = find.byKey(const ValueKey('font-scale-slider'));
+        final sliderRect = tester.getRect(sliderFinder);
+        await tester.tapAt(Offset(sliderRect.right - 8, sliderRect.center.dy));
         await tester.pumpAndSettle();
 
         expect(theme.fontScale, ThemeController.maxFontScale);
@@ -982,11 +1129,28 @@ void main() {
           _expectNoException(tester);
         }
 
+        final restoredTheme = ThemeController();
+        addTearDown(restoredTheme.dispose);
+        await _pumpScreen(
+          tester,
+          const SettingsScreen(),
+          player,
+          restoredTheme,
+          const Size(1280, 800),
+        );
+        expect(restoredTheme.fontScale, ThemeController.maxFontScale);
+        expect(
+          tester
+              .widget<Slider>(find.byKey(const ValueKey('font-scale-slider')))
+              .value,
+          ThemeController.maxFontScale,
+        );
+
         final reset = find.byTooltip('恢复默认字号');
         await tester.ensureVisible(reset);
         await tester.tap(reset);
         await tester.pumpAndSettle();
-        expect(theme.fontScale, ThemeController.defaultFontScale);
+        expect(restoredTheme.fontScale, ThemeController.defaultFontScale);
         expect(prefs.getDouble('font_scale'), ThemeController.defaultFontScale);
         _expectNoException(tester);
       }, _mockClient);

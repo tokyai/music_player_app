@@ -20,6 +20,8 @@ class ApiService {
 
   // ChKSz API 经服务器中转，避免移动网络直连 HTTPS 不稳定。
   static const String _chkszUrl = 'http://161.118.252.183/api-chksz';
+  static const String _qingMusicUrl =
+      'https://musicserver.haitangw.cc/v1/music/resolve-url';
   // API 中转入口（服务器反代到各平台，规避手机直连不稳定）
   static const String neteaseBaseUrl = 'http://161.118.252.183/api-netease';
   static const String kugouSearchBase =
@@ -43,6 +45,36 @@ class ApiService {
       try {
         final response = await _client
             .get(uri, headers: const {'Accept': 'application/json'})
+            .timeout(_requestTimeout);
+        if (attempt == 0 && response.statusCode >= 500) {
+          await Future<void>.delayed(_retryDelay);
+          continue;
+        }
+        return response;
+      } on Exception catch (error) {
+        lastError = error;
+        if (attempt == 0) {
+          await Future<void>.delayed(_retryDelay);
+          continue;
+        }
+      }
+    }
+    throw lastError ?? StateError('请求失败');
+  }
+
+  Future<http.Response> _postJson(Uri uri, Map<String, dynamic> body) async {
+    Exception? lastError;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        final response = await _client
+            .post(
+              uri,
+              headers: const {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+              },
+              body: jsonEncode(body),
+            )
             .timeout(_requestTimeout);
         if (attempt == 0 && response.statusCode >= 500) {
           await Future<void>.delayed(_retryDelay);
@@ -95,6 +127,97 @@ class ApiService {
       return body;
     }
     return {'data': body};
+  }
+
+  /// QingMusic 脚本中的备用解析协议。脚本本身只用于说明适配规则，App
+  /// 直接调用其 resolve-url 服务，不在客户端执行远程 JavaScript。
+  Future<SongDetail> qingMusic(
+    MusicPlatform platform,
+    String id, {
+    required String quality,
+  }) async {
+    final response = await _postJson(Uri.parse(_qingMusicUrl), {
+      'source': switch (platform) {
+        MusicPlatform.qq => 'tx',
+        MusicPlatform.netease => 'wy',
+        MusicPlatform.kugou => 'kg',
+      },
+      'rid': id,
+      'level': _qingMusicLevel(platform, quality),
+    });
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(
+        'QING_HTTP_${response.statusCode}',
+        'QingMusic 服务暂时不可用',
+      );
+    }
+    final dynamic body;
+    try {
+      body = jsonDecode(utf8.decode(response.bodyBytes));
+    } on FormatException {
+      throw ApiException('QING_INVALID_RESPONSE', 'QingMusic 返回了无效数据');
+    }
+    if (body is! Map) {
+      throw ApiException('QING_INVALID_RESPONSE', 'QingMusic 返回格式错误');
+    }
+    final result = Map<String, dynamic>.from(body);
+    if (result['code']?.toString() != '0') {
+      throw ApiException(
+        'QING_${result['code'] ?? 'FAILED'}',
+        result['message']?.toString() ?? 'QingMusic 解析失败',
+      );
+    }
+    final rawData = result['data'];
+    final data = rawData is Map
+        ? Map<String, dynamic>.from(rawData)
+        : <String, dynamic>{};
+    final url = data['url']?.toString() ?? '';
+    if (url.isEmpty) {
+      throw ApiException('QING_EMPTY_URL', 'QingMusic 未返回播放地址');
+    }
+    final rawHeaders = data['playbackHeaders'] ?? data['headers'];
+    final headers = rawHeaders is Map
+        ? rawHeaders.map(
+            (key, value) => MapEntry(key.toString(), value.toString()),
+          )
+        : null;
+    final path = Uri.tryParse(url)?.path ?? '';
+    final dot = path.lastIndexOf('.');
+    return SongDetail(
+      name: '',
+      artist: '',
+      album: '',
+      url: url,
+      format: dot >= 0 && dot < path.length - 1
+          ? path.substring(dot + 1)
+          : null,
+      playbackHeaders: headers?.isEmpty == true ? null : headers,
+    );
+  }
+
+  static String _qingMusicLevel(MusicPlatform platform, String quality) {
+    switch (platform) {
+      case MusicPlatform.netease:
+        return switch (quality) {
+          'standard' => 'standard',
+          'exhigh' => 'exhigh',
+          'lossless' || 'hires' => 'lossless',
+          _ => 'jymaster',
+        };
+      case MusicPlatform.qq:
+        return switch (quality) {
+          '128k' => 'standard',
+          '320k' => 'exhigh',
+          _ => 'lossless',
+        };
+      case MusicPlatform.kugou:
+        return switch (quality) {
+          '128k' => 'standard',
+          '320k' => 'exhigh',
+          'master' => 'clear',
+          _ => 'lossless',
+        };
+    }
   }
 
   // ---- 通用 HTTP GET ----
@@ -234,6 +357,16 @@ class ApiService {
     );
   }
 
+  /// 备用源使用网易云公开歌词接口，不依赖 ChKSz API Key。
+  Future<LyricData> neteasePublicLyric(String id) async {
+    final json = await _httpGet(neteaseBaseUrl, '/lyric', {'id': id});
+    return LyricData(
+      original: json['lrc']?['lyric']?.toString(),
+      translated: json['tlyric']?['lyric']?.toString(),
+      romaji: json['romalrc']?['lyric']?.toString(),
+    );
+  }
+
   /// 网易云热门歌单
   Future<List<PlaylistInfo>> neteaseHotPlaylists({int limit = 20}) async {
     final json = await _httpGet(neteaseBaseUrl, '/top/playlist', {
@@ -354,6 +487,25 @@ class ApiService {
       'type': 'json',
     });
     return SongDetail.fromKugou(json);
+  }
+
+  /// 酷狗脚本的免签名歌词兜底接口。返回 LRC 文本，不参与播放地址解析。
+  Future<LyricData> kugouPublicLyric(String hash) async {
+    final uri = Uri.parse(
+      'https://m.kugou.com/app/i/krc.php',
+    ).replace(queryParameters: {'cmd': '100', 'hash': hash, 'timelength': '1'});
+    final response = await _get(uri);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(
+        'KUGOU_LYRIC_HTTP_${response.statusCode}',
+        '酷狗歌词服务暂时不可用',
+      );
+    }
+    final text = utf8
+        .decode(response.bodyBytes, allowMalformed: true)
+        .replaceAll('\r', '');
+    final start = text.indexOf('[');
+    return LyricData(original: start >= 0 ? text.substring(start) : null);
   }
 
   // ======================== QQ音乐 (直连搜索/推荐, ChKSz解析) ========================

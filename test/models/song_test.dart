@@ -10,10 +10,7 @@ void main() {
         'ar': [
           {'name': 'Singer'},
         ],
-        'al': {
-          'name': 'Album',
-          'picUrl': 'http://music.126.net/cover.jpg',
-        },
+        'al': {'name': 'Album', 'picUrl': 'http://music.126.net/cover.jpg'},
         'dt': 215000,
       });
 
@@ -66,5 +63,19 @@ void main() {
 
     expect(item.copyWith(loading: true).error, 'failed');
     expect(item.copyWith(clearError: true).error, isNull);
+  });
+
+  test('PlayQueueItem preserves and clears playback headers explicitly', () {
+    final item = PlayQueueItem(
+      platform: MusicPlatform.qq,
+      id: 'mid',
+      name: 'Song',
+      artist: 'Singer',
+      album: 'Album',
+      playbackHeaders: const {'Referer': 'https://player.test/'},
+    );
+
+    expect(item.copyWith(loading: true).playbackHeaders, isNotNull);
+    expect(item.copyWith(clearPlaybackHeaders: true).playbackHeaders, isNull);
   });
 }

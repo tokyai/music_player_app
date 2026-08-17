@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../models/song.dart';
 import '../providers/player_provider.dart';
+import '../services/backup_service.dart';
 import '../services/favorite_file_service.dart';
 import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
@@ -14,9 +15,10 @@ import '../utils/song_source_matcher.dart';
 import '../widgets/favorite_playlist_card.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/song_tile.dart';
+import 'backup_restore_screen.dart';
 import 'playlist_detail_screen.dart';
 
-enum _FavoriteMenuAction { importBackup, exportBackup }
+enum _FavoriteMenuAction { importBackup, exportBackup, openNetworkBackup }
 
 class _SourceSwitchResult {
   final SongSearchResult original;
@@ -124,6 +126,8 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                 unawaited(_importFavorites());
               case _FavoriteMenuAction.exportBackup:
                 unawaited(_exportFavorites());
+              case _FavoriteMenuAction.openNetworkBackup:
+                _openBackupScreen();
             }
           },
           itemBuilder: (_) => const [
@@ -141,6 +145,14 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                 contentPadding: EdgeInsets.zero,
                 leading: Icon(Icons.save_alt_outlined),
                 title: Text('导出收藏'),
+              ),
+            ),
+            PopupMenuItem(
+              value: _FavoriteMenuAction.openNetworkBackup,
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.cloud_sync_outlined),
+                title: Text('备份与还原'),
               ),
             ),
           ],
@@ -303,6 +315,15 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                 onPressed: () => setState(() => _selecting = true),
                 icon: const Icon(Icons.library_add_check_outlined, size: 19),
                 label: const Text('批量管理'),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _openBackupScreen,
+                icon: const Icon(Icons.cloud_sync_outlined, size: 19),
+                label: const Text('备份与还原'),
               ),
             ),
           ],
@@ -881,12 +902,13 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
 
   Future<void> _exportFavorites() async {
     final favorites = context.read<FavoriteService>();
+    final player = context.read<PlayerProvider>();
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await favorites.load();
+      await Future.wait([favorites.load(), player.settingsReady]);
       if (!mounted) return;
       final result = await FavoriteFileService.exportBackup(
-        favorites.exportJson(),
+        BackupService.exportJson(favorites: favorites, player: player),
       );
       if (!mounted || result == FavoriteExportResult.cancelled) return;
       messenger.showSnackBar(
@@ -921,14 +943,20 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     final mode = await _chooseImportMode();
     if (mode == null || !mounted) return;
     try {
-      final result = await context.read<FavoriteService>().importJson(
-        raw,
+      final result = await BackupService.importJson(
+        raw: raw,
+        favorites: context.read<FavoriteService>(),
+        player: context.read<PlayerProvider>(),
         mode: mode,
       );
       if (!mounted) return;
       _exitSelection();
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已导入 ${result.added} 首，跳过 ${result.skipped} 首')),
+        SnackBar(
+          content: Text(
+            '已导入 ${result.songsAdded} 首歌曲、${result.playlistsAdded} 个歌单',
+          ),
+        ),
       );
     } on FormatException catch (error) {
       if (!mounted) return;
@@ -965,6 +993,13 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     );
     controller.dispose();
     return value;
+  }
+
+  void _openBackupScreen() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const BackupRestoreScreen()),
+    );
   }
 
   Future<FavoriteImportMode?> _chooseImportMode() {

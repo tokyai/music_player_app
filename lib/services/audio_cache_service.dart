@@ -123,7 +123,8 @@ class AudioCacheService {
   static Future<String?> getCachedPath({
     required String platformCode,
     required String songId,
-    required String url,
+    // 保留旧调用方的命名参数兼容；缓存索引按歌曲身份查找，不依赖 URL。
+    String? url,
   }) async {
     try {
       final index = await _loadIndex();

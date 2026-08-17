@@ -16,7 +16,7 @@ class FavoriteFileService {
     try {
       final saved = await _channel.invokeMethod<bool>('exportFavorites', {
         'content': content,
-        'fileName': 'kuzai-music-favorites-$date.json',
+        'fileName': 'kuzai-music-backup-$date.json',
       });
       return saved == true
           ? FavoriteExportResult.saved

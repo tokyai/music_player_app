@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/song.dart';
 import '../services/api_service.dart';
@@ -7,6 +10,9 @@ enum SearchSubject { general, artist, album }
 
 /// 应用级搜索会话。搜索页面即使因路由或横竖屏切换重建，也能恢复完整结果。
 class SearchSession extends ChangeNotifier {
+  static const String _historyPrefsKey = 'search_history';
+  static const int _maxHistoryItems = 20;
+
   final Map<MusicPlatform, List<SongSearchResult>> _results = {
     MusicPlatform.qq: [],
     MusicPlatform.netease: [],
@@ -28,6 +34,7 @@ class SearchSession extends ChangeNotifier {
     MusicPlatform.kugou: false,
   };
   final Set<MusicPlatform> _loadedPlatforms = {};
+  final List<String> _searchHistory = [];
 
   String _keyword = '';
   bool _playlistMode = false;
@@ -36,11 +43,17 @@ class SearchSession extends ChangeNotifier {
   int _requestId = 0;
   int _navigationId = 0;
   bool _disposed = false;
+  late final Future<void> _historyReady;
+
+  SearchSession() {
+    _historyReady = _loadSearchHistory();
+  }
 
   String get keyword => _keyword;
   bool get playlistMode => _playlistMode;
   int get selectedPlatformIndex => _selectedPlatformIndex;
   int get navigationId => _navigationId;
+  List<String> get searchHistory => List.unmodifiable(_searchHistory);
 
   List<SongSearchResult> songsFor(MusicPlatform platform) =>
       _results[platform] ?? const [];
@@ -63,6 +76,7 @@ class SearchSession extends ChangeNotifier {
     final normalizedKeyword = keyword.trim();
     if (normalizedKeyword.isEmpty) return;
 
+    unawaited(_rememberSearch(normalizedKeyword));
     _requestId++;
     if (navigate) _navigationId++;
     _keyword = normalizedKeyword;
@@ -182,6 +196,17 @@ class SearchSession extends ChangeNotifier {
     await ensurePlatformLoaded(api, platform);
   }
 
+  Future<void> removeSearchHistory(String keyword) async {
+    await _historyReady;
+    if (_disposed) return;
+    final normalized = _normalize(keyword);
+    final oldLength = _searchHistory.length;
+    _searchHistory.removeWhere((item) => _normalize(item) == normalized);
+    if (_searchHistory.length == oldLength) return;
+    _notify();
+    await _saveSearchHistory();
+  }
+
   void clear() {
     _requestId++;
     _keyword = '';
@@ -263,6 +288,42 @@ class SearchSession extends ChangeNotifier {
 
   String _normalize(String value) =>
       value.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+
+  Future<void> _loadSearchHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (_disposed) return;
+      final saved = prefs.getStringList(_historyPrefsKey) ?? const <String>[];
+      final seen = <String>{};
+      for (final item in saved) {
+        final keyword = item.trim();
+        if (keyword.isEmpty || !seen.add(_normalize(keyword))) continue;
+        _searchHistory.add(keyword);
+        if (_searchHistory.length >= _maxHistoryItems) break;
+      }
+      _notify();
+    } catch (_) {}
+  }
+
+  Future<void> _rememberSearch(String keyword) async {
+    await _historyReady;
+    if (_disposed) return;
+    final normalized = _normalize(keyword);
+    _searchHistory.removeWhere((item) => _normalize(item) == normalized);
+    _searchHistory.insert(0, keyword);
+    if (_searchHistory.length > _maxHistoryItems) {
+      _searchHistory.removeRange(_maxHistoryItems, _searchHistory.length);
+    }
+    _notify();
+    await _saveSearchHistory();
+  }
+
+  Future<void> _saveSearchHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_historyPrefsKey, _searchHistory);
+    } catch (_) {}
+  }
 
   bool _isCurrentSearch(
     int requestId,

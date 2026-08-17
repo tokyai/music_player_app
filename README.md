@@ -2,7 +2,7 @@
 
 一款支持 **QQ音乐 / 网易云音乐 / 酷狗音乐** 三大平台聚合搜索与播放的 Flutter 音乐播放器。
 
-> 当前版本：**v2.2.16**（`2.2.16+2216`）
+> 当前版本：**v2.5.0**（`2.5.0+2500`）
 
 > 📌 **项目来源**：本项目基于 [ChKSz](https://linux.do/u/chksz) 作者的 API 项目对接开发，感谢作者的无私分享。API 文档：https://api.chksz.com/ · 社区：[LINUX DO](https://linux.do/)
 
@@ -11,6 +11,7 @@
 ### 搜索与播放
 - **三平台聚合搜索**：同时搜索 QQ / 网易云 / 酷狗，Tab 切换查看结果
 - **高品质播放**：无损 / Hi-Res / 母带等音质可选，按平台自定义音质等级
+- **多播放源**：QQ / 网易云 / 酷狗可分别选择 ChKSz 或 QingMusic 解析，手动切换后持久记忆
 - **歌词同步**：LRC 歌词逐行高亮滚动，支持翻译歌词合并显示，点击歌词跳转
 - **歌单导入**：支持 **QQ音乐 + 网易云** 双平台，粘贴歌单链接或 ID 即可导入（自动提取 ID）
 
@@ -25,6 +26,12 @@
 - **系统媒体通知**：播放时通知栏 / 锁屏显示媒体控制胶囊（MediaSession）
 - **系统悬浮胶囊**：Android 系统级悬浮窗（跨 App 常驻），支持拖动、点击回 App、播放/暂停控制
 
+### 备份与还原
+- 统一备份收藏歌曲、收藏歌单元数据和 API Key，兼容旧版歌曲备份。
+- 支持系统文件导入导出、WebDAV 网络备份，以及不依赖文件管理器的手机局域网传输。
+- WebDAV 默认使用独立账号和 HTTPS 证书指纹校验；请在应用内填写独立 WebDAV 密码，切勿使用服务器 root 密码。
+- 局域网传输使用随机地址令牌、6 位 PIN、5 MB 大小限制和 10 分钟自动失效。
+
 ## 🧱 项目结构
 
 ```
@@ -34,6 +41,9 @@ lib/
 │   └── song.dart                # 数据模型（歌曲、歌单、歌词等）
 ├── services/
 │   ├── api_service.dart         # 三平台 API 封装（走服务器中转）
+│   ├── backup_service.dart      # 收藏 + API Key 统一备份协调
+│   ├── webdav_backup_service.dart # WebDAV 传输与证书指纹校验
+│   ├── lan_backup_service.dart  # 临时局域网手机传输
 │   ├── update_service.dart      # 更新模块（当前未启用）
 │   └── floating_capsule_service.dart  # 系统悬浮胶囊通道封装
 ├── providers/
@@ -43,6 +53,7 @@ lib/
 │   ├── search_screen.dart       # 搜索页（三平台 Tab）
 │   ├── player_screen.dart       # 全屏播放器页
 │   ├── playlist_screen.dart     # 歌单页
+│   ├── backup_restore_screen.dart # 文件 / WebDAV / 局域网备份页
 │   └── settings_screen.dart     # 设置页
 ├── widgets/
 │   ├── song_tile.dart           # 歌曲列表项

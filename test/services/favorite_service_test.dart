@@ -153,6 +153,64 @@ void main() {
       expect(restored.favoritePlaylists, isEmpty);
     },
   );
+
+  test('version 2 backup includes playlists and API Key', () async {
+    final service = FavoriteService();
+    await service.toggle(_song(MusicPlatform.qq, 'song-1', 'Song One'));
+    await service.togglePlaylist(
+      MusicPlatform.netease,
+      PlaylistInfo(
+        id: 'playlist-1',
+        name: 'Playlist One',
+        creator: 'Creator',
+        trackCount: 30,
+        tracks: const [],
+      ),
+    );
+
+    final raw = service.exportJson(apiKey: 'api-key-for-backup');
+    final exported = jsonDecode(raw) as Map<String, dynamic>;
+    expect(exported['version'], 2);
+    expect(exported['songs'], hasLength(1));
+    expect(exported['playlists'], hasLength(1));
+    expect(exported['apiKey'], 'api-key-for-backup');
+
+    SharedPreferences.setMockInitialValues({});
+    final restored = FavoriteService();
+    final result = await restored.importJson(
+      raw,
+      mode: FavoriteImportMode.replace,
+    );
+    expect(restored.favorites.single.id, 'song-1');
+    expect(restored.favoritePlaylists.single.id, 'playlist-1');
+    expect(result.playlistsAdded, 1);
+    expect(result.apiKeyPresent, isTrue);
+    expect(result.apiKey, 'api-key-for-backup');
+  });
+
+  test(
+    'legacy song-only replacement keeps current playlist favorites',
+    () async {
+      final service = FavoriteService();
+      await service.togglePlaylist(
+        MusicPlatform.qq,
+        PlaylistInfo(
+          id: 'keep-playlist',
+          name: 'Keep Playlist',
+          trackCount: 1,
+          tracks: const [],
+        ),
+      );
+
+      await service.importJson(
+        jsonEncode([_song(MusicPlatform.kugou, 'legacy', 'Legacy').toJson()]),
+        mode: FavoriteImportMode.replace,
+      );
+
+      expect(service.favorites.single.id, 'legacy');
+      expect(service.favoritePlaylists.single.id, 'keep-playlist');
+    },
+  );
 }
 
 SongSearchResult _song(

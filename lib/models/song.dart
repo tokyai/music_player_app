@@ -16,6 +16,16 @@ const musicPlatformDisplayOrder = <MusicPlatform>[
   MusicPlatform.kugou,
 ];
 
+/// 播放地址解析源。搜索、歌单和收藏仍沿用各平台原有接口。
+enum PlaybackSource {
+  chksz('ChKSz', 'chksz'),
+  qingMusic('QingMusic', 'qing_music');
+
+  final String label;
+  final String value;
+  const PlaybackSource(this.label, this.value);
+}
+
 /// 封面 URL 工具
 class CoverHelper {
   /// 网易云封面 URL 统一转 https（接口有时返回 http://）
@@ -386,6 +396,7 @@ class SongDetail {
   final int? duration; // 秒
   final String? bitrate;
   final String? format;
+  final Map<String, String>? playbackHeaders;
 
   SongDetail({
     required this.name,
@@ -397,6 +408,7 @@ class SongDetail {
     this.duration,
     this.bitrate,
     this.format,
+    this.playbackHeaders,
   });
 
   /// ChKSz 网易云解析结果
@@ -679,6 +691,7 @@ class PlayQueueItem {
 
   String? playUrl; // 解析后填充
   String? lyric; // 歌词
+  Map<String, String>? playbackHeaders; // 个别备用源播放时需要的请求头
   int? duration; // 秒
   bool loading; // 正在解析中
   String? error; // 解析失败信息
@@ -692,6 +705,7 @@ class PlayQueueItem {
     this.coverUrl,
     this.playUrl,
     this.lyric,
+    this.playbackHeaders,
     this.duration,
     this.loading = false,
     this.error,
@@ -712,11 +726,13 @@ class PlayQueueItem {
   PlayQueueItem copyWith({
     String? playUrl,
     String? lyric,
+    Map<String, String>? playbackHeaders,
     int? duration,
     bool? loading,
     String? error,
     String? coverUrl,
     bool clearError = false,
+    bool clearPlaybackHeaders = false,
   }) {
     return PlayQueueItem(
       platform: platform,
@@ -727,6 +743,9 @@ class PlayQueueItem {
       coverUrl: coverUrl ?? this.coverUrl,
       playUrl: playUrl ?? this.playUrl,
       lyric: lyric ?? this.lyric,
+      playbackHeaders: clearPlaybackHeaders
+          ? null
+          : playbackHeaders ?? this.playbackHeaders,
       duration: duration ?? this.duration,
       loading: loading ?? this.loading,
       error: clearError ? null : error ?? this.error,

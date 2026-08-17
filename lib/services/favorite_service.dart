@@ -11,11 +11,19 @@ class FavoriteImportResult {
   final int added;
   final int skipped;
   final int total;
+  final int playlistsAdded;
+  final int playlistsSkipped;
+  final bool apiKeyPresent;
+  final String? apiKey;
 
   const FavoriteImportResult({
     required this.added,
     required this.skipped,
     required this.total,
+    this.playlistsAdded = 0,
+    this.playlistsSkipped = 0,
+    this.apiKeyPresent = false,
+    this.apiKey,
   });
 }
 
@@ -24,7 +32,7 @@ class FavoriteService extends ChangeNotifier {
   static const String _prefsKey = 'favorites';
   static const String _playlistPrefsKey = 'favorite_playlists';
   static const String exportFormat = 'kuzai_music_favorites';
-  static const int exportVersion = 1;
+  static const int exportVersion = 2;
 
   final List<SongSearchResult> _favorites = [];
   final List<FavoritePlaylist> _favoritePlaylists = [];
@@ -58,7 +66,7 @@ class FavoriteService extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_prefsKey);
       if (raw != null && raw.isNotEmpty) {
-        final decoded = _decodeSongs(raw);
+        final decoded = _decodeBackup(raw);
         _favorites
           ..clear()
           ..addAll(decoded.songs);
@@ -209,12 +217,20 @@ class FavoriteService extends ChangeNotifier {
     return replaced;
   }
 
-  String exportJson() {
+  /// 导出统一备份。API Key 由调用方传入，避免收藏服务直接依赖播放器。
+  ///
+  /// 版本 2 同时保存歌曲、歌单元数据和 API Key。歌单曲目不写入备份，
+  /// 还原后会按平台重新获取最新曲目。
+  String exportJson({String? apiKey}) {
     return const JsonEncoder.withIndent('  ').convert({
       'format': exportFormat,
       'version': exportVersion,
       'exportedAt': DateTime.now().toUtc().toIso8601String(),
       'songs': _favorites.map((song) => song.toJson()).toList(),
+      'playlists': _favoritePlaylists
+          .map((playlist) => playlist.toJson())
+          .toList(),
+      'apiKey': apiKey,
     });
   }
 
@@ -224,7 +240,7 @@ class FavoriteService extends ChangeNotifier {
     FavoriteImportMode mode = FavoriteImportMode.merge,
   }) async {
     await load();
-    final decoded = _decodeSongs(raw);
+    final decoded = _decodeBackup(raw);
     var skipped = decoded.skipped;
     var added = 0;
 
@@ -245,18 +261,42 @@ class FavoriteService extends ChangeNotifier {
       }
     }
 
+    var playlistsAdded = 0;
+    if (decoded.hasPlaylists) {
+      if (mode == FavoriteImportMode.replace) {
+        _favoritePlaylists
+          ..clear()
+          ..addAll(decoded.playlists);
+        playlistsAdded = decoded.playlists.length;
+      } else {
+        final existing = _favoritePlaylists.map(playlistKeyOf).toSet();
+        for (final playlist in decoded.playlists) {
+          if (existing.add(playlistKeyOf(playlist))) {
+            _favoritePlaylists.add(playlist);
+            playlistsAdded++;
+          } else {
+            // 歌曲与歌单的重复计数分别统计，便于 UI 准确反馈。
+            decoded.playlistsSkipped++;
+          }
+        }
+      }
+    }
+
     notifyListeners();
     await _save();
+    if (decoded.hasPlaylists) await _savePlaylists();
     return FavoriteImportResult(
       added: added,
       skipped: skipped,
       total: decoded.songs.length + decoded.skipped,
+      playlistsAdded: playlistsAdded,
+      playlistsSkipped: decoded.playlistsSkipped,
+      apiKeyPresent: decoded.apiKeyPresent,
+      apiKey: decoded.apiKey,
     );
   }
 
-  static ({List<SongSearchResult> songs, int skipped}) _decodeSongs(
-    String raw,
-  ) {
+  static _DecodedBackup _decodeBackup(String raw) {
     final dynamic decoded;
     try {
       decoded = jsonDecode(raw);
@@ -265,6 +305,10 @@ class FavoriteService extends ChangeNotifier {
     }
 
     final List<dynamic> entries;
+    var hasPlaylists = false;
+    List<dynamic> playlistEntries = const [];
+    var apiKeyPresent = false;
+    String? apiKey;
     if (decoded is List) {
       entries = decoded;
     } else if (decoded is Map) {
@@ -277,6 +321,22 @@ class FavoriteService extends ChangeNotifier {
         throw const FormatException('备份文件缺少歌曲列表');
       }
       entries = songs;
+      if (decoded.containsKey('playlists')) {
+        final playlists = decoded['playlists'];
+        if (playlists is! List) {
+          throw const FormatException('备份文件中的歌单列表格式错误');
+        }
+        hasPlaylists = true;
+        playlistEntries = playlists;
+      }
+      if (decoded.containsKey('apiKey')) {
+        apiKeyPresent = true;
+        final rawApiKey = decoded['apiKey'];
+        if (rawApiKey != null && rawApiKey is! String) {
+          throw const FormatException('备份文件中的 API Key 格式错误');
+        }
+        apiKey = rawApiKey as String? ?? '';
+      }
     } else {
       throw const FormatException('备份文件格式不受支持');
     }
@@ -305,7 +365,36 @@ class FavoriteService extends ChangeNotifier {
         skipped++;
       }
     }
-    return (songs: songs, skipped: skipped);
+    final decodedPlaylists = <FavoritePlaylist>[];
+    final playlistSeen = <String>{};
+    var playlistsSkipped = 0;
+    for (final entry in playlistEntries) {
+      if (entry is! Map) {
+        playlistsSkipped++;
+        continue;
+      }
+      try {
+        final playlist = FavoritePlaylist.fromJson(
+          Map<String, dynamic>.from(entry),
+        );
+        if (playlistSeen.add(playlistKeyOf(playlist))) {
+          decodedPlaylists.add(playlist);
+        } else {
+          playlistsSkipped++;
+        }
+      } on FormatException {
+        playlistsSkipped++;
+      }
+    }
+    return _DecodedBackup(
+      songs: songs,
+      skipped: skipped,
+      playlists: decodedPlaylists,
+      playlistsSkipped: playlistsSkipped,
+      hasPlaylists: hasPlaylists,
+      apiKeyPresent: apiKeyPresent,
+      apiKey: apiKey,
+    );
   }
 
   static MusicPlatform? _platformFromCode(String? code) {
@@ -351,4 +440,24 @@ class FavoriteService extends ChangeNotifier {
       ),
     );
   }
+}
+
+class _DecodedBackup {
+  final List<SongSearchResult> songs;
+  final int skipped;
+  final List<FavoritePlaylist> playlists;
+  int playlistsSkipped;
+  final bool hasPlaylists;
+  final bool apiKeyPresent;
+  final String? apiKey;
+
+  _DecodedBackup({
+    required this.songs,
+    required this.skipped,
+    required this.playlists,
+    required this.playlistsSkipped,
+    required this.hasPlaylists,
+    required this.apiKeyPresent,
+    required this.apiKey,
+  });
 }
