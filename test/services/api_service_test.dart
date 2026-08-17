@@ -46,6 +46,76 @@ void main() {
     },
   );
 
+  test('fills Netease search covers from the official album schema', () async {
+    final requested = <Uri>[];
+
+    await http.runWithClient(
+      () async {
+        final api = ApiService(apiKey: '');
+        try {
+          final songs = await api.neteaseSearch('周杰伦');
+          expect(songs, hasLength(1));
+          expect(songs.single.id, '509781655');
+          expect(
+            songs.single.coverUrl,
+            'https://music.126.net/official-cover.jpg',
+          );
+        } finally {
+          api.close();
+        }
+      },
+      () => MockClient((request) async {
+        requested.add(request.url);
+        if (request.url.path == '/api/search/get/web') {
+          return _jsonResponse({
+            'code': 200,
+            'result': {
+              'songs': [
+                {
+                  'id': 509781655,
+                  'name': '想你就写信 (Live)',
+                  'artists': [
+                    {'name': '周杰伦'},
+                  ],
+                  'album': {'name': '演唱会'},
+                  'duration': 240000,
+                },
+              ],
+            },
+          });
+        }
+        if (request.url.path == '/api/song/detail') {
+          return _jsonResponse({
+            'code': 200,
+            'songs': [
+              {
+                'id': 509781655,
+                'name': '想你就写信 (Live)',
+                'artists': [
+                  {'name': '周杰伦'},
+                ],
+                'album': {
+                  'name': '演唱会',
+                  'picUrl': 'http://music.126.net/official-cover.jpg',
+                },
+              },
+            ],
+          });
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+
+    expect(requested.map((uri) => uri.path), [
+      '/api/search/get/web',
+      '/api/song/detail',
+    ]);
+    expect(
+      requested.every((uri) => uri.host == 'interface.music.163.com'),
+      isTrue,
+    );
+  });
+
   test('requests twenty-song Netease pages with an offset', () async {
     final requested = <Uri>[];
     await http.runWithClient(

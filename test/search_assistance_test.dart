@@ -4,11 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/providers/player_provider.dart';
 import 'package:music_player_app/providers/search_session.dart';
 import 'package:music_player_app/screens/search_screen.dart';
 import 'package:music_player_app/services/favorite_service.dart';
 import 'package:music_player_app/theme/app_theme.dart';
+import 'package:music_player_app/widgets/smart_cover.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -262,6 +264,50 @@ void main() {
         );
       },
     );
+
+    testWidgets(
+      'Netease official covers reach song rows at ${size.width.toInt()}x${size.height.toInt()}',
+      (tester) async {
+        await http.runWithClient(() async {
+          final player = PlayerProvider();
+          final session = SearchSession();
+          final favorites = FavoriteService();
+          try {
+            await _pumpSearch(
+              tester,
+              player: player,
+              session: session,
+              favorites: favorites,
+              size: size,
+            );
+
+            await session.search(
+              player.api,
+              '周杰伦',
+              preferredPlatform: MusicPlatform.netease,
+            );
+            await tester.pumpAndSettle();
+
+            expect(find.text('想你就写信 (Live)'), findsOneWidget);
+            final covers = tester
+                .widgetList<SmartCover>(find.byType(SmartCover))
+                .map((cover) => cover.url);
+            expect(
+              covers,
+              contains('https://music.126.net/official-cover.jpg'),
+            );
+            expect(tester.takeException(), isNull);
+          } finally {
+            await tester.pumpWidget(const SizedBox.shrink());
+            player.dispose();
+            session.dispose();
+            favorites.dispose();
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+          }
+        }, _neteaseCoverClient);
+      },
+    );
   }
 }
 
@@ -346,6 +392,57 @@ http.Client _searchClient(List<String> suggestionQueries) {
         },
       },
     });
+  });
+}
+
+http.Client _neteaseCoverClient() {
+  return MockClient((request) async {
+    if (request.url.host != 'interface.music.163.com') {
+      return _jsonResponse(<String, dynamic>{});
+    }
+    if (request.url.path == '/api/search/get/web') {
+      if (request.url.queryParameters['type'] == '1000') {
+        return _jsonResponse({
+          'code': 200,
+          'result': {'playlists': <Object>[]},
+        });
+      }
+      return _jsonResponse({
+        'code': 200,
+        'result': {
+          'songs': [
+            {
+              'id': 509781655,
+              'name': '想你就写信 (Live)',
+              'artists': [
+                {'name': '周杰伦'},
+              ],
+              'album': {'name': '演唱会'},
+              'duration': 240000,
+            },
+          ],
+        },
+      });
+    }
+    if (request.url.path == '/api/song/detail') {
+      return _jsonResponse({
+        'code': 200,
+        'songs': [
+          {
+            'id': 509781655,
+            'name': '想你就写信 (Live)',
+            'artists': [
+              {'name': '周杰伦'},
+            ],
+            'album': {
+              'name': '演唱会',
+              'picUrl': 'http://music.126.net/official-cover.jpg',
+            },
+          },
+        ],
+      });
+    }
+    return http.Response('not found', 404);
   });
 }
 

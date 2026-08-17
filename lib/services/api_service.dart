@@ -747,7 +747,7 @@ class ApiService {
       final details = await _neteaseSongDetails(missing.map((song) => song.id));
       for (final d in details) {
         final id = d['id']?.toString();
-        final picUrl = CoverHelper.normalize(d['al']?['picUrl']?.toString());
+        final picUrl = SongSearchResult.fromNetease(d).coverUrl;
         if (id == null || picUrl == null) continue;
         final idx = songs.indexWhere((s) => s.id == id);
         if (idx >= 0) {
