@@ -10,6 +10,7 @@ import '../services/favorite_service.dart';
 import '../services/floating_capsule_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
+import '../theme/lyric_style.dart';
 import 'backup_restore_screen.dart';
 import 'cache_list_screen.dart';
 import 'favorites_screen.dart';
@@ -30,6 +31,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _versionCode = '';
   String _cacheSizeText = '';
   int _cacheCount = 0;
+  LyricFontFamilyPreset _lyricFontFamily = LyricFontFamilyPreset.system;
+  LyricFontWeightPreset _lyricFontWeight = LyricFontWeightPreset.medium;
 
   @override
   void initState() {
@@ -43,6 +46,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
     _loadVersion();
     _loadCacheInfo();
+    _loadLyricStyleSettings();
   }
 
   Future<void> _loadVersion() async {
@@ -68,6 +72,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _cacheSizeText = AudioCacheService.formatSize(results[0]);
         _cacheCount = results[1];
       });
+    } catch (_) {}
+  }
+
+  Future<void> _loadLyricStyleSettings() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final family = LyricFontFamilyPreset.fromValue(
+        prefs.getString(LyricStylePreferences.fontFamilyKey),
+      );
+      final rawWeight = prefs.get(LyricStylePreferences.fontWeightKey);
+      final weight = LyricFontWeightPreset.fromValue(
+        rawWeight is num ? rawWeight.toInt() : null,
+      );
+      if (!mounted) return;
+      setState(() {
+        _lyricFontFamily = family;
+        _lyricFontWeight = weight;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _setLyricFontFamily(LyricFontFamilyPreset family) async {
+    if (_lyricFontFamily != family && mounted) {
+      setState(() => _lyricFontFamily = family);
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(LyricStylePreferences.fontFamilyKey, family.value);
+    } catch (_) {}
+  }
+
+  Future<void> _setLyricFontWeight(LyricFontWeightPreset weight) async {
+    if (_lyricFontWeight != weight && mounted) {
+      setState(() => _lyricFontWeight = weight);
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(LyricStylePreferences.fontWeightKey, weight.value);
     } catch (_) {}
   }
 
@@ -163,6 +205,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       children: [
         _buildPageTitle(),
         _buildAppearanceCard(),
+        _buildLyricsCard(),
         _buildLibraryCard(),
         _buildPlaybackCard(),
         _buildApiCard(),
@@ -196,6 +239,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       child: Column(
                         children: [
                           _buildAppearanceCard(compact: compact),
+                          _buildLyricsCard(compact: compact),
                           _buildLibraryCard(compact: compact),
                           _buildPlaybackCard(compact: compact),
                         ],
@@ -432,6 +476,183 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ],
     );
+  }
+
+  Widget _buildLyricsCard({bool compact = false}) {
+    final layout = AppLayout.fromContext(context);
+    return _buildCard(
+      compact: compact,
+      children: [
+        _buildSectionHeader(icon: Icons.lyrics_outlined, title: '歌词显示'),
+        ListTile(
+          key: const ValueKey('lyric-font-family-setting'),
+          dense: compact,
+          leading: const Icon(Icons.text_fields_rounded),
+          title: const Text(
+            '字体样式',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          subtitle: Text(
+            '${_lyricFontFamily.label} · ${_lyricFontFamily.description}',
+            maxLines: compact ? 1 : 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: _showLyricFontFamilyPicker,
+        ),
+        const Divider(height: 1),
+        ListTile(
+          key: const ValueKey('lyric-font-weight-setting'),
+          dense: compact,
+          leading: const Icon(Icons.format_bold_rounded),
+          title: const Text(
+            '字体粗细',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          subtitle: Text('${_lyricFontWeight.label} · 当前歌词会自动加粗'),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: _showLyricFontWeightPicker,
+        ),
+        Padding(
+          padding: EdgeInsets.fromLTRB(
+            compact ? 12 : 16,
+            compact ? 8 : 12,
+            compact ? 12 : 16,
+            compact ? 12 : 16,
+          ),
+          child: Container(
+            key: const ValueKey('lyric-font-preview'),
+            width: double.infinity,
+            padding: EdgeInsets.symmetric(
+              horizontal: compact ? 12 : 16,
+              vertical: compact ? 10 : 14,
+            ),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceSoft,
+              borderRadius: BorderRadius.circular(AppRadius.control),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '字体预览',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: layout.secondarySize,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '让音乐陪你一路前行',
+                  key: const ValueKey('lyric-font-preview-text'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: compact ? 18 : layout.sectionTitleSize,
+                    fontWeight: _lyricFontWeight.weight,
+                    fontFamily: _lyricFontFamily.fontFamily,
+                    fontFamilyFallback: _lyricFontFamily.fontFamilyFallback,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '字号与上下间距仍可在播放页的字体按钮中调节',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: layout.secondarySize,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _showLyricFontFamilyPicker() async {
+    final selected = await showDialog<LyricFontFamilyPreset>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        key: const ValueKey('lyric-font-family-dialog'),
+        title: const Text('选择歌词字体'),
+        children: LyricFontFamilyPreset.values.map((preset) {
+          final selected = preset == _lyricFontFamily;
+          return SimpleDialogOption(
+            key: ValueKey('lyric-font-family-${preset.value}'),
+            onPressed: () => Navigator.pop(dialogContext, preset),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 9),
+            child: Row(
+              children: [
+                Icon(
+                  selected ? Icons.check_circle_rounded : Icons.circle_outlined,
+                  color: selected ? AppColors.primary : AppColors.textSecondary,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    '${preset.label}　春风又绿江南岸',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontFamily: preset.fontFamily,
+                      fontFamilyFallback: preset.fontFamilyFallback,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
+    if (selected != null) await _setLyricFontFamily(selected);
+  }
+
+  Future<void> _showLyricFontWeightPicker() async {
+    final selected = await showDialog<LyricFontWeightPreset>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        key: const ValueKey('lyric-font-weight-dialog'),
+        title: const Text('选择字体粗细'),
+        children: LyricFontWeightPreset.values.map((preset) {
+          final selected = preset == _lyricFontWeight;
+          return SimpleDialogOption(
+            key: ValueKey('lyric-font-weight-${preset.value}'),
+            onPressed: () => Navigator.pop(dialogContext, preset),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 9),
+            child: Row(
+              children: [
+                Icon(
+                  selected ? Icons.check_circle_rounded : Icons.circle_outlined,
+                  color: selected ? AppColors.primary : AppColors.textSecondary,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    '${preset.label}　让音乐陪你一路前行',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontWeight: preset.weight,
+                      fontFamily: _lyricFontFamily.fontFamily,
+                      fontFamilyFallback: _lyricFontFamily.fontFamilyFallback,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
+    if (selected != null) await _setLyricFontWeight(selected);
   }
 
   Widget _buildPlaybackCard({bool compact = false}) {

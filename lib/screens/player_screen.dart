@@ -12,6 +12,7 @@ import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
+import '../theme/lyric_style.dart';
 import '../utils/color_extractor.dart';
 import '../utils/system_ui.dart';
 import '../widgets/cover_hero_tags.dart';
@@ -469,6 +470,8 @@ class _AnimatedLyricLineText extends StatelessWidget {
   final Color playedColor;
   final Color unplayedColor;
   final Color inactiveColor;
+  final LyricFontFamilyPreset fontFamily;
+  final LyricFontWeightPreset fontWeight;
 
   const _AnimatedLyricLineText({
     required this.index,
@@ -480,6 +483,8 @@ class _AnimatedLyricLineText extends StatelessWidget {
     required this.playedColor,
     required this.unplayedColor,
     required this.inactiveColor,
+    required this.fontFamily,
+    required this.fontWeight,
   });
 
   @override
@@ -487,7 +492,9 @@ class _AnimatedLyricLineText extends StatelessWidget {
     final style = TextStyle(
       color: isCurrent ? unplayedColor : inactiveColor,
       fontSize: isCurrent ? currentFontSize : inactiveFontSize,
-      fontWeight: isCurrent ? FontWeight.w800 : FontWeight.w500,
+      fontWeight: isCurrent ? fontWeight.currentLineWeight : fontWeight.weight,
+      fontFamily: fontFamily.fontFamily,
+      fontFamilyFallback: fontFamily.fontFamilyFallback,
       height: 1.18,
     );
     return AnimatedDefaultTextStyle(
@@ -610,8 +617,6 @@ class _KaraokeProgressText extends StatelessWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
-  static const _lyricFontSizePreferenceKey = 'lyric_font_size';
-  static const _lyricLineSpacingPreferenceKey = 'lyric_line_spacing';
   static const _landscapeSplitRatioPreferenceKey =
       'player_landscape_split_ratio';
   static const _lyricFontSizes = <double>[32, 36, 42, 48, 54, 60];
@@ -627,6 +632,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _lyricLineSpacingChangedByUser = false;
   double _lyricFontSize = 42;
   double _lyricLineSpacing = 44;
+  LyricFontFamilyPreset _lyricFontFamily = LyricFontFamilyPreset.system;
+  LyricFontWeightPreset _lyricFontWeight = LyricFontWeightPreset.medium;
   double _lyricLineExtent = 86;
   double _landscapeLeftRatio = _defaultLandscapeLeftRatio;
   bool _landscapeSplitChangedByUser = false;
@@ -651,15 +658,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Future<void> _loadLyricDisplaySettings() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final rawValue = prefs.get(_lyricFontSizePreferenceKey);
+      final rawValue = prefs.get(LyricStylePreferences.fontSizeKey);
       final rawSize = rawValue is num ? rawValue.toDouble() : null;
-      final rawSpacingValue = prefs.get(_lyricLineSpacingPreferenceKey);
+      final rawSpacingValue = prefs.get(LyricStylePreferences.lineSpacingKey);
       final savedSpacing = rawSpacingValue is num
           ? rawSpacingValue.toDouble().clamp(
               _minimumLyricLineSpacing,
               _maximumLyricLineSpacing,
             )
           : null;
+      final savedFontFamily = LyricFontFamilyPreset.fromValue(
+        prefs.getString(LyricStylePreferences.fontFamilyKey),
+      );
+      final rawFontWeight = prefs.get(LyricStylePreferences.fontWeightKey);
+      final savedFontWeight = LyricFontWeightPreset.fromValue(
+        rawFontWeight is num ? rawFontWeight.toInt() : null,
+      );
       // 旧版本的 24/28 档在大屏上过小，平滑迁移到新的最小档 32。
       final savedSize = rawSize != null && rawSize < 32 ? 32.0 : rawSize;
       if (!mounted) return;
@@ -675,6 +689,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
           layoutChanged = layoutChanged || _lyricLineSpacing != savedSpacing;
           _lyricLineSpacing = savedSpacing;
         }
+        layoutChanged =
+            layoutChanged ||
+            _lyricFontFamily != savedFontFamily ||
+            _lyricFontWeight != savedFontWeight;
+        _lyricFontFamily = savedFontFamily;
+        _lyricFontWeight = savedFontWeight;
         if (layoutChanged) {
           _lastAutoScrollLyricIndex = null;
           _forceLyricRecenter = true;
@@ -699,7 +719,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Future<void> _saveLyricFontSize(double size) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setDouble(_lyricFontSizePreferenceKey, size);
+      await prefs.setDouble(LyricStylePreferences.fontSizeKey, size);
     } catch (_) {}
   }
 
@@ -726,7 +746,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Future<void> _saveLyricLineSpacing(double spacing) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setDouble(_lyricLineSpacingPreferenceKey, spacing);
+      await prefs.setDouble(LyricStylePreferences.lineSpacingKey, spacing);
     } catch (_) {}
   }
 
@@ -2010,6 +2030,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         inactiveColor: textColor.withValues(
                           alpha: i < player.currentLyricIndex ? 0.62 : 0.48,
                         ),
+                        fontFamily: _lyricFontFamily,
+                        fontWeight: _lyricFontWeight,
                       ),
                     ),
                   ),

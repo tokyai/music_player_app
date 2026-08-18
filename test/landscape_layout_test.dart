@@ -21,6 +21,7 @@ import 'package:music_player_app/services/favorite_service.dart';
 import 'package:music_player_app/theme/app_layout.dart';
 import 'package:music_player_app/theme/app_motion.dart';
 import 'package:music_player_app/theme/app_theme.dart';
+import 'package:music_player_app/theme/lyric_style.dart';
 import 'package:music_player_app/utils/lyric_parser.dart';
 import 'package:music_player_app/widgets/mini_player.dart';
 import 'package:provider/provider.dart';
@@ -1575,6 +1576,117 @@ void main() {
       expect(prefs.getString('playback_source_netease'), 'qing_music');
       expect(prefs.getString('playback_source_kugou'), isNull);
       expect(prefs.getString('video_player_mode'), 'mpv');
+      _expectNoException(tester);
+    }, _mockClient);
+  });
+
+  testWidgets('lyric font family and weight persist in both landscapes', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      SharedPreferences.setMockInitialValues({
+        LyricStylePreferences.fontFamilyKey: 'songti',
+        LyricStylePreferences.fontWeightKey: 400,
+      });
+      final player = _PlayerWithLyrics();
+      final theme = ThemeController();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        player.dispose();
+        theme.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      await _pumpScreen(
+        tester,
+        const SettingsScreen(),
+        player,
+        theme,
+        const Size(640, 360),
+      );
+      final familySetting = find.byKey(
+        const ValueKey('lyric-font-family-setting'),
+      );
+      await tester.ensureVisible(familySetting);
+      await tester.pumpAndSettle();
+      expect(familySetting.hitTestable(), findsOneWidget);
+      expect(find.textContaining('宋体 ·'), findsOneWidget);
+      var preview = tester.widget<Text>(
+        find.byKey(const ValueKey('lyric-font-preview-text')),
+      );
+      expect(preview.style?.fontFamily, 'serif');
+      expect(preview.style?.fontWeight, FontWeight.w400);
+
+      await tester.tap(familySetting);
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('lyric-font-family-dialog')),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const ValueKey('lyric-font-family-kaiti')));
+      await tester.pumpAndSettle();
+
+      final weightSetting = find.byKey(
+        const ValueKey('lyric-font-weight-setting'),
+      );
+      await tester.ensureVisible(weightSetting);
+      await tester.pumpAndSettle();
+      expect(weightSetting.hitTestable(), findsOneWidget);
+      await tester.tap(weightSetting);
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('lyric-font-weight-dialog')),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const ValueKey('lyric-font-weight-700')));
+      await tester.pumpAndSettle();
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString(LyricStylePreferences.fontFamilyKey), 'kaiti');
+      expect(prefs.getInt(LyricStylePreferences.fontWeightKey), 700);
+      preview = tester.widget<Text>(
+        find.byKey(const ValueKey('lyric-font-preview-text')),
+      );
+      expect(preview.style?.fontFamily, 'KaiTi');
+      expect(preview.style?.fontWeight, FontWeight.w700);
+      _expectNoException(tester);
+
+      await _pumpScreen(
+        tester,
+        const SettingsScreen(),
+        player,
+        theme,
+        const Size(1280, 800),
+      );
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('lyric-font-preview')),
+      );
+      await tester.pumpAndSettle();
+      preview = tester.widget<Text>(
+        find.byKey(const ValueKey('lyric-font-preview-text')),
+      );
+      expect(preview.style?.fontFamily, 'KaiTi');
+      expect(preview.style?.fontWeight, FontWeight.w700);
+      _expectNoException(tester);
+
+      await _pumpScreen(
+        tester,
+        const PlayerScreen(),
+        player,
+        theme,
+        const Size(1280, 800),
+      );
+      final currentLyric = tester.widget<Text>(
+        find.byKey(const ValueKey('lyric-text-0')),
+      );
+      final inactiveLyric = tester.widget<Text>(
+        find.byKey(const ValueKey('lyric-text-1')),
+      );
+      expect(currentLyric.style?.fontFamily, 'KaiTi');
+      expect(currentLyric.style?.fontWeight, FontWeight.w900);
+      expect(inactiveLyric.style?.fontFamily, 'KaiTi');
+      expect(inactiveLyric.style?.fontWeight, FontWeight.w700);
       _expectNoException(tester);
     }, _mockClient);
   });
