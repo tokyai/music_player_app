@@ -1033,9 +1033,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
       );
       if (!context.mounted || selected == null) return;
       setState(() => _lyricsAutoScroll = true);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('已使用《$selected》的歌词')));
+      final isLandscape =
+          MediaQuery.orientationOf(context) == Orientation.landscape;
+      final snackBarBottomMargin = isLandscape
+          // Use the largest footer so a snackbar created in compact mode
+          // remains clear after the window expands.
+          ? 130.0
+          : null;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已使用《$selected》的歌词'),
+          margin: isLandscape
+              ? EdgeInsets.fromLTRB(16, 16, 16, snackBarBottomMargin!)
+              : null,
+        ),
+      );
     } finally {
       _lyricSearchDialogOpen = false;
     }
@@ -1439,6 +1451,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
             child: LayoutBuilder(
               builder: (context, constraints) {
                 final compact = layout.isCompactLandscape;
+                final footerMetrics = _landscapeFooterMetrics(layout);
+                final footerBottomPadding = footerMetrics.bottomPadding;
+                final footerHeight = footerMetrics.height;
                 final dividerWidth = largeUi ? 30.0 : (compact ? 20.0 : 24.0);
                 final panesWidth = (constraints.maxWidth - dividerWidth).clamp(
                   1.0,
@@ -1488,6 +1503,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           baseColor,
                           textColor,
                           subTextColor,
+                          footerHeight: footerHeight,
+                          footerBottomPadding: footerBottomPadding,
                         ),
                       ),
                     ),
@@ -1503,7 +1520,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     Expanded(
                       child: KeyedSubtree(
                         key: const ValueKey('landscape-player-lyrics'),
-                        child: _buildLandscapeLyrics(ctx, player, textColor),
+                        child: _buildLandscapeLyrics(
+                          ctx,
+                          player,
+                          textColor,
+                          footerHeight: footerHeight,
+                          footerBottomPadding: footerBottomPadding,
+                        ),
                       ),
                     ),
                   ],
@@ -1513,6 +1536,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  ({double height, double bottomPadding}) _landscapeFooterMetrics(
+    AppLayout layout,
+  ) {
+    final buttonHeight = layout.usesLargeTypography
+        ? 54.0
+        : layout.isCompactLandscape
+        ? 42.0
+        : 50.0;
+    final bottomPadding = layout.usesLargeTypography
+        ? 50.0
+        : layout.isCompactLandscape
+        ? 0.0
+        : 32.0;
+    return (
+      height: 2.0 + buttonHeight + bottomPadding,
+      bottomPadding: bottomPadding,
     );
   }
 
@@ -1566,15 +1608,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
     PlayQueueItem song,
     Color baseColor,
     Color textColor,
-    Color subTextColor,
-  ) {
+    Color subTextColor, {
+    required double footerHeight,
+    required double footerBottomPadding,
+  }) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final layout = AppLayout.fromContext(context);
         final largeUi = layout.usesLargeTypography;
         final compactHeight = constraints.maxHeight < 420 && !largeUi;
+        final shortCarUi =
+            layout.isHighDensityCarDisplay && constraints.maxHeight < 500;
         final widthLimit = constraints.maxWidth - (compactHeight ? 28 : 40);
-        final largeHeightFactor = layout.isHighDensityCarDisplay ? 0.27 : 0.44;
+        final largeHeightFactor = shortCarUi
+            ? 0.18
+            : layout.isHighDensityCarDisplay
+            ? 0.27
+            : 0.44;
         final heightLimit =
             constraints.maxHeight *
             (largeUi ? largeHeightFactor : (compactHeight ? 0.24 : 0.54));
@@ -1582,55 +1632,80 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ? widthLimit
             : heightLimit;
         final coverSize = rawCoverSize.clamp(
-          layout.isHighDensityCarDisplay
+          shortCarUi
+              ? 80.0
+              : layout.isHighDensityCarDisplay
               ? 128.0
               : (compactHeight ? 72.0 : 160.0),
           largeUi ? 400.0 : 320.0,
         );
         final verticalPadding = largeUi ? 6.0 : (compactHeight ? 4.0 : 10.0);
 
-        return SingleChildScrollView(
-          padding: EdgeInsets.symmetric(vertical: verticalPadding),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              minHeight: constraints.maxHeight - verticalPadding * 2,
+        return Column(
+          children: [
+            Expanded(
+              key: const ValueKey('landscape-player-left-content-frame'),
+              child: SingleChildScrollView(
+                padding: EdgeInsets.symmetric(vertical: verticalPadding),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minHeight:
+                        constraints.maxHeight -
+                        footerHeight -
+                        verticalPadding * 2,
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _buildLandscapeCoverArt(song, baseColor, coverSize),
+                      SizedBox(
+                        height: shortCarUi
+                            ? 4
+                            : largeUi
+                            ? 8
+                            : (compactHeight ? 5 : 14),
+                      ),
+                      _buildLandscapeSongInfo(
+                        ctx,
+                        player,
+                        song,
+                        textColor,
+                        subTextColor,
+                      ),
+                      _buildProgressBar(
+                        ctx,
+                        player,
+                        textColor,
+                        subTextColor,
+                        compact: true,
+                      ),
+                      _buildControls(
+                        ctx,
+                        player,
+                        textColor,
+                        compact: true,
+                        landscape: true,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _buildLandscapeCoverArt(song, baseColor, coverSize),
-                SizedBox(height: largeUi ? 8 : (compactHeight ? 5 : 14)),
-                _buildLandscapeSongInfo(
+            SizedBox(
+              key: const ValueKey('landscape-player-left-footer-frame'),
+              height: footerHeight,
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(0, 2, 0, footerBottomPadding),
+                child: _buildBottomActions(
                   ctx,
                   player,
-                  song,
-                  textColor,
                   subTextColor,
-                ),
-                _buildProgressBar(
-                  ctx,
-                  player,
-                  textColor,
-                  subTextColor,
-                  compact: true,
-                ),
-                _buildControls(
-                  ctx,
-                  player,
-                  textColor,
-                  compact: true,
+                  compact: layout.isCompactLandscape,
                   landscape: true,
                 ),
-                _buildBottomActions(
-                  ctx,
-                  player,
-                  subTextColor,
-                  compact: true,
-                  landscape: true,
-                ),
-              ],
+              ),
             ),
-          ),
+          ],
         );
       },
     );
@@ -1773,16 +1848,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget _buildLandscapeLyrics(
     BuildContext ctx,
     PlayerProvider player,
-    Color textColor,
-  ) {
-    return Selector<PlayerProvider, (int, int, bool, Duration, String?)>(
+    Color textColor, {
+    required double footerHeight,
+    required double footerBottomPadding,
+  }) {
+    return Selector<
+      PlayerProvider,
+      (int, int, bool, Duration, Duration, String?)
+    >(
       selector: (_, p) {
         final song = p.currentSong;
         return (
           p.lyrics.length,
           p.currentLyricIndex,
           p.lyricsLoading,
-          p.position,
+          p.lyricPosition,
+          p.lyricOffset,
           _lyricTargetKey(song),
         );
       },
@@ -1798,6 +1879,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
           textColor,
           landscape: true,
           toggleOnTap: false,
+          landscapeFooterHeight: footerHeight,
+          landscapeFooterBottomPadding: footerBottomPadding,
         );
       },
     );
@@ -1809,17 +1892,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
     Color textColor, {
     required bool landscape,
     bool toggleOnTap = true,
+    double? landscapeFooterHeight,
+    double? landscapeFooterBottomPadding,
   }) {
+    assert(
+      !landscape ||
+          (landscapeFooterHeight != null &&
+              landscapeFooterBottomPadding != null),
+    );
     final song = player.currentSong;
-    if (song?.platform == MusicPlatform.bilibili && player.lyrics.isEmpty) {
-      return _buildBilibiliInfoPane(
-        ctx,
-        player,
-        song!,
-        textColor,
-        landscape: landscape,
-      );
-    }
+    final showBilibiliInfo =
+        song?.platform == MusicPlatform.bilibili && player.lyrics.isEmpty;
     final lyricStateKey = player.lyrics.isNotEmpty
         ? 'content'
         : player.lyricsLoading
@@ -1827,41 +1910,195 @@ class _PlayerScreenState extends State<PlayerScreen> {
         : 'empty';
     return RepaintBoundary(
       key: const ValueKey('player-lyric-repaint-boundary'),
-      child: Stack(
+      child: Column(
         children: [
-          Positioned.fill(
-            child: AppMotionSwitcher(
-              child: KeyedSubtree(
-                key: ValueKey('player-lyrics-$lyricStateKey'),
-                child: _buildLyricView(
-                  ctx,
-                  player,
-                  textColor,
-                  landscape: landscape,
-                  toggleOnTap: toggleOnTap,
-                ),
-              ),
-            ),
+          Expanded(
+            key: landscape
+                ? const ValueKey('landscape-player-right-content-frame')
+                : null,
+            child: showBilibiliInfo
+                ? _buildBilibiliInfoPane(
+                    ctx,
+                    player,
+                    song!,
+                    textColor,
+                    landscape: landscape,
+                  )
+                : AppMotionSwitcher(
+                    child: KeyedSubtree(
+                      key: ValueKey('player-lyrics-$lyricStateKey'),
+                      child: _buildLyricView(
+                        ctx,
+                        player,
+                        textColor,
+                        landscape: landscape,
+                        toggleOnTap: toggleOnTap,
+                      ),
+                    ),
+                  ),
           ),
           if (song != null)
-            Positioned(
-              top: landscape ? 0 : 6,
-              right: landscape ? 0 : 8,
-              child: IconButton(
-                key: const ValueKey('player-lyric-search-action'),
-                tooltip: '查找歌词',
-                onPressed: () => _openLyricSearch(ctx, player, song),
-                icon: Icon(Icons.manage_search_rounded, color: textColor),
-                iconSize: landscape ? 30 : 28,
-                style: IconButton.styleFrom(
-                  minimumSize: Size.square(landscape ? 48 : 44),
-                  backgroundColor: Colors.black.withValues(alpha: 0.12),
+            if (landscape)
+              SizedBox(
+                key: const ValueKey('landscape-player-right-footer-frame'),
+                height: landscapeFooterHeight!,
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    0,
+                    2,
+                    0,
+                    landscapeFooterBottomPadding!,
+                  ),
+                  child: _buildLyricBottomToolbar(
+                    ctx,
+                    player,
+                    song,
+                    textColor,
+                    landscape: true,
+                    showOffsetControls: player.lyrics.isNotEmpty,
+                    searchKey: showBilibiliInfo
+                        ? const ValueKey('bilibili-lyric-search-action')
+                        : const ValueKey('player-lyric-search-action'),
+                  ),
                 ),
+              )
+            else
+              _buildLyricBottomToolbar(
+                ctx,
+                player,
+                song,
+                textColor,
+                landscape: false,
+                showOffsetControls: player.lyrics.isNotEmpty,
+                searchKey: showBilibiliInfo
+                    ? const ValueKey('bilibili-lyric-search-action')
+                    : const ValueKey('player-lyric-search-action'),
               ),
-            ),
         ],
       ),
     );
+  }
+
+  Widget _buildLyricBottomToolbar(
+    BuildContext ctx,
+    PlayerProvider player,
+    PlayQueueItem song,
+    Color textColor, {
+    required bool landscape,
+    required bool showOffsetControls,
+    required Key searchKey,
+  }) {
+    final layout = AppLayout.fromContext(ctx);
+    final compact = landscape && layout.isCompactLandscape;
+    final offset = player.lyricOffset;
+    final step = player.lyricOffsetStep;
+    final stepLabel = _formatDurationSeconds(step);
+    final limit = PlayerProvider.lyricOffsetLimit.inMilliseconds;
+    final canMoveEarlier = offset.inMilliseconds > -limit;
+    final canMoveLater = offset.inMilliseconds < limit;
+    final offsetLabel = compact
+        ? _formatCompactLyricOffset(offset)
+        : _formatLyricOffset(offset);
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        landscape ? 0 : 8,
+        landscape ? 0 : 2,
+        landscape ? 0 : 8,
+        landscape ? 0 : 6,
+      ),
+      child: Row(
+        key: const ValueKey('player-lyric-bottom-toolbar'),
+        children: [
+          if (!showOffsetControls) const Spacer(),
+          Expanded(
+            child: _playerActionButton(
+              key: searchKey,
+              context: ctx,
+              compact: compact,
+              onPressed: () => _openLyricSearch(ctx, player, song),
+              icon: Icons.manage_search_rounded,
+              label: '查找',
+              tooltip: '查找歌词',
+              color: textColor,
+            ),
+          ),
+          if (showOffsetControls) ...[
+            Expanded(
+              child: _playerActionButton(
+                key: const ValueKey('player-lyric-offset-earlier'),
+                context: ctx,
+                compact: compact,
+                onPressed: canMoveEarlier
+                    ? () => player.adjustLyricOffset(-step)
+                    : null,
+                icon: Icons.keyboard_double_arrow_left_rounded,
+                label: compact ? '-${stepLabel}s' : '提前 ${stepLabel}s',
+                tooltip: '歌词提前 $stepLabel 秒',
+                color: canMoveEarlier
+                    ? textColor
+                    : textColor.withValues(alpha: 0.38),
+              ),
+            ),
+            Expanded(
+              child: _playerActionButton(
+                key: const ValueKey('player-lyric-offset-reset'),
+                context: ctx,
+                compact: compact,
+                onPressed: offset == Duration.zero
+                    ? null
+                    : player.resetLyricOffset,
+                icon: offset == Duration.zero
+                    ? Icons.sync_rounded
+                    : Icons.restart_alt_rounded,
+                label: offsetLabel,
+                labelKey: const ValueKey('player-lyric-offset-value'),
+                tooltip: offset == Duration.zero ? '歌词当前已同步' : '重置歌词时延',
+                color: offset == Duration.zero ? textColor : AppColors.primary,
+              ),
+            ),
+            Expanded(
+              child: _playerActionButton(
+                key: const ValueKey('player-lyric-offset-later'),
+                context: ctx,
+                compact: compact,
+                onPressed: canMoveLater
+                    ? () => player.adjustLyricOffset(step)
+                    : null,
+                icon: Icons.keyboard_double_arrow_right_rounded,
+                label: compact ? '+${stepLabel}s' : '延后 ${stepLabel}s',
+                tooltip: '歌词延后 $stepLabel 秒',
+                color: canMoveLater
+                    ? textColor
+                    : textColor.withValues(alpha: 0.38),
+              ),
+            ),
+          ] else
+            const Spacer(),
+        ],
+      ),
+    );
+  }
+
+  String _formatLyricOffset(Duration offset) {
+    if (offset == Duration.zero) return '同步';
+    final seconds = _formatDurationSeconds(offset.abs());
+    return offset.isNegative ? '提前 ${seconds}s' : '延后 ${seconds}s';
+  }
+
+  String _formatCompactLyricOffset(Duration offset) {
+    if (offset == Duration.zero) return '同步';
+    final seconds = offset.inMilliseconds.abs() / 1000;
+    final value = seconds == seconds.roundToDouble()
+        ? seconds.toStringAsFixed(0)
+        : seconds.toStringAsFixed(1);
+    return '${offset.isNegative ? '-' : '+'}${value}s';
+  }
+
+  String _formatDurationSeconds(Duration duration) {
+    final milliseconds = duration.inMilliseconds;
+    return milliseconds % 1000 == 0
+        ? '${milliseconds ~/ 1000}'
+        : (milliseconds / 1000).toStringAsFixed(1);
   }
 
   Widget _buildBilibiliInfoPane(
@@ -1898,25 +2135,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    '视频信息',
-                    style: TextStyle(
-                      color: textColor,
-                      fontSize: landscape ? 22 : 20,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  key: const ValueKey('bilibili-lyric-search-action'),
-                  tooltip: '查找歌词',
-                  onPressed: () => _openLyricSearch(ctx, player, song),
-                  icon: Icon(Icons.manage_search_rounded, color: textColor),
-                ),
-              ],
+            Text(
+              '视频信息',
+              style: TextStyle(
+                color: textColor,
+                fontSize: landscape ? 22 : 20,
+                fontWeight: FontWeight.w700,
+              ),
             ),
             const SizedBox(height: 8),
             Text(
@@ -2195,7 +2420,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     Color textColor, {
     bool landscape = false,
   }) {
-    return Selector<PlayerProvider, (bool, int, int, bool, Duration, String?)>(
+    return Selector<
+      PlayerProvider,
+      (bool, int, int, bool, Duration, Duration, String?)
+    >(
       selector: (_, p) {
         final song = p.currentSong;
         return (
@@ -2203,7 +2431,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
           p.currentLyricIndex,
           p.lyrics.length,
           p.lyricsLoading,
-          p.showLyric ? p.position : Duration.zero,
+          p.showLyric ? p.lyricPosition : Duration.zero,
+          p.showLyric ? p.lyricOffset : Duration.zero,
           _lyricTargetKey(song),
         );
       },
@@ -2444,7 +2673,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   ? player.duration
                   : null;
               final progress = isCurrent
-                  ? lyric.progressAt(player.position, fallbackEnd: fallbackEnd)
+                  ? lyric.progressAt(
+                      player.lyricPosition,
+                      fallbackEnd: fallbackEnd,
+                    )
                   : 0.0;
               final inactiveFontSize = (_lyricFontSize * 0.82).clamp(
                 20.0,
@@ -2452,7 +2684,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
               );
               return GestureDetector(
                 onTap: () {
-                  player.seekTo(lyric.time);
+                  final adjustedPosition = lyric.time + player.lyricOffset;
+                  final seekPosition = adjustedPosition.isNegative
+                      ? Duration.zero
+                      : player.duration > Duration.zero &&
+                            adjustedPosition > player.duration
+                      ? player.duration
+                      : adjustedPosition;
+                  player.seekTo(seekPosition);
                   setState(() {
                     _lyricsAutoScroll = true;
                     _lastAutoScrollLyricIndex = null;
@@ -2823,7 +3062,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         final showLyric = lyricState.$1;
         final hasLyrics = lyricState.$2;
         return Padding(
-          padding: EdgeInsets.only(bottom: compact ? 0 : 12),
+          padding: EdgeInsets.only(bottom: landscape || compact ? 0 : 12),
           child: Row(
             children: [
               if (!landscape)
@@ -2913,35 +3152,42 @@ class _PlayerScreenState extends State<PlayerScreen> {
     required VoidCallback? onPressed,
     required IconData icon,
     required String label,
+    Key? labelKey,
+    String? tooltip,
     required Color color,
     Object? animationKey,
   }) {
     final layout = AppLayout.fromContext(context);
     final largeUi = layout.usesLargeTypography;
-    final height = largeUi ? 54.0 : (compact ? 36.0 : 50.0);
+    final height = largeUi ? 54.0 : (compact ? 42.0 : 50.0);
     final iconSize = largeUi ? 24.0 : (compact ? 18.0 : 22.0);
     final fontSize = largeUi ? 16.0 : (compact ? 13.0 : 16.0);
     return Tooltip(
       key: key,
-      message: label == '队列' ? '播放队列' : label,
-      child: TextButton.icon(
-        onPressed: onPressed,
-        style: TextButton.styleFrom(
-          padding: EdgeInsets.symmetric(horizontal: largeUi ? 4 : 2),
-          minimumSize: Size(0, height),
-          tapTargetSize: MaterialTapTargetSize.padded,
-        ),
-        icon: animationKey == null
-            ? Icon(icon, color: color, size: iconSize)
-            : AppAnimatedIcon(
-                stateKey: animationKey,
-                child: Icon(icon, color: color, size: iconSize),
-              ),
-        label: Text(
-          label,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(color: color, fontSize: fontSize),
+      message: tooltip ?? (label == '队列' ? '播放队列' : label),
+      child: SizedBox(
+        height: height,
+        child: TextButton.icon(
+          onPressed: onPressed,
+          style: TextButton.styleFrom(
+            padding: EdgeInsets.symmetric(horizontal: largeUi ? 4 : 2),
+            minimumSize: Size(0, height),
+            maximumSize: Size(double.infinity, height),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          icon: animationKey == null
+              ? Icon(icon, color: color, size: iconSize)
+              : AppAnimatedIcon(
+                  stateKey: animationKey,
+                  child: Icon(icon, color: color, size: iconSize),
+                ),
+          label: Text(
+            label,
+            key: labelKey,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: color, fontSize: fontSize),
+          ),
         ),
       ),
     );

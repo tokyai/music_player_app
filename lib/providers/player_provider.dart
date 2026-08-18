@@ -16,6 +16,11 @@ enum PlayMode { sequence, repeat, shuffle }
 /// 全局播放器状态管理
 class PlayerProvider extends ChangeNotifier {
   static const _resolvedUrlLifetime = Duration(minutes: 5);
+  static const defaultLyricOffsetStep = Duration(milliseconds: 500);
+  static const minLyricOffsetStep = Duration(milliseconds: 100);
+  static const maxLyricOffsetStep = Duration(seconds: 2);
+  static const lyricOffsetLimit = Duration(seconds: 10);
+  static const _lyricOffsetStepKey = 'lyric_offset_step_ms';
   static const _bilibiliLyricPlatformOrderKey = 'bilibili_lyric_platform_order';
   static const _defaultBilibiliLyricPlatformOrder = <MusicPlatform>[
     MusicPlatform.qq,
@@ -46,7 +51,9 @@ class PlayerProvider extends ChangeNotifier {
   int _currentLyricIndex = 0;
   bool _showLyric = false;
   bool _lyricsLoading = false;
+  Duration _lyricOffsetStep = defaultLyricOffsetStep;
   final Map<String, _ResolvedLyrics> _lyricCache = {};
+  final Map<String, Duration> _lyricOffsets = {};
   final Set<String> _bilibiliLyricAutoAttempted = {};
   final Map<String, DateTime> _playUrlResolvedAt = {};
 
@@ -110,6 +117,19 @@ class PlayerProvider extends ChangeNotifier {
   int get currentLyricIndex => _currentLyricIndex;
   bool get showLyric => _showLyric;
   bool get lyricsLoading => _lyricsLoading;
+  Duration get lyricOffsetStep => _lyricOffsetStep;
+  Duration get lyricOffset {
+    final song = currentSong;
+    return song == null
+        ? Duration.zero
+        : _lyricOffsets[_lyricKey(song)] ?? Duration.zero;
+  }
+
+  Duration get lyricPosition {
+    final adjusted = position - lyricOffset;
+    return adjusted.isNegative ? Duration.zero : adjusted;
+  }
+
   NeteaseLevel get neteaseLevel => _neteaseLevel;
   CommonLevel get commonLevel => _commonLevel;
   List<BilibiliStream> get bilibiliAudioQualities => _bilibiliAudioQualities;
@@ -224,6 +244,13 @@ class PlayerProvider extends ChangeNotifier {
       _bilibiliLyricPlatformOrder = _readBilibiliLyricPlatformOrder(
         prefs.getStringList(_bilibiliLyricPlatformOrderKey),
       );
+      _lyricOffsetStep = _normalizeLyricOffsetStep(
+        Duration(
+          milliseconds:
+              prefs.getInt(_lyricOffsetStepKey) ??
+              defaultLyricOffsetStep.inMilliseconds,
+        ),
+      );
       final savedVideoPlayerMode = prefs.getString('video_player_mode');
       _videoPlayerMode = VideoPlayerMode.values.firstWhere(
         (mode) => mode.value == savedVideoPlayerMode,
@@ -309,6 +336,25 @@ class PlayerProvider extends ChangeNotifier {
       normalized.map((platform) => platform.code).toList(growable: false),
     );
     notifyListeners();
+  }
+
+  Future<void> setLyricOffsetStep(Duration step) async {
+    await settingsReady;
+    if (_disposed) return;
+    final normalized = _normalizeLyricOffsetStep(step);
+    if (_lyricOffsetStep == normalized) return;
+    _lyricOffsetStep = normalized;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_lyricOffsetStepKey, normalized.inMilliseconds);
+  }
+
+  static Duration _normalizeLyricOffsetStep(Duration step) {
+    final milliseconds = step.inMilliseconds.clamp(
+      minLyricOffsetStep.inMilliseconds,
+      maxLyricOffsetStep.inMilliseconds,
+    );
+    return Duration(milliseconds: milliseconds);
   }
 
   Future<void> setVideoPlayerMode(VideoPlayerMode mode) async {
@@ -460,11 +506,13 @@ class PlayerProvider extends ChangeNotifier {
         throw const ApiException('SONG_CHANGED', '当前歌曲已切换，请重新查找歌词');
       }
 
+      final activeSong = current!;
+      _lyricOffsets.remove(_lyricKey(activeSong));
       _lyrics = resolved.lines;
-      _currentLyricIndex = LyricParser.findCurrentIndex(_lyrics, _position);
+      _currentLyricIndex = LyricParser.findCurrentIndex(_lyrics, lyricPosition);
       _lyricsLoading = false;
-      _lyricCache[_lyricKey(current!)] = resolved;
-      _queue[_currentIndex] = current.copyWith(lyric: resolved.rawText);
+      _lyricCache[_lyricKey(activeSong)] = resolved;
+      _queue[_currentIndex] = activeSong.copyWith(lyric: resolved.rawText);
       notifyListeners();
     } catch (_) {
       final current = currentSong;
@@ -1161,7 +1209,7 @@ class PlayerProvider extends ChangeNotifier {
   ) {
     if (!_isCurrentRequest(requestId, item)) return;
     _lyrics = resolved?.lines ?? [];
-    _currentLyricIndex = 0;
+    _currentLyricIndex = LyricParser.findCurrentIndex(_lyrics, lyricPosition);
     _lyricsLoading = false;
     if (resolved != null) {
       _lyricCache[_lyricKey(item)] = resolved;
@@ -1354,6 +1402,31 @@ class PlayerProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  void adjustLyricOffset(Duration delta) {
+    setLyricOffset(lyricOffset + delta);
+  }
+
+  void resetLyricOffset() {
+    setLyricOffset(Duration.zero);
+  }
+
+  void setLyricOffset(Duration offset) {
+    final song = currentSong;
+    if (song == null) return;
+    final limit = lyricOffsetLimit.inMilliseconds;
+    final milliseconds = offset.inMilliseconds.clamp(-limit, limit).toInt();
+    final next = Duration(milliseconds: milliseconds);
+    if (next == lyricOffset) return;
+    final key = _lyricKey(song);
+    if (next == Duration.zero) {
+      _lyricOffsets.remove(key);
+    } else {
+      _lyricOffsets[key] = next;
+    }
+    _updateLyricIndex();
+    notifyListeners();
+  }
+
   void togglePlayMode() {
     switch (_playMode) {
       case PlayMode.sequence:
@@ -1420,7 +1493,7 @@ class PlayerProvider extends ChangeNotifier {
 
   void _updateLyricIndex() {
     if (_lyrics.isEmpty) return;
-    final newIndex = LyricParser.findCurrentIndex(_lyrics, _position);
+    final newIndex = LyricParser.findCurrentIndex(_lyrics, lyricPosition);
     if (newIndex != _currentLyricIndex) {
       _currentLyricIndex = newIndex;
     }

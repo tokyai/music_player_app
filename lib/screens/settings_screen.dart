@@ -577,6 +577,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const Divider(height: 1),
         Consumer<PlayerProvider>(
           builder: (context, player, _) {
+            final stepLabel = _formatLyricOffsetStep(player.lyricOffsetStep);
+            return ListTile(
+              key: const ValueKey('lyric-offset-step-setting'),
+              dense: compact,
+              leading: const Icon(Icons.timer_outlined),
+              title: const Text(
+                '歌词时延单次调节',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                '播放页每次提前/延后 $stepLabel 秒',
+                maxLines: compact ? 1 : 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('$stepLabel 秒'),
+                  const SizedBox(width: 4),
+                  const Icon(Icons.chevron_right_rounded),
+                ],
+              ),
+              onTap: () => _showLyricOffsetStepPicker(player),
+            );
+          },
+        ),
+        const Divider(height: 1),
+        Consumer<PlayerProvider>(
+          builder: (context, player, _) {
             final order = player.bilibiliLyricPlatformOrder;
             return ListTile(
               key: const ValueKey('bilibili-lyric-platform-order-setting'),
@@ -599,6 +629,95 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ],
     );
+  }
+
+  Future<void> _showLyricOffsetStepPicker(PlayerProvider player) async {
+    final selected = await showDialog<Duration>(
+      context: context,
+      builder: (dialogContext) {
+        var milliseconds = player.lyricOffsetStep.inMilliseconds;
+        final minimum = PlayerProvider.minLyricOffsetStep.inMilliseconds;
+        final maximum = PlayerProvider.maxLyricOffsetStep.inMilliseconds;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final value = Duration(milliseconds: milliseconds);
+            final valueLabel = _formatLyricOffsetStep(value);
+            return AlertDialog(
+              key: const ValueKey('lyric-offset-step-dialog'),
+              title: const Text('歌词时延单次调节'),
+              content: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(child: Text('每次提前或延后')),
+                        Text(
+                          '$valueLabel 秒',
+                          key: const ValueKey('lyric-offset-step-value'),
+                          style: const TextStyle(
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Slider(
+                      key: const ValueKey('lyric-offset-step-slider'),
+                      value: milliseconds.toDouble(),
+                      min: minimum.toDouble(),
+                      max: maximum.toDouble(),
+                      divisions: (maximum - minimum) ~/ 100,
+                      label: '$valueLabel 秒',
+                      semanticFormatterCallback: (rawValue) =>
+                          '${_formatLyricOffsetStep(Duration(milliseconds: rawValue.round()))} 秒',
+                      onChanged: (rawValue) => setDialogState(() {
+                        milliseconds = (rawValue / 100).round() * 100;
+                      }),
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: const [Text('0.1 秒'), Text('2.0 秒')],
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => setDialogState(() {
+                    milliseconds =
+                        PlayerProvider.defaultLyricOffsetStep.inMilliseconds;
+                  }),
+                  child: const Text('恢复默认'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  key: const ValueKey('lyric-offset-step-save'),
+                  onPressed: () => Navigator.pop(
+                    dialogContext,
+                    Duration(milliseconds: milliseconds),
+                  ),
+                  child: const Text('保存'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (selected != null) await player.setLyricOffsetStep(selected);
+  }
+
+  String _formatLyricOffsetStep(Duration step) {
+    final milliseconds = step.inMilliseconds;
+    return milliseconds % 1000 == 0
+        ? '${milliseconds ~/ 1000}'
+        : (milliseconds / 1000).toStringAsFixed(1);
   }
 
   Future<void> _showBilibiliLyricPlatformOrderPicker(
