@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:media_kit/media_kit.dart' as media_kit;
 import 'package:media_kit_video/media_kit_video.dart' as media_kit_video;
 import 'package:video_player/video_player.dart';
@@ -32,13 +34,25 @@ abstract class _MvPlaybackController extends ChangeNotifier {
 
 class _ExoPlaybackController extends _MvPlaybackController {
   late final VideoPlayerController _controller;
+  final String? _audioUrl;
+  final Map<String, String> _headers;
+  AudioPlayer? _audioPlayer;
+  bool _syncingAudio = false;
   bool _closed = false;
+  String? _audioError;
 
-  _ExoPlaybackController(String url, Map<String, String> headers) {
+  _ExoPlaybackController(
+    String url,
+    Map<String, String> headers, {
+    String? audioUrl,
+  }) : _audioUrl = audioUrl,
+       _headers = headers {
+    final hasExternalAudio = audioUrl != null && audioUrl.isNotEmpty;
     _controller = VideoPlayerController.networkUrl(
       Uri.parse(url),
       httpHeaders: headers,
-      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
+      // The separate just_audio player owns audio focus for B站 DASH.
+      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: hasExternalAudio),
     )..addListener(_handleChanged);
   }
 
@@ -66,28 +80,88 @@ class _ExoPlaybackController extends _MvPlaybackController {
       : 16 / 9;
 
   @override
-  String? get error => _controller.value.hasError
-      ? (_controller.value.errorDescription ?? 'ExoPlayer 播放失败')
-      : null;
+  String? get error {
+    if (_controller.value.hasError) {
+      return _controller.value.errorDescription ?? 'ExoPlayer 播放失败';
+    }
+    return _audioError;
+  }
 
   void _handleChanged() {
-    if (!_closed) notifyListeners();
+    if (_closed) return;
+    if (_audioPlayer != null) unawaited(_syncExternalAudio());
+    notifyListeners();
+  }
+
+  Future<void> _syncExternalAudio() async {
+    final audioPlayer = _audioPlayer;
+    if (_closed || _syncingAudio || audioPlayer == null) return;
+    _syncingAudio = true;
+    try {
+      final value = _controller.value;
+      if (!value.isInitialized) return;
+      if (!value.isPlaying || value.isBuffering || value.isCompleted) {
+        if (audioPlayer.playing) await audioPlayer.pause();
+        return;
+      }
+      final drift = (audioPlayer.position - value.position).abs();
+      if (drift > const Duration(milliseconds: 650)) {
+        await audioPlayer.seek(value.position);
+      }
+      if (!audioPlayer.playing) unawaited(_playExternalAudio());
+    } catch (error) {
+      if (!_closed) {
+        _audioError = 'B站音轨播放失败：$error';
+        notifyListeners();
+      }
+    } finally {
+      _syncingAudio = false;
+    }
+  }
+
+  Future<void> _playExternalAudio() async {
+    try {
+      await _audioPlayer?.play();
+    } catch (error) {
+      if (!_closed) {
+        _audioError = 'B站音轨播放失败：$error';
+        notifyListeners();
+      }
+    }
   }
 
   @override
   Future<void> initialize() async {
     await _controller.initialize();
+    final audioUrl = _audioUrl;
+    if (audioUrl != null && audioUrl.isNotEmpty) {
+      final audioPlayer = AudioPlayer();
+      _audioPlayer = audioPlayer;
+      await audioPlayer.setAudioSource(
+        AudioSource.uri(Uri.parse(audioUrl), headers: _headers),
+      );
+    }
     await _controller.play();
+    if (_audioPlayer != null) unawaited(_syncExternalAudio());
   }
 
   @override
-  Future<void> play() => _controller.play();
+  Future<void> play() async {
+    await _controller.play();
+    if (_audioPlayer != null) unawaited(_syncExternalAudio());
+  }
 
   @override
-  Future<void> pause() => _controller.pause();
+  Future<void> pause() async {
+    await _controller.pause();
+    await _audioPlayer?.pause();
+  }
 
   @override
-  Future<void> seekTo(Duration position) => _controller.seekTo(position);
+  Future<void> seekTo(Duration position) async {
+    await _controller.seekTo(position);
+    await _audioPlayer?.seek(position);
+  }
 
   @override
   Widget buildSurface(Key key) => VideoPlayer(_controller, key: key);
@@ -97,6 +171,7 @@ class _ExoPlaybackController extends _MvPlaybackController {
     if (_closed) return;
     _closed = true;
     _controller.removeListener(_handleChanged);
+    await _audioPlayer?.dispose();
     await _controller.dispose();
     dispose();
   }
@@ -107,12 +182,13 @@ class _MpvPlaybackController extends _MvPlaybackController {
   late final media_kit_video.VideoController _controller;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   final String url;
+  final String? audioUrl;
   final Map<String, String> headers;
   bool _initialized = false;
   bool _closed = false;
   String? _error;
 
-  _MpvPlaybackController(this.url, this.headers) {
+  _MpvPlaybackController(this.url, this.headers, {this.audioUrl}) {
     _player = media_kit.Player(
       configuration: const media_kit.PlayerConfiguration(
         title: '库仔音乐 MV',
@@ -176,9 +252,24 @@ class _MpvPlaybackController extends _MvPlaybackController {
   @override
   Future<void> initialize() async {
     _error = null;
-    await _player.open(media_kit.Media(url, httpHeaders: headers), play: true);
+    final source = audioUrl == null || audioUrl!.isEmpty
+        ? url
+        : _edlSource(url, audioUrl!);
+    await _player.open(
+      media_kit.Media(source, httpHeaders: headers),
+      play: true,
+    );
     _initialized = true;
     _changed();
+  }
+
+  static String _edlSource(String video, String audio) {
+    final videoLength = utf8.encode(video).length;
+    final audioLength = utf8.encode(audio).length;
+    return 'edl://!no_clip;!no_chapters;'
+        '%$videoLength%$video;'
+        '!new_stream;!no_clip;!no_chapters;'
+        '%$audioLength%$audio';
   }
 
   @override
@@ -213,6 +304,7 @@ class _MpvPlaybackController extends _MvPlaybackController {
 class VideoPlayerScreen extends StatefulWidget {
   final String url;
   final List<String> alternateUrls;
+  final String? audioUrl;
   final Map<String, String>? headers;
   final String title;
   final String artist;
@@ -223,6 +315,7 @@ class VideoPlayerScreen extends StatefulWidget {
     super.key,
     required this.url,
     this.alternateUrls = const [],
+    this.audioUrl,
     this.headers,
     required this.title,
     required this.artist,
@@ -302,8 +395,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final headers = _headersFor(widget.platform, widget.headers);
     final url = _sourceUrls[_sourceIndex];
     return switch (engine) {
-      _MvEngine.exo => _ExoPlaybackController(url, headers),
-      _MvEngine.mpv => _MpvPlaybackController(url, headers),
+      _MvEngine.exo => _ExoPlaybackController(
+        url,
+        headers,
+        audioUrl: widget.audioUrl,
+      ),
+      _MvEngine.mpv => _MpvPlaybackController(
+        url,
+        headers,
+        audioUrl: widget.audioUrl,
+      ),
     };
   }
 

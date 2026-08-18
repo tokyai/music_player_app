@@ -122,6 +122,8 @@ void main() {
     final source = await service.videoSource('BV1test', 101, 80);
     expect(source.url, endsWith('video.m4s'));
     expect(source.urls, hasLength(2));
+    expect(source.audioUrl, endsWith('audio.m4s'));
+    expect(source.audioUrls, hasLength(1));
     expect(source.headers['Origin'], 'https://www.bilibili.com');
     expect(source.headers['Referer'], 'https://www.bilibili.com/video/BV1test');
     expect(await service.videoUrl('BV1test', 101, 80), endsWith('video.m4s'));

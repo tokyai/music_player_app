@@ -29,11 +29,20 @@ class BilibiliQrCode {
 /// 因此不能像普通音乐源一样只保留一个 URL。
 class BilibiliVideoSource {
   final List<String> urls;
+
+  /// DASH 音频流的候选地址。B站 DASH 将音视频拆成两条流，内置 MV
+  /// 播放器需要把这条音轨和 [urls] 中的视频流一起播放。
+  final List<String> audioUrls;
   final Map<String, String> headers;
 
-  const BilibiliVideoSource({required this.urls, required this.headers});
+  const BilibiliVideoSource({
+    required this.urls,
+    this.audioUrls = const [],
+    required this.headers,
+  });
 
   String get url => urls.first;
+  String? get audioUrl => audioUrls.isEmpty ? null : audioUrls.first;
 }
 
 enum BilibiliQrStatus { waiting, scanned, expired, success }
@@ -376,8 +385,9 @@ class BilibiliService extends ChangeNotifier {
   Future<BilibiliVideoSource> videoSource(
     String bvid,
     int cid,
-    int quality,
-  ) async {
+    int quality, {
+    int? audioQuality,
+  }) async {
     final response = await _bilibiliGet('/x/player/wbi/playurl', {
       'bvid': bvid,
       'cid': cid,
@@ -396,6 +406,29 @@ class BilibiliService extends ChangeNotifier {
     final dash = rawDash is Map
         ? Map<String, dynamic>.from(rawDash)
         : <String, dynamic>{};
+    // DASH 的音频和视频是两条独立流。默认使用普通音频列表中的 AAC；
+    // 只有用户明确选中对应音质时才使用 Dolby/FLAC。
+    final regularAudioStreams = _parseStreams(dash['audio'], audio: true)
+      ..sort((a, b) => b.bandwidth.compareTo(a.bandwidth));
+    final audioStreams = <BilibiliStream>[
+      ...regularAudioStreams,
+      if (dash['dolby'] is Map)
+        ..._parseStreams((dash['dolby'] as Map)['audio'], audio: true),
+      if (dash['flac'] is Map && (dash['flac'] as Map)['audio'] is Map)
+        ..._parseStreams([(dash['flac'] as Map)['audio']], audio: true),
+    ];
+    BilibiliStream? selectedAudio;
+    if (audioQuality != null) {
+      for (final stream in audioStreams) {
+        if (stream.quality == audioQuality) {
+          selectedAudio = stream;
+          break;
+        }
+      }
+    }
+    if (selectedAudio == null && regularAudioStreams.isNotEmpty) {
+      selectedAudio = regularAudioStreams.first;
+    }
     final streams = _parseStreams(dash['video'], audio: false)
       ..sort(_compareVideoStreams);
     if (streams.isNotEmpty) {
@@ -415,12 +448,11 @@ class BilibiliService extends ChangeNotifier {
       final selected = streams.where(
         (stream) => stream.quality == targetQuality,
       );
-      final urls = _orderedUrls(
-        selected.expand((stream) => stream.playUrls),
-      );
+      final urls = _orderedUrls(selected.expand((stream) => stream.playUrls));
       if (urls.isNotEmpty) {
         return BilibiliVideoSource(
           urls: urls,
+          audioUrls: selectedAudio?.playUrls ?? const [],
           headers: playbackHeadersForVideo(bvid),
         );
       }
@@ -442,6 +474,7 @@ class BilibiliService extends ChangeNotifier {
     }
     return BilibiliVideoSource(
       urls: urls,
+      audioUrls: const [],
       headers: playbackHeadersForVideo(bvid),
     );
   }

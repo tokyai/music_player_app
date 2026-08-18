@@ -986,6 +986,7 @@ class PlayQueueItem {
     bool clearError = false,
     bool clearPlaybackHeaders = false,
     bool clearPlayUrl = false,
+    bool clearLyric = false,
   }) {
     return PlayQueueItem(
       platform: platform,
@@ -1000,7 +1001,7 @@ class PlayQueueItem {
       bilibiliPage: bilibiliPage ?? this.bilibiliPage,
       bilibiliPages: bilibiliPages ?? this.bilibiliPages,
       playUrl: clearPlayUrl ? null : playUrl ?? this.playUrl,
-      lyric: lyric ?? this.lyric,
+      lyric: clearLyric ? null : lyric ?? this.lyric,
       playbackHeaders: clearPlaybackHeaders
           ? null
           : playbackHeaders ?? this.playbackHeaders,

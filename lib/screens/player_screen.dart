@@ -74,7 +74,9 @@ class _LyricSearchDialogState extends State<_LyricSearchDialog> {
   @override
   void initState() {
     super.initState();
-    _queryController = TextEditingController(text: widget.song.name);
+    _queryController = TextEditingController(
+      text: widget.player.lyricSearchQueryFor(widget.song),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) => _search());
   }
 
@@ -119,7 +121,7 @@ class _LyricSearchDialogState extends State<_LyricSearchDialog> {
   Future<void> _apply(SongSearchResult result) async {
     if (_applyingId != null) return;
     setState(() {
-      _applyingId = result.id;
+      _applyingId = '${result.platform.code}:${result.id}';
       _error = null;
     });
     try {
@@ -283,8 +285,11 @@ class _LyricSearchDialogState extends State<_LyricSearchDialog> {
       separatorBuilder: (_, __) => const Divider(height: 1),
       itemBuilder: (context, index) {
         final result = _results[index];
-        final applying = _applyingId == result.id;
+        final applying = _applyingId == '${result.platform.code}:${result.id}';
         final album = result.album.trim().isEmpty ? '未知专辑' : result.album;
+        final sourcePrefix = widget.song.platform == MusicPlatform.bilibili
+            ? '${result.platform.label} · '
+            : '';
         return ListTile(
           key: ValueKey(
             'lyric-search-result-${result.platform.code}-${result.id}',
@@ -313,7 +318,7 @@ class _LyricSearchDialogState extends State<_LyricSearchDialog> {
             ),
           ),
           subtitle: Text(
-            '${result.artist} · $album',
+            '$sourcePrefix${result.artist} · $album',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
@@ -890,7 +895,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (!_lyricsAutoScroll) return;
     final index = player.currentLyricIndex;
     final song = player.currentSong;
-    final songKey = song == null ? null : '${song.platform.code}:${song.id}';
+    final songKey = _lyricTargetKey(song);
     if (!_forceLyricRecenter &&
         _lastAutoScrollSongKey == songKey &&
         _lastAutoScrollLyricIndex == index) {
@@ -929,6 +934,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
           .animateTo(target, duration: duration, curve: Curves.easeOutCubic)
           .catchError((_) {}),
     );
+  }
+
+  String? _lyricTargetKey(PlayQueueItem? song) {
+    if (song == null) return null;
+    return song.platform == MusicPlatform.bilibili
+        ? '${song.platform.code}:${song.id}:${song.bilibiliCid ?? 0}'
+        : '${song.platform.code}:${song.id}';
   }
 
   void _openScopedSearch(
@@ -982,6 +994,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             alternateUrls:
                 bilibiliSource?.urls.skip(1).toList(growable: false) ??
                 const [],
+            audioUrl: bilibiliSource?.audioUrl,
             headers: bilibiliSource?.headers,
             title: song.name,
             artist: song.artist,
@@ -1770,7 +1783,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           p.currentLyricIndex,
           p.lyricsLoading,
           p.position,
-          song == null ? null : '${song.platform.code}:${song.id}',
+          _lyricTargetKey(song),
         );
       },
       builder: (ctx, selection, _) {
@@ -1798,7 +1811,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     bool toggleOnTap = true,
   }) {
     final song = player.currentSong;
-    if (song?.platform == MusicPlatform.bilibili) {
+    if (song?.platform == MusicPlatform.bilibili && player.lyrics.isEmpty) {
       return _buildBilibiliInfoPane(
         ctx,
         player,
@@ -1898,10 +1911,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   ),
                 ),
                 IconButton(
-                  key: const ValueKey('bilibili-quality-action'),
-                  tooltip: '音频和视频清晰度',
-                  onPressed: () => _showBilibiliQualityDialog(ctx, player),
-                  icon: Icon(Icons.tune_rounded, color: textColor),
+                  key: const ValueKey('bilibili-lyric-search-action'),
+                  tooltip: '查找歌词',
+                  onPressed: () => _openLyricSearch(ctx, player, song),
+                  icon: Icon(Icons.manage_search_rounded, color: textColor),
                 ),
               ],
             ),
@@ -2191,7 +2204,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           p.lyrics.length,
           p.lyricsLoading,
           p.showLyric ? p.position : Duration.zero,
-          song == null ? null : '${song.platform.code}:${song.id}',
+          _lyricTargetKey(song),
         );
       },
       builder: (ctx, sel, _) {
@@ -2804,9 +2817,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final song = player.currentSong;
     final isBilibili = song?.platform == MusicPlatform.bilibili;
     final isFav = song != null && fav.isFavorite(song.platform, song.id);
-    return Selector<PlayerProvider, bool>(
-      selector: (_, p) => p.showLyric,
-      builder: (ctx, showLyric, _) {
+    return Selector<PlayerProvider, (bool, bool)>(
+      selector: (_, p) => (p.showLyric, p.lyrics.isNotEmpty),
+      builder: (ctx, lyricState, _) {
+        final showLyric = lyricState.$1;
+        final hasLyrics = lyricState.$2;
         return Padding(
           padding: EdgeInsets.only(bottom: compact ? 0 : 12),
           child: Row(
@@ -2818,9 +2833,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     compact: compact,
                     onPressed: player.toggleShowLyric,
                     icon: isBilibili
-                        ? Icons.video_library_outlined
+                        ? hasLyrics
+                              ? Icons.text_snippet_rounded
+                              : Icons.video_library_outlined
                         : Icons.text_snippet_rounded,
-                    label: isBilibili ? '视频信息' : '歌词',
+                    label: isBilibili && !hasLyrics ? '视频信息' : '歌词',
                     color: showLyric ? AppColors.primary : subColor,
                   ),
                 ),
@@ -2863,11 +2880,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
               Expanded(
                 child: _playerActionButton(
+                  key: ValueKey(
+                    isBilibili
+                        ? 'player-bilibili-pages-action'
+                        : 'player-queue-action',
+                  ),
                   context: ctx,
                   compact: compact,
-                  onPressed: () => _showQueueSheet(ctx, player),
-                  icon: Icons.queue_music_rounded,
-                  label: '队列',
+                  onPressed: isBilibili
+                      ? song == null || song.bilibiliPages.isEmpty
+                            ? null
+                            : () => _showBilibiliPageSheet(ctx, player)
+                      : () => _showQueueSheet(ctx, player),
+                  icon: isBilibili
+                      ? Icons.format_list_numbered_rounded
+                      : Icons.queue_music_rounded,
+                  label: isBilibili ? '分P' : '队列',
                   color: subColor,
                 ),
               ),
@@ -2916,6 +2944,196 @@ class _PlayerScreenState extends State<PlayerScreen> {
           style: TextStyle(color: color, fontSize: fontSize),
         ),
       ),
+    );
+  }
+
+  void _showBilibiliPageSheet(BuildContext ctx, PlayerProvider player) {
+    final isLandscape = MediaQuery.orientationOf(ctx) == Orientation.landscape;
+    if (isLandscape) {
+      showGeneralDialog<void>(
+        context: ctx,
+        barrierDismissible: true,
+        barrierLabel: '关闭分P列表',
+        barrierColor: Colors.black54,
+        transitionDuration: AppMotion.resolve(ctx, AppMotion.page),
+        pageBuilder: (dialogCtx, _, _) {
+          final size = MediaQuery.sizeOf(dialogCtx);
+          final panelWidth = (size.width * 0.46).clamp(320.0, 540.0);
+          return Align(
+            alignment: Alignment.centerRight,
+            child: SafeArea(
+              left: false,
+              child: Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: Material(
+                  color: AppColors.surface,
+                  elevation: 12,
+                  borderRadius: BorderRadius.circular(AppRadius.panel),
+                  clipBehavior: Clip.antiAlias,
+                  child: SizedBox(
+                    width: panelWidth,
+                    height: size.height * 0.9,
+                    child: _buildBilibiliPageContent(
+                      dialogCtx,
+                      player,
+                      null,
+                      showHandle: false,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+        transitionBuilder: (_, animation, _, child) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: AppMotion.enterCurve,
+            reverseCurve: AppMotion.exitCurve,
+          );
+          return FadeTransition(
+            opacity: curved,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0.08, 0),
+                end: Offset.zero,
+              ).animate(curved),
+              child: child,
+            ),
+          );
+        },
+      );
+      return;
+    }
+
+    showModalBottomSheet<void>(
+      context: ctx,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(AppRadius.panel),
+        ),
+      ),
+      builder: (sheetContext) => DraggableScrollableSheet(
+        initialChildSize: 0.68,
+        minChildSize: 0.35,
+        maxChildSize: 0.92,
+        expand: false,
+        builder: (context, scrollController) =>
+            _buildBilibiliPageContent(context, player, scrollController),
+      ),
+    );
+  }
+
+  Widget _buildBilibiliPageContent(
+    BuildContext ctx,
+    PlayerProvider player,
+    ScrollController? scrollController, {
+    bool showHandle = true,
+  }) {
+    return Consumer<PlayerProvider>(
+      builder: (context, current, _) {
+        final song = current.currentSong;
+        final pages = song?.platform == MusicPlatform.bilibili
+            ? song!.bilibiliPages
+            : const <BilibiliPageInfo>[];
+        final selectedCid = song?.bilibiliCid;
+        return Column(
+          key: const ValueKey('bilibili-page-sheet'),
+          children: [
+            if (showHandle)
+              Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(top: 10),
+                decoration: BoxDecoration(
+                  color: AppColors.textHint.withValues(alpha: 0.4),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '分P (${pages.length})',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '关闭',
+                    onPressed: () => Navigator.pop(ctx),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: pages.isEmpty
+                  ? Center(
+                      child: Text(
+                        '暂无分P',
+                        style: TextStyle(color: AppColors.textSecondary),
+                      ),
+                    )
+                  : ListView.builder(
+                      controller: scrollController,
+                      itemCount: pages.length,
+                      itemBuilder: (context, index) {
+                        final page = pages[index];
+                        final selected = page.cid == selectedCid;
+                        return ListTile(
+                          key: ValueKey('bilibili-page-sheet-${page.cid}'),
+                          selected: selected,
+                          selectedColor: PlatformColors.bilibili,
+                          leading: SizedBox(
+                            width: 44,
+                            child: Text(
+                              'P${page.page}',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: selected
+                                    ? PlatformColors.bilibili
+                                    : AppColors.textSecondary,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          title: Text(
+                            page.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: page.duration == null
+                              ? null
+                              : Text(
+                                  _formatDuration(
+                                    Duration(seconds: page.duration!),
+                                  ),
+                                  style: TextStyle(
+                                    color: AppColors.textSecondary,
+                                  ),
+                                ),
+                          onTap: () async {
+                            if (!selected) {
+                              await current.selectBilibiliPage(index);
+                            }
+                            if (ctx.mounted) Navigator.pop(ctx);
+                          },
+                        );
+                      },
+                    ),
+            ),
+          ],
+        );
+      },
     );
   }
 
