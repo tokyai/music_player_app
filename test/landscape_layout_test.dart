@@ -2306,7 +2306,14 @@ void main() {
         )
         .style;
     expect(darkLyricStyle.color, Colors.white.withValues(alpha: 0.42));
-    expect(find.byType(ShaderMask), findsOneWidget);
+    expect(
+      tester
+          .widget<Text>(find.byKey(const ValueKey('lyric-text-0')))
+          .style
+          ?.color,
+      Colors.white,
+    );
+    expect(find.byType(ShaderMask), findsNothing);
     final darkScrim = tester.widget<DecoratedBox>(
       find.byKey(const ValueKey('player-background-scrim')),
     );
@@ -2328,6 +2335,13 @@ void main() {
     expect(
       lightLyricStyle.color,
       const Color(0xFF171A1F).withValues(alpha: 0.42),
+    );
+    expect(
+      tester
+          .widget<Text>(find.byKey(const ValueKey('lyric-text-0')))
+          .style
+          ?.color,
+      const Color(0xFF171A1F),
     );
     final lightScrim = tester.widget<DecoratedBox>(
       find.byKey(const ValueKey('player-background-scrim')),

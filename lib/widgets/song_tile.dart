@@ -38,16 +38,13 @@ class SongTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     AppColors.syncWithTheme(context);
-    final playerState = context
-        .select<PlayerProvider, (String?, MusicPlatform?, bool)>(
-          (player) => (
-            player.currentSong?.id,
-            player.currentSong?.platform,
-            player.isPlaying,
-          ),
-        );
-    final isCurrent =
-        playerState.$1 == song.id && playerState.$2 == song.platform;
+    final playerState = context.select<PlayerProvider, (bool, bool)>((player) {
+      final current = player.currentSong;
+      final isCurrent =
+          current?.id == song.id && current?.platform == song.platform;
+      return (isCurrent, isCurrent && player.isPlaying);
+    });
+    final isCurrent = playerState.$1;
     final platformColor = PlatformColors.of(song.platform);
     final layout = AppLayout.fromContext(context);
 
@@ -57,9 +54,7 @@ class SongTile extends StatelessWidget {
         final narrowPane = constraints.maxWidth < 380;
         final coverSize = layout.songCoverSize;
         final actionIconSize = layout.usesLargeTypography ? 26.0 : 22.0;
-        return AnimatedContainer(
-          duration: AppMotion.resolve(context, AppMotion.quick),
-          curve: AppMotion.enterCurve,
+        return Container(
           decoration: BoxDecoration(
             color: selectionMode && selected
                 ? AppColors.primarySoft
@@ -114,7 +109,7 @@ class SongTile extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (isCurrent && playerState.$3) ...[
+                if (playerState.$2) ...[
                   const SizedBox(width: 8),
                   _PlayingIndicator(color: AppColors.primary),
                 ],
@@ -147,12 +142,13 @@ class SongTile extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       if (showFavorite)
-                        Consumer<FavoriteService>(
-                          builder: (ctx, fav, _) {
-                            final isFav = fav.isFavorite(
-                              song.platform,
-                              song.id,
-                            );
+                        Selector<FavoriteService, bool>(
+                          selector: (_, favorites) => favorites.isFavorite(
+                            song.platform,
+                            song.id,
+                          ),
+                          builder: (ctx, isFav, _) {
+                            final favorites = ctx.read<FavoriteService>();
                             return IconButton(
                               tooltip: isFav ? '取消收藏' : '收藏',
                               icon: AppAnimatedIcon(
@@ -168,7 +164,7 @@ class SongTile extends StatelessWidget {
                                 ),
                               ),
                               onPressed: () {
-                                fav.toggle(song);
+                                favorites.toggle(song);
                                 ScaffoldMessenger.of(ctx).showSnackBar(
                                   SnackBar(
                                     content: Text(
@@ -246,69 +242,22 @@ class SongTile extends StatelessWidget {
   }
 }
 
-/// 播放中的音波动画指示器
-class _PlayingIndicator extends StatefulWidget {
+/// 播放中的轻量静态指示器。
+///
+/// 列表中可能同时存在多个当前歌曲卡片，常驻逐帧音波会为每个卡片
+/// 保留一个 ticker。静态图标仍能清晰表达播放状态，但不会持续占用 CPU。
+class _PlayingIndicator extends StatelessWidget {
   final Color color;
+
   const _PlayingIndicator({required this.color});
 
   @override
-  State<_PlayingIndicator> createState() => _PlayingIndicatorState();
-}
-
-class _PlayingIndicatorState extends State<_PlayingIndicator>
-    with TickerProviderStateMixin {
-  late AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 600),
-      vsync: this,
-    );
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (MediaQuery.maybeOf(context)?.disableAnimations == true) {
-      _controller
-        ..stop()
-        ..value = 0.5;
-    } else if (!_controller.isAnimating) {
-      _controller.repeat(reverse: true);
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (_, child) {
-        return Row(
-          mainAxisSize: MainAxisSize.min,
-          children: List.generate(3, (i) {
-            final delay = i * 0.2;
-            final value = ((_controller.value + delay) % 1.0);
-            final height = 3.0 + (value * 9);
-            return Container(
-              margin: const EdgeInsets.symmetric(horizontal: 1),
-              width: 3,
-              height: height,
-              decoration: BoxDecoration(
-                color: widget.color,
-                borderRadius: BorderRadius.circular(1.5),
-              ),
-            );
-          }),
-        );
-      },
+    return Icon(
+      Icons.graphic_eq_rounded,
+      key: const ValueKey('song-playing-indicator'),
+      size: 20,
+      color: color,
     );
   }
 }

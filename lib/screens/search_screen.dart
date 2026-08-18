@@ -403,85 +403,74 @@ class _SearchScreenState extends State<SearchScreen>
     final layout = AppLayout.fromContext(context);
     final optionList = options.toList(growable: false);
     final highlightedIndex = AutocompleteHighlightedOption.of(context);
-    return TweenAnimationBuilder<double>(
-      duration: AppMotion.resolve(context, AppMotion.quick),
-      curve: AppMotion.enterCurve,
-      tween: Tween(begin: 0, end: 1),
-      builder: (context, value, child) => Opacity(
-        opacity: value,
-        child: Transform.translate(
-          offset: Offset(0, (1 - value) * 6),
-          child: child,
-        ),
+    // Suggestions are rebuilt for every completed query. Replaying an opacity
+    // layer for the whole list on each keystroke makes typing feel delayed on
+    // low-end devices, so the already-debounced results appear immediately.
+    return Material(
+      key: const ValueKey('search-suggestions'),
+      color: AppColors.surface,
+      elevation: 8,
+      shadowColor: AppColors.cardShadow,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.control),
+        side: BorderSide(color: AppColors.outline),
       ),
-      child: Material(
-        key: const ValueKey('search-suggestions'),
-        color: AppColors.surface,
-        elevation: 8,
-        shadowColor: AppColors.cardShadow,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(AppRadius.control),
-          side: BorderSide(color: AppColors.outline),
+      clipBehavior: Clip.antiAlias,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: layout.isCompactLandscape ? 220 : 320,
         ),
-        clipBehavior: Clip.antiAlias,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxHeight: layout.isCompactLandscape ? 220 : 320,
-          ),
-          child: ListView.separated(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            shrinkWrap: true,
-            itemCount: optionList.length,
-            separatorBuilder: (_, _) =>
-                Divider(height: 1, thickness: 1, color: AppColors.outline),
-            itemBuilder: (context, index) {
-              final option = optionList[index];
-              final isHighlighted = index == highlightedIndex;
-              final isArtist = option.kind == _SearchSuggestionKind.artist;
-              final subtitle = isArtist
-                  ? '歌手'
-                  : option.detail == null || option.detail!.isEmpty
-                  ? '曲目'
-                  : '曲目 · ${option.detail}';
-              return Material(
-                color: isHighlighted
-                    ? AppColors.primarySoft
-                    : Colors.transparent,
-                child: ListTile(
-                  key: ValueKey(
-                    'search-suggestion-${option.kind.name}-${option.keyword}',
-                  ),
-                  dense: layout.isCompactLandscape,
-                  minTileHeight: layout.isCompactLandscape ? 48 : 58,
-                  leading: Icon(
-                    isArtist ? Icons.person_rounded : Icons.music_note_rounded,
-                    size: layout.isCompactLandscape ? 24 : 28,
-                    color: isArtist ? PlatformColors.qq : AppColors.primary,
-                  ),
-                  title: Text(
-                    option.keyword,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: layout.bodySize,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textPrimary,
-                    ),
-                  ),
-                  subtitle: Text(
-                    subtitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: layout.secondarySize,
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                  onTap: () => onSelected(option),
+        child: ListView.separated(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          shrinkWrap: true,
+          itemCount: optionList.length,
+          separatorBuilder: (_, _) =>
+              Divider(height: 1, thickness: 1, color: AppColors.outline),
+          itemBuilder: (context, index) {
+            final option = optionList[index];
+            final isHighlighted = index == highlightedIndex;
+            final isArtist = option.kind == _SearchSuggestionKind.artist;
+            final subtitle = isArtist
+                ? '歌手'
+                : option.detail == null || option.detail!.isEmpty
+                ? '曲目'
+                : '曲目 · ${option.detail}';
+            return Material(
+              color: isHighlighted ? AppColors.primarySoft : Colors.transparent,
+              child: ListTile(
+                key: ValueKey(
+                  'search-suggestion-${option.kind.name}-${option.keyword}',
                 ),
-              );
-            },
-          ),
+                dense: layout.isCompactLandscape,
+                minTileHeight: layout.isCompactLandscape ? 48 : 58,
+                leading: Icon(
+                  isArtist ? Icons.person_rounded : Icons.music_note_rounded,
+                  size: layout.isCompactLandscape ? 24 : 28,
+                  color: isArtist ? PlatformColors.qq : AppColors.primary,
+                ),
+                title: Text(
+                  option.keyword,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: layout.bodySize,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                subtitle: Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: layout.secondarySize,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+                onTap: () => onSelected(option),
+              ),
+            );
+          },
         ),
       ),
     );

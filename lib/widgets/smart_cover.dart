@@ -1,8 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
-import '../theme/app_motion.dart';
-
 /// 封面中转代理：当手机直连各平台封面 CDN 失败时，经我们的服务器中转加载。
 class CoverProxy {
   static const String proxyBase = 'http://161.118.252.183/cover-proxy';
@@ -126,11 +124,12 @@ class _SmartCoverState extends State<SmartCover> {
           imageUrl: url,
           fit: widget.fit,
           memCacheWidth: boundedDecodeWidth,
-          fadeInDuration: AppMotion.resolve(context, AppMotion.quick),
-          fadeOutDuration: AppMotion.resolve(
-            context,
-            const Duration(milliseconds: 80),
-          ),
+          // A search result can start loading dozens of covers together.
+          // Per-image fades create many simultaneous opacity layers, so covers
+          // appear immediately once decoded. Prominent player backgrounds own
+          // their transition separately.
+          fadeInDuration: Duration.zero,
+          fadeOutDuration: Duration.zero,
           useOldImageOnUrlChange: true,
           placeholder: (_, __) => widget.placeholder(),
           errorWidget: (_, __, ___) {

@@ -34,15 +34,15 @@ class PlayerScreen extends StatefulWidget {
           curve: AppMotion.enterCurve,
           reverseCurve: AppMotion.exitCurve,
         );
-        return FadeTransition(
-          opacity: curved,
-          child: SlideTransition(
-            position: Tween<Offset>(
-              begin: const Offset(0, 0.025),
-              end: Offset.zero,
-            ).animate(curved),
-            child: child,
-          ),
+        // The cover Hero already provides continuity. Fading the complete
+        // player adds a full-screen opacity layer exactly while its first
+        // frame is decoding artwork, which is costly on low-end head units.
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 0.025),
+            end: Offset.zero,
+          ).animate(curved),
+          child: child,
         );
       },
     );
@@ -500,7 +500,7 @@ class _AnimatedLyricLineText extends StatelessWidget {
       height: 1.18,
     );
     return AnimatedDefaultTextStyle(
-      duration: const Duration(milliseconds: 280),
+      duration: AppMotion.resolve(context, AppMotion.state),
       curve: Curves.easeOutCubic,
       style: style,
       textAlign: TextAlign.center,
@@ -555,18 +555,13 @@ class _SolidCurrentLyricText extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final style = DefaultTextStyle.of(context).style;
-    return ShaderMask(
-      blendMode: BlendMode.srcIn,
-      shaderCallback: (bounds) =>
-          LinearGradient(colors: [color, color]).createShader(bounds),
-      child: Text(
-        text,
-        key: ValueKey('lyric-text-$index'),
-        textAlign: TextAlign.center,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: style.copyWith(foreground: Paint()..color = Colors.white),
-      ),
+    return Text(
+      text,
+      key: ValueKey('lyric-text-$index'),
+      textAlign: TextAlign.center,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: style.copyWith(color: color),
     );
   }
 }
@@ -920,13 +915,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (distance < 0.5) return;
     // 相邻歌词使用与参考播放器一致的纵向滑行动画；新动画会平滑接管
     // 上一行尚未结束的滚动，快歌下也不会堆积动画队列。
+    final duration = AppMotion.resolve(
+      context,
+      const Duration(milliseconds: 300),
+    );
+    if (duration == Duration.zero) {
+      position.jumpTo(target);
+      return;
+    }
     unawaited(
       position
-          .animateTo(
-            target,
-            duration: const Duration(milliseconds: 360),
-            curve: Curves.easeOutCubic,
-          )
+          .animateTo(target, duration: duration, curve: Curves.easeOutCubic)
           .catchError((_) {}),
     );
   }
@@ -1287,35 +1286,50 @@ class _PlayerScreenState extends State<PlayerScreen> {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          AnimatedContainer(
-            duration: AppMotion.resolve(context, AppMotion.background),
-            curve: AppMotion.enterCurve,
-            color: baseColor.withValues(alpha: 0.34),
-          ),
+          ColoredBox(color: baseColor.withValues(alpha: 0.34)),
           if (_routeTransitionComplete && cover != null && cover.isNotEmpty)
             Positioned.fill(
-              child: TweenAnimationBuilder<double>(
-                key: ValueKey(
-                  'player-background-cover-${song.platform.code}:${song.id}',
-                ),
-                tween: Tween<double>(begin: 0, end: 1),
-                duration: AppMotion.resolve(context, AppMotion.quick),
-                curve: AppMotion.enterCurve,
-                builder: (context, opacity, child) =>
-                    Opacity(opacity: opacity, child: child),
-                child: ImageFiltered(
-                  imageFilter: ui.ImageFilter.blur(sigmaX: 34, sigmaY: 34),
-                  child: Transform.scale(
-                    scale: 1.12,
-                    child: SmartCover(
-                      url: cover,
-                      fit: BoxFit.cover,
-                      maxDecodeWidth: 320,
-                      placeholder: () =>
-                          ColoredBox(color: baseColor.withValues(alpha: 0.28)),
+              key: ValueKey(
+                'player-background-cover-${song.platform.code}:${song.id}',
+              ),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  // Blur a small off-screen surface and let the compositor
+                  // upscale the finished layer. Applying ImageFiltered to the
+                  // full 1920x1080 canvas was the largest player paint spike.
+                  const maximumBlurSurfaceSide = 360.0;
+                  final longestSide = constraints.biggest.longestSide;
+                  final scale = longestSide > maximumBlurSurfaceSide
+                      ? longestSide / maximumBlurSurfaceSide
+                      : 1.0;
+                  final surfaceWidth = constraints.maxWidth / scale;
+                  final surfaceHeight = constraints.maxHeight / scale;
+                  final localSigma = 34 / scale;
+                  return FittedBox(
+                    fit: BoxFit.fill,
+                    child: SizedBox(
+                      width: surfaceWidth,
+                      height: surfaceHeight,
+                      child: ImageFiltered(
+                        imageFilter: ui.ImageFilter.blur(
+                          sigmaX: localSigma,
+                          sigmaY: localSigma,
+                        ),
+                        child: Transform.scale(
+                          scale: 1.12,
+                          child: SmartCover(
+                            url: cover,
+                            fit: BoxFit.cover,
+                            maxDecodeWidth: maximumBlurSurfaceSide.round(),
+                            placeholder: () => ColoredBox(
+                              color: baseColor.withValues(alpha: 0.28),
+                            ),
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
-                ),
+                  );
+                },
               ),
             ),
           Positioned.fill(
@@ -1777,39 +1791,42 @@ class _PlayerScreenState extends State<PlayerScreen> {
         : player.lyricsLoading
         ? 'loading'
         : 'empty';
-    return Stack(
-      children: [
-        Positioned.fill(
-          child: AppMotionSwitcher(
-            child: KeyedSubtree(
-              key: ValueKey('player-lyrics-$lyricStateKey'),
-              child: _buildLyricView(
-                ctx,
-                player,
-                textColor,
-                landscape: landscape,
-                toggleOnTap: toggleOnTap,
+    return RepaintBoundary(
+      key: const ValueKey('player-lyric-repaint-boundary'),
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: AppMotionSwitcher(
+              child: KeyedSubtree(
+                key: ValueKey('player-lyrics-$lyricStateKey'),
+                child: _buildLyricView(
+                  ctx,
+                  player,
+                  textColor,
+                  landscape: landscape,
+                  toggleOnTap: toggleOnTap,
+                ),
               ),
             ),
           ),
-        ),
-        if (song != null)
-          Positioned(
-            top: landscape ? 0 : 6,
-            right: landscape ? 0 : 8,
-            child: IconButton(
-              key: const ValueKey('player-lyric-search-action'),
-              tooltip: '查找歌词',
-              onPressed: () => _openLyricSearch(ctx, player, song),
-              icon: Icon(Icons.manage_search_rounded, color: textColor),
-              iconSize: landscape ? 30 : 28,
-              style: IconButton.styleFrom(
-                minimumSize: Size.square(landscape ? 48 : 44),
-                backgroundColor: Colors.black.withValues(alpha: 0.12),
+          if (song != null)
+            Positioned(
+              top: landscape ? 0 : 6,
+              right: landscape ? 0 : 8,
+              child: IconButton(
+                key: const ValueKey('player-lyric-search-action'),
+                tooltip: '查找歌词',
+                onPressed: () => _openLyricSearch(ctx, player, song),
+                icon: Icon(Icons.manage_search_rounded, color: textColor),
+                iconSize: landscape ? 30 : 28,
+                style: IconButton.styleFrom(
+                  minimumSize: Size.square(landscape ? 48 : 44),
+                  backgroundColor: Colors.black.withValues(alpha: 0.12),
+                ),
               ),
             ),
-          ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -2241,78 +2258,81 @@ class _PlayerScreenState extends State<PlayerScreen> {
     bool compact = false,
   }) {
     // 进度条独立监听 position/duration，只有时间变化才重建这一小块
-    return Selector<PlayerProvider, (Duration, Duration)>(
-      selector: (_, p) => (p.position, p.duration),
-      builder: (ctx, sel, _) {
-        final position = sel.$1;
-        final duration = sel.$2;
-        final layout = AppLayout.fromContext(ctx);
-        final largeUi = compact && layout.usesLargeTypography;
-        final total = duration.inMilliseconds.toDouble();
-        final pos = position.inMilliseconds.toDouble().clamp(
-          0,
-          total > 0 ? total : 1,
-        );
-        return Padding(
-          padding: EdgeInsets.symmetric(
-            horizontal: compact ? 16 : 24,
-            vertical: compact ? 0 : 4,
-          ),
-          child: Column(
-            children: [
-              SliderTheme(
-                data: SliderTheme.of(ctx).copyWith(
-                  trackHeight: largeUi ? 4 : 3,
-                  thumbShape: RoundSliderThumbShape(
-                    enabledThumbRadius: largeUi ? 8 : 6,
-                  ),
-                  overlayShape: RoundSliderOverlayShape(
-                    overlayRadius: largeUi ? 16 : 12,
-                  ),
-                  activeTrackColor: AppColors.primary,
-                  inactiveTrackColor: subColor.withOpacity(0.25),
-                  thumbColor: AppColors.primary,
-                ),
-                child: SizedBox(
-                  height: largeUi ? 44 : (compact ? 34 : 50),
-                  child: Slider(
-                    value: total > 0 ? pos / total : 0,
-                    onChanged: total > 0
-                        ? (v) {
-                            player.seekTo(
-                              Duration(milliseconds: (v * total).toInt()),
-                            );
-                          }
-                        : null,
-                  ),
-                ),
-              ),
-              Padding(
-                padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      _formatDuration(position),
-                      style: TextStyle(
-                        color: subColor,
-                        fontSize: largeUi ? 14 : (compact ? 11 : 13),
-                      ),
+    return RepaintBoundary(
+      key: const ValueKey('player-progress-repaint-boundary'),
+      child: Selector<PlayerProvider, (Duration, Duration)>(
+        selector: (_, p) => (p.position, p.duration),
+        builder: (ctx, sel, _) {
+          final position = sel.$1;
+          final duration = sel.$2;
+          final layout = AppLayout.fromContext(ctx);
+          final largeUi = compact && layout.usesLargeTypography;
+          final total = duration.inMilliseconds.toDouble();
+          final pos = position.inMilliseconds.toDouble().clamp(
+            0,
+            total > 0 ? total : 1,
+          );
+          return Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: compact ? 16 : 24,
+              vertical: compact ? 0 : 4,
+            ),
+            child: Column(
+              children: [
+                SliderTheme(
+                  data: SliderTheme.of(ctx).copyWith(
+                    trackHeight: largeUi ? 4 : 3,
+                    thumbShape: RoundSliderThumbShape(
+                      enabledThumbRadius: largeUi ? 8 : 6,
                     ),
-                    Text(
-                      _formatDuration(duration),
-                      style: TextStyle(
-                        color: subColor,
-                        fontSize: largeUi ? 14 : (compact ? 12 : 13),
-                      ),
+                    overlayShape: RoundSliderOverlayShape(
+                      overlayRadius: largeUi ? 16 : 12,
                     ),
-                  ],
+                    activeTrackColor: AppColors.primary,
+                    inactiveTrackColor: subColor.withOpacity(0.25),
+                    thumbColor: AppColors.primary,
+                  ),
+                  child: SizedBox(
+                    height: largeUi ? 44 : (compact ? 34 : 50),
+                    child: Slider(
+                      value: total > 0 ? pos / total : 0,
+                      onChanged: total > 0
+                          ? (v) {
+                              player.seekTo(
+                                Duration(milliseconds: (v * total).toInt()),
+                              );
+                            }
+                          : null,
+                    ),
+                  ),
                 ),
-              ),
-            ],
-          ),
-        );
-      },
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 16),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        _formatDuration(position),
+                        style: TextStyle(
+                          color: subColor,
+                          fontSize: largeUi ? 14 : (compact ? 11 : 13),
+                        ),
+                      ),
+                      Text(
+                        _formatDuration(duration),
+                        style: TextStyle(
+                          color: subColor,
+                          fontSize: largeUi ? 14 : (compact ? 12 : 13),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 

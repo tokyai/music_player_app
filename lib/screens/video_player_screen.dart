@@ -241,6 +241,20 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _automaticFallbackUsed = false;
   String? _initializationError;
   String? _engineNotice;
+  Timer? _videoUiTimer;
+  final Stopwatch _videoUiClock = Stopwatch()..start();
+  int _lastVideoUiRefreshMs = -1000;
+  ({
+    bool initialized,
+    bool playing,
+    bool buffering,
+    int durationMs,
+    int aspectMilli,
+    String? error,
+  })?
+  _lastVideoUiState;
+
+  static const _videoPositionUiInterval = Duration(milliseconds: 180);
 
   @override
   void initState() {
@@ -295,6 +309,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         _initializing = false;
         _engineNotice = null;
       });
+      _lastVideoUiState = _readVideoUiState();
+      _lastVideoUiRefreshMs = _videoUiClock.elapsedMilliseconds;
       _scheduleControlsHide();
     } catch (_) {
       if (!mounted || initializingController != _controller) return;
@@ -308,7 +324,66 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       unawaited(_handlePlaybackFailure());
       return;
     }
-    setState(() {});
+    final nextState = _readVideoUiState();
+    final presentationChanged = nextState != _lastVideoUiState;
+    _lastVideoUiState = nextState;
+    // During startup the loading state is already visible. Avoid rebuilding
+    // it for every native position/buffer callback before initialization ends.
+    if (_initializing) return;
+    if (presentationChanged) {
+      _refreshVideoUiNow();
+    } else {
+      _scheduleVideoUiRefresh();
+    }
+  }
+
+  ({
+    bool initialized,
+    bool playing,
+    bool buffering,
+    int durationMs,
+    int aspectMilli,
+    String? error,
+  })
+  _readVideoUiState() {
+    final aspect = _controller.aspectRatio;
+    return (
+      initialized: _controller.isInitialized,
+      playing: _controller.isPlaying,
+      buffering: _controller.isBuffering,
+      durationMs: _controller.duration.inMilliseconds,
+      aspectMilli: (aspect.isFinite ? aspect : 16 / 9) * 1000 ~/ 1,
+      error: _controller.error,
+    );
+  }
+
+  void _refreshVideoUiNow() {
+    _videoUiTimer?.cancel();
+    _videoUiTimer = null;
+    _lastVideoUiRefreshMs = _videoUiClock.elapsedMilliseconds;
+    if (mounted) setState(() {});
+  }
+
+  void _scheduleVideoUiRefresh() {
+    if (_videoUiTimer != null) return;
+    final elapsed = _videoUiClock.elapsedMilliseconds - _lastVideoUiRefreshMs;
+    final remaining = _videoPositionUiInterval.inMilliseconds - elapsed;
+    if (remaining <= 0) {
+      _refreshVideoUiNow();
+      return;
+    }
+    _videoUiTimer = Timer(Duration(milliseconds: remaining), () {
+      _videoUiTimer = null;
+      if (!mounted || _switchingEngine || _initializing) return;
+      _lastVideoUiRefreshMs = _videoUiClock.elapsedMilliseconds;
+      setState(() {});
+    });
+  }
+
+  void _cancelVideoUiRefresh() {
+    _videoUiTimer?.cancel();
+    _videoUiTimer = null;
+    _lastVideoUiState = null;
   }
 
   Future<void> _handlePlaybackFailure() async {
@@ -331,6 +406,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (_switchingEngine || engine == _activeEngine) return;
     _switchingEngine = true;
     _controlsTimer?.cancel();
+    _cancelVideoUiRefresh();
     if (mounted) {
       setState(() {
         _initializing = true;
@@ -350,6 +426,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   Future<void> _retry() async {
     if (_switchingEngine) return;
+    _cancelVideoUiRefresh();
     _controller.removeListener(_handleVideoChanged);
     await _controller.close();
     if (!mounted) return;
@@ -417,6 +494,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controlsTimer?.cancel();
+    _cancelVideoUiRefresh();
     _controller.removeListener(_handleVideoChanged);
     unawaited(_controller.close());
     applySystemUi(dark: AppColors.isDark);
@@ -441,11 +519,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             children: [
               if (!_initializing && error == null)
                 Positioned.fill(
-                  child: Center(
-                    child: AspectRatio(
-                      aspectRatio: _controller.aspectRatio,
-                      child: _controller.buildSurface(
-                        ValueKey('mv-video-surface-${_activeEngine.name}'),
+                  child: RepaintBoundary(
+                    key: const ValueKey('mv-video-repaint-boundary'),
+                    child: Center(
+                      child: AspectRatio(
+                        aspectRatio: _controller.aspectRatio,
+                        child: _controller.buildSurface(
+                          ValueKey('mv-video-surface-${_activeEngine.name}'),
+                        ),
                       ),
                     ),
                   ),
@@ -504,7 +585,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       ignoring: !_controlsVisible,
       child: AnimatedOpacity(
         opacity: _controlsVisible ? 1 : 0,
-        duration: const Duration(milliseconds: 180),
+        duration: AppMotion.resolve(context, AppMotion.state),
         child: Align(
           alignment: Alignment.topCenter,
           child: Container(
@@ -577,7 +658,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       ignoring: !_controlsVisible,
       child: AnimatedOpacity(
         opacity: _controlsVisible ? 1 : 0,
-        duration: const Duration(milliseconds: 180),
+        duration: AppMotion.resolve(context, AppMotion.state),
         child: Align(
           alignment: Alignment.bottomCenter,
           child: Container(

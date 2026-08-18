@@ -317,20 +317,16 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               key: const ValueKey('home-favorites-header'),
               onTap: _openFavorites,
             ),
-            AnimatedSize(
-              duration: AppMotion.resolve(context, AppMotion.state),
-              curve: AppMotion.enterCurve,
-              child: AppMotionSwitcher(
-                child: KeyedSubtree(
-                  key: ValueKey(
-                    !favorites.loaded
-                        ? 'home-favorites-loading'
-                        : songs.isEmpty
-                        ? 'home-favorites-empty'
-                        : 'home-favorites-content',
-                  ),
-                  child: _buildFavoriteSection(favorites, compact: compact),
+            AppMotionSwitcher(
+              child: KeyedSubtree(
+                key: ValueKey(
+                  !favorites.loaded
+                      ? 'home-favorites-loading'
+                      : songs.isEmpty
+                      ? 'home-favorites-empty'
+                      : 'home-favorites-content',
                 ),
+                child: _buildFavoriteSection(favorites, compact: compact),
               ),
             ),
           ],
@@ -415,22 +411,18 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               key: const ValueKey('home-favorite-playlists-header'),
               onTap: _openFavorites,
             ),
-            AnimatedSize(
-              duration: AppMotion.resolve(context, AppMotion.state),
-              curve: AppMotion.enterCurve,
-              child: AppMotionSwitcher(
-                child: KeyedSubtree(
-                  key: ValueKey(
-                    !favorites.loaded
-                        ? 'home-playlists-loading'
-                        : playlists.isEmpty
-                        ? 'home-playlists-empty'
-                        : 'home-playlists-content',
-                  ),
-                  child: _buildFavoritePlaylistSection(
-                    favorites,
-                    compact: compact,
-                  ),
+            AppMotionSwitcher(
+              child: KeyedSubtree(
+                key: ValueKey(
+                  !favorites.loaded
+                      ? 'home-playlists-loading'
+                      : playlists.isEmpty
+                      ? 'home-playlists-empty'
+                      : 'home-playlists-content',
+                ),
+                child: _buildFavoritePlaylistSection(
+                  favorites,
+                  compact: compact,
                 ),
               ),
             ),
@@ -593,14 +585,10 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         : songs.isEmpty
         ? 'empty'
         : 'content';
-    return AnimatedSize(
-      duration: AppMotion.resolve(context, AppMotion.state),
-      curve: AppMotion.enterCurve,
-      child: AppMotionSwitcher(
-        child: KeyedSubtree(
-          key: ValueKey('home-daily-$stateKey'),
-          child: _buildSongSection(songs, loading, error, onRetry: onRetry),
-        ),
+    return AppMotionSwitcher(
+      child: KeyedSubtree(
+        key: ValueKey('home-daily-$stateKey'),
+        child: _buildSongSection(songs, loading, error, onRetry: onRetry),
       ),
     );
   }

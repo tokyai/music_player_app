@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../models/song.dart';
 import '../theme/app_layout.dart';
-import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 import 'cover_hero_tags.dart';
 import 'smart_cover.dart';
@@ -77,13 +76,10 @@ class FavoritePlaylistCard extends StatelessWidget {
                           tooltip: '取消收藏歌单',
                           visualDensity: VisualDensity.compact,
                           onPressed: onFavoritePressed,
-                          icon: const AppAnimatedIcon(
-                            stateKey: true,
-                            child: Icon(
-                              Icons.favorite_rounded,
-                              color: Colors.redAccent,
-                              size: 21,
-                            ),
+                          icon: const Icon(
+                            Icons.favorite_rounded,
+                            color: Colors.redAccent,
+                            size: 21,
                           ),
                         ),
                       ),

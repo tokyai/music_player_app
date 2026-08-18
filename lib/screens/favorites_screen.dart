@@ -92,20 +92,16 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (!isLandscape)
-              AnimatedSize(
-                duration: AppMotion.resolve(context, AppMotion.state),
-                curve: AppMotion.enterCurve,
-                child: AppMotionSwitcher(
-                  alignment: Alignment.bottomCenter,
-                  child: _selecting
-                      ? KeyedSubtree(
-                          key: const ValueKey('favorites-selection-bar'),
-                          child: _buildSelectionBar(songs),
-                        )
-                      : const SizedBox.shrink(
-                          key: ValueKey('favorites-selection-bar-hidden'),
-                        ),
-                ),
+              AppMotionSwitcher(
+                alignment: Alignment.bottomCenter,
+                child: _selecting
+                    ? KeyedSubtree(
+                        key: const ValueKey('favorites-selection-bar'),
+                        child: _buildSelectionBar(songs),
+                      )
+                    : const SizedBox.shrink(
+                        key: ValueKey('favorites-selection-bar-hidden'),
+                      ),
               ),
             const MiniPlayer(),
           ],
@@ -703,13 +699,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                   if (progress == null)
                     const LinearProgressIndicator()
                   else
-                    TweenAnimationBuilder<double>(
-                      duration: AppMotion.resolve(context, AppMotion.quick),
-                      curve: AppMotion.enterCurve,
-                      tween: Tween(end: progress),
-                      builder: (context, value, _) =>
-                          LinearProgressIndicator(value: value),
-                    ),
+                    LinearProgressIndicator(value: progress),
                   const SizedBox(height: 14),
                   Text(
                     '正在匹配 $_switchCompleted / $_switchTotal',

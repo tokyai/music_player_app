@@ -451,18 +451,14 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         _buildCard(
           title: '手机局域网传输',
           icon: Icons.phone_android_outlined,
-          child: AnimatedSize(
-            duration: AppMotion.resolve(context, AppMotion.state),
-            curve: AppMotion.enterCurve,
-            child: AppMotionSwitcher(
-              child: KeyedSubtree(
-                key: ValueKey(
-                  _lanSession?.isActive == true
-                      ? 'backup-lan-active'
-                      : 'backup-lan-idle',
-                ),
-                child: _buildLanContent(layout),
+          child: AppMotionSwitcher(
+            child: KeyedSubtree(
+              key: ValueKey(
+                _lanSession?.isActive == true
+                    ? 'backup-lan-active'
+                    : 'backup-lan-idle',
               ),
+              child: _buildLanContent(layout),
             ),
           ),
         ),
@@ -645,38 +641,32 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
                     ],
                   ),
           ),
-          AnimatedSize(
-            duration: AppMotion.resolve(context, AppMotion.state),
-            curve: AppMotion.enterCurve,
-            child: AppMotionSwitcher(
-              child: _status == null
-                  ? const SizedBox.shrink(key: ValueKey('backup-status-empty'))
-                  : Padding(
-                      key: ValueKey(
-                        'backup-status-${_statusError ? 'error' : 'success'}',
+          AppMotionSwitcher(
+            child: _status == null
+                ? const SizedBox.shrink(key: ValueKey('backup-status-empty'))
+                : Padding(
+                    key: ValueKey(
+                      'backup-status-${_statusError ? 'error' : 'success'}',
+                    ),
+                    padding: const EdgeInsets.only(top: 14),
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: (_statusError ? Colors.red : AppColors.primary)
+                            .withValues(alpha: .10),
+                        borderRadius: BorderRadius.circular(AppRadius.control),
                       ),
-                      padding: const EdgeInsets.only(top: 14),
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: (_statusError ? Colors.red : AppColors.primary)
-                              .withValues(alpha: .10),
-                          borderRadius: BorderRadius.circular(
-                            AppRadius.control,
-                          ),
-                        ),
-                        child: Text(
-                          _status!,
-                          style: TextStyle(
-                            color: _statusError
-                                ? Colors.red.shade700
-                                : AppColors.textPrimary,
-                            fontSize: layout.secondarySize,
-                          ),
+                      child: Text(
+                        _status!,
+                        style: TextStyle(
+                          color: _statusError
+                              ? Colors.red.shade700
+                              : AppColors.textPrimary,
+                          fontSize: layout.secondarySize,
                         ),
                       ),
                     ),
-            ),
+                  ),
           ),
         ],
       ),

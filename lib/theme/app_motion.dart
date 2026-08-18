@@ -41,20 +41,27 @@ class AppMotionSwitcher extends StatelessWidget {
       reverseDuration: AppMotion.resolve(context, AppMotion.quick),
       switchInCurve: AppMotion.enterCurve,
       switchOutCurve: AppMotion.exitCurve,
-      layoutBuilder: (currentChild, previousChildren) => Stack(
-        alignment: alignment,
-        children: [...previousChildren, if (currentChild != null) currentChild],
-      ),
-      transitionBuilder: (child, animation) => FadeTransition(
-        opacity: animation,
-        child: SlideTransition(
+      // Large loading/content switches used to retain and paint both the old
+      // and new list during the cross-fade.  Keeping only the incoming child
+      // halves the peak paint/layout work on low-end head units.
+      layoutBuilder: (currentChild, _) => currentChild == null
+          ? const SizedBox.shrink()
+          : Stack(alignment: alignment, children: [currentChild]),
+      transitionBuilder: (child, animation) {
+        // Default state changes use only a compositor translation. A fade is
+        // reserved for centered overlays that explicitly request no movement;
+        // this avoids full-list opacity layers at high resolutions.
+        if (beginOffset == Offset.zero) {
+          return FadeTransition(opacity: animation, child: child);
+        }
+        return SlideTransition(
           position: Tween<Offset>(
             begin: beginOffset,
             end: Offset.zero,
           ).animate(animation),
           child: child,
-        ),
-      ),
+        );
+      },
       child: child,
     );
   }

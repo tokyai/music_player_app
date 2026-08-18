@@ -70,8 +70,11 @@ class MusicPlayerApp extends StatelessWidget {
             theme: AppTheme.light(),
             darkTheme: AppTheme.dark(),
             themeMode: themeCtrl.mode,
-            themeAnimationDuration: AppMotion.resolve(context, AppMotion.state),
-            themeAnimationCurve: AppMotion.enterCurve,
+            // AnimatedTheme interpolates the complete application theme and
+            // rebuilds every visible page for several frames.  An immediate
+            // switch is much more reliable on low-end car hardware and also
+            // prevents custom surfaces from lagging one frame behind.
+            themeAnimationDuration: Duration.zero,
             // 按实际生效的主题同步全局亮暗标志 + 系统栏样式（状态栏不黑条、图标跟随主题）
             builder: (context, child) {
               AppColors.syncWithTheme(context);
@@ -116,7 +119,6 @@ class _MainScreenState extends State<MainScreen>
   SearchSession? _searchSession;
   int _handledSearchNavigationId = 0;
   late final AnimationController _pageTransitionController;
-  late final Animation<double> _pageOpacity;
   late final Animation<Offset> _pageOffset;
 
   final List<Widget?> _screens = [const DiscoverScreen(), null, null, null];
@@ -133,7 +135,6 @@ class _MainScreenState extends State<MainScreen>
       parent: _pageTransitionController,
       curve: AppMotion.enterCurve,
     );
-    _pageOpacity = Tween<double>(begin: 0.9, end: 1).animate(curved);
     _pageOffset = Tween<Offset>(
       begin: const Offset(0.012, 0),
       end: Offset.zero,
@@ -221,18 +222,17 @@ class _MainScreenState extends State<MainScreen>
         final isLandscape =
             MediaQuery.orientationOf(context) == Orientation.landscape;
         final hasCurrentSong = playerState.hasSong;
-        final content = FadeTransition(
-          opacity: _pageOpacity,
-          child: SlideTransition(
-            position: _pageOffset,
-            child: IndexedStack(
-              index: _currentIndex,
-              children: List.generate(
-                _screens.length,
-                (index) => TickerMode(
-                  enabled: index == _currentIndex,
-                  child: _screens[index] ?? const SizedBox.shrink(),
-                ),
+        // A compositor-only offset preserves a clear navigation response
+        // without applying animated opacity to the entire image-heavy page.
+        final content = SlideTransition(
+          position: _pageOffset,
+          child: IndexedStack(
+            index: _currentIndex,
+            children: List.generate(
+              _screens.length,
+              (index) => TickerMode(
+                enabled: index == _currentIndex,
+                child: _screens[index] ?? const SizedBox.shrink(),
               ),
             ),
           ),
@@ -331,30 +331,23 @@ class _MainScreenState extends State<MainScreen>
                         ],
                       ),
                     ),
-                    AnimatedSize(
-                      duration: AppMotion.resolve(context, AppMotion.page),
-                      curve: AppMotion.enterCurve,
-                      alignment: Alignment.centerRight,
-                      clipBehavior: Clip.hardEdge,
-                      child: SizedBox(
-                        width: showPlayerPane ? 297 : 0,
-                        child: showPlayerPane
-                            ? Row(
-                                children: [
-                                  VerticalDivider(
-                                    width: 1,
-                                    thickness: 1,
-                                    color: AppColors.surfaceSoft,
-                                  ),
-                                  const SizedBox(
-                                    width: 296,
-                                    child: LandscapeMiniPlayer(),
-                                  ),
-                                ],
-                              )
-                            : null,
+                    if (showPlayerPane)
+                      SizedBox(
+                        width: 297,
+                        child: Row(
+                          children: [
+                            VerticalDivider(
+                              width: 1,
+                              thickness: 1,
+                              color: AppColors.surfaceSoft,
+                            ),
+                            const SizedBox(
+                              width: 296,
+                              child: LandscapeMiniPlayer(),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
                   ],
                 ),
               );

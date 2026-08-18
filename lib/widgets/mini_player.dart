@@ -152,15 +152,18 @@ class _MiniProgressBar extends StatelessWidget {
         final progress = durationMs > 0
             ? value.$1.inMilliseconds / durationMs
             : 0.0;
-        return ClipRRect(
-          borderRadius: const BorderRadius.vertical(
-            top: Radius.circular(AppRadius.card),
-          ),
-          child: LinearProgressIndicator(
-            value: progress.clamp(0.0, 1.0),
-            minHeight: 3,
-            backgroundColor: AppColors.primarySoft,
-            valueColor: AlwaysStoppedAnimation<Color>(platformColor),
+        return RepaintBoundary(
+          key: const ValueKey('mini-player-progress-repaint-boundary'),
+          child: ClipRRect(
+            borderRadius: const BorderRadius.vertical(
+              top: Radius.circular(AppRadius.card),
+            ),
+            child: LinearProgressIndicator(
+              value: progress.clamp(0.0, 1.0),
+              minHeight: 3,
+              backgroundColor: AppColors.primarySoft,
+              valueColor: AlwaysStoppedAnimation<Color>(platformColor),
+            ),
           ),
         );
       },
@@ -373,13 +376,16 @@ class _LandscapeMiniProgressBar extends StatelessWidget {
         final progress = durationMs > 0
             ? value.$1.inMilliseconds / durationMs
             : 0.0;
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(2),
-          child: LinearProgressIndicator(
-            value: progress.clamp(0.0, 1.0),
-            minHeight: 3,
-            backgroundColor: AppColors.primarySoft,
-            valueColor: AlwaysStoppedAnimation<Color>(platformColor),
+        return RepaintBoundary(
+          key: const ValueKey('landscape-mini-progress-repaint-boundary'),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              value: progress.clamp(0.0, 1.0),
+              minHeight: 3,
+              backgroundColor: AppColors.primarySoft,
+              valueColor: AlwaysStoppedAnimation<Color>(platformColor),
+            ),
           ),
         );
       },
