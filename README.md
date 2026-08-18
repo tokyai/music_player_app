@@ -104,6 +104,25 @@ flutter run
 flutter build apk --release
 ```
 
+### iOS IPA
+
+首次构建前，在 Mac 的 Xcode 中登录 Apple Developer 账号，并安装 Flutter、Xcode Command Line Tools 和 CocoaPods。然后在项目根目录执行：
+
+```bash
+./build_ipa.sh
+```
+
+脚本首次运行会询问应用的 Bundle ID 和 10 位 Apple Developer Team ID，本地配置写入已忽略的 `ios/Flutter/Signing.xcconfig`，不会提交签名信息。默认生成 App Store IPA；也可以通过环境变量一次性指定：
+
+```bash
+IOS_BUNDLE_ID=com.example.kuzaiMusic \
+IOS_TEAM_ID=ABCDEFGHIJ \
+IOS_EXPORT_METHOD=app-store \
+./build_ipa.sh
+```
+
+可用的导出方式为 `app-store`、`ad-hoc`、`development` 和 `enterprise`。构建成功后的文件位于 `build/ios/ipa/`。
+
 > 注意：除用户选择的播放解析源外，平台请求和封面均默认直连；只有直连失败时才使用 `http://161.118.252.183` 的兼容线路。
 
 ## 🛠 技术栈

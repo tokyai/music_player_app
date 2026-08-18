@@ -1,0 +1,10 @@
+*.sh text eol=lf
+*.xcconfig text eol=lf
+*.pbxproj text eol=lf
+Podfile text eol=lf
+*.swift text eol=lf
+*.plist text eol=lf
+*.storyboard text eol=lf
+*.xcscheme text eol=lf
+*.xcworkspacedata text eol=lf
+*.png binary

@@ -1,0 +1,3 @@
+// build_ipa.sh overrides these defaults through the ignored Signing.xcconfig.
+IOS_BUNDLE_IDENTIFIER = com.example.musicPlayerApp
+IOS_DEVELOPMENT_TEAM =
