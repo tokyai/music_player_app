@@ -11,6 +11,9 @@ class FavoriteImportResult {
   final int added;
   final int skipped;
   final int total;
+  final int bilibiliAdded;
+  final int bilibiliSkipped;
+  final int bilibiliTotal;
   final int playlistsAdded;
   final int playlistsSkipped;
   final bool apiKeyPresent;
@@ -20,6 +23,9 @@ class FavoriteImportResult {
     required this.added,
     required this.skipped,
     required this.total,
+    this.bilibiliAdded = 0,
+    this.bilibiliSkipped = 0,
+    this.bilibiliTotal = 0,
     this.playlistsAdded = 0,
     this.playlistsSkipped = 0,
     this.apiKeyPresent = false,
@@ -32,13 +38,19 @@ class FavoriteService extends ChangeNotifier {
   static const String _prefsKey = 'favorites';
   static const String _playlistPrefsKey = 'favorite_playlists';
   static const String exportFormat = 'kuzai_music_favorites';
-  static const int exportVersion = 2;
+  static const int exportVersion = 3;
 
   final List<SongSearchResult> _favorites = [];
   final List<FavoritePlaylist> _favoritePlaylists = [];
   bool _loaded = false;
 
-  List<SongSearchResult> get favorites => List.unmodifiable(_favorites);
+  List<SongSearchResult> get favorites => List.unmodifiable(
+    _favorites.where((song) => song.platform != MusicPlatform.bilibili),
+  );
+  List<SongSearchResult> get bilibiliFavorites => List.unmodifiable(
+    _favorites.where((song) => song.platform == MusicPlatform.bilibili),
+  );
+  List<SongSearchResult> get allFavorites => List.unmodifiable(_favorites);
   List<FavoritePlaylist> get favoritePlaylists =>
       List.unmodifiable(_favoritePlaylists);
   bool get loaded => _loaded;
@@ -69,7 +81,8 @@ class FavoriteService extends ChangeNotifier {
         final decoded = _decodeBackup(raw);
         _favorites
           ..clear()
-          ..addAll(decoded.songs);
+          ..addAll(decoded.songs)
+          ..addAll(decoded.bilibili);
       }
       final playlistRaw = prefs.getString(_playlistPrefsKey);
       if (playlistRaw != null && playlistRaw.isNotEmpty) {
@@ -134,6 +147,32 @@ class FavoriteService extends ChangeNotifier {
       0,
       FavoritePlaylist(platform: platform, playlist: playlist),
     );
+    notifyListeners();
+    await _savePlaylists();
+    return true;
+  }
+
+  /// 将歌单保存到本地歌单库，已存在时更新元数据而不删除。
+  ///
+  /// 返回值表示是否新增了歌单。
+  Future<bool> savePlaylist(
+    MusicPlatform platform,
+    PlaylistInfo playlist,
+  ) async {
+    await load();
+    final key = playlistKey(platform, playlist.id);
+    final index = _favoritePlaylists.indexWhere(
+      (item) => playlistKeyOf(item) == key,
+    );
+    final saved = FavoritePlaylist(platform: platform, playlist: playlist);
+    if (index >= 0) {
+      _favoritePlaylists[index] = saved;
+      notifyListeners();
+      await _savePlaylists();
+      return false;
+    }
+
+    _favoritePlaylists.insert(0, saved);
     notifyListeners();
     await _savePlaylists();
     return true;
@@ -219,14 +258,15 @@ class FavoriteService extends ChangeNotifier {
 
   /// 导出统一备份。API Key 由调用方传入，避免收藏服务直接依赖播放器。
   ///
-  /// 版本 2 同时保存歌曲、歌单元数据和 API Key。歌单曲目不写入备份，
-  /// 还原后会按平台重新获取最新曲目。
+  /// 版本 3 将音乐歌曲与 B站收藏分开保存，同时保留歌单元数据和 API Key。
+  /// 歌单曲目不写入备份，还原后会按平台重新获取最新曲目。
   String exportJson({String? apiKey}) {
     return const JsonEncoder.withIndent('  ').convert({
       'format': exportFormat,
       'version': exportVersion,
       'exportedAt': DateTime.now().toUtc().toIso8601String(),
-      'songs': _favorites.map((song) => song.toJson()).toList(),
+      'songs': favorites.map((song) => song.toJson()).toList(),
+      'bilibili': bilibiliFavorites.map((song) => song.toJson()).toList(),
       'playlists': _favoritePlaylists
           .map((playlist) => playlist.toJson())
           .toList(),
@@ -243,12 +283,20 @@ class FavoriteService extends ChangeNotifier {
     final decoded = _decodeBackup(raw);
     var skipped = decoded.skipped;
     var added = 0;
+    var bilibiliSkipped = decoded.bilibiliSkipped;
+    var bilibiliAdded = 0;
 
     if (mode == FavoriteImportMode.replace) {
-      _favorites
-        ..clear()
-        ..addAll(decoded.songs);
+      _favorites.removeWhere((song) => song.platform != MusicPlatform.bilibili);
+      _favorites.insertAll(0, decoded.songs);
       added = decoded.songs.length;
+      if (decoded.hasBilibili) {
+        _favorites.removeWhere(
+          (song) => song.platform == MusicPlatform.bilibili,
+        );
+        _favorites.addAll(decoded.bilibili);
+        bilibiliAdded = decoded.bilibili.length;
+      }
     } else {
       final existing = _favorites.map(keyOf).toSet();
       for (final song in decoded.songs) {
@@ -257,6 +305,14 @@ class FavoriteService extends ChangeNotifier {
           added++;
         } else {
           skipped++;
+        }
+      }
+      for (final song in decoded.bilibili) {
+        if (existing.add(keyOf(song))) {
+          _favorites.add(song);
+          bilibiliAdded++;
+        } else {
+          bilibiliSkipped++;
         }
       }
     }
@@ -289,6 +345,9 @@ class FavoriteService extends ChangeNotifier {
       added: added,
       skipped: skipped,
       total: decoded.songs.length + decoded.skipped,
+      bilibiliAdded: bilibiliAdded,
+      bilibiliSkipped: bilibiliSkipped,
+      bilibiliTotal: decoded.bilibili.length + decoded.bilibiliSkipped,
       playlistsAdded: playlistsAdded,
       playlistsSkipped: decoded.playlistsSkipped,
       apiKeyPresent: decoded.apiKeyPresent,
@@ -305,7 +364,9 @@ class FavoriteService extends ChangeNotifier {
     }
 
     final List<dynamic> entries;
+    List<dynamic> bilibiliEntries = const [];
     var hasPlaylists = false;
+    var hasBilibili = false;
     List<dynamic> playlistEntries = const [];
     var apiKeyPresent = false;
     String? apiKey;
@@ -321,6 +382,14 @@ class FavoriteService extends ChangeNotifier {
         throw const FormatException('备份文件缺少歌曲列表');
       }
       entries = songs;
+      if (decoded.containsKey('bilibili')) {
+        final bilibili = decoded['bilibili'];
+        if (bilibili is! List) {
+          throw const FormatException('备份文件中的 B站收藏格式错误');
+        }
+        hasBilibili = true;
+        bilibiliEntries = bilibili;
+      }
       if (decoded.containsKey('playlists')) {
         final playlists = decoded['playlists'];
         if (playlists is! List) {
@@ -342,8 +411,10 @@ class FavoriteService extends ChangeNotifier {
     }
 
     final songs = <SongSearchResult>[];
+    final bilibili = <SongSearchResult>[];
     final seen = <String>{};
     var skipped = 0;
+    var bilibiliSkipped = 0;
     for (final entry in entries) {
       if (entry is! Map) {
         skipped++;
@@ -355,14 +426,49 @@ class FavoriteService extends ChangeNotifier {
       final id = map['id']?.toString().trim() ?? '';
       final name = map['name']?.toString().trim() ?? '';
       if (platform == null || id.isEmpty || name.isEmpty) {
-        skipped++;
+        if (platform == MusicPlatform.bilibili) {
+          hasBilibili = true;
+          bilibiliSkipped++;
+        } else {
+          skipped++;
+        }
         continue;
       }
       final song = SongSearchResult.fromJson(map);
       if (seen.add(keyOf(song))) {
-        songs.add(song);
+        if (song.platform == MusicPlatform.bilibili) {
+          bilibili.add(song);
+          hasBilibili = true;
+        } else {
+          songs.add(song);
+        }
       } else {
-        skipped++;
+        if (song.platform == MusicPlatform.bilibili) {
+          hasBilibili = true;
+          bilibiliSkipped++;
+        } else {
+          skipped++;
+        }
+      }
+    }
+    for (final entry in bilibiliEntries) {
+      if (entry is! Map) {
+        bilibiliSkipped++;
+        continue;
+      }
+      final map = Map<String, dynamic>.from(entry);
+      final platform = _platformFromCode(map['platform']?.toString());
+      final id = map['id']?.toString().trim() ?? '';
+      final name = map['name']?.toString().trim() ?? '';
+      if (platform != MusicPlatform.bilibili || id.isEmpty || name.isEmpty) {
+        bilibiliSkipped++;
+        continue;
+      }
+      final song = SongSearchResult.fromJson(map);
+      if (seen.add(keyOf(song))) {
+        bilibili.add(song);
+      } else {
+        bilibiliSkipped++;
       }
     }
     final decodedPlaylists = <FavoritePlaylist>[];
@@ -389,6 +495,9 @@ class FavoriteService extends ChangeNotifier {
     return _DecodedBackup(
       songs: songs,
       skipped: skipped,
+      bilibili: bilibili,
+      bilibiliSkipped: bilibiliSkipped,
+      hasBilibili: hasBilibili,
       playlists: decodedPlaylists,
       playlistsSkipped: playlistsSkipped,
       hasPlaylists: hasPlaylists,
@@ -445,6 +554,9 @@ class FavoriteService extends ChangeNotifier {
 class _DecodedBackup {
   final List<SongSearchResult> songs;
   final int skipped;
+  final List<SongSearchResult> bilibili;
+  final int bilibiliSkipped;
+  final bool hasBilibili;
   final List<FavoritePlaylist> playlists;
   int playlistsSkipped;
   final bool hasPlaylists;
@@ -454,6 +566,9 @@ class _DecodedBackup {
   _DecodedBackup({
     required this.songs,
     required this.skipped,
+    required this.bilibili,
+    required this.bilibiliSkipped,
+    required this.hasBilibili,
     required this.playlists,
     required this.playlistsSkipped,
     required this.hasPlaylists,

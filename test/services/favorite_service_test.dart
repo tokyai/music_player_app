@@ -154,9 +154,10 @@ void main() {
     },
   );
 
-  test('version 2 backup includes playlists and API Key', () async {
+  test('version 3 backup separates Bilibili favorites', () async {
     final service = FavoriteService();
     await service.toggle(_song(MusicPlatform.qq, 'song-1', 'Song One'));
+    await service.toggle(_song(MusicPlatform.bilibili, 'BV1test', 'Video One'));
     await service.togglePlaylist(
       MusicPlatform.netease,
       PlaylistInfo(
@@ -170,8 +171,9 @@ void main() {
 
     final raw = service.exportJson(apiKey: 'api-key-for-backup');
     final exported = jsonDecode(raw) as Map<String, dynamic>;
-    expect(exported['version'], 2);
+    expect(exported['version'], 3);
     expect(exported['songs'], hasLength(1));
+    expect(exported['bilibili'], hasLength(1));
     expect(exported['playlists'], hasLength(1));
     expect(exported['apiKey'], 'api-key-for-backup');
 
@@ -182,8 +184,10 @@ void main() {
       mode: FavoriteImportMode.replace,
     );
     expect(restored.favorites.single.id, 'song-1');
+    expect(restored.bilibiliFavorites.single.id, 'BV1test');
     expect(restored.favoritePlaylists.single.id, 'playlist-1');
     expect(result.playlistsAdded, 1);
+    expect(result.bilibiliAdded, 1);
     expect(result.apiKeyPresent, isTrue);
     expect(result.apiKey, 'api-key-for-backup');
   });
@@ -209,6 +213,80 @@ void main() {
 
       expect(service.favorites.single.id, 'legacy');
       expect(service.favoritePlaylists.single.id, 'keep-playlist');
+    },
+  );
+
+  test('legacy backup migrates Bilibili entries out of songs', () async {
+    final service = FavoriteService();
+    final raw = jsonEncode({
+      'format': FavoriteService.exportFormat,
+      'version': 2,
+      'songs': [
+        _song(MusicPlatform.qq, 'song-1', 'Song One').toJson(),
+        _song(MusicPlatform.bilibili, 'BV1legacy', 'Legacy Video').toJson(),
+      ],
+    });
+
+    final result = await service.importJson(
+      raw,
+      mode: FavoriteImportMode.replace,
+    );
+
+    expect(service.favorites.single.id, 'song-1');
+    expect(service.bilibiliFavorites.single.id, 'BV1legacy');
+    expect(result.added, 1);
+    expect(result.bilibiliAdded, 1);
+  });
+
+  test(
+    'saving playlists adds multiple entries and updates duplicates',
+    () async {
+      final service = FavoriteService();
+      final first = PlaylistInfo(
+        id: 'playlist-1',
+        name: 'Playlist One',
+        trackCount: 10,
+        tracks: const [],
+      );
+      final second = PlaylistInfo(
+        id: 'playlist-2',
+        name: 'Playlist Two',
+        trackCount: 20,
+        tracks: const [],
+      );
+
+      expect(await service.savePlaylist(MusicPlatform.qq, first), isTrue);
+      expect(await service.savePlaylist(MusicPlatform.netease, second), isTrue);
+      expect(service.favoritePlaylists, hasLength(2));
+
+      expect(
+        await service.savePlaylist(
+          MusicPlatform.qq,
+          PlaylistInfo(
+            id: first.id,
+            name: 'Playlist One Updated',
+            trackCount: 12,
+            tracks: const [],
+          ),
+        ),
+        isFalse,
+      );
+      expect(service.favoritePlaylists, hasLength(2));
+      expect(
+        service.favoritePlaylists
+            .firstWhere((playlist) => playlist.id == first.id)
+            .playlist
+            .name,
+        'Playlist One Updated',
+      );
+
+      final restored = FavoriteService();
+      await restored.load();
+      expect(restored.favoritePlaylists, hasLength(2));
+      expect(
+        restored.favoritePlaylists.map((playlist) => playlist.id),
+        containsAll(['playlist-1', 'playlist-2']),
+      );
     },
   );
 }

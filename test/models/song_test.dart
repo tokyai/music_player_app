@@ -78,4 +78,24 @@ void main() {
     expect(item.copyWith(loading: true).playbackHeaders, isNotNull);
     expect(item.copyWith(clearPlaybackHeaders: true).playbackHeaders, isNull);
   });
+
+  test('PlayQueueItem can clear lyrics when a B站 page changes', () {
+    final item = PlayQueueItem(
+      platform: MusicPlatform.bilibili,
+      id: 'BV1lyrics',
+      name: '第一P',
+      artist: '测试UP主',
+      album: '测试视频',
+      bilibiliCid: 101,
+      lyric: '[00:00.00]第一P歌词',
+    );
+
+    final nextPage = item.copyWith(
+      name: '第二P',
+      bilibiliCid: 102,
+      clearLyric: true,
+    );
+    expect(nextPage.lyric, isNull);
+    expect(nextPage.bilibiliCid, 102);
+  });
 }

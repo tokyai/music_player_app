@@ -8,6 +8,7 @@ import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../providers/search_session.dart';
 import '../services/api_service.dart';
+import '../services/bilibili_service.dart';
 import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
@@ -73,7 +74,9 @@ class _LyricSearchDialogState extends State<_LyricSearchDialog> {
   @override
   void initState() {
     super.initState();
-    _queryController = TextEditingController(text: widget.song.name);
+    _queryController = TextEditingController(
+      text: widget.player.lyricSearchQueryFor(widget.song),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) => _search());
   }
 
@@ -118,7 +121,7 @@ class _LyricSearchDialogState extends State<_LyricSearchDialog> {
   Future<void> _apply(SongSearchResult result) async {
     if (_applyingId != null) return;
     setState(() {
-      _applyingId = result.id;
+      _applyingId = '${result.platform.code}:${result.id}';
       _error = null;
     });
     try {
@@ -282,8 +285,11 @@ class _LyricSearchDialogState extends State<_LyricSearchDialog> {
       separatorBuilder: (_, __) => const Divider(height: 1),
       itemBuilder: (context, index) {
         final result = _results[index];
-        final applying = _applyingId == result.id;
+        final applying = _applyingId == '${result.platform.code}:${result.id}';
         final album = result.album.trim().isEmpty ? '未知专辑' : result.album;
+        final sourcePrefix = widget.song.platform == MusicPlatform.bilibili
+            ? '${result.platform.label} · '
+            : '';
         return ListTile(
           key: ValueKey(
             'lyric-search-result-${result.platform.code}-${result.id}',
@@ -312,7 +318,7 @@ class _LyricSearchDialogState extends State<_LyricSearchDialog> {
             ),
           ),
           subtitle: Text(
-            '${result.artist} · $album',
+            '$sourcePrefix${result.artist} · $album',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
@@ -889,7 +895,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (!_lyricsAutoScroll) return;
     final index = player.currentLyricIndex;
     final song = player.currentSong;
-    final songKey = song == null ? null : '${song.platform.code}:${song.id}';
+    final songKey = _lyricTargetKey(song);
     if (!_forceLyricRecenter &&
         _lastAutoScrollSongKey == songKey &&
         _lastAutoScrollLyricIndex == index) {
@@ -930,6 +936,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
+  String? _lyricTargetKey(PlayQueueItem? song) {
+    if (song == null) return null;
+    return song.platform == MusicPlatform.bilibili
+        ? '${song.platform.code}:${song.id}:${song.bilibiliCid ?? 0}'
+        : '${song.platform.code}:${song.id}';
+  }
+
   void _openScopedSearch(
     BuildContext context,
     PlayerProvider player,
@@ -962,12 +975,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (_mvOpening) return;
     setState(() => _mvOpening = true);
     try {
-      final url = await player.api.musicVideoUrl(
-        platform: song.platform,
-        songId: song.id,
-        songName: song.name,
-        artist: song.artist,
-      );
+      BilibiliVideoSource? bilibiliSource;
+      final url = song.platform == MusicPlatform.bilibili
+          ? (bilibiliSource = await player.currentBilibiliVideoSource()).url
+          : await player.api.musicVideoUrl(
+              platform: song.platform,
+              songId: song.id,
+              songName: song.name,
+              artist: song.artist,
+            );
       if (!context.mounted) return;
       if (player.isPlaying) await player.pause();
       if (!context.mounted) return;
@@ -975,6 +991,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
         MaterialPageRoute<void>(
           builder: (_) => VideoPlayerScreen(
             url: url,
+            alternateUrls:
+                bilibiliSource?.urls.skip(1).toList(growable: false) ??
+                const [],
+            audioUrl: bilibiliSource?.audioUrl,
+            headers: bilibiliSource?.headers,
             title: song.name,
             artist: song.artist,
             platform: song.platform,
@@ -984,7 +1005,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       );
     } catch (error) {
       if (!context.mounted) return;
-      final message = error is ApiException ? error.message : 'MV 加载失败，请稍后重试';
+      final message = error is ApiException
+          ? error.message
+          : song.platform == MusicPlatform.bilibili
+          ? error.toString()
+          : 'MV 加载失败，请稍后重试';
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(message)));
@@ -1008,9 +1033,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
       );
       if (!context.mounted || selected == null) return;
       setState(() => _lyricsAutoScroll = true);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('已使用《$selected》的歌词')));
+      final isLandscape =
+          MediaQuery.orientationOf(context) == Orientation.landscape;
+      final snackBarBottomMargin = isLandscape
+          // Use the largest footer so a snackbar created in compact mode
+          // remains clear after the window expands.
+          ? 130.0
+          : null;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已使用《$selected》的歌词'),
+          margin: isLandscape
+              ? EdgeInsets.fromLTRB(16, 16, 16, snackBarBottomMargin!)
+              : null,
+        ),
+      );
     } finally {
       _lyricSearchDialogOpen = false;
     }
@@ -1414,6 +1451,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
             child: LayoutBuilder(
               builder: (context, constraints) {
                 final compact = layout.isCompactLandscape;
+                final footerMetrics = _landscapeFooterMetrics(layout);
+                final footerBottomPadding = footerMetrics.bottomPadding;
+                final footerHeight = footerMetrics.height;
                 final dividerWidth = largeUi ? 30.0 : (compact ? 20.0 : 24.0);
                 final panesWidth = (constraints.maxWidth - dividerWidth).clamp(
                   1.0,
@@ -1463,6 +1503,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           baseColor,
                           textColor,
                           subTextColor,
+                          footerHeight: footerHeight,
+                          footerBottomPadding: footerBottomPadding,
                         ),
                       ),
                     ),
@@ -1478,7 +1520,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     Expanded(
                       child: KeyedSubtree(
                         key: const ValueKey('landscape-player-lyrics'),
-                        child: _buildLandscapeLyrics(ctx, player, textColor),
+                        child: _buildLandscapeLyrics(
+                          ctx,
+                          player,
+                          textColor,
+                          footerHeight: footerHeight,
+                          footerBottomPadding: footerBottomPadding,
+                        ),
                       ),
                     ),
                   ],
@@ -1488,6 +1536,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  ({double height, double bottomPadding}) _landscapeFooterMetrics(
+    AppLayout layout,
+  ) {
+    final buttonHeight = layout.usesLargeTypography
+        ? 54.0
+        : layout.isCompactLandscape
+        ? 42.0
+        : 50.0;
+    final bottomPadding = layout.usesLargeTypography
+        ? 50.0
+        : layout.isCompactLandscape
+        ? 0.0
+        : 32.0;
+    return (
+      height: 2.0 + buttonHeight + bottomPadding,
+      bottomPadding: bottomPadding,
     );
   }
 
@@ -1541,15 +1608,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
     PlayQueueItem song,
     Color baseColor,
     Color textColor,
-    Color subTextColor,
-  ) {
+    Color subTextColor, {
+    required double footerHeight,
+    required double footerBottomPadding,
+  }) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final layout = AppLayout.fromContext(context);
         final largeUi = layout.usesLargeTypography;
         final compactHeight = constraints.maxHeight < 420 && !largeUi;
+        final shortCarUi =
+            layout.isHighDensityCarDisplay && constraints.maxHeight < 500;
         final widthLimit = constraints.maxWidth - (compactHeight ? 28 : 40);
-        final largeHeightFactor = layout.isHighDensityCarDisplay ? 0.27 : 0.44;
+        final largeHeightFactor = shortCarUi
+            ? 0.18
+            : layout.isHighDensityCarDisplay
+            ? 0.27
+            : 0.44;
         final heightLimit =
             constraints.maxHeight *
             (largeUi ? largeHeightFactor : (compactHeight ? 0.24 : 0.54));
@@ -1557,55 +1632,80 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ? widthLimit
             : heightLimit;
         final coverSize = rawCoverSize.clamp(
-          layout.isHighDensityCarDisplay
+          shortCarUi
+              ? 80.0
+              : layout.isHighDensityCarDisplay
               ? 128.0
               : (compactHeight ? 72.0 : 160.0),
           largeUi ? 400.0 : 320.0,
         );
         final verticalPadding = largeUi ? 6.0 : (compactHeight ? 4.0 : 10.0);
 
-        return SingleChildScrollView(
-          padding: EdgeInsets.symmetric(vertical: verticalPadding),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              minHeight: constraints.maxHeight - verticalPadding * 2,
+        return Column(
+          children: [
+            Expanded(
+              key: const ValueKey('landscape-player-left-content-frame'),
+              child: SingleChildScrollView(
+                padding: EdgeInsets.symmetric(vertical: verticalPadding),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minHeight:
+                        constraints.maxHeight -
+                        footerHeight -
+                        verticalPadding * 2,
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _buildLandscapeCoverArt(song, baseColor, coverSize),
+                      SizedBox(
+                        height: shortCarUi
+                            ? 4
+                            : largeUi
+                            ? 8
+                            : (compactHeight ? 5 : 14),
+                      ),
+                      _buildLandscapeSongInfo(
+                        ctx,
+                        player,
+                        song,
+                        textColor,
+                        subTextColor,
+                      ),
+                      _buildProgressBar(
+                        ctx,
+                        player,
+                        textColor,
+                        subTextColor,
+                        compact: true,
+                      ),
+                      _buildControls(
+                        ctx,
+                        player,
+                        textColor,
+                        compact: true,
+                        landscape: true,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _buildLandscapeCoverArt(song, baseColor, coverSize),
-                SizedBox(height: largeUi ? 8 : (compactHeight ? 5 : 14)),
-                _buildLandscapeSongInfo(
+            SizedBox(
+              key: const ValueKey('landscape-player-left-footer-frame'),
+              height: footerHeight,
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(0, 2, 0, footerBottomPadding),
+                child: _buildBottomActions(
                   ctx,
                   player,
-                  song,
-                  textColor,
                   subTextColor,
-                ),
-                _buildProgressBar(
-                  ctx,
-                  player,
-                  textColor,
-                  subTextColor,
-                  compact: true,
-                ),
-                _buildControls(
-                  ctx,
-                  player,
-                  textColor,
-                  compact: true,
+                  compact: layout.isCompactLandscape,
                   landscape: true,
                 ),
-                _buildBottomActions(
-                  ctx,
-                  player,
-                  subTextColor,
-                  compact: true,
-                  landscape: true,
-                ),
-              ],
+              ),
             ),
-          ),
+          ],
         );
       },
     );
@@ -1748,17 +1848,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget _buildLandscapeLyrics(
     BuildContext ctx,
     PlayerProvider player,
-    Color textColor,
-  ) {
-    return Selector<PlayerProvider, (int, int, bool, Duration, String?)>(
+    Color textColor, {
+    required double footerHeight,
+    required double footerBottomPadding,
+  }) {
+    return Selector<
+      PlayerProvider,
+      (int, int, bool, Duration, Duration, String?)
+    >(
       selector: (_, p) {
         final song = p.currentSong;
         return (
           p.lyrics.length,
           p.currentLyricIndex,
           p.lyricsLoading,
-          p.position,
-          song == null ? null : '${song.platform.code}:${song.id}',
+          p.lyricPosition,
+          p.lyricOffset,
+          _lyricTargetKey(song),
         );
       },
       builder: (ctx, selection, _) {
@@ -1773,6 +1879,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
           textColor,
           landscape: true,
           toggleOnTap: false,
+          landscapeFooterHeight: footerHeight,
+          landscapeFooterBottomPadding: footerBottomPadding,
         );
       },
     );
@@ -1784,8 +1892,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
     Color textColor, {
     required bool landscape,
     bool toggleOnTap = true,
+    double? landscapeFooterHeight,
+    double? landscapeFooterBottomPadding,
   }) {
+    assert(
+      !landscape ||
+          (landscapeFooterHeight != null &&
+              landscapeFooterBottomPadding != null),
+    );
     final song = player.currentSong;
+    final showBilibiliInfo =
+        song?.platform == MusicPlatform.bilibili && player.lyrics.isEmpty;
     final lyricStateKey = player.lyrics.isNotEmpty
         ? 'content'
         : player.lyricsLoading
@@ -1793,40 +1910,476 @@ class _PlayerScreenState extends State<PlayerScreen> {
         : 'empty';
     return RepaintBoundary(
       key: const ValueKey('player-lyric-repaint-boundary'),
-      child: Stack(
+      child: Column(
         children: [
-          Positioned.fill(
-            child: AppMotionSwitcher(
-              child: KeyedSubtree(
-                key: ValueKey('player-lyrics-$lyricStateKey'),
-                child: _buildLyricView(
-                  ctx,
-                  player,
-                  textColor,
-                  landscape: landscape,
-                  toggleOnTap: toggleOnTap,
-                ),
-              ),
-            ),
+          Expanded(
+            key: landscape
+                ? const ValueKey('landscape-player-right-content-frame')
+                : null,
+            child: showBilibiliInfo
+                ? _buildBilibiliInfoPane(
+                    ctx,
+                    player,
+                    song!,
+                    textColor,
+                    landscape: landscape,
+                  )
+                : AppMotionSwitcher(
+                    child: KeyedSubtree(
+                      key: ValueKey('player-lyrics-$lyricStateKey'),
+                      child: _buildLyricView(
+                        ctx,
+                        player,
+                        textColor,
+                        landscape: landscape,
+                        toggleOnTap: toggleOnTap,
+                      ),
+                    ),
+                  ),
           ),
           if (song != null)
-            Positioned(
-              top: landscape ? 0 : 6,
-              right: landscape ? 0 : 8,
-              child: IconButton(
-                key: const ValueKey('player-lyric-search-action'),
-                tooltip: '查找歌词',
-                onPressed: () => _openLyricSearch(ctx, player, song),
-                icon: Icon(Icons.manage_search_rounded, color: textColor),
-                iconSize: landscape ? 30 : 28,
-                style: IconButton.styleFrom(
-                  minimumSize: Size.square(landscape ? 48 : 44),
-                  backgroundColor: Colors.black.withValues(alpha: 0.12),
+            if (landscape)
+              SizedBox(
+                key: const ValueKey('landscape-player-right-footer-frame'),
+                height: landscapeFooterHeight!,
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    0,
+                    2,
+                    0,
+                    landscapeFooterBottomPadding!,
+                  ),
+                  child: _buildLyricBottomToolbar(
+                    ctx,
+                    player,
+                    song,
+                    textColor,
+                    landscape: true,
+                    showOffsetControls: player.lyrics.isNotEmpty,
+                    searchKey: showBilibiliInfo
+                        ? const ValueKey('bilibili-lyric-search-action')
+                        : const ValueKey('player-lyric-search-action'),
+                  ),
+                ),
+              )
+            else
+              _buildLyricBottomToolbar(
+                ctx,
+                player,
+                song,
+                textColor,
+                landscape: false,
+                showOffsetControls: player.lyrics.isNotEmpty,
+                searchKey: showBilibiliInfo
+                    ? const ValueKey('bilibili-lyric-search-action')
+                    : const ValueKey('player-lyric-search-action'),
+              ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLyricBottomToolbar(
+    BuildContext ctx,
+    PlayerProvider player,
+    PlayQueueItem song,
+    Color textColor, {
+    required bool landscape,
+    required bool showOffsetControls,
+    required Key searchKey,
+  }) {
+    final layout = AppLayout.fromContext(ctx);
+    final compact = landscape && layout.isCompactLandscape;
+    final offset = player.lyricOffset;
+    final step = player.lyricOffsetStep;
+    final stepLabel = _formatDurationSeconds(step);
+    final limit = PlayerProvider.lyricOffsetLimit.inMilliseconds;
+    final canMoveEarlier = offset.inMilliseconds > -limit;
+    final canMoveLater = offset.inMilliseconds < limit;
+    final offsetLabel = compact
+        ? _formatCompactLyricOffset(offset)
+        : _formatLyricOffset(offset);
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        landscape ? 0 : 8,
+        landscape ? 0 : 2,
+        landscape ? 0 : 8,
+        landscape ? 0 : 6,
+      ),
+      child: Row(
+        key: const ValueKey('player-lyric-bottom-toolbar'),
+        children: [
+          if (!showOffsetControls) const Spacer(),
+          Expanded(
+            child: _playerActionButton(
+              key: searchKey,
+              context: ctx,
+              compact: compact,
+              onPressed: () => _openLyricSearch(ctx, player, song),
+              icon: Icons.manage_search_rounded,
+              label: '查找',
+              tooltip: '查找歌词',
+              color: textColor,
+            ),
+          ),
+          if (showOffsetControls) ...[
+            Expanded(
+              child: _playerActionButton(
+                key: const ValueKey('player-lyric-offset-earlier'),
+                context: ctx,
+                compact: compact,
+                onPressed: canMoveEarlier
+                    ? () => player.adjustLyricOffset(-step)
+                    : null,
+                icon: Icons.keyboard_double_arrow_left_rounded,
+                label: compact ? '-${stepLabel}s' : '提前 ${stepLabel}s',
+                tooltip: '歌词提前 $stepLabel 秒',
+                color: canMoveEarlier
+                    ? textColor
+                    : textColor.withValues(alpha: 0.38),
+              ),
+            ),
+            Expanded(
+              child: _playerActionButton(
+                key: const ValueKey('player-lyric-offset-reset'),
+                context: ctx,
+                compact: compact,
+                onPressed: offset == Duration.zero
+                    ? null
+                    : player.resetLyricOffset,
+                icon: offset == Duration.zero
+                    ? Icons.sync_rounded
+                    : Icons.restart_alt_rounded,
+                label: offsetLabel,
+                labelKey: const ValueKey('player-lyric-offset-value'),
+                tooltip: offset == Duration.zero ? '歌词当前已同步' : '重置歌词时延',
+                color: offset == Duration.zero ? textColor : AppColors.primary,
+              ),
+            ),
+            Expanded(
+              child: _playerActionButton(
+                key: const ValueKey('player-lyric-offset-later'),
+                context: ctx,
+                compact: compact,
+                onPressed: canMoveLater
+                    ? () => player.adjustLyricOffset(step)
+                    : null,
+                icon: Icons.keyboard_double_arrow_right_rounded,
+                label: compact ? '+${stepLabel}s' : '延后 ${stepLabel}s',
+                tooltip: '歌词延后 $stepLabel 秒',
+                color: canMoveLater
+                    ? textColor
+                    : textColor.withValues(alpha: 0.38),
+              ),
+            ),
+          ] else
+            const Spacer(),
+        ],
+      ),
+    );
+  }
+
+  String _formatLyricOffset(Duration offset) {
+    if (offset == Duration.zero) return '同步';
+    final seconds = _formatDurationSeconds(offset.abs());
+    return offset.isNegative ? '提前 ${seconds}s' : '延后 ${seconds}s';
+  }
+
+  String _formatCompactLyricOffset(Duration offset) {
+    if (offset == Duration.zero) return '同步';
+    final seconds = offset.inMilliseconds.abs() / 1000;
+    final value = seconds == seconds.roundToDouble()
+        ? seconds.toStringAsFixed(0)
+        : seconds.toStringAsFixed(1);
+    return '${offset.isNegative ? '-' : '+'}${value}s';
+  }
+
+  String _formatDurationSeconds(Duration duration) {
+    final milliseconds = duration.inMilliseconds;
+    return milliseconds % 1000 == 0
+        ? '${milliseconds ~/ 1000}'
+        : (milliseconds / 1000).toStringAsFixed(1);
+  }
+
+  Widget _buildBilibiliInfoPane(
+    BuildContext ctx,
+    PlayerProvider player,
+    PlayQueueItem song,
+    Color textColor, {
+    required bool landscape,
+  }) {
+    final subColor = textColor.withValues(alpha: 0.7);
+    final pages = song.bilibiliPages;
+    final currentPageIndex = pages.indexWhere(
+      (page) => page.cid == song.bilibiliCid,
+    );
+    final audioLabel = _bilibiliQualityLabel(
+      player.bilibiliAudioQualities,
+      player.bilibiliAudioQuality,
+      fallback: '自动',
+    );
+    final videoLabel = _bilibiliQualityLabel(
+      player.bilibiliVideoQualities,
+      player.bilibiliVideoQuality,
+      fallback: '自动',
+    );
+    return RepaintBoundary(
+      key: const ValueKey('bilibili-info-pane'),
+      child: SingleChildScrollView(
+        padding: EdgeInsets.fromLTRB(
+          landscape ? 12 : 20,
+          landscape ? 4 : 12,
+          landscape ? 12 : 20,
+          landscape ? 12 : 24,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              '视频信息',
+              style: TextStyle(
+                color: textColor,
+                fontSize: landscape ? 22 : 20,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              song.bilibiliVideoTitle ?? song.album,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: textColor,
+                fontSize: landscape ? 17 : 16,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 16),
+            _buildBilibiliSectionTitle(
+              '分P',
+              pages.isEmpty ? '加载中' : '${pages.length} P',
+              textColor,
+              subColor,
+            ),
+            const SizedBox(height: 6),
+            if (pages.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                child: Center(
+                  child: SizedBox.square(
+                    dimension: 24,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: PlatformColors.bilibili,
+                    ),
+                  ),
+                ),
+              )
+            else
+              ...pages.indexed.map((entry) {
+                final index = entry.$1;
+                final page = entry.$2;
+                final selected = index == currentPageIndex;
+                return ListTile(
+                  key: ValueKey('bilibili-page-${page.cid}'),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                  dense: landscape,
+                  selected: selected,
+                  selectedColor: PlatformColors.bilibili,
+                  leading: SizedBox(
+                    width: 42,
+                    child: Text(
+                      'P${page.page}',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: selected ? PlatformColors.bilibili : subColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  title: Text(
+                    page.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: selected ? null : textColor),
+                  ),
+                  trailing: page.duration == null
+                      ? null
+                      : Text(
+                          _formatDuration(Duration(seconds: page.duration!)),
+                          style: TextStyle(color: subColor),
+                        ),
+                  onTap: selected
+                      ? null
+                      : () => player.selectBilibiliPage(index),
+                );
+              }),
+            const SizedBox(height: 14),
+            _buildBilibiliSectionTitle('清晰度', null, textColor, subColor),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  key: const ValueKey('bilibili-audio-quality-action'),
+                  onPressed: () => _showBilibiliQualityDialog(ctx, player),
+                  icon: const Icon(Icons.graphic_eq_rounded),
+                  label: Text('音频 $audioLabel'),
+                ),
+                OutlinedButton.icon(
+                  key: const ValueKey('bilibili-video-quality-action'),
+                  onPressed: () => _showBilibiliQualityDialog(ctx, player),
+                  icon: const Icon(Icons.ondemand_video_rounded),
+                  label: Text('视频 $videoLabel'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 18),
+            _buildBilibiliSectionTitle('视频简介', null, textColor, subColor),
+            const SizedBox(height: 8),
+            SelectableText(
+              song.bilibiliDescription?.trim().isNotEmpty == true
+                  ? song.bilibiliDescription!.trim()
+                  : '暂无简介',
+              style: TextStyle(color: subColor, height: 1.55),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBilibiliSectionTitle(
+    String title,
+    String? trailing,
+    Color textColor,
+    Color subColor,
+  ) {
+    return Row(
+      children: [
+        Container(
+          width: 4,
+          height: 18,
+          decoration: BoxDecoration(
+            color: PlatformColors.bilibili,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            title,
+            style: TextStyle(color: textColor, fontWeight: FontWeight.w700),
+          ),
+        ),
+        if (trailing != null) Text(trailing, style: TextStyle(color: subColor)),
+      ],
+    );
+  }
+
+  String _bilibiliQualityLabel(
+    List<BilibiliStream> streams,
+    int quality, {
+    required String fallback,
+  }) {
+    for (final stream in streams) {
+      if (stream.quality == quality) return stream.label;
+    }
+    return streams.isEmpty ? fallback : streams.first.label;
+  }
+
+  Future<void> _showBilibiliQualityDialog(
+    BuildContext context,
+    PlayerProvider player,
+  ) {
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) => Consumer<PlayerProvider>(
+        builder: (context, current, _) {
+          return AlertDialog(
+            key: const ValueKey('bilibili-quality-dialog'),
+            title: const Text('B站播放清晰度'),
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460, maxHeight: 480),
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildBilibiliQualityGroup(
+                      title: '音频',
+                      emptyText: '音频流加载后显示可选音质',
+                      streams: current.bilibiliAudioQualities,
+                      selectedQuality: current.bilibiliAudioQuality,
+                      onSelected: current.setBilibiliAudioQuality,
+                    ),
+                    const Divider(height: 28),
+                    _buildBilibiliQualityGroup(
+                      title: '视频',
+                      emptyText: '视频流加载后显示可选清晰度',
+                      streams: current.bilibiliVideoQualities,
+                      selectedQuality: current.bilibiliVideoQuality,
+                      onSelected: current.setBilibiliVideoQuality,
+                    ),
+                  ],
                 ),
               ),
             ),
-        ],
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('完成'),
+              ),
+            ],
+          );
+        },
       ),
+    );
+  }
+
+  Widget _buildBilibiliQualityGroup({
+    required String title,
+    required String emptyText,
+    required List<BilibiliStream> streams,
+    required int selectedQuality,
+    required Future<void> Function(int quality) onSelected,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 4),
+        if (streams.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Text(
+              emptyText,
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
+          )
+        else
+          ...streams.map((stream) {
+            final selected = stream.quality == selectedQuality;
+            return ListTile(
+              key: ValueKey('$title-quality-${stream.quality}'),
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              title: Text(stream.label),
+              subtitle: stream.bandwidth <= 0
+                  ? null
+                  : Text('${(stream.bandwidth / 1000).round()} kbps'),
+              trailing: Icon(
+                selected ? Icons.check_circle_rounded : Icons.circle_outlined,
+                color: selected
+                    ? PlatformColors.bilibili
+                    : AppColors.textSecondary,
+              ),
+              onTap: selected
+                  ? null
+                  : () => unawaited(onSelected(stream.quality)),
+            );
+          }),
+      ],
     );
   }
 
@@ -1867,7 +2420,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     Color textColor, {
     bool landscape = false,
   }) {
-    return Selector<PlayerProvider, (bool, int, int, bool, Duration, String?)>(
+    return Selector<
+      PlayerProvider,
+      (bool, int, int, bool, Duration, Duration, String?)
+    >(
       selector: (_, p) {
         final song = p.currentSong;
         return (
@@ -1875,8 +2431,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
           p.currentLyricIndex,
           p.lyrics.length,
           p.lyricsLoading,
-          p.showLyric ? p.position : Duration.zero,
-          song == null ? null : '${song.platform.code}:${song.id}',
+          p.showLyric ? p.lyricPosition : Duration.zero,
+          p.showLyric ? p.lyricOffset : Duration.zero,
+          _lyricTargetKey(song),
         );
       },
       builder: (ctx, sel, _) {
@@ -2116,7 +2673,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   ? player.duration
                   : null;
               final progress = isCurrent
-                  ? lyric.progressAt(player.position, fallbackEnd: fallbackEnd)
+                  ? lyric.progressAt(
+                      player.lyricPosition,
+                      fallbackEnd: fallbackEnd,
+                    )
                   : 0.0;
               final inactiveFontSize = (_lyricFontSize * 0.82).clamp(
                 20.0,
@@ -2124,7 +2684,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
               );
               return GestureDetector(
                 onTap: () {
-                  player.seekTo(lyric.time);
+                  final adjustedPosition = lyric.time + player.lyricOffset;
+                  final seekPosition = adjustedPosition.isNegative
+                      ? Duration.zero
+                      : player.duration > Duration.zero &&
+                            adjustedPosition > player.duration
+                      ? player.duration
+                      : adjustedPosition;
+                  player.seekTo(seekPosition);
                   setState(() {
                     _lyricsAutoScroll = true;
                     _lastAutoScrollLyricIndex = null;
@@ -2446,13 +3013,30 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
                 onPressed: player.playNext,
               ),
-              // 字号只保留图标，紧跟在下一首右侧。
-              _buildLyricFontControlButton(
-                textColor,
-                width: iconButtonWidth,
-                height: iconButtonHeight,
-                iconSize: largeUi ? 30 : (compact ? 24 : 28),
-              ),
+              if (player.currentSong?.platform == MusicPlatform.bilibili)
+                SizedBox(
+                  key: const ValueKey('player-bilibili-quality-control'),
+                  width: iconButtonWidth,
+                  height: iconButtonHeight,
+                  child: IconButton(
+                    tooltip: '音频和视频清晰度',
+                    padding: EdgeInsets.zero,
+                    onPressed: () => _showBilibiliQualityDialog(ctx, player),
+                    icon: Icon(
+                      Icons.tune_rounded,
+                      color: textColor,
+                      size: largeUi ? 30 : (compact ? 24 : 28),
+                    ),
+                  ),
+                )
+              else
+                // 字号只保留图标，紧跟在下一首右侧。
+                _buildLyricFontControlButton(
+                  textColor,
+                  width: iconButtonWidth,
+                  height: iconButtonHeight,
+                  iconSize: largeUi ? 30 : (compact ? 24 : 28),
+                ),
             ],
           ),
         );
@@ -2470,12 +3054,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
     // 收藏状态跟随 FavoriteService（点击收藏/取消收藏实时刷新）
     final fav = ctx.watch<FavoriteService>();
     final song = player.currentSong;
+    final isBilibili = song?.platform == MusicPlatform.bilibili;
     final isFav = song != null && fav.isFavorite(song.platform, song.id);
-    return Selector<PlayerProvider, bool>(
-      selector: (_, p) => p.showLyric,
-      builder: (ctx, showLyric, _) {
+    return Selector<PlayerProvider, (bool, bool)>(
+      selector: (_, p) => (p.showLyric, p.lyrics.isNotEmpty),
+      builder: (ctx, lyricState, _) {
+        final showLyric = lyricState.$1;
+        final hasLyrics = lyricState.$2;
         return Padding(
-          padding: EdgeInsets.only(bottom: compact ? 0 : 12),
+          padding: EdgeInsets.only(bottom: landscape || compact ? 0 : 12),
           child: Row(
             children: [
               if (!landscape)
@@ -2484,8 +3071,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     context: ctx,
                     compact: compact,
                     onPressed: player.toggleShowLyric,
-                    icon: Icons.text_snippet_rounded,
-                    label: '歌词',
+                    icon: isBilibili
+                        ? hasLyrics
+                              ? Icons.text_snippet_rounded
+                              : Icons.video_library_outlined
+                        : Icons.text_snippet_rounded,
+                    label: isBilibili && !hasLyrics ? '视频信息' : '歌词',
                     color: showLyric ? AppColors.primary : subColor,
                   ),
                 ),
@@ -2528,11 +3119,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
               Expanded(
                 child: _playerActionButton(
+                  key: ValueKey(
+                    isBilibili
+                        ? 'player-bilibili-pages-action'
+                        : 'player-queue-action',
+                  ),
                   context: ctx,
                   compact: compact,
-                  onPressed: () => _showQueueSheet(ctx, player),
-                  icon: Icons.queue_music_rounded,
-                  label: '队列',
+                  onPressed: isBilibili
+                      ? song == null || song.bilibiliPages.isEmpty
+                            ? null
+                            : () => _showBilibiliPageSheet(ctx, player)
+                      : () => _showQueueSheet(ctx, player),
+                  icon: isBilibili
+                      ? Icons.format_list_numbered_rounded
+                      : Icons.queue_music_rounded,
+                  label: isBilibili ? '分P' : '队列',
                   color: subColor,
                 ),
               ),
@@ -2550,37 +3152,234 @@ class _PlayerScreenState extends State<PlayerScreen> {
     required VoidCallback? onPressed,
     required IconData icon,
     required String label,
+    Key? labelKey,
+    String? tooltip,
     required Color color,
     Object? animationKey,
   }) {
     final layout = AppLayout.fromContext(context);
     final largeUi = layout.usesLargeTypography;
-    final height = largeUi ? 54.0 : (compact ? 36.0 : 50.0);
+    final height = largeUi ? 54.0 : (compact ? 42.0 : 50.0);
     final iconSize = largeUi ? 24.0 : (compact ? 18.0 : 22.0);
     final fontSize = largeUi ? 16.0 : (compact ? 13.0 : 16.0);
     return Tooltip(
       key: key,
-      message: label == '队列' ? '播放队列' : label,
-      child: TextButton.icon(
-        onPressed: onPressed,
-        style: TextButton.styleFrom(
-          padding: EdgeInsets.symmetric(horizontal: largeUi ? 4 : 2),
-          minimumSize: Size(0, height),
-          tapTargetSize: MaterialTapTargetSize.padded,
-        ),
-        icon: animationKey == null
-            ? Icon(icon, color: color, size: iconSize)
-            : AppAnimatedIcon(
-                stateKey: animationKey,
-                child: Icon(icon, color: color, size: iconSize),
-              ),
-        label: Text(
-          label,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(color: color, fontSize: fontSize),
+      message: tooltip ?? (label == '队列' ? '播放队列' : label),
+      child: SizedBox(
+        height: height,
+        child: TextButton.icon(
+          onPressed: onPressed,
+          style: TextButton.styleFrom(
+            padding: EdgeInsets.symmetric(horizontal: largeUi ? 4 : 2),
+            minimumSize: Size(0, height),
+            maximumSize: Size(double.infinity, height),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          icon: animationKey == null
+              ? Icon(icon, color: color, size: iconSize)
+              : AppAnimatedIcon(
+                  stateKey: animationKey,
+                  child: Icon(icon, color: color, size: iconSize),
+                ),
+          label: Text(
+            label,
+            key: labelKey,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: color, fontSize: fontSize),
+          ),
         ),
       ),
+    );
+  }
+
+  void _showBilibiliPageSheet(BuildContext ctx, PlayerProvider player) {
+    final isLandscape = MediaQuery.orientationOf(ctx) == Orientation.landscape;
+    if (isLandscape) {
+      showGeneralDialog<void>(
+        context: ctx,
+        barrierDismissible: true,
+        barrierLabel: '关闭分P列表',
+        barrierColor: Colors.black54,
+        transitionDuration: AppMotion.resolve(ctx, AppMotion.page),
+        pageBuilder: (dialogCtx, _, _) {
+          final size = MediaQuery.sizeOf(dialogCtx);
+          final panelWidth = (size.width * 0.46).clamp(320.0, 540.0);
+          return Align(
+            alignment: Alignment.centerRight,
+            child: SafeArea(
+              left: false,
+              child: Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: Material(
+                  color: AppColors.surface,
+                  elevation: 12,
+                  borderRadius: BorderRadius.circular(AppRadius.panel),
+                  clipBehavior: Clip.antiAlias,
+                  child: SizedBox(
+                    width: panelWidth,
+                    height: size.height * 0.9,
+                    child: _buildBilibiliPageContent(
+                      dialogCtx,
+                      player,
+                      null,
+                      showHandle: false,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+        transitionBuilder: (_, animation, _, child) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: AppMotion.enterCurve,
+            reverseCurve: AppMotion.exitCurve,
+          );
+          return FadeTransition(
+            opacity: curved,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0.08, 0),
+                end: Offset.zero,
+              ).animate(curved),
+              child: child,
+            ),
+          );
+        },
+      );
+      return;
+    }
+
+    showModalBottomSheet<void>(
+      context: ctx,
+      isScrollControlled: true,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(AppRadius.panel),
+        ),
+      ),
+      builder: (sheetContext) => DraggableScrollableSheet(
+        initialChildSize: 0.68,
+        minChildSize: 0.35,
+        maxChildSize: 0.92,
+        expand: false,
+        builder: (context, scrollController) =>
+            _buildBilibiliPageContent(context, player, scrollController),
+      ),
+    );
+  }
+
+  Widget _buildBilibiliPageContent(
+    BuildContext ctx,
+    PlayerProvider player,
+    ScrollController? scrollController, {
+    bool showHandle = true,
+  }) {
+    return Consumer<PlayerProvider>(
+      builder: (context, current, _) {
+        final song = current.currentSong;
+        final pages = song?.platform == MusicPlatform.bilibili
+            ? song!.bilibiliPages
+            : const <BilibiliPageInfo>[];
+        final selectedCid = song?.bilibiliCid;
+        return Column(
+          key: const ValueKey('bilibili-page-sheet'),
+          children: [
+            if (showHandle)
+              Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(top: 10),
+                decoration: BoxDecoration(
+                  color: AppColors.textHint.withValues(alpha: 0.4),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '分P (${pages.length})',
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '关闭',
+                    onPressed: () => Navigator.pop(ctx),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: pages.isEmpty
+                  ? Center(
+                      child: Text(
+                        '暂无分P',
+                        style: TextStyle(color: AppColors.textSecondary),
+                      ),
+                    )
+                  : ListView.builder(
+                      controller: scrollController,
+                      itemCount: pages.length,
+                      itemBuilder: (context, index) {
+                        final page = pages[index];
+                        final selected = page.cid == selectedCid;
+                        return ListTile(
+                          key: ValueKey('bilibili-page-sheet-${page.cid}'),
+                          selected: selected,
+                          selectedColor: PlatformColors.bilibili,
+                          leading: SizedBox(
+                            width: 44,
+                            child: Text(
+                              'P${page.page}',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: selected
+                                    ? PlatformColors.bilibili
+                                    : AppColors.textSecondary,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          title: Text(
+                            page.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: page.duration == null
+                              ? null
+                              : Text(
+                                  _formatDuration(
+                                    Duration(seconds: page.duration!),
+                                  ),
+                                  style: TextStyle(
+                                    color: AppColors.textSecondary,
+                                  ),
+                                ),
+                          onTap: () async {
+                            if (!selected) {
+                              await current.selectBilibiliPage(index);
+                            }
+                            if (ctx.mounted) Navigator.pop(ctx);
+                          },
+                        );
+                      },
+                    ),
+            ),
+          ],
+        );
+      },
     );
   }
 

@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
 import '../services/api_service.dart';
 import '../services/audio_cache_service.dart';
+import '../services/bilibili_service.dart';
 import '../services/floating_capsule_service.dart';
 import '../utils/lyric_parser.dart';
 
@@ -15,6 +16,17 @@ enum PlayMode { sequence, repeat, shuffle }
 /// 全局播放器状态管理
 class PlayerProvider extends ChangeNotifier {
   static const _resolvedUrlLifetime = Duration(minutes: 5);
+  static const defaultLyricOffsetStep = Duration(milliseconds: 500);
+  static const minLyricOffsetStep = Duration(milliseconds: 100);
+  static const maxLyricOffsetStep = Duration(seconds: 2);
+  static const lyricOffsetLimit = Duration(seconds: 10);
+  static const _lyricOffsetStepKey = 'lyric_offset_step_ms';
+  static const _bilibiliLyricPlatformOrderKey = 'bilibili_lyric_platform_order';
+  static const _defaultBilibiliLyricPlatformOrder = <MusicPlatform>[
+    MusicPlatform.qq,
+    MusicPlatform.kugou,
+    MusicPlatform.netease,
+  ];
 
   final AudioPlayer _audioPlayer = AudioPlayer();
   late ApiService _api;
@@ -39,7 +51,10 @@ class PlayerProvider extends ChangeNotifier {
   int _currentLyricIndex = 0;
   bool _showLyric = false;
   bool _lyricsLoading = false;
+  Duration _lyricOffsetStep = defaultLyricOffsetStep;
   final Map<String, _ResolvedLyrics> _lyricCache = {};
+  final Map<String, Duration> _lyricOffsets = {};
+  final Set<String> _bilibiliLyricAutoAttempted = {};
   final Map<String, DateTime> _playUrlResolvedAt = {};
 
   // 音质
@@ -48,7 +63,14 @@ class PlayerProvider extends ChangeNotifier {
   PlaybackSource _neteasePlaybackSource = PlaybackSource.chksz;
   PlaybackSource _qqPlaybackSource = PlaybackSource.chksz;
   PlaybackSource _kugouPlaybackSource = PlaybackSource.chksz;
+  List<MusicPlatform> _bilibiliLyricPlatformOrder = List<MusicPlatform>.from(
+    _defaultBilibiliLyricPlatformOrder,
+  );
   VideoPlayerMode _videoPlayerMode = VideoPlayerMode.automatic;
+  List<BilibiliStream> _bilibiliAudioQualities = const [];
+  List<BilibiliStream> _bilibiliVideoQualities = const [];
+  int _bilibiliAudioQuality = 30280;
+  int _bilibiliVideoQuality = 80;
 
   // API Key
   String _apiKey = '';
@@ -65,8 +87,13 @@ class PlayerProvider extends ChangeNotifier {
 
   PlayerProvider() {
     _api = ApiService(apiKey: '');
+    _api.bilibili.addListener(_handleBilibiliChanged);
     _initAudioPlayer();
     settingsReady = _loadSettings();
+  }
+
+  void _handleBilibiliChanged() {
+    if (!_disposed) notifyListeners();
   }
 
   // ==================== Getters ====================
@@ -90,15 +117,39 @@ class PlayerProvider extends ChangeNotifier {
   int get currentLyricIndex => _currentLyricIndex;
   bool get showLyric => _showLyric;
   bool get lyricsLoading => _lyricsLoading;
+  Duration get lyricOffsetStep => _lyricOffsetStep;
+  Duration get lyricOffset {
+    final song = currentSong;
+    return song == null
+        ? Duration.zero
+        : _lyricOffsets[_lyricKey(song)] ?? Duration.zero;
+  }
+
+  Duration get lyricPosition {
+    final adjusted = position - lyricOffset;
+    return adjusted.isNegative ? Duration.zero : adjusted;
+  }
+
   NeteaseLevel get neteaseLevel => _neteaseLevel;
   CommonLevel get commonLevel => _commonLevel;
+  List<BilibiliStream> get bilibiliAudioQualities => _bilibiliAudioQualities;
+  List<BilibiliStream> get bilibiliVideoQualities => _bilibiliVideoQualities;
+  int get bilibiliAudioQuality => _bilibiliAudioQuality;
+  int get bilibiliVideoQuality => _bilibiliVideoQuality;
+  BilibiliUser? get bilibiliUser => _api.bilibili.user;
+  bool get bilibiliLoggedIn => _api.bilibili.isLoggedIn;
+  bool get bilibiliAccountLoading => _api.bilibili.accountLoading;
   PlaybackSource playbackSourceFor(MusicPlatform platform) {
     return switch (platform) {
       MusicPlatform.netease => _neteasePlaybackSource,
       MusicPlatform.qq => _qqPlaybackSource,
       MusicPlatform.kugou => _kugouPlaybackSource,
+      MusicPlatform.bilibili => PlaybackSource.chksz,
     };
   }
+
+  List<MusicPlatform> get bilibiliLyricPlatformOrder =>
+      List.unmodifiable(_bilibiliLyricPlatformOrder);
 
   VideoPlayerMode get videoPlayerMode => _videoPlayerMode;
 
@@ -179,6 +230,8 @@ class PlayerProvider extends ChangeNotifier {
           orElse: () => CommonLevel.flac,
         );
       }
+      _bilibiliAudioQuality = prefs.getInt('bilibili_audio_quality') ?? 30280;
+      _bilibiliVideoQuality = prefs.getInt('bilibili_video_quality') ?? 80;
       _neteasePlaybackSource = _readPlaybackSource(
         prefs.getString(_playbackSourcePreferenceKey(MusicPlatform.netease)),
       );
@@ -188,12 +241,26 @@ class PlayerProvider extends ChangeNotifier {
       _kugouPlaybackSource = _readPlaybackSource(
         prefs.getString(_playbackSourcePreferenceKey(MusicPlatform.kugou)),
       );
+      _bilibiliLyricPlatformOrder = _readBilibiliLyricPlatformOrder(
+        prefs.getStringList(_bilibiliLyricPlatformOrderKey),
+      );
+      _lyricOffsetStep = _normalizeLyricOffsetStep(
+        Duration(
+          milliseconds:
+              prefs.getInt(_lyricOffsetStepKey) ??
+              defaultLyricOffsetStep.inMilliseconds,
+        ),
+      );
       final savedVideoPlayerMode = prefs.getString('video_player_mode');
       _videoPlayerMode = VideoPlayerMode.values.firstWhere(
         (mode) => mode.value == savedVideoPlayerMode,
         // 旧版的 built_in/system 都迁移到不依赖系统播放器的自动兼容模式。
         orElse: () => VideoPlayerMode.automatic,
       );
+      await _api.bilibili.ready;
+      if (_api.bilibili.hasCookie) {
+        unawaited(_api.bilibili.refreshAccount());
+      }
     } catch (e) {
       debugPrint('读取播放器设置失败: $e');
     }
@@ -235,7 +302,11 @@ class PlayerProvider extends ChangeNotifier {
     PlaybackSource source,
   ) async {
     await settingsReady;
-    if (_disposed || playbackSourceFor(platform) == source) return;
+    if (_disposed ||
+        platform == MusicPlatform.bilibili ||
+        playbackSourceFor(platform) == source) {
+      return;
+    }
     switch (platform) {
       case MusicPlatform.netease:
         _neteasePlaybackSource = source;
@@ -243,6 +314,8 @@ class PlayerProvider extends ChangeNotifier {
         _qqPlaybackSource = source;
       case MusicPlatform.kugou:
         _kugouPlaybackSource = source;
+      case MusicPlatform.bilibili:
+        return;
     }
     _playUrlResolvedAt.removeWhere(
       (key, _) => key.startsWith('${platform.code}:'),
@@ -250,6 +323,38 @@ class PlayerProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_playbackSourcePreferenceKey(platform), source.value);
     notifyListeners();
+  }
+
+  Future<void> setBilibiliLyricPlatformOrder(List<MusicPlatform> order) async {
+    await settingsReady;
+    if (_disposed) return;
+    final normalized = _normalizeBilibiliLyricPlatformOrder(order);
+    _bilibiliLyricPlatformOrder = normalized;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _bilibiliLyricPlatformOrderKey,
+      normalized.map((platform) => platform.code).toList(growable: false),
+    );
+    notifyListeners();
+  }
+
+  Future<void> setLyricOffsetStep(Duration step) async {
+    await settingsReady;
+    if (_disposed) return;
+    final normalized = _normalizeLyricOffsetStep(step);
+    if (_lyricOffsetStep == normalized) return;
+    _lyricOffsetStep = normalized;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_lyricOffsetStepKey, normalized.inMilliseconds);
+  }
+
+  static Duration _normalizeLyricOffsetStep(Duration step) {
+    final milliseconds = step.inMilliseconds.clamp(
+      minLyricOffsetStep.inMilliseconds,
+      maxLyricOffsetStep.inMilliseconds,
+    );
+    return Duration(milliseconds: milliseconds);
   }
 
   Future<void> setVideoPlayerMode(VideoPlayerMode mode) async {
@@ -261,24 +366,121 @@ class PlayerProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<BilibiliQrCode> createBilibiliQrCode() => _api.bilibili.createQrCode();
+
+  Future<BilibiliQrPollResult> pollBilibiliQrCode(String key) =>
+      _api.bilibili.pollQrCode(key);
+
+  Future<void> refreshBilibiliAccount() => _api.bilibili.refreshAccount();
+
+  Future<void> logoutBilibili() => _api.bilibili.logout();
+
+  Future<void> setBilibiliAudioQuality(int quality) async {
+    await settingsReady;
+    if (_disposed || _bilibiliAudioQuality == quality) return;
+    _bilibiliAudioQuality = quality;
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setInt('bilibili_audio_quality', quality);
+    final song = currentSong;
+    if (song?.platform == MusicPlatform.bilibili) {
+      _playUrlResolvedAt.removeWhere(
+        (key, _) => key.startsWith('${MusicPlatform.bilibili.code}:'),
+      );
+      _queue[_currentIndex] = song!.copyWith(clearPlayUrl: true);
+      notifyListeners();
+      await _playCurrent();
+    } else {
+      notifyListeners();
+    }
+  }
+
+  Future<void> setBilibiliVideoQuality(int quality) async {
+    await settingsReady;
+    if (_disposed || _bilibiliVideoQuality == quality) return;
+    _bilibiliVideoQuality = quality;
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setInt('bilibili_video_quality', quality);
+    notifyListeners();
+  }
+
   Future<List<SongSearchResult>> searchLyricCandidates(String keyword) async {
     final song = currentSong;
     final query = keyword.trim();
     if (song == null || query.isEmpty) return const [];
-    final results = await _api.searchLyricCandidates(
-      platform: song.platform,
-      keyword: query,
-      currentName: song.name,
-      currentArtist: song.artist,
-      currentAlbum: song.album,
-    );
+    final results = song.platform == MusicPlatform.bilibili
+        ? await _searchBilibiliLyricCandidates(song, query)
+        : await _api.searchLyricCandidates(
+            platform: song.platform,
+            keyword: query,
+            currentName: song.name,
+            currentArtist: song.artist,
+            currentAlbum: song.album,
+          );
     final current = currentSong;
-    if (current == null ||
-        current.platform != song.platform ||
-        current.id != song.id) {
+    if (!_isSameLyricTarget(current, song)) {
       throw const ApiException('SONG_CHANGED', '当前歌曲已切换，请重新查找歌词');
     }
     return results;
+  }
+
+  String lyricSearchQueryFor(PlayQueueItem song) {
+    return song.platform == MusicPlatform.bilibili
+        ? _cleanBilibiliLyricTitle(song.name)
+        : song.name;
+  }
+
+  Future<List<SongSearchResult>> _searchBilibiliLyricCandidates(
+    PlayQueueItem song,
+    String keyword,
+  ) async {
+    final cleanedKeyword = _cleanBilibiliLyricTitle(keyword);
+    final batches = await Future.wait(
+      configurableMusicPlatforms.map((platform) async {
+        try {
+          return await _api.searchLyricCandidates(
+            platform: platform,
+            keyword: cleanedKeyword,
+            currentName: cleanedKeyword,
+            // B站的 artist 通常是 UP 主，不一定是真实歌手。搜索仍只用
+            // 标题关键词，歌手/UP主在本地评分，避免把跨平台歌词搜索限制得过窄。
+            currentArtist: song.artist,
+            currentAlbum: '',
+          );
+        } catch (error) {
+          debugPrint('${platform.label}歌词候选搜索失败: $error');
+          return const <SongSearchResult>[];
+        }
+      }),
+    );
+    final seen = <String>{};
+    final candidates = batches
+        .expand((batch) => batch)
+        .where(
+          (candidate) => seen.add('${candidate.platform.code}:${candidate.id}'),
+        )
+        .toList();
+    candidates.sort((a, b) {
+      final platformPriority = _bilibiliLyricPlatformOrder
+          .indexOf(a.platform)
+          .compareTo(_bilibiliLyricPlatformOrder.indexOf(b.platform));
+      if (platformPriority != 0) return platformPriority;
+      final score =
+          _bilibiliLyricMatchScore(
+            b,
+            cleanedKeyword,
+            song.duration,
+            expectedArtist: song.artist,
+          ).compareTo(
+            _bilibiliLyricMatchScore(
+              a,
+              cleanedKeyword,
+              song.duration,
+              expectedArtist: song.artist,
+            ),
+          );
+      return score != 0 ? score : a.platform.index.compareTo(b.platform.index);
+    });
+    return candidates.take(30).toList(growable: false);
   }
 
   Future<void> applyLyricCandidate(SongSearchResult candidate) async {
@@ -286,7 +488,8 @@ class PlayerProvider extends ChangeNotifier {
     if (song == null) {
       throw const ApiException('NO_CURRENT_SONG', '当前没有正在播放的歌曲');
     }
-    if (candidate.platform != song.platform) {
+    if (song.platform != MusicPlatform.bilibili &&
+        candidate.platform != song.platform) {
       throw const ApiException('LYRIC_PLATFORM_MISMATCH', '歌词来源与当前歌曲平台不一致');
     }
 
@@ -299,23 +502,21 @@ class PlayerProvider extends ChangeNotifier {
         throw const ApiException('LYRIC_EMPTY', '这个版本没有可用歌词');
       }
       final current = currentSong;
-      if (current == null ||
-          current.platform != song.platform ||
-          current.id != song.id) {
+      if (!_isSameLyricTarget(current, song)) {
         throw const ApiException('SONG_CHANGED', '当前歌曲已切换，请重新查找歌词');
       }
 
+      final activeSong = current!;
+      _lyricOffsets.remove(_lyricKey(activeSong));
       _lyrics = resolved.lines;
-      _currentLyricIndex = LyricParser.findCurrentIndex(_lyrics, _position);
+      _currentLyricIndex = LyricParser.findCurrentIndex(_lyrics, lyricPosition);
       _lyricsLoading = false;
-      _lyricCache[_itemKey(current)] = resolved;
-      _queue[_currentIndex] = current.copyWith(lyric: resolved.rawText);
+      _lyricCache[_lyricKey(activeSong)] = resolved;
+      _queue[_currentIndex] = activeSong.copyWith(lyric: resolved.rawText);
       notifyListeners();
     } catch (_) {
       final current = currentSong;
-      if (current != null &&
-          current.platform == song.platform &&
-          current.id == song.id) {
+      if (_isSameLyricTarget(current, song)) {
         _lyricsLoading = false;
         notifyListeners();
       }
@@ -323,11 +524,153 @@ class PlayerProvider extends ChangeNotifier {
     }
   }
 
+  static bool _isSameLyricTarget(
+    PlayQueueItem? current,
+    PlayQueueItem expected,
+  ) {
+    return current != null &&
+        current.platform == expected.platform &&
+        current.id == expected.id &&
+        (expected.platform != MusicPlatform.bilibili ||
+            current.bilibiliCid == expected.bilibiliCid);
+  }
+
+  static String _cleanBilibiliLyricTitle(String value) {
+    var result = value.trim();
+    result = result.replaceFirst(
+      RegExp(r'^\s*(?:p\s*)?\d{1,4}\s*[.\-_:：、，]+\s*', caseSensitive: false),
+      '',
+    );
+    result = result.replaceFirst(
+      RegExp(r'^\s*(?:p\s*)?\d{1,4}\s+', caseSensitive: false),
+      '',
+    );
+    result = result.replaceAllMapped(
+      RegExp(r'\b([a-z]+),([a-z]{1,3})\b', caseSensitive: false),
+      (match) => "${match.group(1)}'${match.group(2)}",
+    );
+    return result.trim().isEmpty ? value.trim() : result.trim();
+  }
+
+  static int _bilibiliLyricMatchScore(
+    SongSearchResult candidate,
+    String keyword,
+    int? expectedDuration, {
+    String? expectedArtist,
+  }) {
+    var score = _bilibiliLyricTitleMatchScore(candidate.name, keyword);
+    if (expectedArtist != null) {
+      score += _bilibiliLyricArtistMatchScore(candidate.artist, expectedArtist);
+    }
+
+    final candidateDuration = candidate.duration;
+    if (expectedDuration != null && candidateDuration != null) {
+      final difference = (candidateDuration - expectedDuration).abs();
+      final tolerance = (expectedDuration * 0.2).round().clamp(10, 45).toInt();
+      if (difference <= tolerance) {
+        score += 240 - (difference * 4).clamp(0, 200).toInt();
+      }
+    }
+    return score;
+  }
+
+  static int _bilibiliLyricTitleMatchScore(
+    String candidateTitle,
+    String keyword,
+  ) {
+    final expected = _normalizeLyricMatchText(keyword);
+    final name = _normalizeLyricMatchText(candidateTitle);
+    if (expected.isEmpty || name.isEmpty) return 0;
+    if (name == expected) return 1200;
+    if (expected.length >= 2 && name.startsWith(expected)) return 850;
+    if (name.length >= 2 && expected.startsWith(name)) return 720;
+    if (expected.length >= 2 && name.contains(expected)) return 650;
+
+    final expectedTokens = _lyricMatchTokens(keyword);
+    final candidateTokens = _lyricMatchTokens(candidateTitle);
+    if (expectedTokens.isEmpty || candidateTokens.isEmpty) return 0;
+    final overlap = expectedTokens
+        .where(
+          (token) => candidateTokens.any(
+            (candidateToken) =>
+                candidateToken == token ||
+                candidateToken.contains(token) ||
+                token.contains(candidateToken),
+          ),
+        )
+        .length;
+    final requiredOverlap = expectedTokens.length >= 3 ? 2 : 1;
+    if (overlap < requiredOverlap) return 0;
+    return 420 + overlap * 80;
+  }
+
+  static int _bilibiliLyricArtistMatchScore(
+    String candidateArtist,
+    String expectedArtist,
+  ) {
+    final expected = _normalizeLyricMatchText(expectedArtist);
+    final artist = _normalizeLyricMatchText(candidateArtist);
+    if (!_isUsefulLyricArtist(expected) || artist.isEmpty) return 0;
+    if (artist == expected) return 360;
+    if (artist.contains(expected) || expected.contains(artist)) return 180;
+
+    final expectedTokens = _lyricMatchTokens(expectedArtist);
+    final artistTokens = _lyricMatchTokens(candidateArtist);
+    final overlap = expectedTokens
+        .where(
+          (token) => artistTokens.any(
+            (artistToken) =>
+                artistToken == token ||
+                artistToken.contains(token) ||
+                token.contains(artistToken),
+          ),
+        )
+        .length;
+    return overlap > 0 ? 100 : 0;
+  }
+
+  @visibleForTesting
+  static bool bilibiliLyricTitleMatches(
+    String candidateTitle,
+    String keyword,
+  ) => _bilibiliLyricTitleMatchScore(candidateTitle, keyword) > 0;
+
+  static bool _isUsefulLyricArtist(String normalizedArtist) {
+    if (normalizedArtist.isEmpty) return false;
+    const placeholders = {
+      '未知歌手',
+      '未知up主',
+      'up主',
+      'uploader',
+      'unknown',
+      'bilibili',
+    };
+    return !placeholders.contains(normalizedArtist);
+  }
+
+  static List<String> _lyricMatchTokens(String value) {
+    return RegExp(r'[a-z0-9]+|[\u4e00-\u9fff]')
+        .allMatches(_cleanBilibiliLyricTitle(value).toLowerCase())
+        .map((match) => match.group(0)!)
+        .where(
+          (token) =>
+              token.length >= 2 || RegExp(r'[\u4e00-\u9fff]').hasMatch(token),
+        )
+        .toList(growable: false);
+  }
+
+  static String _normalizeLyricMatchText(String value) {
+    return _cleanBilibiliLyricTitle(
+      value,
+    ).toLowerCase().replaceAll(RegExp(r'[^a-z0-9\u4e00-\u9fff]+'), '');
+  }
+
   static String _playbackSourcePreferenceKey(MusicPlatform platform) =>
       switch (platform) {
         MusicPlatform.netease => 'playback_source_netease',
         MusicPlatform.qq => 'playback_source_qq',
         MusicPlatform.kugou => 'playback_source_kugou',
+        MusicPlatform.bilibili => throw UnsupportedError('B站不使用第三方播放源'),
       };
 
   static PlaybackSource _readPlaybackSource(String? value) {
@@ -335,6 +678,39 @@ class PlayerProvider extends ChangeNotifier {
       (source) => source.value == value,
       orElse: () => PlaybackSource.chksz,
     );
+  }
+
+  static List<MusicPlatform> _readBilibiliLyricPlatformOrder(
+    List<String>? values,
+  ) {
+    if (values == null) {
+      return List<MusicPlatform>.from(_defaultBilibiliLyricPlatformOrder);
+    }
+    final parsed = values
+        .map(
+          (value) => MusicPlatform.values.cast<MusicPlatform?>().firstWhere(
+            (platform) => platform?.code == value,
+            orElse: () => null,
+          ),
+        )
+        .whereType<MusicPlatform>();
+    return _normalizeBilibiliLyricPlatformOrder(parsed);
+  }
+
+  static List<MusicPlatform> _normalizeBilibiliLyricPlatformOrder(
+    Iterable<MusicPlatform> order,
+  ) {
+    final normalized = <MusicPlatform>[];
+    for (final platform in order) {
+      if (configurableMusicPlatforms.contains(platform) &&
+          !normalized.contains(platform)) {
+        normalized.add(platform);
+      }
+    }
+    for (final platform in _defaultBilibiliLyricPlatformOrder) {
+      if (!normalized.contains(platform)) normalized.add(platform);
+    }
+    return normalized;
   }
 
   // ==================== 播放控制 ====================
@@ -397,15 +773,15 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> _playCurrent() async {
     if (_currentIndex < 0 || _currentIndex >= _queue.length) return;
-    final item = _queue[_currentIndex];
+    var item = _queue[_currentIndex];
     final requestId = ++_playRequestId;
-    final itemKey = _itemKey(item);
     final immediateLyrics = _cachedLyrics(item);
 
     _isLoading = true;
     _errorMessage = null;
     _lyrics = immediateLyrics?.lines ?? [];
-    _lyricsLoading = immediateLyrics == null;
+    _lyricsLoading =
+        item.platform != MusicPlatform.bilibili && immediateLyrics == null;
     _currentLyricIndex = 0;
     _position = Duration.zero;
 
@@ -422,8 +798,15 @@ class PlayerProvider extends ChangeNotifier {
       await settingsReady;
       if (!_isCurrentRequest(requestId, item)) return;
 
-      final playbackSource = playbackSourceFor(item.platform);
-      if (playbackSource == PlaybackSource.chksz && _apiKey.isEmpty) {
+      if (item.platform == MusicPlatform.bilibili) {
+        item = await _prepareBilibiliItem(requestId, item);
+        if (!_isCurrentRequest(requestId, item)) return;
+      }
+      final itemKey = _itemKey(item);
+      final usesChksz =
+          item.platform != MusicPlatform.bilibili &&
+          playbackSourceFor(item.platform) == PlaybackSource.chksz;
+      if (usesChksz && _apiKey.isEmpty) {
         throw ApiException('API_KEY_REQUIRED', '播放需要配置 API Key（设置 → API 配置）');
       }
 
@@ -441,7 +824,7 @@ class PlayerProvider extends ChangeNotifier {
       // 直接播放本地文件，不再为了封面、歌手、专辑等已有信息请求详情。
       final cachedPath = await AudioCacheService.getCachedPath(
         platformCode: item.platform.code,
-        songId: item.id,
+        songId: _audioCacheSongId(item),
       );
       if (!_isCurrentRequest(requestId, item)) return;
 
@@ -495,7 +878,7 @@ class PlayerProvider extends ChangeNotifier {
           audioUri,
           headers: playbackHeaders,
           tag: MediaItem(
-            id: '${item.platform.code}_${item.id}',
+            id: '${item.platform.code}_${_audioCacheSongId(item)}',
             title: item.name,
             artist: item.artist,
             album: item.album,
@@ -517,7 +900,9 @@ class PlayerProvider extends ChangeNotifier {
       // 歌词独立完成：网络慢或失败都不阻塞声音。酷狗歌词随解析详情返回；
       // 若本地音频秒开且没有歌词，只在后台补一次歌词。
       if (immediateLyrics == null) {
-        if (independentLyrics != null) {
+        if (item.platform == MusicPlatform.bilibili) {
+          unawaited(_loadBilibiliLyricsInBackground(requestId, item));
+        } else if (independentLyrics != null) {
           unawaited(
             _completeLyrics(
               requestId,
@@ -540,7 +925,14 @@ class PlayerProvider extends ChangeNotifier {
       // 等音频源已预加载并开始播放后再启动后台下载，避免缓存下载与首包
       // 缓冲争抢带宽。
       if (shouldCacheAudio && resolvedUrl != null) {
-        unawaited(_cacheAudioAfterPlaybackStarts(requestId, item, resolvedUrl));
+        unawaited(
+          _cacheAudioAfterPlaybackStarts(
+            requestId,
+            item,
+            resolvedUrl,
+            headers: playbackHeaders,
+          ),
+        );
       }
 
       // 系统悬浮胶囊：显示/更新当前歌曲
@@ -573,7 +965,56 @@ class PlayerProvider extends ChangeNotifier {
     }
   }
 
-  String _itemKey(PlayQueueItem item) => '${item.platform.code}:${item.id}';
+  String _itemKey(PlayQueueItem item) {
+    if (item.platform == MusicPlatform.bilibili) {
+      return '${item.platform.code}:${item.id}:${item.bilibiliCid ?? 0}:'
+          'q$_bilibiliAudioQuality';
+    }
+    return '${item.platform.code}:${item.id}';
+  }
+
+  String _audioCacheSongId(PlayQueueItem item) {
+    if (item.platform == MusicPlatform.bilibili) {
+      return '${item.id}_${item.bilibiliCid ?? 0}_q$_bilibiliAudioQuality';
+    }
+    return item.id;
+  }
+
+  Future<PlayQueueItem> _prepareBilibiliItem(
+    int requestId,
+    PlayQueueItem item,
+  ) async {
+    var pages = item.bilibiliPages;
+    var description = item.bilibiliDescription;
+    var videoTitle = item.bilibiliVideoTitle ?? item.album;
+    var coverUrl = item.coverUrl;
+    if (pages.isEmpty || description == null) {
+      final info = await _api.bilibili.videoInfo(item.id);
+      if (!_isCurrentRequest(requestId, item)) return item;
+      pages = info.pages;
+      description = info.description;
+      videoTitle = info.title;
+      coverUrl = _preferExisting(coverUrl, info.coverUrl);
+    }
+    final selected = pages.firstWhere(
+      (page) => page.cid == item.bilibiliCid,
+      orElse: () => pages.first,
+    );
+    final prepared = item.copyWith(
+      name: selected.title,
+      album: videoTitle,
+      coverUrl: coverUrl,
+      duration: selected.duration,
+      bilibiliVideoTitle: videoTitle,
+      bilibiliDescription: description,
+      bilibiliCid: selected.cid,
+      bilibiliPage: selected.page,
+      bilibiliPages: pages,
+    );
+    _queue[_currentIndex] = prepared;
+    notifyListeners();
+    return prepared;
+  }
 
   String? _preferExisting(String? existing, String? fallback) {
     if (existing != null && existing.trim().isNotEmpty) return existing;
@@ -592,9 +1033,37 @@ class PlayerProvider extends ChangeNotifier {
     return url;
   }
 
-  Future<SongDetail> _resolveSongDetail(PlayQueueItem item) {
+  Future<SongDetail> _resolveSongDetail(PlayQueueItem item) async {
+    if (item.platform == MusicPlatform.bilibili) {
+      final cid = item.bilibiliCid;
+      if (cid == null || cid <= 0) {
+        throw const BilibiliApiException('VIDEO_CID', '当前分P信息不完整');
+      }
+      final playInfo = await _api.bilibili.playInfo(item.id, cid);
+      _bilibiliAudioQualities = playInfo.audioStreams;
+      _bilibiliVideoQualities = playInfo.videoStreams;
+      final selected = playInfo.audioStreams.firstWhere(
+        (stream) => stream.quality == _bilibiliAudioQuality,
+        orElse: () => playInfo.audioStreams.first,
+      );
+      if (!playInfo.audioStreams.any(
+        (stream) => stream.quality == _bilibiliAudioQuality,
+      )) {
+        _bilibiliAudioQuality = selected.quality;
+      }
+      return SongDetail(
+        name: item.name,
+        artist: item.artist,
+        album: item.album,
+        url: selected.url,
+        duration: playInfo.duration,
+        bitrate: selected.bandwidth.toString(),
+        format: selected.mimeType?.split('/').last,
+        playbackHeaders: _api.bilibili.playbackHeaders,
+      );
+    }
     if (playbackSourceFor(item.platform) == PlaybackSource.qingMusic) {
-      return _api.qingMusic(
+      return await _api.qingMusic(
         item.platform,
         item.id,
         quality: item.platform == MusicPlatform.netease
@@ -608,17 +1077,61 @@ class PlayerProvider extends ChangeNotifier {
       case MusicPlatform.qq:
         return _api.qqMusic(item.id, size: _commonLevel.value);
       case MusicPlatform.kugou:
-        return _api.kugouMusic(item.id, size: _commonLevel.value);
+        return await _api.kugouMusic(item.id, size: _commonLevel.value);
+      case MusicPlatform.bilibili:
+        throw StateError('B站播放已在专用分支处理');
     }
   }
 
+  Future<void> _loadBilibiliLyricsInBackground(
+    int requestId,
+    PlayQueueItem item,
+  ) async {
+    if (!_bilibiliLyricAutoAttempted.add(_lyricKey(item))) return;
+    try {
+      final query = lyricSearchQueryFor(item);
+      final candidates = await _searchBilibiliLyricCandidates(item, query);
+      if (!_isCurrentRequest(requestId, item)) return;
+      // B站分P标题常带编号、版本说明，跨平台歌词候选的时长也经常缺失。
+      // 标题关键字是自动匹配的必要条件；歌手/UP主和时长只参与上面的排序。
+      final matchedCandidates = candidates
+          .where(
+            (candidate) => bilibiliLyricTitleMatches(candidate.name, query),
+          )
+          .take(8);
+
+      for (final candidate in matchedCandidates) {
+        try {
+          final data = await _api.getLyric(candidate.platform, candidate.id);
+          if (!_isCurrentRequest(requestId, item)) return;
+          final resolved = data == null ? null : _resolveLyricData(data);
+          if (resolved != null && resolved.lines.isNotEmpty) {
+            _applyLyrics(requestId, item, resolved);
+            return;
+          }
+        } catch (_) {
+          // 候选无歌词时继续尝试下一个高置信版本。
+        }
+      }
+    } catch (_) {
+      // 自动匹配失败时保留 B 站分P与视频信息，不影响音频播放。
+    }
+  }
+
+  String _lyricKey(PlayQueueItem item) {
+    if (item.platform == MusicPlatform.bilibili) {
+      return '${item.platform.code}:${item.id}:${item.bilibiliCid ?? 0}';
+    }
+    return _itemKey(item);
+  }
+
   _ResolvedLyrics? _cachedLyrics(PlayQueueItem item) {
-    final cached = _lyricCache[_itemKey(item)];
+    final cached = _lyricCache[_lyricKey(item)];
     if (cached != null) return cached;
     final raw = item.lyric;
     if (raw == null || raw.trim().isEmpty) return null;
     final resolved = _ResolvedLyrics.fromPlainText(raw);
-    if (resolved != null) _lyricCache[_itemKey(item)] = resolved;
+    if (resolved != null) _lyricCache[_lyricKey(item)] = resolved;
     return resolved;
   }
 
@@ -630,6 +1143,8 @@ class PlayerProvider extends ChangeNotifier {
         return _fetchQqLyrics(item.id);
       case MusicPlatform.kugou:
         return _fetchKugouLyrics(item.id);
+      case MusicPlatform.bilibili:
+        return null;
     }
   }
 
@@ -694,10 +1209,10 @@ class PlayerProvider extends ChangeNotifier {
   ) {
     if (!_isCurrentRequest(requestId, item)) return;
     _lyrics = resolved?.lines ?? [];
-    _currentLyricIndex = 0;
+    _currentLyricIndex = LyricParser.findCurrentIndex(_lyrics, lyricPosition);
     _lyricsLoading = false;
     if (resolved != null) {
-      _lyricCache[_itemKey(item)] = resolved;
+      _lyricCache[_lyricKey(item)] = resolved;
       final current = _queue[_currentIndex];
       _queue[_currentIndex] = current.copyWith(lyric: resolved.rawText);
     }
@@ -733,16 +1248,18 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> _cacheAudioAfterPlaybackStarts(
     int requestId,
     PlayQueueItem item,
-    String url,
-  ) async {
+    String url, {
+    Map<String, String>? headers,
+  }) async {
     await Future<void>.delayed(const Duration(milliseconds: 1200));
     if (!_isCurrentRequest(requestId, item)) return;
     final localPath = await AudioCacheService.cacheAudio(
       platformCode: item.platform.code,
-      songId: item.id,
+      songId: _audioCacheSongId(item),
       url: url,
       name: item.name,
       artist: item.artist,
+      headers: headers,
     );
     if (localPath != null) debugPrint('后台缓存完成: $localPath');
   }
@@ -803,6 +1320,52 @@ class PlayerProvider extends ChangeNotifier {
     }
   }
 
+  Future<void> selectBilibiliPage(int pageIndex) async {
+    final song = currentSong;
+    if (song == null ||
+        song.platform != MusicPlatform.bilibili ||
+        pageIndex < 0 ||
+        pageIndex >= song.bilibiliPages.length) {
+      return;
+    }
+    final page = song.bilibiliPages[pageIndex];
+    if (page.cid == song.bilibiliCid) return;
+    _queue[_currentIndex] = song.copyWith(
+      name: page.title,
+      duration: page.duration,
+      bilibiliCid: page.cid,
+      bilibiliPage: page.page,
+      clearPlayUrl: true,
+      clearPlaybackHeaders: true,
+      clearLyric: true,
+    );
+    _lyrics.clear();
+    _lyricsLoading = false;
+    notifyListeners();
+    await _playCurrent();
+  }
+
+  Future<BilibiliVideoSource> currentBilibiliVideoSource() async {
+    final song = currentSong;
+    if (song == null || song.platform != MusicPlatform.bilibili) {
+      throw const BilibiliApiException('VIDEO_CURRENT', '当前不是B站视频');
+    }
+    final cid = song.bilibiliCid;
+    if (cid == null || cid <= 0) {
+      throw const BilibiliApiException('VIDEO_CID', '当前分P仍在加载');
+    }
+    return _api.bilibili.videoSource(
+      song.id,
+      cid,
+      _bilibiliVideoQuality,
+      audioQuality: _bilibiliAudioQuality,
+    );
+  }
+
+  Future<String> currentBilibiliVideoUrl() async {
+    return (await currentBilibiliVideoSource()).url;
+  }
+
   Future<void> playPause() async {
     if (currentSong == null || _isLoading) return;
     if (_isPlaying) {
@@ -835,6 +1398,31 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> seekTo(Duration position) async {
     await _audioPlayer.seek(position);
     _position = position;
+    _updateLyricIndex();
+    notifyListeners();
+  }
+
+  void adjustLyricOffset(Duration delta) {
+    setLyricOffset(lyricOffset + delta);
+  }
+
+  void resetLyricOffset() {
+    setLyricOffset(Duration.zero);
+  }
+
+  void setLyricOffset(Duration offset) {
+    final song = currentSong;
+    if (song == null) return;
+    final limit = lyricOffsetLimit.inMilliseconds;
+    final milliseconds = offset.inMilliseconds.clamp(-limit, limit).toInt();
+    final next = Duration(milliseconds: milliseconds);
+    if (next == lyricOffset) return;
+    final key = _lyricKey(song);
+    if (next == Duration.zero) {
+      _lyricOffsets.remove(key);
+    } else {
+      _lyricOffsets[key] = next;
+    }
     _updateLyricIndex();
     notifyListeners();
   }
@@ -905,7 +1493,7 @@ class PlayerProvider extends ChangeNotifier {
 
   void _updateLyricIndex() {
     if (_lyrics.isEmpty) return;
-    final newIndex = LyricParser.findCurrentIndex(_lyrics, _position);
+    final newIndex = LyricParser.findCurrentIndex(_lyrics, lyricPosition);
     if (newIndex != _currentLyricIndex) {
       _currentLyricIndex = newIndex;
     }
@@ -923,6 +1511,7 @@ class PlayerProvider extends ChangeNotifier {
     _positionSub?.cancel();
     _bufferSub?.cancel();
     _errorSub?.cancel();
+    _api.bilibili.removeListener(_handleBilibiliChanged);
     _api.close();
     _audioPlayer.dispose();
     super.dispose();

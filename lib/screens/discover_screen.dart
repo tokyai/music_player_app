@@ -81,6 +81,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
           const SizedBox(height: 12),
           _buildFavoritePlaylistsBlock(),
           const SizedBox(height: 12),
+          _buildBilibiliFavoritesBlock(),
+          const SizedBox(height: 12),
           _buildSectionHeader('每日推荐', PlatformColors.kugou, '每天为你精选好音乐'),
           _buildAnimatedSongSection(
             _kugouDaily,
@@ -108,8 +110,10 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                 children: [
                   _buildHeader(),
                   _buildFavoritesBlock(compact: compact),
-                  const SizedBox(height: 12),
+                  const SizedBox.shrink(),
                   _buildFavoritePlaylistsBlock(compact: compact),
+                  const SizedBox.shrink(),
+                  _buildBilibiliFavoritesBlock(compact: compact),
                   const SizedBox(height: 24),
                 ],
               ),
@@ -340,9 +344,10 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     bool compact = false,
   }) {
     final layout = AppLayout.fromContext(context);
+    final cardSize = _favoritePreviewSize(layout);
     if (!favorites.loaded) {
       return SizedBox(
-        height: layout.usesLargeTypography ? 160 : (compact ? 108 : 128),
+        height: cardSize + (layout.usesLargeTypography ? 62 : 52),
         child: Center(
           child: SizedBox.square(
             dimension: 24,
@@ -358,7 +363,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     final songs = favorites.favorites;
     if (songs.isEmpty) {
       return SizedBox(
-        height: layout.usesLargeTypography ? 136 : (compact ? 92 : 112),
+        height: layout.usesLargeTypography ? 88 : (compact ? 76 : 96),
         child: Center(
           child: TextButton.icon(
             onPressed: _openFavorites,
@@ -371,8 +376,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
 
     return SizedBox(
       height:
-          layout.mediaCardWidth +
-          (layout.usesLargeTypography ? 78 : (compact ? 58 : 68)),
+          cardSize + (layout.usesLargeTypography ? 62 : (compact ? 54 : 60)),
       child: ListView.builder(
         key: const ValueKey('home-favorites-carousel'),
         scrollDirection: Axis.horizontal,
@@ -382,6 +386,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
           final song = songs[index];
           return _FavoriteSongCard(
             song: song,
+            cardSize: cardSize,
             onTap: () => context.read<PlayerProvider>().playSingle(song),
           );
         },
@@ -437,9 +442,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     bool compact = false,
   }) {
     final layout = AppLayout.fromContext(context);
+    final cardSize = _favoritePreviewSize(layout);
     final sectionHeight =
-        layout.mediaCardWidth +
-        (layout.usesLargeTypography ? 76 : (compact ? 66 : 68));
+        cardSize + (layout.usesLargeTypography ? 62 : (compact ? 56 : 60));
     if (!favorites.loaded) {
       return SizedBox(
         height: sectionHeight,
@@ -454,7 +459,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     final playlists = favorites.favoritePlaylists;
     if (playlists.isEmpty) {
       return SizedBox(
-        height: layout.usesLargeTypography ? 136 : (compact ? 92 : 112),
+        height: layout.usesLargeTypography ? 88 : (compact ? 76 : 96),
         child: Center(
           child: TextButton.icon(
             onPressed: _openFavorites,
@@ -477,6 +482,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
             padding: const EdgeInsets.only(right: 14),
             child: FavoritePlaylistCard(
               favorite: favorite,
+              cardWidth: cardSize,
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
@@ -493,6 +499,99 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         },
       ),
     );
+  }
+
+  Widget _buildBilibiliFavoritesBlock({bool compact = false}) {
+    return Consumer<FavoriteService>(
+      builder: (context, favorites, _) {
+        final videos = favorites.bilibiliFavorites;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildSectionHeader(
+              'B站收藏',
+              PlatformColors.bilibili,
+              '${videos.length} 个',
+              compact: compact,
+              key: const ValueKey('home-bilibili-favorites-header'),
+              onTap: _openFavorites,
+            ),
+            AppMotionSwitcher(
+              child: KeyedSubtree(
+                key: ValueKey(
+                  !favorites.loaded
+                      ? 'home-bilibili-loading'
+                      : videos.isEmpty
+                      ? 'home-bilibili-empty'
+                      : 'home-bilibili-content',
+                ),
+                child: _buildBilibiliFavoriteSection(
+                  favorites,
+                  compact: compact,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildBilibiliFavoriteSection(
+    FavoriteService favorites, {
+    bool compact = false,
+  }) {
+    final layout = AppLayout.fromContext(context);
+    final cardSize = _favoritePreviewSize(layout);
+    final sectionHeight =
+        cardSize + (layout.usesLargeTypography ? 62 : (compact ? 54 : 60));
+    if (!favorites.loaded) {
+      return SizedBox(
+        height: sectionHeight,
+        child: Center(
+          child: CircularProgressIndicator(
+            strokeWidth: 2.5,
+            color: PlatformColors.bilibili,
+          ),
+        ),
+      );
+    }
+    final videos = favorites.bilibiliFavorites;
+    if (videos.isEmpty) {
+      return SizedBox(
+        height: layout.usesLargeTypography ? 88 : (compact ? 76 : 96),
+        child: Center(
+          child: TextButton.icon(
+            onPressed: _openFavorites,
+            icon: const Icon(Icons.video_library_outlined, size: 21),
+            label: const Text('还没有B站收藏'),
+          ),
+        ),
+      );
+    }
+    return SizedBox(
+      height: sectionHeight,
+      child: ListView.builder(
+        key: const ValueKey('home-bilibili-favorites-carousel'),
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: videos.length,
+        itemBuilder: (context, index) {
+          final video = videos[index];
+          return _FavoriteSongCard(
+            song: video,
+            cardSize: cardSize,
+            onTap: () => context.read<PlayerProvider>().playSingle(video),
+          );
+        },
+      ),
+    );
+  }
+
+  double _favoritePreviewSize(AppLayout layout) {
+    if (!layout.isLandscape) return layout.mediaCardWidth.clamp(110.0, 144.0);
+    if (layout.usesLargeTypography) return 92;
+    return layout.isCompactLandscape ? 86 : 104;
   }
 
   Widget _buildSongSection(
@@ -597,14 +696,20 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
 class _FavoriteSongCard extends StatelessWidget {
   final SongSearchResult song;
   final VoidCallback onTap;
+  final double? cardSize;
 
-  const _FavoriteSongCard({required this.song, required this.onTap});
+  const _FavoriteSongCard({
+    required this.song,
+    required this.onTap,
+    this.cardSize,
+  });
 
   @override
   Widget build(BuildContext context) {
     AppColors.syncWithTheme(context);
     final layout = AppLayout.fromContext(context);
-    final cardSize = layout.mediaCardWidth;
+    final cardSize = this.cardSize ?? layout.mediaCardWidth;
+    final compactPreview = cardSize < layout.mediaCardWidth;
     final platformColor = PlatformColors.of(song.platform);
     return InkWell(
       key: ValueKey('home-favorite-${song.platform.code}-${song.id}'),
@@ -640,7 +745,7 @@ class _FavoriteSongCard extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: layout.mediaCardTitleSize,
+                fontSize: compactPreview ? 15 : layout.mediaCardTitleSize,
                 fontWeight: FontWeight.w600,
                 color: AppColors.textPrimary,
               ),
@@ -651,7 +756,7 @@ class _FavoriteSongCard extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: layout.mediaCardSubtitleSize,
+                fontSize: compactPreview ? 13 : layout.mediaCardSubtitleSize,
                 color: AppColors.textHint,
               ),
             ),

@@ -31,6 +31,9 @@ class BackupService {
       songsAdded: result.added,
       songsSkipped: result.skipped,
       songsTotal: result.total,
+      bilibiliAdded: result.bilibiliAdded,
+      bilibiliSkipped: result.bilibiliSkipped,
+      bilibiliTotal: result.bilibiliTotal,
       playlistsAdded: result.playlistsAdded,
       playlistsSkipped: result.playlistsSkipped,
       apiKeyRestored: apiKeyRestored,
@@ -42,6 +45,9 @@ class BackupRestoreResult {
   final int songsAdded;
   final int songsSkipped;
   final int songsTotal;
+  final int bilibiliAdded;
+  final int bilibiliSkipped;
+  final int bilibiliTotal;
   final int playlistsAdded;
   final int playlistsSkipped;
   final bool apiKeyRestored;
@@ -50,6 +56,9 @@ class BackupRestoreResult {
     required this.songsAdded,
     required this.songsSkipped,
     required this.songsTotal,
+    this.bilibiliAdded = 0,
+    this.bilibiliSkipped = 0,
+    this.bilibiliTotal = 0,
     required this.playlistsAdded,
     required this.playlistsSkipped,
     required this.apiKeyRestored,

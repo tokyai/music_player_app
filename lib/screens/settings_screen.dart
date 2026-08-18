@@ -11,6 +11,7 @@ import '../services/floating_capsule_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../theme/lyric_style.dart';
+import '../widgets/bilibili_login_dialog.dart';
 import 'backup_restore_screen.dart';
 import 'cache_list_screen.dart';
 import 'favorites_screen.dart';
@@ -208,6 +209,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _buildLyricsCard(),
         _buildLibraryCard(),
         _buildPlaybackCard(),
+        _buildBilibiliAccountCard(),
         _buildApiCard(),
         _buildAboutCard(),
       ],
@@ -261,6 +263,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       child: Column(
                         children: [
+                          _buildBilibiliAccountCard(compact: compact),
                           _buildApiCard(compact: compact),
                           _buildAboutCard(compact: compact),
                         ],
@@ -571,8 +574,235 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
         ),
+        const Divider(height: 1),
+        Consumer<PlayerProvider>(
+          builder: (context, player, _) {
+            final stepLabel = _formatLyricOffsetStep(player.lyricOffsetStep);
+            return ListTile(
+              key: const ValueKey('lyric-offset-step-setting'),
+              dense: compact,
+              leading: const Icon(Icons.timer_outlined),
+              title: const Text(
+                '歌词时延单次调节',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                '播放页每次提前/延后 $stepLabel 秒',
+                maxLines: compact ? 1 : 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('$stepLabel 秒'),
+                  const SizedBox(width: 4),
+                  const Icon(Icons.chevron_right_rounded),
+                ],
+              ),
+              onTap: () => _showLyricOffsetStepPicker(player),
+            );
+          },
+        ),
+        const Divider(height: 1),
+        Consumer<PlayerProvider>(
+          builder: (context, player, _) {
+            final order = player.bilibiliLyricPlatformOrder;
+            return ListTile(
+              key: const ValueKey('bilibili-lyric-platform-order-setting'),
+              dense: compact,
+              leading: const Icon(Icons.swap_vert_rounded),
+              title: const Text(
+                'B站歌词平台权重',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                '${order.map((platform) => platform.label).join(' > ')} · 仅影响B站歌词匹配',
+                maxLines: compact ? 1 : 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () => _showBilibiliLyricPlatformOrderPicker(player),
+            );
+          },
+        ),
       ],
     );
+  }
+
+  Future<void> _showLyricOffsetStepPicker(PlayerProvider player) async {
+    final selected = await showDialog<Duration>(
+      context: context,
+      builder: (dialogContext) {
+        var milliseconds = player.lyricOffsetStep.inMilliseconds;
+        final minimum = PlayerProvider.minLyricOffsetStep.inMilliseconds;
+        final maximum = PlayerProvider.maxLyricOffsetStep.inMilliseconds;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final value = Duration(milliseconds: milliseconds);
+            final valueLabel = _formatLyricOffsetStep(value);
+            return AlertDialog(
+              key: const ValueKey('lyric-offset-step-dialog'),
+              title: const Text('歌词时延单次调节'),
+              content: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(child: Text('每次提前或延后')),
+                        Text(
+                          '$valueLabel 秒',
+                          key: const ValueKey('lyric-offset-step-value'),
+                          style: const TextStyle(
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Slider(
+                      key: const ValueKey('lyric-offset-step-slider'),
+                      value: milliseconds.toDouble(),
+                      min: minimum.toDouble(),
+                      max: maximum.toDouble(),
+                      divisions: (maximum - minimum) ~/ 100,
+                      label: '$valueLabel 秒',
+                      semanticFormatterCallback: (rawValue) =>
+                          '${_formatLyricOffsetStep(Duration(milliseconds: rawValue.round()))} 秒',
+                      onChanged: (rawValue) => setDialogState(() {
+                        milliseconds = (rawValue / 100).round() * 100;
+                      }),
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: const [Text('0.1 秒'), Text('2.0 秒')],
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => setDialogState(() {
+                    milliseconds =
+                        PlayerProvider.defaultLyricOffsetStep.inMilliseconds;
+                  }),
+                  child: const Text('恢复默认'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  key: const ValueKey('lyric-offset-step-save'),
+                  onPressed: () => Navigator.pop(
+                    dialogContext,
+                    Duration(milliseconds: milliseconds),
+                  ),
+                  child: const Text('保存'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (selected != null) await player.setLyricOffsetStep(selected);
+  }
+
+  String _formatLyricOffsetStep(Duration step) {
+    final milliseconds = step.inMilliseconds;
+    return milliseconds % 1000 == 0
+        ? '${milliseconds ~/ 1000}'
+        : (milliseconds / 1000).toStringAsFixed(1);
+  }
+
+  Future<void> _showBilibiliLyricPlatformOrderPicker(
+    PlayerProvider player,
+  ) async {
+    final selected = await showDialog<List<MusicPlatform>>(
+      context: context,
+      builder: (dialogContext) {
+        var order = player.bilibiliLyricPlatformOrder;
+        return StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            key: const ValueKey('bilibili-lyric-platform-order-dialog'),
+            title: const Text('B站歌词平台优先级'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var index = 0; index < order.length; index++)
+                  ListTile(
+                    key: ValueKey(
+                      'bilibili-lyric-platform-order-${order[index].code}',
+                    ),
+                    dense: true,
+                    leading: Text(
+                      '${index + 1}',
+                      style: const TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    title: Text(order[index].label),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          key: ValueKey(
+                            'bilibili-lyric-platform-order-${order[index].code}-up',
+                          ),
+                          tooltip: '上移',
+                          onPressed: index == 0
+                              ? null
+                              : () => setDialogState(() {
+                                  final next = List<MusicPlatform>.from(order);
+                                  final moved = next.removeAt(index);
+                                  next.insert(index - 1, moved);
+                                  order = next;
+                                }),
+                          icon: const Icon(Icons.keyboard_arrow_up_rounded),
+                        ),
+                        IconButton(
+                          key: ValueKey(
+                            'bilibili-lyric-platform-order-${order[index].code}-down',
+                          ),
+                          tooltip: '下移',
+                          onPressed: index == order.length - 1
+                              ? null
+                              : () => setDialogState(() {
+                                  final next = List<MusicPlatform>.from(order);
+                                  final moved = next.removeAt(index);
+                                  next.insert(index + 1, moved);
+                                  order = next;
+                                }),
+                          icon: const Icon(Icons.keyboard_arrow_down_rounded),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, order),
+                child: const Text('保存'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (selected != null) {
+      await player.setBilibiliLyricPlatformOrder(selected);
+    }
   }
 
   Future<void> _showLyricFontFamilyPicker() async {
@@ -696,7 +926,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                 ),
-                ...musicPlatformDisplayOrder.map((platform) {
+                ...configurableMusicPlatforms.map((platform) {
                   final source = player.playbackSourceFor(platform);
                   return ListTile(
                     key: ValueKey('playback-source-${platform.code}'),
@@ -808,7 +1038,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: const Text('我的收藏'),
             subtitle: Text(
               '${favorites.favorites.length} 首歌曲 · '
-              '${favorites.favoritePlaylists.length} 个歌单',
+              '${favorites.favoritePlaylists.length} 个歌单 · '
+              '${favorites.bilibiliFavorites.length} 个B站收藏',
             ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(
@@ -861,6 +1092,103 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ],
     );
+  }
+
+  Widget _buildBilibiliAccountCard({bool compact = false}) {
+    return _buildCard(
+      compact: compact,
+      children: [
+        _buildSectionHeader(
+          icon: Icons.video_collection_outlined,
+          title: 'B站账号',
+        ),
+        Consumer<PlayerProvider>(
+          builder: (context, player, _) {
+            final user = player.bilibiliUser;
+            final loading = player.bilibiliAccountLoading;
+            return ListTile(
+              key: const ValueKey('bilibili-account-setting'),
+              dense: compact,
+              leading: CircleAvatar(
+                backgroundColor: PlatformColors.bilibili.withValues(
+                  alpha: 0.14,
+                ),
+                child: loading
+                    ? const SizedBox.square(
+                        dimension: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(
+                        user == null
+                            ? Icons.qr_code_2_rounded
+                            : Icons.person_rounded,
+                        color: PlatformColors.bilibili,
+                      ),
+              ),
+              title: Text(
+                user?.name ?? '扫码登录 B站',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                user == null ? '登录后可使用账号对应的视频清晰度权限' : 'UID ${user.mid} · 已登录',
+                maxLines: compact ? 1 : 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: user == null
+                  ? const Icon(Icons.chevron_right_rounded)
+                  : IconButton(
+                      key: const ValueKey('bilibili-logout-action'),
+                      tooltip: '退出 B站账号',
+                      onPressed: loading ? null : () => _logoutBilibili(player),
+                      icon: const Icon(Icons.logout_rounded),
+                    ),
+              onTap: loading || user != null
+                  ? null
+                  : () => _openBilibiliLogin(player),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Future<void> _openBilibiliLogin(PlayerProvider player) async {
+    final loggedIn = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const BilibiliLoginDialog(),
+    );
+    if (loggedIn != true || !mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('B站账号登录成功')));
+  }
+
+  Future<void> _logoutBilibili(PlayerProvider player) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('退出 B站账号'),
+        content: const Text('将清除本机保存的 B站登录信息。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('退出'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await player.logoutBilibili();
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('已退出 B站账号')));
   }
 
   Widget _buildApiCard({bool compact = false}) {

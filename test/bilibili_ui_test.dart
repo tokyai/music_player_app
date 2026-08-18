@@ -1,0 +1,705 @@
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:music_player_app/models/song.dart';
+import 'package:music_player_app/providers/player_provider.dart';
+import 'package:music_player_app/providers/search_session.dart';
+import 'package:music_player_app/providers/theme_controller.dart';
+import 'package:music_player_app/screens/discover_screen.dart';
+import 'package:music_player_app/screens/player_screen.dart';
+import 'package:music_player_app/screens/settings_screen.dart';
+import 'package:music_player_app/screens/video_player_screen.dart';
+import 'package:music_player_app/services/bilibili_service.dart';
+import 'package:music_player_app/services/favorite_service.dart';
+import 'package:music_player_app/theme/app_layout.dart';
+import 'package:music_player_app/theme/app_theme.dart';
+import 'package:music_player_app/utils/lyric_parser.dart';
+import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() {
+    AppColors.isDark = false;
+    SharedPreferences.setMockInitialValues({});
+  });
+
+  test('Bilibili lyric title matching accepts meaningful keywords', () {
+    expect(
+      PlayerProvider.bilibiliLyricTitleMatches(
+        "If You're Happy And You Know It",
+        '001. If You,re Happy',
+      ),
+      isTrue,
+    );
+    expect(
+      PlayerProvider.bilibiliLyricTitleMatches('完全不同的歌曲', 'SSS儿歌'),
+      isFalse,
+    );
+  });
+
+  test(
+    'Bilibili lyric ranking favors matching artist without duration',
+    () async {
+      await http.runWithClient(
+        () async {
+          final player = _BilibiliLyricSearchPlayer();
+          addTearDown(player.dispose);
+
+          final results = await player.searchLyricCandidates(
+            '001. If You,re Happy',
+          );
+
+          expect(results.first.id, 'artist-match');
+          expect(results.first.duration, isNull);
+        },
+        () => MockClient((request) async {
+          if (request.url.host == 'u.y.qq.com') {
+            return http.Response(
+              jsonEncode({
+                'req_1': {
+                  'code': 0,
+                  'data': {
+                    'body': {
+                      'song': {
+                        'list': [
+                          {
+                            'mid': 'duration-match',
+                            'name': "If You're Happy And You Know It",
+                            'singer': [
+                              {'name': '其他歌手'},
+                            ],
+                            'album': {'name': '儿歌'},
+                            'interval': 120,
+                          },
+                          {
+                            'mid': 'artist-match',
+                            'name': "If You're Happy And You Know It",
+                            'singer': [
+                              {'name': '测试UP主'},
+                            ],
+                            'album': {'name': '儿歌'},
+                          },
+                        ],
+                      },
+                    },
+                  },
+                },
+              }),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          if (request.url.host == 'interface.music.163.com') {
+            return http.Response(
+              jsonEncode({
+                'result': {'songs': <Object>[]},
+              }),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          if (request.url.host == 'mobilecdn.kugou.com') {
+            return http.Response(
+              jsonEncode({
+                'data': {'info': <Object>[]},
+              }),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          return http.Response('{}', 200);
+        }),
+      );
+    },
+  );
+
+  test('Bilibili lyric platform order is persisted independently', () async {
+    SharedPreferences.setMockInitialValues({
+      'bilibili_lyric_platform_order': ['kugou', '163', 'qq'],
+    });
+    final player = PlayerProvider();
+    await player.settingsReady;
+    expect(player.bilibiliLyricPlatformOrder, [
+      MusicPlatform.kugou,
+      MusicPlatform.netease,
+      MusicPlatform.qq,
+    ]);
+
+    await player.setBilibiliLyricPlatformOrder([
+      MusicPlatform.netease,
+      MusicPlatform.qq,
+      MusicPlatform.kugou,
+    ]);
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getStringList('bilibili_lyric_platform_order'), [
+      '163',
+      'qq',
+      'kugou',
+    ]);
+    player.dispose();
+  });
+
+  test(
+    'Bilibili lyric candidates follow the configured platform order',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'bilibili_lyric_platform_order': ['kugou', '163', 'qq'],
+      });
+      await http.runWithClient(
+        () async {
+          final player = _BilibiliLyricSearchPlayer();
+          addTearDown(player.dispose);
+          final results = await player.searchLyricCandidates('晴天');
+          expect(results.take(3).map((song) => song.platform), [
+            MusicPlatform.kugou,
+            MusicPlatform.netease,
+            MusicPlatform.qq,
+          ]);
+        },
+        () => MockClient((request) async {
+          if (request.url.host == 'mobilecdn.kugou.com') {
+            return http.Response(
+              jsonEncode({
+                'data': {
+                  'info': [
+                    {
+                      'hash': 'kugou-lyric',
+                      'songname': '晴天',
+                      'singername': '其他歌手',
+                      'album_name': '专辑',
+                      'duration': 120,
+                    },
+                  ],
+                },
+              }),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          if (request.url.host == 'interface.music.163.com') {
+            return http.Response(
+              jsonEncode({
+                'result': {
+                  'songs': [
+                    {
+                      'id': 163001,
+                      'name': '晴天',
+                      'dt': 120000,
+                      'ar': [
+                        {'name': '测试UP主'},
+                      ],
+                      'al': {'name': '专辑', 'picUrl': 'https://cover.test/163'},
+                    },
+                  ],
+                },
+              }),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          if (request.url.host == 'u.y.qq.com') {
+            return http.Response(
+              jsonEncode({
+                'req_1': {
+                  'code': 0,
+                  'data': {
+                    'body': {
+                      'song': {
+                        'list': [
+                          {
+                            'mid': 'qq-lyric',
+                            'name': '晴天',
+                            'interval': 120,
+                            'singer': [
+                              {'name': '其他歌手'},
+                            ],
+                            'album': {'name': '专辑'},
+                          },
+                        ],
+                      },
+                    },
+                  },
+                },
+              }),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          return http.Response('{}', 200);
+        }),
+      );
+    },
+  );
+
+  testWidgets('Bilibili lyric platform order is usable in landscape settings', (
+    tester,
+  ) async {
+    for (final size in const [Size(640, 360), Size(1280, 800)]) {
+      SharedPreferences.setMockInitialValues({});
+      final player = PlayerProvider();
+      final favorites = FavoriteService();
+      final theme = ThemeController();
+      await _pump(
+        tester,
+        const SettingsScreen(),
+        player,
+        favorites,
+        theme,
+        size,
+      );
+
+      final setting = find.byKey(
+        const ValueKey('bilibili-lyric-platform-order-setting'),
+      );
+      expect(setting, findsOneWidget);
+      final preferencesPane = find.descendant(
+        of: find.byKey(const PageStorageKey('settings-landscape-preferences')),
+        matching: find.byType(Scrollable),
+      );
+      expect(preferencesPane, findsOneWidget);
+      await tester.scrollUntilVisible(
+        setting,
+        240,
+        scrollable: preferencesPane,
+      );
+      await tester.pumpAndSettle();
+      expect(setting.hitTestable(), findsOneWidget);
+      expect(find.textContaining('QQ音乐 > 酷狗 > 网易云'), findsOneWidget);
+      await tester.tap(setting);
+      await tester.pumpAndSettle();
+      final dialog = find.byKey(
+        const ValueKey('bilibili-lyric-platform-order-dialog'),
+      );
+      expect(dialog, findsOneWidget);
+
+      await tester.tap(
+        find
+            .byKey(const ValueKey('bilibili-lyric-platform-order-qq-down'))
+            .hitTestable(),
+      );
+      await tester.pump();
+      await tester.tap(
+        find.descendant(of: dialog, matching: find.text('保存')).hitTestable(),
+      );
+      await tester.pumpAndSettle();
+      expect(player.bilibiliLyricPlatformOrder, [
+        MusicPlatform.kugou,
+        MusicPlatform.qq,
+        MusicPlatform.netease,
+      ]);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      player.dispose();
+      favorites.dispose();
+      theme.dispose();
+    }
+    tester.view.resetPhysicalSize();
+    tester.view.resetDevicePixelRatio();
+  });
+
+  testWidgets('large landscape keeps all three favorite previews on screen', (
+    tester,
+  ) async {
+    final music = _song(MusicPlatform.qq, 'music-1', '收藏歌曲');
+    final bilibili = _song(MusicPlatform.bilibili, 'BV1favorite', 'B站收藏视频');
+    final playlist = FavoritePlaylist(
+      platform: MusicPlatform.netease,
+      playlist: PlaylistInfo(
+        id: 'playlist-1',
+        name: '收藏歌单',
+        creator: '创建者',
+        trackCount: 10,
+        tracks: const [],
+      ),
+    );
+    SharedPreferences.setMockInitialValues({
+      'favorites': jsonEncode([music.toJson(), bilibili.toJson()]),
+      'favorite_playlists': jsonEncode([playlist.toJson()]),
+    });
+
+    await http.runWithClient(() async {
+      final player = PlayerProvider();
+      final favorites = FavoriteService();
+      final theme = ThemeController();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        player.dispose();
+        favorites.dispose();
+        theme.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      await _pump(
+        tester,
+        const DiscoverScreen(),
+        player,
+        favorites,
+        theme,
+        const Size(1280, 800),
+      );
+
+      expect(favorites.bilibiliFavorites, hasLength(1));
+      expect(find.text('收藏歌曲'), findsWidgets);
+      expect(find.text('收藏歌单'), findsWidgets);
+      expect(find.text('B站收藏'), findsOneWidget);
+      for (final key in const [
+        'home-favorites-carousel',
+        'home-favorite-playlists-carousel',
+        'home-bilibili-favorites-carousel',
+      ]) {
+        final finder = find.byKey(ValueKey(key));
+        expect(finder, findsOneWidget);
+        expect(finder.hitTestable(), findsOneWidget);
+        expect(tester.getBottomRight(finder).dy, lessThanOrEqualTo(800));
+      }
+      expect(tester.takeException(), isNull);
+    }, () => MockClient((_) async => http.Response('{}', 200)));
+  });
+
+  testWidgets(
+    'Bilibili player exposes pages lyrics quality and MV in landscape',
+    (tester) async {
+      for (final size in const [Size(640, 360), Size(1280, 800)]) {
+        final player = _BilibiliPlayer();
+        expect(
+          player.lyricSearchQueryFor(
+            player.currentSong.copyWith(name: '001. If You,re Happy'),
+          ),
+          "If You're Happy",
+        );
+        final favorites = FavoriteService();
+        final theme = ThemeController();
+        await _pump(
+          tester,
+          const PlayerScreen(),
+          player,
+          favorites,
+          theme,
+          size,
+        );
+
+        expect(
+          find.byKey(const ValueKey('bilibili-info-pane')),
+          findsOneWidget,
+        );
+        expect(find.text('第一P标题'), findsWidgets);
+        expect(find.byKey(const ValueKey('bilibili-page-102')), findsOneWidget);
+        expect(
+          find
+              .byKey(const ValueKey('bilibili-lyric-search-action'))
+              .hitTestable(),
+          findsOneWidget,
+        );
+        expect(
+          find
+              .byKey(const ValueKey('player-bilibili-quality-control'))
+              .hitTestable(),
+          findsOneWidget,
+        );
+        expect(find.byKey(const ValueKey('player-mv-action')), findsOneWidget);
+        expect(find.text('分P'), findsWidgets);
+        expect(find.text('队列'), findsNothing);
+
+        await tester.tap(
+          find
+              .byKey(const ValueKey('player-bilibili-pages-action'))
+              .hitTestable(),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const ValueKey('bilibili-page-sheet')),
+          findsOneWidget,
+        );
+        await tester.tap(find.byKey(const ValueKey('bilibili-page-sheet-102')));
+        await tester.pumpAndSettle();
+        expect(player.currentSong.name, '第二P标题');
+        expect(find.text('第二P标题'), findsWidgets);
+        expect(tester.takeException(), isNull);
+
+        await tester.tap(
+          find
+              .byKey(const ValueKey('bilibili-lyric-search-action'))
+              .hitTestable(),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('QQ音乐 · 匹配歌手 · 匹配专辑'), findsOneWidget);
+        await tester.tap(
+          find.byKey(const ValueKey('lyric-search-result-qq-lyric-candidate')),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byKey(const ValueKey('player-lyric-list')), findsOneWidget);
+        expect(find.text('已匹配的第一行歌词'), findsOneWidget);
+        expect(find.byKey(const ValueKey('bilibili-info-pane')), findsNothing);
+        expect(tester.takeException(), isNull);
+        await tester.pump(const Duration(seconds: 5));
+        await tester.pumpAndSettle();
+
+        await tester.tap(
+          find.byKey(const ValueKey('player-mv-action')).hitTestable(),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        final videoScreen = tester.widget<VideoPlayerScreen>(
+          find.byType(VideoPlayerScreen),
+        );
+        expect(videoScreen.url, contains('.mcdn.bilivideo.cn'));
+        expect(videoScreen.alternateUrls, hasLength(1));
+        expect(
+          videoScreen.audioUrl,
+          'https://test.mcdn.bilivideo.cn/audio.m4s',
+        );
+        expect(
+          videoScreen.headers?['Referer'],
+          'https://www.bilibili.com/video/BV1player',
+        );
+        expect(videoScreen.headers?['Origin'], 'https://www.bilibili.com');
+        expect(find.byKey(const ValueKey('mv-player-back')), findsOneWidget);
+        expect(tester.takeException(), isNull);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        player.dispose();
+        favorites.dispose();
+        theme.dispose();
+      }
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    },
+  );
+
+  testWidgets('Bilibili QR login is reachable in both landscape sizes', (
+    tester,
+  ) async {
+    for (final size in const [Size(640, 360), Size(1280, 800)]) {
+      final player = _BilibiliPlayer();
+      final favorites = FavoriteService();
+      final theme = ThemeController();
+      await _pump(
+        tester,
+        const SettingsScreen(),
+        player,
+        favorites,
+        theme,
+        size,
+      );
+
+      final account = find.byKey(const ValueKey('bilibili-account-setting'));
+      expect(account.hitTestable(), findsOneWidget);
+      await tester.tap(account);
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('bilibili-login-dialog')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('bilibili-login-qr')), findsOneWidget);
+      await tester.tap(find.byTooltip('关闭'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      player.dispose();
+      favorites.dispose();
+      theme.dispose();
+    }
+    tester.view.resetPhysicalSize();
+    tester.view.resetDevicePixelRatio();
+  });
+}
+
+Future<void> _pump(
+  WidgetTester tester,
+  Widget screen,
+  PlayerProvider player,
+  FavoriteService favorites,
+  ThemeController theme,
+  Size size,
+) async {
+  tester.view.devicePixelRatio = 1;
+  tester.view.physicalSize = size;
+  await tester.pumpWidget(
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider<PlayerProvider>.value(value: player),
+        ChangeNotifierProvider<FavoriteService>.value(value: favorites),
+        ChangeNotifierProvider<ThemeController>.value(value: theme),
+        ChangeNotifierProvider(create: (_) => SearchSession()),
+      ],
+      child: MaterialApp(
+        theme: AppTheme.light(),
+        builder: (context, child) => MediaQuery(
+          data: AppLayout.adaptiveMediaQueryOf(context),
+          child: child!,
+        ),
+        home: screen,
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+}
+
+SongSearchResult _song(MusicPlatform platform, String id, String name) {
+  return SongSearchResult(
+    platform: platform,
+    id: id,
+    name: name,
+    artist: platform == MusicPlatform.bilibili ? '测试UP主' : '测试歌手',
+    album: name,
+  );
+}
+
+class _BilibiliPlayer extends PlayerProvider {
+  PlayQueueItem _song = PlayQueueItem(
+    platform: MusicPlatform.bilibili,
+    id: 'BV1player',
+    name: '第一P标题',
+    artist: '测试UP主',
+    album: '视频总标题',
+    duration: 120,
+    bilibiliVideoTitle: '视频总标题',
+    bilibiliDescription: '这是用于横屏测试的视频简介。',
+    bilibiliCid: 101,
+    bilibiliPage: 1,
+    bilibiliPages: const [
+      BilibiliPageInfo(cid: 101, page: 1, title: '第一P标题', duration: 120),
+      BilibiliPageInfo(cid: 102, page: 2, title: '第二P标题', duration: 180),
+    ],
+  );
+  int _audioQuality = 30280;
+  int _videoQuality = 80;
+  List<LyricLine> _matchedLyrics = const [];
+
+  @override
+  PlayQueueItem get currentSong => _song;
+
+  @override
+  List<PlayQueueItem> get queue => [_song];
+
+  @override
+  int get currentIndex => 0;
+
+  @override
+  Duration get duration => Duration(seconds: _song.duration ?? 0);
+
+  @override
+  List<LyricLine> get lyrics => _matchedLyrics;
+
+  @override
+  int get currentLyricIndex => 0;
+
+  @override
+  bool get lyricsLoading => false;
+
+  @override
+  List<BilibiliStream> get bilibiliAudioQualities => const [
+    BilibiliStream(
+      quality: 30280,
+      label: '192K',
+      url: 'https://example.com/audio.m4s',
+      bandwidth: 192000,
+    ),
+  ];
+
+  @override
+  List<BilibiliStream> get bilibiliVideoQualities => const [
+    BilibiliStream(
+      quality: 80,
+      label: '1080P',
+      url: 'https://example.com/video.m4s',
+      bandwidth: 2500000,
+    ),
+  ];
+
+  @override
+  int get bilibiliAudioQuality => _audioQuality;
+
+  @override
+  int get bilibiliVideoQuality => _videoQuality;
+
+  @override
+  Future<void> selectBilibiliPage(int pageIndex) async {
+    final page = _song.bilibiliPages[pageIndex];
+    _song = _song.copyWith(
+      name: page.title,
+      duration: page.duration,
+      bilibiliCid: page.cid,
+      bilibiliPage: page.page,
+    );
+    notifyListeners();
+  }
+
+  @override
+  Future<void> setBilibiliAudioQuality(int quality) async {
+    _audioQuality = quality;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> setBilibiliVideoQuality(int quality) async {
+    _videoQuality = quality;
+    notifyListeners();
+  }
+
+  @override
+  Future<List<SongSearchResult>> searchLyricCandidates(String keyword) async {
+    return [
+      SongSearchResult(
+        platform: MusicPlatform.qq,
+        id: 'lyric-candidate',
+        name: '第二P标题',
+        artist: '匹配歌手',
+        album: '匹配专辑',
+        duration: 180,
+      ),
+    ];
+  }
+
+  @override
+  Future<void> applyLyricCandidate(SongSearchResult candidate) async {
+    _matchedLyrics = const [
+      LyricLine(Duration.zero, '已匹配的第一行歌词'),
+      LyricLine(Duration(seconds: 10), '已匹配的第二行歌词'),
+    ];
+    notifyListeners();
+  }
+
+  @override
+  Future<BilibiliVideoSource> currentBilibiliVideoSource() async =>
+      const BilibiliVideoSource(
+        urls: [
+          'https://test.mcdn.bilivideo.cn/video.m4s',
+          'https://backup.bilivideo.com/video.m4s',
+        ],
+        audioUrls: ['https://test.mcdn.bilivideo.cn/audio.m4s'],
+        headers: {
+          'Referer': 'https://www.bilibili.com/video/BV1player',
+          'Origin': 'https://www.bilibili.com',
+        },
+      );
+
+  @override
+  Future<BilibiliQrCode> createBilibiliQrCode() async => const BilibiliQrCode(
+    key: 'test-key',
+    url: 'https://passport.bilibili.com/test-login',
+  );
+}
+
+class _BilibiliLyricSearchPlayer extends PlayerProvider {
+  final PlayQueueItem _song = PlayQueueItem(
+    platform: MusicPlatform.bilibili,
+    id: 'BV1lyrics',
+    name: '001. If You,re Happy',
+    artist: '测试UP主',
+    album: '测试儿歌',
+    duration: 120,
+    bilibiliCid: 101,
+  );
+
+  @override
+  PlayQueueItem get currentSong => _song;
+}

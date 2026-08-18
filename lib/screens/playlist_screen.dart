@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
+import '../services/api_service.dart';
 import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
@@ -27,6 +28,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   bool _loadingMore = false;
   bool _hasMore = false;
   String? _error;
+  int _loadRequestId = 0;
 
   @override
   void initState() {
@@ -41,7 +43,10 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   }
 
   void _handleTrackScroll() {
-    if (!_trackScrollController.hasClients || _loadingMore || !_hasMore) {
+    if (!_trackScrollController.hasClients ||
+        _loading ||
+        _loadingMore ||
+        !_hasMore) {
       return;
     }
     if (_trackScrollController.position.extentAfter < 520) {
@@ -49,58 +54,112 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     }
   }
 
-  Future<void> _loadPlaylist(MusicPlatform platform, String id) async {
+  Future<void> _loadPlaylist(
+    MusicPlatform platform,
+    String id, {
+    bool saveOnSuccess = false,
+    PlaylistInfo? savedMetadata,
+  }) async {
     final player = context.read<PlayerProvider>();
+    final favorites = context.read<FavoriteService>();
+    final requestId = ++_loadRequestId;
     setState(() {
       _loading = true;
+      _loadingMore = false;
       _error = null;
-      _platform = platform;
-      _playlist = null;
-      _hasMore = false;
     });
 
     try {
-      PlaylistInfo playlist;
-      if (platform == MusicPlatform.qq) {
-        playlist = await player.api.qqPlaylist(id);
-        _hasMore = playlist.tracks.length < playlist.trackCount;
-      } else {
-        final page = await player.api.neteasePlaylistTracks(
-          id,
-          limit: _pageSize,
-        );
-        playlist = PlaylistInfo(
-          id: id,
-          name: '网易云歌单',
-          trackCount: page.total ?? page.tracks.length,
-          tracks: page.tracks,
-        );
-        _hasMore = page.hasMore(0, _pageSize);
-      }
-      if (!mounted) return;
+      final (playlist, hasMore) = await _fetchPlaylist(
+        player,
+        platform,
+        id,
+        savedMetadata: savedMetadata,
+      );
+      if (!mounted || requestId != _loadRequestId) return;
+      final added = saveOnSuccess
+          ? await favorites.savePlaylist(platform, playlist)
+          : false;
+      if (!mounted || requestId != _loadRequestId) return;
       setState(() {
+        _platform = platform;
         _playlist = playlist;
+        _hasMore = hasMore;
         _loading = false;
       });
+      if (saveOnSuccess) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(added ? '已导入：${playlist.name}' : '歌单已存在，已打开')),
+        );
+      }
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || requestId != _loadRequestId) return;
       setState(() {
-        _error = e.toString();
+        _error = e is ApiException ? e.message : e.toString();
         _loading = false;
       });
     }
   }
 
+  Future<(PlaylistInfo, bool)> _fetchPlaylist(
+    PlayerProvider player,
+    MusicPlatform platform,
+    String id, {
+    PlaylistInfo? savedMetadata,
+  }) async {
+    switch (platform) {
+      case MusicPlatform.qq:
+        if (savedMetadata == null) {
+          final playlist = await player.api.qqPlaylist(id);
+          return (playlist, playlist.tracks.length < playlist.trackCount);
+        }
+        final page = await player.api.qqPlaylistTracks(id, limit: _pageSize);
+        final playlist = _copyPlaylist(
+          savedMetadata,
+          page.tracks,
+          trackCount: page.total,
+        );
+        return (playlist, page.hasMore(0, _pageSize));
+      case MusicPlatform.netease:
+        final metadata =
+            savedMetadata ?? await player.api.neteasePlaylistSummary(id);
+        final page = await player.api.neteasePlaylistTracks(
+          id,
+          limit: _pageSize,
+        );
+        final playlist = _copyPlaylist(
+          metadata,
+          page.tracks,
+          trackCount: page.total,
+        );
+        return (playlist, page.hasMore(0, _pageSize));
+      case MusicPlatform.kugou:
+        if (savedMetadata == null) {
+          throw const ApiException('PLAYLIST_IMPORT_UNSUPPORTED', '导入暂不支持酷狗歌单');
+        }
+        final page = await player.api.kugouPlaylistTracks(id, limit: _pageSize);
+        final playlist = _copyPlaylist(
+          savedMetadata,
+          page.tracks,
+          trackCount: page.total,
+        );
+        return (playlist, page.hasMore(0, _pageSize));
+      case MusicPlatform.bilibili:
+        throw const ApiException('PLAYLIST_UNSUPPORTED', 'B站歌单暂不支持在此页打开');
+    }
+  }
+
   PlaylistInfo _copyPlaylist(
     PlaylistInfo source,
-    List<SongSearchResult> tracks,
-  ) {
+    List<SongSearchResult> tracks, {
+    int? trackCount,
+  }) {
     return PlaylistInfo(
       id: source.id,
       name: source.name,
       coverUrl: source.coverUrl,
       creator: source.creator,
-      trackCount: source.trackCount,
+      trackCount: trackCount ?? source.trackCount,
       description: source.description,
       tracks: tracks,
     );
@@ -109,27 +168,42 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   Future<void> _loadMoreTracks() async {
     final playlist = _playlist;
     final platform = _platform;
-    if (playlist == null || platform == null || _loadingMore || !_hasMore) {
+    final requestId = _loadRequestId;
+    if (playlist == null ||
+        platform == null ||
+        _loading ||
+        _loadingMore ||
+        !_hasMore) {
       return;
     }
     setState(() => _loadingMore = true);
     try {
       final offset = playlist.tracks.length;
       final api = context.read<PlayerProvider>().api;
-      final page = platform == MusicPlatform.qq
-          ? await api.qqPlaylistTracks(
-              playlist.id,
-              limit: _pageSize,
-              offset: offset,
-            )
-          : await api.neteasePlaylistTracks(
-              playlist.id,
-              limit: _pageSize,
-              offset: offset,
-            );
+      final page = switch (platform) {
+        MusicPlatform.qq => await api.qqPlaylistTracks(
+          playlist.id,
+          limit: _pageSize,
+          offset: offset,
+        ),
+        MusicPlatform.netease => await api.neteasePlaylistTracks(
+          playlist.id,
+          limit: _pageSize,
+          offset: offset,
+        ),
+        MusicPlatform.kugou => await api.kugouPlaylistTracks(
+          playlist.id,
+          page: offset ~/ _pageSize + 1,
+          limit: _pageSize,
+        ),
+        MusicPlatform.bilibili => throw const ApiException(
+          'PLAYLIST_UNSUPPORTED',
+          'B站歌单暂不支持在此页打开',
+        ),
+      };
       final nextTracks = page.tracks;
       final total = page.total;
-      if (!mounted) return;
+      if (!mounted || requestId != _loadRequestId) return;
       final combined = [...playlist.tracks, ...nextTracks];
       setState(() {
         _playlist = _copyPlaylist(playlist, combined);
@@ -140,13 +214,15 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
                 : nextTracks.length >= _pageSize);
       });
     } catch (_) {
-      if (mounted) {
+      if (mounted && requestId == _loadRequestId) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('加载更多失败，请稍后重试')));
       }
     } finally {
-      if (mounted) setState(() => _loadingMore = false);
+      if (mounted && requestId == _loadRequestId) {
+        setState(() => _loadingMore = false);
+      }
     }
   }
 
@@ -166,6 +242,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     return Column(
       children: [
         _buildTitleBar(),
+        _buildPlaylistSelector(),
         if (_playlist != null) _buildPlaylistHeader(),
         if (_error != null)
           Padding(
@@ -201,6 +278,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
                 ),
                 children: [
                   _buildTitleBar(layout: layout),
+                  _buildPlaylistSelector(layout: layout),
                   if (_playlist != null)
                     _buildPlaylistHeader(layout: layout)
                   else
@@ -301,9 +379,128 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     showDialog(
       context: context,
       builder: (_) => PlaylistImportDialog(
-        onImport: (platform, id) => _loadPlaylist(platform, id),
+        onImport: (platform, id) =>
+            _loadPlaylist(platform, id, saveOnSuccess: true),
       ),
     );
+  }
+
+  Widget _buildPlaylistSelector({AppLayout? layout}) {
+    final isLandscape = layout != null;
+    return Consumer<FavoriteService>(
+      builder: (context, favorites, _) {
+        final playlists = favorites.favoritePlaylists;
+        if (playlists.isEmpty) return const SizedBox.shrink();
+        if (isLandscape) {
+          return Padding(
+            padding: EdgeInsets.fromLTRB(
+              layout.isCompactLandscape ? 10 : 18,
+              2,
+              layout.isCompactLandscape ? 10 : 18,
+              6,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final favorite in playlists)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: _buildPlaylistChip(favorite),
+                  ),
+              ],
+            ),
+          );
+        }
+        return SizedBox(
+          height: 48,
+          child: ListView.separated(
+            key: const ValueKey('imported-playlist-selector'),
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            itemCount: playlists.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 8),
+            itemBuilder: (_, index) => _buildPlaylistChip(playlists[index]),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildPlaylistChip(FavoritePlaylist favorite) {
+    final selected =
+        _platform == favorite.platform && _playlist?.id == favorite.id;
+    final platformColor = PlatformColors.of(favorite.platform);
+    final chip = InputChip(
+      key: ValueKey(
+        'imported-playlist-${favorite.platform.code}-${favorite.id}',
+      ),
+      selected: selected,
+      avatar: Icon(Icons.queue_music_rounded, size: 18, color: platformColor),
+      label: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 150),
+        child: Text(
+          favorite.playlist.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      deleteIcon: const Icon(Icons.close_rounded, size: 18),
+      deleteButtonTooltipMessage: '删除歌单 ${favorite.playlist.name}',
+      onPressed: () => _loadPlaylist(
+        favorite.platform,
+        favorite.id,
+        savedMetadata: favorite.playlist,
+      ),
+      onDeleted: () => _confirmDeletePlaylist(favorite),
+    );
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onLongPress: () => _confirmDeletePlaylist(favorite),
+      child: chip,
+    );
+  }
+
+  Future<void> _confirmDeletePlaylist(FavoritePlaylist favorite) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('删除歌单'),
+        content: Text('确定从我的歌单中删除「${favorite.playlist.name}」吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final deletingSelected =
+        _platform == favorite.platform && _playlist?.id == favorite.id;
+    if (deletingSelected) {
+      _loadRequestId++;
+      setState(() {
+        _playlist = null;
+        _platform = null;
+        _loading = false;
+        _loadingMore = false;
+        _hasMore = false;
+        _error = null;
+      });
+    }
+    await context.read<FavoriteService>().removePlaylist(
+      favorite.platform,
+      favorite.id,
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('已删除：${favorite.playlist.name}')));
   }
 
   Widget _buildAnimatedTrackArea({AppLayout? layout}) {
@@ -369,9 +566,12 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
                 SizedBox(height: isCompact ? 10 : 16),
                 _buildPlaylistMetadata(p, layout: layout),
                 SizedBox(height: isCompact ? 10 : 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: _buildPlayAllButton(showLabel: true),
+                Row(
+                  children: [
+                    Expanded(child: _buildPlayAllButton(showLabel: true)),
+                    const SizedBox(width: 6),
+                    _buildDeletePlaylistButton(p),
+                  ],
                 ),
               ],
             )
@@ -381,6 +581,8 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
                 const SizedBox(width: 16),
                 Expanded(child: _buildPlaylistMetadata(p)),
                 const SizedBox(width: 8),
+                _buildDeletePlaylistButton(p),
+                const SizedBox(width: 4),
                 _buildPlayAllButton(),
               ],
             ),
@@ -464,6 +666,19 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
       ),
       icon: const Icon(Icons.play_arrow_rounded, size: 26),
       tooltip: '播放全部',
+    );
+  }
+
+  Widget _buildDeletePlaylistButton(PlaylistInfo playlist) {
+    final platform = _platform;
+    if (platform == null) return const SizedBox.shrink();
+    return IconButton(
+      key: const ValueKey('delete-current-playlist'),
+      tooltip: '删除当前歌单',
+      onPressed: () => _confirmDeletePlaylist(
+        FavoritePlaylist(platform: platform, playlist: playlist),
+      ),
+      icon: const Icon(Icons.delete_outline_rounded),
     );
   }
 

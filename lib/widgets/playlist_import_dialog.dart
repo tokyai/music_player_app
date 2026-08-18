@@ -98,6 +98,10 @@ class _PlaylistImportDialogState extends State<PlaylistImportDialog> {
                 keyboardType: TextInputType.url,
                 validator: (v) {
                   if (v == null || v.trim().isEmpty) return '请输入歌单 ID 或链接';
+                  final id = _extractId(v);
+                  if (!RegExp(r'^\d{5,}$').hasMatch(id)) {
+                    return '请输入有效的歌单 ID 或链接';
+                  }
                   return null;
                 },
               ),

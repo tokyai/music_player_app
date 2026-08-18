@@ -39,6 +39,7 @@ dependencies:
   shared_preferences: ^2.3.2
 
   # UI
+  qr_flutter: ^4.1.0
   # 工具
   palette_generator: ^0.3.3+4
 

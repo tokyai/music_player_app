@@ -11,12 +11,14 @@ class FavoritePlaylistCard extends StatelessWidget {
   final FavoritePlaylist favorite;
   final VoidCallback onTap;
   final VoidCallback onFavoritePressed;
+  final double? cardWidth;
 
   const FavoritePlaylistCard({
     super.key,
     required this.favorite,
     required this.onTap,
     required this.onFavoritePressed,
+    this.cardWidth,
   });
 
   @override
@@ -25,7 +27,8 @@ class FavoritePlaylistCard extends StatelessWidget {
     final layout = AppLayout.fromContext(context);
     final playlist = favorite.playlist;
     final platformColor = PlatformColors.of(favorite.platform);
-    final cardWidth = layout.mediaCardWidth;
+    final cardWidth = this.cardWidth ?? layout.mediaCardWidth;
+    final compactPreview = cardWidth < layout.mediaCardWidth;
     return SizedBox(
       key: ValueKey(
         'favorite-playlist-${favorite.platform.code}-${playlist.id}',
@@ -93,7 +96,7 @@ class FavoritePlaylistCard extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: AppColors.textPrimary,
-                    fontSize: layout.mediaCardTitleSize,
+                    fontSize: compactPreview ? 15 : layout.mediaCardTitleSize,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -106,7 +109,9 @@ class FavoritePlaylistCard extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: AppColors.textSecondary,
-                    fontSize: layout.mediaCardSubtitleSize,
+                    fontSize: compactPreview
+                        ? 13
+                        : layout.mediaCardSubtitleSize,
                   ),
                 ),
               ],

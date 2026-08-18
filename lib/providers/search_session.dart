@@ -17,21 +17,25 @@ class SearchSession extends ChangeNotifier {
     MusicPlatform.qq: [],
     MusicPlatform.netease: [],
     MusicPlatform.kugou: [],
+    MusicPlatform.bilibili: [],
   };
   final Map<MusicPlatform, List<PlaylistInfo>> _playlistResults = {
     MusicPlatform.qq: [],
     MusicPlatform.netease: [],
     MusicPlatform.kugou: [],
+    MusicPlatform.bilibili: [],
   };
   final Map<MusicPlatform, String?> _errors = {
     MusicPlatform.qq: null,
     MusicPlatform.netease: null,
     MusicPlatform.kugou: null,
+    MusicPlatform.bilibili: null,
   };
   final Map<MusicPlatform, bool> _loading = {
     MusicPlatform.qq: false,
     MusicPlatform.netease: false,
     MusicPlatform.kugou: false,
+    MusicPlatform.bilibili: false,
   };
   final Set<MusicPlatform> _loadedPlatforms = {};
   final List<String> _searchHistory = [];
@@ -269,6 +273,8 @@ class SearchSession extends ChangeNotifier {
           playlists = await api.qqSearchPlaylists(keyword);
         case MusicPlatform.kugou:
           playlists = await api.kugouSearchPlaylists(keyword);
+        case MusicPlatform.bilibili:
+          playlists = const [];
       }
       if (_isCurrentSearch(requestId, playlistMode, subject)) {
         _playlistResults[platform] = playlists;
