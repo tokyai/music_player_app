@@ -595,6 +595,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   String? _lastColorSongId;
   String? _lastAutoScrollSongKey;
   int? _lastAutoScrollLyricIndex;
+  bool _forceLyricRecenter = false;
 
   @override
   void initState() {
@@ -622,13 +623,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
       final savedSize = rawSize != null && rawSize < 32 ? 32.0 : rawSize;
       if (!mounted) return;
       setState(() {
+        var layoutChanged = false;
         if (!_lyricFontSizeChangedByUser &&
             savedSize != null &&
             _lyricFontSizes.contains(savedSize)) {
+          layoutChanged = layoutChanged || _lyricFontSize != savedSize;
           _lyricFontSize = savedSize;
         }
         if (!_lyricLineSpacingChangedByUser && savedSpacing != null) {
+          layoutChanged = layoutChanged || _lyricLineSpacing != savedSpacing;
           _lyricLineSpacing = savedSpacing;
+        }
+        if (layoutChanged) {
+          _lastAutoScrollLyricIndex = null;
+          _forceLyricRecenter = true;
         }
       });
     } catch (_) {}
@@ -641,6 +649,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       setState(() {
         _lyricFontSize = size;
         _lastAutoScrollLyricIndex = null;
+        _forceLyricRecenter = true;
       });
     }
     unawaited(_saveLyricFontSize(size));
@@ -663,6 +672,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       setState(() {
         _lyricLineSpacing = next;
         _lastAutoScrollLyricIndex = null;
+        _forceLyricRecenter = true;
       });
     }
   }
@@ -742,7 +752,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final index = player.currentLyricIndex;
     final song = player.currentSong;
     final songKey = song == null ? null : '${song.platform.code}:${song.id}';
-    if (_lastAutoScrollSongKey == songKey &&
+    if (!_forceLyricRecenter &&
+        _lastAutoScrollSongKey == songKey &&
         _lastAutoScrollLyricIndex == index) {
       return;
     }
@@ -754,9 +765,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
     _lastAutoScrollSongKey = songKey;
     _lastAutoScrollLyricIndex = index;
+    final forceRecenter = _forceLyricRecenter;
+    _forceLyricRecenter = false;
 
     final distance = (position.pixels - target).abs();
-    if (distance > _lyricLineExtent * 4) {
+    if (forceRecenter || distance > _lyricLineExtent * 4) {
       // 初次打开或跨越多行跳转时直接定位，避免从列表顶部长距离飞过。
       position.jumpTo(target);
       return;
@@ -1852,9 +1865,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
           scaledFontSize + _maximumLyricLineSpacing,
         );
         _lyricLineExtent = lineExtent;
-        final landscapePadding = availableHeight <= 20
-            ? 0.0
-            : ((availableHeight - lineExtent) / 2).clamp(20.0, availableHeight);
+        final centerPadding = availableHeight > lineExtent
+            ? (availableHeight - lineExtent) / 2
+            : 0.0;
         return GestureDetector(
           onTap: toggleOnTap ? () => player.toggleShowLyric() : null,
           onVerticalDragUpdate: (_) =>
@@ -1863,9 +1876,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             key: const ValueKey('player-lyric-list'),
             controller: _lyricScrollController,
             padding: EdgeInsets.symmetric(
-              vertical: landscape
-                  ? landscapePadding
-                  : MediaQuery.sizeOf(ctx).height * 0.28,
+              vertical: centerPadding,
               horizontal: landscape ? (largeUi ? 44 : 28) : 32,
             ),
             itemCount: player.lyrics.length,

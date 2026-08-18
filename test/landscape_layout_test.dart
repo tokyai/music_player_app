@@ -1159,6 +1159,67 @@ void main() {
     }, _mockClient);
   });
 
+  testWidgets('saved and live lyric spacing keep the current line centered', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      for (final size in const [Size(640, 360), Size(1280, 800)]) {
+        SharedPreferences.setMockInitialValues({'lyric_line_spacing': 160.0});
+        final player = _CenteredLyricsPlayer();
+        final theme = ThemeController();
+
+        await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
+
+        final lyricsRect = tester.getRect(
+          find.byKey(const ValueKey('player-lyric-list')),
+        );
+        final currentLineRect = tester.getRect(
+          find.byKey(const ValueKey('lyric-line-3')),
+        );
+        expect(
+          currentLineRect.center.dy,
+          closeTo(lyricsRect.center.dy, 1),
+          reason: '已保存的歌词间距加载后，当前歌词仍应位于歌词栏正中',
+        );
+        expect(currentLineRect.height, greaterThan(190));
+
+        await tester.tap(find.byTooltip('歌词字号和间距'));
+        await tester.pumpAndSettle();
+        final spacingSlider = tester.widget<Slider>(
+          find.byKey(const ValueKey('lyric-line-spacing-slider')),
+        );
+        spacingSlider.onChanged!(20);
+        spacingSlider.onChangeEnd!(20);
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const ValueKey('lyric-display-settings-close')),
+        );
+        await tester.pumpAndSettle();
+
+        final resizedLyricsRect = tester.getRect(
+          find.byKey(const ValueKey('player-lyric-list')),
+        );
+        final resizedCurrentLineRect = tester.getRect(
+          find.byKey(const ValueKey('lyric-line-3')),
+        );
+        expect(
+          resizedCurrentLineRect.center.dy,
+          closeTo(resizedLyricsRect.center.dy, 1),
+          reason: '拖动歌词间距滑杆后，当前歌词仍应位于歌词栏正中',
+        );
+        expect(resizedCurrentLineRect.height, lessThan(currentLineRect.height));
+        _expectNoException(tester);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        player.dispose();
+        theme.dispose();
+      }
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    }, _mockClient);
+  });
+
   testWidgets('main shell switches navigation and player placement', (
     tester,
   ) async {
@@ -2248,6 +2309,25 @@ class _KaraokePlayer extends _PlayerWithLyrics {
     _testPosition = position;
     notifyListeners();
   }
+}
+
+class _CenteredLyricsPlayer extends _PlayerWithLyrics {
+  late final List<LyricLine> _centeredLyrics = List.generate(
+    7,
+    (index) => LyricLine(Duration(seconds: index * 10), '第${index + 1}句居中测试歌词'),
+  );
+
+  @override
+  List<LyricLine> get lyrics => _centeredLyrics;
+
+  @override
+  Duration get position => const Duration(seconds: 35);
+
+  @override
+  Duration get duration => const Duration(seconds: 70);
+
+  @override
+  int get currentLyricIndex => 3;
 }
 
 class _ControllablePlayer extends PlayerProvider {
