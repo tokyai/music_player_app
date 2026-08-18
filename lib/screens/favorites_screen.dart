@@ -10,6 +10,7 @@ import '../services/backup_service.dart';
 import '../services/favorite_file_service.dart';
 import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
+import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 import '../utils/song_source_matcher.dart';
 import '../widgets/favorite_playlist_card.dart';
@@ -70,7 +71,19 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
             _buildLandscapeBody(songs, playlists)
           else
             _buildPortraitBody(songs, playlists),
-          if (_switchingSources) _buildSwitchProgress(),
+          Positioned.fill(
+            child: AppMotionSwitcher(
+              beginOffset: Offset.zero,
+              child: _switchingSources
+                  ? KeyedSubtree(
+                      key: const ValueKey('favorites-source-progress'),
+                      child: _buildSwitchProgress(),
+                    )
+                  : const SizedBox.shrink(
+                      key: ValueKey('favorites-source-progress-hidden'),
+                    ),
+            ),
+          ),
         ],
       ),
       bottomNavigationBar: SafeArea(
@@ -78,7 +91,22 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (_selecting && !isLandscape) _buildSelectionBar(songs),
+            if (!isLandscape)
+              AnimatedSize(
+                duration: AppMotion.resolve(context, AppMotion.state),
+                curve: AppMotion.enterCurve,
+                child: AppMotionSwitcher(
+                  alignment: Alignment.bottomCenter,
+                  child: _selecting
+                      ? KeyedSubtree(
+                          key: const ValueKey('favorites-selection-bar'),
+                          child: _buildSelectionBar(songs),
+                        )
+                      : const SizedBox.shrink(
+                          key: ValueKey('favorites-selection-bar-hidden'),
+                        ),
+                ),
+              ),
             const MiniPlayer(),
           ],
         ),
@@ -87,8 +115,10 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   PreferredSizeWidget _buildAppBar(List<SongSearchResult> songs) {
+    final AppBar appBar;
     if (_selecting) {
-      return AppBar(
+      appBar = AppBar(
+        key: const ValueKey('favorites-selection-app-bar'),
         leading: IconButton(
           tooltip: '退出选择',
           onPressed: _exitSelection,
@@ -107,57 +137,65 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           ),
         ],
       );
-    }
-
-    return AppBar(
-      title: const Text('我的收藏'),
-      actions: [
-        if (songs.isNotEmpty)
-          IconButton(
-            tooltip: '批量选择',
-            onPressed: () => setState(() => _selecting = true),
-            icon: const Icon(Icons.library_add_check_outlined),
+    } else {
+      appBar = AppBar(
+        key: const ValueKey('favorites-normal-app-bar'),
+        title: const Text('我的收藏'),
+        actions: [
+          if (songs.isNotEmpty)
+            IconButton(
+              tooltip: '批量选择',
+              onPressed: () => setState(() => _selecting = true),
+              icon: const Icon(Icons.library_add_check_outlined),
+            ),
+          PopupMenuButton<_FavoriteMenuAction>(
+            tooltip: '收藏管理',
+            onSelected: (action) {
+              switch (action) {
+                case _FavoriteMenuAction.importBackup:
+                  unawaited(_importFavorites());
+                case _FavoriteMenuAction.exportBackup:
+                  unawaited(_exportFavorites());
+                case _FavoriteMenuAction.openNetworkBackup:
+                  _openBackupScreen();
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: _FavoriteMenuAction.importBackup,
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.file_open_outlined),
+                  title: Text('导入收藏'),
+                ),
+              ),
+              PopupMenuItem(
+                value: _FavoriteMenuAction.exportBackup,
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.save_alt_outlined),
+                  title: Text('导出收藏'),
+                ),
+              ),
+              PopupMenuItem(
+                value: _FavoriteMenuAction.openNetworkBackup,
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.cloud_sync_outlined),
+                  title: Text('备份与还原'),
+                ),
+              ),
+            ],
           ),
-        PopupMenuButton<_FavoriteMenuAction>(
-          tooltip: '收藏管理',
-          onSelected: (action) {
-            switch (action) {
-              case _FavoriteMenuAction.importBackup:
-                unawaited(_importFavorites());
-              case _FavoriteMenuAction.exportBackup:
-                unawaited(_exportFavorites());
-              case _FavoriteMenuAction.openNetworkBackup:
-                _openBackupScreen();
-            }
-          },
-          itemBuilder: (_) => const [
-            PopupMenuItem(
-              value: _FavoriteMenuAction.importBackup,
-              child: ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(Icons.file_open_outlined),
-                title: Text('导入收藏'),
-              ),
-            ),
-            PopupMenuItem(
-              value: _FavoriteMenuAction.exportBackup,
-              child: ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(Icons.save_alt_outlined),
-                title: Text('导出收藏'),
-              ),
-            ),
-            PopupMenuItem(
-              value: _FavoriteMenuAction.openNetworkBackup,
-              child: ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(Icons.cloud_sync_outlined),
-                title: Text('备份与还原'),
-              ),
-            ),
-          ],
-        ),
-      ],
+        ],
+      );
+    }
+    return PreferredSize(
+      preferredSize: appBar.preferredSize,
+      child: AppMotionSwitcher(
+        beginOffset: const Offset(0, -0.08),
+        child: appBar,
+      ),
     );
   }
 
@@ -168,7 +206,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     return Column(
       children: [
         _buildOverview(songs),
-        Expanded(child: _buildCollectionList(songs, playlists)),
+        Expanded(child: _buildAnimatedCollectionList(songs, playlists)),
       ],
     );
   }
@@ -192,9 +230,21 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
               width: overviewWidth,
               child: SingleChildScrollView(
                 key: const PageStorageKey('favorites-landscape-overview'),
-                child: _selecting
-                    ? _buildSelectionOverview(songs, layout)
-                    : _buildOverview(songs, layout: layout),
+                child: AppMotionSwitcher(
+                  child: _selecting
+                      ? KeyedSubtree(
+                          key: const ValueKey(
+                            'favorites-landscape-selection-overview',
+                          ),
+                          child: _buildSelectionOverview(songs, layout),
+                        )
+                      : KeyedSubtree(
+                          key: const ValueKey(
+                            'favorites-landscape-normal-overview',
+                          ),
+                          child: _buildOverview(songs, layout: layout),
+                        ),
+                ),
               ),
             ),
             VerticalDivider(
@@ -202,7 +252,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
               thickness: 1,
               color: AppColors.surfaceSoft,
             ),
-            Expanded(child: _buildCollectionList(songs, playlists)),
+            Expanded(child: _buildAnimatedCollectionList(songs, playlists)),
           ],
         );
       },
@@ -440,6 +490,20 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     );
   }
 
+  Widget _buildAnimatedCollectionList(
+    List<SongSearchResult> songs,
+    List<FavoritePlaylist> playlists,
+  ) {
+    return AppMotionSwitcher(
+      child: KeyedSubtree(
+        key: ValueKey(
+          _selecting ? 'favorites-selecting-list' : 'favorites-library-list',
+        ),
+        child: _buildCollectionList(songs, playlists),
+      ),
+    );
+  }
+
   Widget _buildSongTile(List<SongSearchResult> songs, int index) {
     final song = songs[index];
     final key = FavoriteService.keyOf(song);
@@ -620,31 +684,38 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   Widget _buildSwitchProgress() {
     final layout = AppLayout.fromContext(context);
     final progress = _switchTotal == 0 ? null : _switchCompleted / _switchTotal;
-    return Positioned.fill(
-      child: ColoredBox(
-        color: Colors.black.withValues(alpha: 0.28),
-        child: Center(
-          child: Material(
-            color: AppColors.surface,
-            elevation: 12,
-            borderRadius: BorderRadius.circular(AppRadius.panel),
-            child: SizedBox(
-              width: layout.isLandscape
-                  ? (layout.isCompactLandscape ? 260 : 360)
-                  : 260,
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    LinearProgressIndicator(value: progress),
-                    const SizedBox(height: 14),
-                    Text(
-                      '正在匹配 $_switchCompleted / $_switchTotal',
-                      style: TextStyle(fontSize: layout.bodySize),
+    return ColoredBox(
+      color: Colors.black.withValues(alpha: 0.28),
+      child: Center(
+        child: Material(
+          color: AppColors.surface,
+          elevation: 12,
+          borderRadius: BorderRadius.circular(AppRadius.panel),
+          child: SizedBox(
+            width: layout.isLandscape
+                ? (layout.isCompactLandscape ? 260 : 360)
+                : 260,
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (progress == null)
+                    const LinearProgressIndicator()
+                  else
+                    TweenAnimationBuilder<double>(
+                      duration: AppMotion.resolve(context, AppMotion.quick),
+                      curve: AppMotion.enterCurve,
+                      tween: Tween(end: progress),
+                      builder: (context, value, _) =>
+                          LinearProgressIndicator(value: value),
                     ),
-                  ],
-                ),
+                  const SizedBox(height: 14),
+                  Text(
+                    '正在匹配 $_switchCompleted / $_switchTotal',
+                    style: TextStyle(fontSize: layout.bodySize),
+                  ),
+                ],
               ),
             ),
           ),

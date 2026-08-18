@@ -1,6 +1,8 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
+import '../theme/app_motion.dart';
+
 /// 封面中转代理：当手机直连各平台封面 CDN 失败时，经我们的服务器中转加载。
 class CoverProxy {
   static const String proxyBase = 'http://161.118.252.183/cover-proxy';
@@ -94,14 +96,34 @@ class _SmartCoverState extends State<SmartCover> {
     if (url == null || url.isEmpty) {
       return widget.placeholder();
     }
-    return CachedNetworkImage(
-      imageUrl: url,
-      fit: widget.fit,
-      placeholder: (_, __) => widget.placeholder(),
-      errorWidget: (_, __, ___) {
-        // 失败后自动切换到下一个 URL（延迟到 build 之后执行，避免 setState 时序问题）
-        Future.microtask(_nextAttempt);
-        return widget.placeholder();
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final logicalWidth = constraints.hasBoundedWidth
+            ? constraints.maxWidth
+            : null;
+        final decodeWidth = logicalWidth != null && logicalWidth.isFinite
+            ? (logicalWidth * MediaQuery.devicePixelRatioOf(context))
+                  .ceil()
+                  .clamp(1, 2048)
+                  .toInt()
+            : null;
+        return CachedNetworkImage(
+          imageUrl: url,
+          fit: widget.fit,
+          memCacheWidth: decodeWidth,
+          fadeInDuration: AppMotion.resolve(context, AppMotion.quick),
+          fadeOutDuration: AppMotion.resolve(
+            context,
+            const Duration(milliseconds: 80),
+          ),
+          useOldImageOnUrlChange: true,
+          placeholder: (_, __) => widget.placeholder(),
+          errorWidget: (_, __, ___) {
+            // 失败后自动切换到下一个 URL（延迟到 build 之后执行，避免 setState 时序问题）
+            Future.microtask(_nextAttempt);
+            return widget.placeholder();
+          },
+        );
       },
     );
   }

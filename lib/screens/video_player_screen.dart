@@ -6,6 +6,7 @@ import 'package:media_kit_video/media_kit_video.dart' as media_kit_video;
 import 'package:video_player/video_player.dart';
 
 import '../models/song.dart';
+import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 import '../utils/system_ui.dart';
 
@@ -438,19 +439,33 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
           child: Stack(
             fit: StackFit.expand,
             children: [
-              if (_initializing)
-                _buildLoading(compact)
-              else if (error != null)
-                _buildError(error, compact)
-              else
-                Center(
-                  child: AspectRatio(
-                    aspectRatio: _controller.aspectRatio,
-                    child: _controller.buildSurface(
-                      ValueKey('mv-video-surface-${_activeEngine.name}'),
+              if (!_initializing && error == null)
+                Positioned.fill(
+                  child: Center(
+                    child: AspectRatio(
+                      aspectRatio: _controller.aspectRatio,
+                      child: _controller.buildSurface(
+                        ValueKey('mv-video-surface-${_activeEngine.name}'),
+                      ),
                     ),
                   ),
                 ),
+              Positioned.fill(
+                child: AppMotionSwitcher(
+                  beginOffset: Offset.zero,
+                  child: _initializing
+                      ? KeyedSubtree(
+                          key: const ValueKey('mv-loading-state'),
+                          child: _buildLoading(compact),
+                        )
+                      : error != null
+                      ? KeyedSubtree(
+                          key: const ValueKey('mv-error-state'),
+                          child: _buildError(error, compact),
+                        )
+                      : const SizedBox.shrink(key: ValueKey('mv-ready-state')),
+                ),
+              ),
               if (!_initializing && error == null && _controller.isBuffering)
                 const Center(child: CircularProgressIndicator()),
               _buildTopControls(compact),
@@ -591,10 +606,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 IconButton(
                   tooltip: _controller.isPlaying ? '暂停' : '播放',
                   onPressed: _togglePlayback,
-                  icon: Icon(
-                    _controller.isPlaying
-                        ? Icons.pause_circle_filled_rounded
-                        : Icons.play_circle_fill_rounded,
+                  icon: AppAnimatedIcon(
+                    stateKey: _controller.isPlaying,
+                    child: Icon(
+                      _controller.isPlaying
+                          ? Icons.pause_circle_filled_rounded
+                          : Icons.play_circle_fill_rounded,
+                    ),
                   ),
                   color: Colors.white,
                   iconSize: compact ? 35 : 44,

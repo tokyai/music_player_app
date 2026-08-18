@@ -908,7 +908,6 @@ class PlayerProvider extends ChangeNotifier {
     final newIndex = LyricParser.findCurrentIndex(_lyrics, _position);
     if (newIndex != _currentLyricIndex) {
       _currentLyricIndex = newIndex;
-      notifyListeners();
     }
   }
 

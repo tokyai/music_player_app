@@ -16,6 +16,7 @@ import 'screens/settings_screen.dart';
 import 'services/favorite_service.dart';
 import 'services/floating_capsule_service.dart';
 import 'theme/app_layout.dart';
+import 'theme/app_motion.dart';
 import 'theme/app_theme.dart';
 import 'utils/system_ui.dart';
 import 'widgets/mini_player.dart';
@@ -69,6 +70,8 @@ class MusicPlayerApp extends StatelessWidget {
             theme: AppTheme.light(),
             darkTheme: AppTheme.dark(),
             themeMode: themeCtrl.mode,
+            themeAnimationDuration: AppMotion.resolve(context, AppMotion.state),
+            themeAnimationCurve: AppMotion.enterCurve,
             // 按实际生效的主题同步全局亮暗标志 + 系统栏样式（状态栏不黑条、图标跟随主题）
             builder: (context, child) {
               AppColors.syncWithTheme(context);
@@ -79,9 +82,7 @@ class MusicPlayerApp extends StatelessWidget {
                   context.read<PlayerProvider>().playPause();
                 };
                 FloatingCapsuleService.onCapsuleTap = () {
-                  _navigatorKey.currentState?.push(
-                    MaterialPageRoute(builder: (_) => const PlayerScreen()),
-                  );
+                  _navigatorKey.currentState?.push(PlayerScreen.route(context));
                 };
               }
               // 在车机大屏上统一放大未显式使用 AppLayout 尺寸令牌的文字，
@@ -109,12 +110,35 @@ class MainScreen extends StatefulWidget {
   State<MainScreen> createState() => _MainScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> {
+class _MainScreenState extends State<MainScreen>
+    with SingleTickerProviderStateMixin {
   int _currentIndex = 0;
   SearchSession? _searchSession;
   int _handledSearchNavigationId = 0;
+  late final AnimationController _pageTransitionController;
+  late final Animation<double> _pageOpacity;
+  late final Animation<Offset> _pageOffset;
 
   final List<Widget?> _screens = [const DiscoverScreen(), null, null, null];
+
+  @override
+  void initState() {
+    super.initState();
+    _pageTransitionController = AnimationController(
+      vsync: this,
+      duration: AppMotion.state,
+      value: 1,
+    );
+    final curved = CurvedAnimation(
+      parent: _pageTransitionController,
+      curve: AppMotion.enterCurve,
+    );
+    _pageOpacity = Tween<double>(begin: 0.9, end: 1).animate(curved);
+    _pageOffset = Tween<Offset>(
+      begin: const Offset(0.012, 0),
+      end: Offset.zero,
+    ).animate(curved);
+  }
 
   @override
   void didChangeDependencies() {
@@ -129,7 +153,16 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void dispose() {
     _searchSession?.removeListener(_handleSearchNavigation);
+    _pageTransitionController.dispose();
     super.dispose();
+  }
+
+  void _runPageTransition() {
+    if (AppMotion.resolve(context, AppMotion.state) == Duration.zero) {
+      _pageTransitionController.value = 1;
+      return;
+    }
+    _pageTransitionController.forward(from: 0);
   }
 
   void _handleSearchNavigation() {
@@ -140,6 +173,7 @@ class _MainScreenState extends State<MainScreen> {
       _screens[1] ??= _createScreen(1);
       _currentIndex = 1;
     });
+    _runPageTransition();
   }
 
   Widget _createScreen(int index) {
@@ -158,6 +192,7 @@ class _MainScreenState extends State<MainScreen> {
       _screens[index] ??= _createScreen(index);
       _currentIndex = index;
     });
+    _runPageTransition();
   }
 
   @override
@@ -186,11 +221,21 @@ class _MainScreenState extends State<MainScreen> {
         final isLandscape =
             MediaQuery.orientationOf(context) == Orientation.landscape;
         final hasCurrentSong = playerState.hasSong;
-        final content = IndexedStack(
-          index: _currentIndex,
-          children: _screens
-              .map((screen) => screen ?? const SizedBox.shrink())
-              .toList(),
+        final content = FadeTransition(
+          opacity: _pageOpacity,
+          child: SlideTransition(
+            position: _pageOffset,
+            child: IndexedStack(
+              index: _currentIndex,
+              children: List.generate(
+                _screens.length,
+                (index) => TickerMode(
+                  enabled: index == _currentIndex,
+                  child: _screens[index] ?? const SizedBox.shrink(),
+                ),
+              ),
+            ),
+          ),
         );
 
         if (isLandscape) {
@@ -286,14 +331,30 @@ class _MainScreenState extends State<MainScreen> {
                         ],
                       ),
                     ),
-                    if (showPlayerPane) ...[
-                      VerticalDivider(
-                        width: 1,
-                        thickness: 1,
-                        color: AppColors.surfaceSoft,
+                    AnimatedSize(
+                      duration: AppMotion.resolve(context, AppMotion.page),
+                      curve: AppMotion.enterCurve,
+                      alignment: Alignment.centerRight,
+                      clipBehavior: Clip.hardEdge,
+                      child: SizedBox(
+                        width: showPlayerPane ? 297 : 0,
+                        child: showPlayerPane
+                            ? Row(
+                                children: [
+                                  VerticalDivider(
+                                    width: 1,
+                                    thickness: 1,
+                                    color: AppColors.surfaceSoft,
+                                  ),
+                                  const SizedBox(
+                                    width: 296,
+                                    child: LandscapeMiniPlayer(),
+                                  ),
+                                ],
+                              )
+                            : null,
                       ),
-                      const SizedBox(width: 296, child: LandscapeMiniPlayer()),
-                    ],
+                    ),
                   ],
                 ),
               );

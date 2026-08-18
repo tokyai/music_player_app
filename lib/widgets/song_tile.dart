@@ -4,6 +4,7 @@ import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
+import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 import 'smart_cover.dart';
 
@@ -56,164 +57,182 @@ class SongTile extends StatelessWidget {
         final narrowPane = constraints.maxWidth < 380;
         final coverSize = layout.songCoverSize;
         final actionIconSize = layout.usesLargeTypography ? 26.0 : 22.0;
-        return ListTile(
-          minTileHeight: layout.songRowHeight,
-          tileColor: isCurrent
-              ? AppColors.primarySoft.withValues(alpha: 0.72)
-              : Colors.transparent,
-          selectedTileColor: AppColors.primarySoft,
-          shape: RoundedRectangleBorder(
+        return AnimatedContainer(
+          duration: AppMotion.resolve(context, AppMotion.quick),
+          curve: AppMotion.enterCurve,
+          decoration: BoxDecoration(
+            color: selectionMode && selected
+                ? AppColors.primarySoft
+                : isCurrent
+                ? AppColors.primarySoft.withValues(alpha: 0.72)
+                : Colors.transparent,
             borderRadius: BorderRadius.circular(AppRadius.card),
           ),
-          contentPadding: EdgeInsets.symmetric(
-            horizontal: veryCompact
-                ? 8
-                : (layout.usesLargeTypography ? 20 : 14),
-            vertical: layout.usesLargeTypography ? 8 : 4,
-          ),
-          leading: veryCompact
-              ? null
-              : ClipRRect(
-                  borderRadius: BorderRadius.circular(AppRadius.media),
-                  child: SizedBox(
-                    width: coverSize,
-                    height: coverSize,
-                    child: song.coverUrl != null && song.coverUrl!.isNotEmpty
-                        ? SmartCover(
-                            url: song.coverUrl,
-                            fit: BoxFit.cover,
-                            placeholder: () => _placeholder(platformColor),
-                          )
-                        : _placeholder(platformColor),
+          child: ListTile(
+            minTileHeight: layout.songRowHeight,
+            tileColor: Colors.transparent,
+            selectedTileColor: Colors.transparent,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadius.card),
+            ),
+            contentPadding: EdgeInsets.symmetric(
+              horizontal: veryCompact
+                  ? 8
+                  : (layout.usesLargeTypography ? 20 : 14),
+              vertical: layout.usesLargeTypography ? 8 : 4,
+            ),
+            leading: veryCompact
+                ? null
+                : ClipRRect(
+                    borderRadius: BorderRadius.circular(AppRadius.media),
+                    child: SizedBox(
+                      width: coverSize,
+                      height: coverSize,
+                      child: song.coverUrl != null && song.coverUrl!.isNotEmpty
+                          ? SmartCover(
+                              url: song.coverUrl,
+                              fit: BoxFit.cover,
+                              placeholder: () => _placeholder(platformColor),
+                            )
+                          : _placeholder(platformColor),
+                    ),
+                  ),
+            title: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    song.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: isCurrent
+                          ? AppColors.primary
+                          : AppColors.textPrimary,
+                      fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+                      fontSize: layout.songTitleSize,
+                      height: 1.25,
+                    ),
                   ),
                 ),
-          title: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  song.name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: isCurrent
-                        ? AppColors.primary
-                        : AppColors.textPrimary,
-                    fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
-                    fontSize: layout.songTitleSize,
-                    height: 1.25,
-                  ),
-                ),
-              ),
-              if (isCurrent && playerState.$3) ...[
-                const SizedBox(width: 8),
-                _PlayingIndicator(color: AppColors.primary),
+                if (isCurrent && playerState.$3) ...[
+                  const SizedBox(width: 8),
+                  _PlayingIndicator(color: AppColors.primary),
+                ],
               ],
-            ],
-          ),
-          subtitle: Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Text(
-              '${song.artist} · ${song.album}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: layout.songSubtitleSize,
-                height: 1.25,
-                color: isCurrent
-                    ? AppColors.primary.withOpacity(0.7)
-                    : AppColors.textSecondary,
+            ),
+            subtitle: Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                '${song.artist} · ${song.album}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: layout.songSubtitleSize,
+                  height: 1.25,
+                  color: isCurrent
+                      ? AppColors.primary.withOpacity(0.7)
+                      : AppColors.textSecondary,
+                ),
               ),
             ),
-          ),
-          trailing: veryCompact
-              ? null
-              : selectionMode
-              ? Checkbox(
-                  value: selected,
-                  onChanged: (value) =>
-                      onSelectionChanged?.call(value ?? false),
-                )
-              : Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (showFavorite)
-                      Consumer<FavoriteService>(
-                        builder: (ctx, fav, _) {
-                          final isFav = fav.isFavorite(song.platform, song.id);
-                          return IconButton(
-                            tooltip: isFav ? '取消收藏' : '收藏',
-                            icon: Icon(
-                              isFav ? Icons.favorite : Icons.favorite_border,
-                              size: actionIconSize,
-                              color: isFav
-                                  ? Colors.redAccent
-                                  : AppColors.textHint,
-                            ),
-                            onPressed: () {
-                              fav.toggle(song);
-                              ScaffoldMessenger.of(ctx).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    isFav
-                                        ? '已取消收藏: ${song.name}'
-                                        : '已收藏: ${song.name}',
-                                  ),
-                                  duration: const Duration(seconds: 1),
+            trailing: veryCompact
+                ? null
+                : selectionMode
+                ? Checkbox(
+                    value: selected,
+                    onChanged: (value) =>
+                        onSelectionChanged?.call(value ?? false),
+                  )
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (showFavorite)
+                        Consumer<FavoriteService>(
+                          builder: (ctx, fav, _) {
+                            final isFav = fav.isFavorite(
+                              song.platform,
+                              song.id,
+                            );
+                            return IconButton(
+                              tooltip: isFav ? '取消收藏' : '收藏',
+                              icon: AppAnimatedIcon(
+                                stateKey: isFav,
+                                child: Icon(
+                                  isFav
+                                      ? Icons.favorite
+                                      : Icons.favorite_border,
+                                  size: actionIconSize,
+                                  color: isFav
+                                      ? Colors.redAccent
+                                      : AppColors.textHint,
                                 ),
-                              );
-                            },
-                          );
-                        },
-                      ),
-                    if (showPlatformTag && !narrowPane)
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 9,
-                          vertical: 4,
+                              ),
+                              onPressed: () {
+                                fav.toggle(song);
+                                ScaffoldMessenger.of(ctx).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      isFav
+                                          ? '已取消收藏: ${song.name}'
+                                          : '已收藏: ${song.name}',
+                                    ),
+                                    duration: const Duration(seconds: 1),
+                                  ),
+                                );
+                              },
+                            );
+                          },
                         ),
-                        decoration: BoxDecoration(
-                          color: platformColor.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(
-                            AppRadius.control,
+                      if (showPlatformTag && !narrowPane)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 9,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: platformColor.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(
+                              AppRadius.control,
+                            ),
+                          ),
+                          child: Text(
+                            song.platform.label,
+                            style: TextStyle(
+                              fontSize: layout.secondarySize,
+                              color: platformColor,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
-                        child: Text(
-                          song.platform.label,
-                          style: TextStyle(
-                            fontSize: layout.secondarySize,
-                            color: platformColor,
-                            fontWeight: FontWeight.w600,
-                          ),
+                      if (onAddToQueue != null) ...[
+                        const SizedBox(width: 2),
+                        PopupMenuButton<String>(
+                          iconSize: actionIconSize,
+                          color: AppColors.surface,
+                          onSelected: (value) {
+                            if (value == 'add_queue') onAddToQueue!();
+                          },
+                          itemBuilder: (_) => const [
+                            PopupMenuItem(
+                              value: 'add_queue',
+                              child: Text('添加到队列'),
+                            ),
+                          ],
                         ),
-                      ),
-                    if (onAddToQueue != null) ...[
-                      const SizedBox(width: 2),
-                      PopupMenuButton<String>(
-                        iconSize: actionIconSize,
-                        color: AppColors.surface,
-                        onSelected: (value) {
-                          if (value == 'add_queue') onAddToQueue!();
-                        },
-                        itemBuilder: (_) => const [
-                          PopupMenuItem(
-                            value: 'add_queue',
-                            child: Text('添加到队列'),
-                          ),
-                        ],
-                      ),
-                    ] else
-                      Icon(
-                        Icons.chevron_right,
-                        size: actionIconSize,
-                        color: AppColors.textHint,
-                      ),
-                  ],
-                ),
-          selected: selectionMode && selected,
-          onTap: selectionMode
-              ? () => onSelectionChanged?.call(!selected)
-              : onTap,
-          onLongPress: onLongPress,
+                      ] else
+                        Icon(
+                          Icons.chevron_right,
+                          size: actionIconSize,
+                          color: AppColors.textHint,
+                        ),
+                    ],
+                  ),
+            selected: selectionMode && selected,
+            onTap: selectionMode
+                ? () => onSelectionChanged?.call(!selected)
+                : onTap,
+            onLongPress: onLongPress,
+          ),
         );
       },
     );
@@ -246,7 +265,19 @@ class _PlayingIndicatorState extends State<_PlayingIndicator>
     _controller = AnimationController(
       duration: const Duration(milliseconds: 600),
       vsync: this,
-    )..repeat(reverse: true);
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.maybeOf(context)?.disableAnimations == true) {
+      _controller
+        ..stop()
+        ..value = 0.5;
+    } else if (!_controller.isAnimating) {
+      _controller.repeat(reverse: true);
+    }
   }
 
   @override

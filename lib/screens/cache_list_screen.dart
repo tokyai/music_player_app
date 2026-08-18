@@ -4,6 +4,7 @@ import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../services/audio_cache_service.dart';
 import '../theme/app_layout.dart';
+import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 import '../widgets/mini_player.dart';
 
@@ -114,7 +115,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
       children: [
         _buildTitleBar(),
         if (_cacheList.isNotEmpty) _buildStats(totalSize),
-        Expanded(child: _buildCacheList()),
+        Expanded(child: _buildAnimatedCacheList()),
       ],
     );
   }
@@ -143,7 +144,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
               thickness: 1,
               color: AppColors.surfaceSoft,
             ),
-            Expanded(child: _buildCacheList(layout: layout)),
+            Expanded(child: _buildAnimatedCacheList(layout: layout)),
           ],
         );
       },
@@ -263,6 +264,20 @@ class _CacheListScreenState extends State<CacheListScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildAnimatedCacheList({AppLayout? layout}) {
+    final stateKey = _loading
+        ? 'loading'
+        : _cacheList.isEmpty
+        ? 'empty'
+        : 'content';
+    return AppMotionSwitcher(
+      child: KeyedSubtree(
+        key: ValueKey('cache-list-$stateKey'),
+        child: _buildCacheList(layout: layout),
+      ),
     );
   }
 

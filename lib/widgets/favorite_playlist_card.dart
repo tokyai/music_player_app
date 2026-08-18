@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../models/song.dart';
 import '../theme/app_layout.dart';
+import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
+import 'cover_hero_tags.dart';
 import 'smart_cover.dart';
 
 /// 收藏歌单卡片：封面在上，歌单名和创建者在下。
@@ -43,19 +45,24 @@ class FavoritePlaylistCard extends StatelessWidget {
               children: [
                 Stack(
                   children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(AppRadius.media),
-                      child: SizedBox.square(
-                        dimension: cardWidth,
-                        child:
-                            playlist.coverUrl != null &&
-                                playlist.coverUrl!.isNotEmpty
-                            ? SmartCover(
-                                url: playlist.coverUrl,
-                                fit: BoxFit.cover,
-                                placeholder: () => _placeholder(platformColor),
-                              )
-                            : _placeholder(platformColor),
+                    Hero(
+                      tag: playlistCoverHeroTag(favorite.platform, playlist.id),
+                      transitionOnUserGestures: true,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(AppRadius.media),
+                        child: SizedBox.square(
+                          dimension: cardWidth,
+                          child:
+                              playlist.coverUrl != null &&
+                                  playlist.coverUrl!.isNotEmpty
+                              ? SmartCover(
+                                  url: playlist.coverUrl,
+                                  fit: BoxFit.cover,
+                                  placeholder: () =>
+                                      _placeholder(platformColor),
+                                )
+                              : _placeholder(platformColor),
+                        ),
                       ),
                     ),
                     Positioned(
@@ -70,10 +77,13 @@ class FavoritePlaylistCard extends StatelessWidget {
                           tooltip: '取消收藏歌单',
                           visualDensity: VisualDensity.compact,
                           onPressed: onFavoritePressed,
-                          icon: const Icon(
-                            Icons.favorite_rounded,
-                            color: Colors.redAccent,
-                            size: 21,
+                          icon: const AppAnimatedIcon(
+                            stateKey: true,
+                            child: Icon(
+                              Icons.favorite_rounded,
+                              color: Colors.redAccent,
+                              size: 21,
+                            ),
                           ),
                         ),
                       ),

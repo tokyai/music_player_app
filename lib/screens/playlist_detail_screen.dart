@@ -6,7 +6,9 @@ import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
+import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
+import '../widgets/cover_hero_tags.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/song_tile.dart';
 import '../widgets/smart_cover.dart';
@@ -213,7 +215,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             : Column(
                 children: [
                   _buildDetailHeader(),
-                  Expanded(child: _buildTrackArea()),
+                  Expanded(child: _buildAnimatedTrackArea()),
                 ],
               ),
       ),
@@ -242,7 +244,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               thickness: 1,
               color: AppColors.surfaceSoft,
             ),
-            Expanded(child: _buildTrackArea()),
+            Expanded(child: _buildAnimatedTrackArea()),
           ],
         );
       },
@@ -262,18 +264,22 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               ? 230.0
               : 184.0
         : 108.0;
-    final cover = ClipRRect(
-      borderRadius: BorderRadius.circular(AppRadius.media),
-      child: SizedBox(
-        width: coverSize,
-        height: coverSize,
-        child: p.coverUrl != null && p.coverUrl!.isNotEmpty
-            ? SmartCover(
-                url: p.coverUrl,
-                fit: BoxFit.cover,
-                placeholder: () => _coverPlaceholder(platformColor),
-              )
-            : _coverPlaceholder(platformColor),
+    final cover = Hero(
+      tag: playlistCoverHeroTag(widget.platform, p.id),
+      transitionOnUserGestures: true,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(AppRadius.media),
+        child: SizedBox(
+          width: coverSize,
+          height: coverSize,
+          child: p.coverUrl != null && p.coverUrl!.isNotEmpty
+              ? SmartCover(
+                  url: p.coverUrl,
+                  fit: BoxFit.cover,
+                  placeholder: () => _coverPlaceholder(platformColor),
+                )
+              : _coverPlaceholder(platformColor),
+        ),
       ),
     );
     final metadata = Column(
@@ -350,9 +356,19 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         ? isLandscape
               ? FilledButton.icon(
                   onPressed: _loadingAll ? null : playAll,
-                  icon: _loadingAll
-                      ? loadingIcon
-                      : const Icon(Icons.play_arrow_rounded, size: 24),
+                  icon: AppMotionSwitcher(
+                    beginOffset: Offset.zero,
+                    child: _loadingAll
+                        ? KeyedSubtree(
+                            key: const ValueKey('playlist-play-all-loading'),
+                            child: loadingIcon,
+                          )
+                        : const Icon(
+                            Icons.play_arrow_rounded,
+                            key: ValueKey('playlist-play-all-ready'),
+                            size: 24,
+                          ),
+                  ),
                   label: Text(_loadingAll ? loadingLabel : '播放全部'),
                 )
               : IconButton.filled(
@@ -361,9 +377,19 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                     backgroundColor: AppColors.primary,
                     foregroundColor: Colors.white,
                   ),
-                  icon: _loadingAll
-                      ? loadingIcon
-                      : const Icon(Icons.play_arrow_rounded, size: 28),
+                  icon: AppMotionSwitcher(
+                    beginOffset: Offset.zero,
+                    child: _loadingAll
+                        ? KeyedSubtree(
+                            key: const ValueKey('playlist-play-all-loading'),
+                            child: loadingIcon,
+                          )
+                        : const Icon(
+                            Icons.play_arrow_rounded,
+                            key: ValueKey('playlist-play-all-ready'),
+                            size: 28,
+                          ),
+                  ),
                   tooltip: _loadingAll ? loadingLabel : '播放全部',
                 )
         : const SizedBox.shrink();
@@ -385,9 +411,14 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               SnackBar(content: Text(added ? '已收藏歌单: ${p.name}' : '已取消收藏歌单')),
             );
           },
-          icon: Icon(
-            isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-            color: isFavorite ? Colors.redAccent : AppColors.textSecondary,
+          icon: AppAnimatedIcon(
+            stateKey: isFavorite,
+            child: Icon(
+              isFavorite
+                  ? Icons.favorite_rounded
+                  : Icons.favorite_border_rounded,
+              color: isFavorite ? Colors.redAccent : AppColors.textSecondary,
+            ),
           ),
         );
       },
@@ -463,6 +494,22 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
   }
 
+  Widget _buildAnimatedTrackArea() {
+    final stateKey = _loading
+        ? 'loading'
+        : _error != null
+        ? 'error'
+        : _detail == null || _tracks.isEmpty
+        ? 'empty'
+        : 'content';
+    return AppMotionSwitcher(
+      child: KeyedSubtree(
+        key: ValueKey('playlist-detail-$stateKey'),
+        child: _buildTrackArea(),
+      ),
+    );
+  }
+
   Widget _buildTrackArea() {
     final layout = AppLayout.fromContext(context);
     if (_loading) {
@@ -517,17 +564,22 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 18),
             child: Center(
-              child: _loadingMore
-                  ? const SizedBox.square(
-                      dimension: 26,
-                      child: CircularProgressIndicator(strokeWidth: 2.5),
-                    )
-                  : TextButton(
-                      key: const ValueKey('playlist-load-more'),
-                      onPressed: () =>
-                          unawaited(_loadMore(context.read<PlayerProvider>())),
-                      child: const Text('加载更多'),
-                    ),
+              child: AppMotionSwitcher(
+                beginOffset: Offset.zero,
+                child: _loadingMore
+                    ? const SizedBox.square(
+                        key: ValueKey('playlist-loading-more'),
+                        dimension: 26,
+                        child: CircularProgressIndicator(strokeWidth: 2.5),
+                      )
+                    : TextButton(
+                        key: const ValueKey('playlist-load-more'),
+                        onPressed: () => unawaited(
+                          _loadMore(context.read<PlayerProvider>()),
+                        ),
+                        child: const Text('加载更多'),
+                      ),
+              ),
             ),
           );
         }

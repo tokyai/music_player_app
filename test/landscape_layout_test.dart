@@ -19,6 +19,7 @@ import 'package:music_player_app/screens/settings_screen.dart';
 import 'package:music_player_app/screens/video_player_screen.dart';
 import 'package:music_player_app/services/favorite_service.dart';
 import 'package:music_player_app/theme/app_layout.dart';
+import 'package:music_player_app/theme/app_motion.dart';
 import 'package:music_player_app/theme/app_theme.dart';
 import 'package:music_player_app/utils/lyric_parser.dart';
 import 'package:music_player_app/widgets/mini_player.dart';
@@ -274,6 +275,79 @@ void main() {
         );
       }),
     );
+  });
+
+  testWidgets('mini players open the animated player route with cover hero', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      final player = _ControllablePlayer()..showSong();
+      final theme = ThemeController();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        player.dispose();
+        theme.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      await _pumpScreen(
+        tester,
+        const MainScreen(),
+        player,
+        theme,
+        const Size(640, 360),
+      );
+      expect(find.byType(MiniPlayer), findsOneWidget);
+
+      tester
+          .widget<GestureDetector>(
+            find.byKey(const ValueKey('mini-player-qq:first-song')),
+          )
+          .onTap!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1));
+      final compactRoute = ModalRoute.of(
+        tester.element(find.byType(PlayerScreen)),
+      )!;
+      expect(compactRoute.transitionDuration, AppMotion.page);
+      expect(compactRoute.animation!.value, lessThan(1));
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is Hero && widget.tag == 'player-cover-qq:first-song',
+        ),
+        findsWidgets,
+      );
+      await tester.pumpAndSettle();
+      _expectNoException(tester);
+
+      await tester.tap(find.byKey(const ValueKey('player-back')).hitTestable());
+      await tester.pumpAndSettle();
+      _setViewSize(tester, const Size(1280, 800));
+      await tester.pumpAndSettle();
+      expect(find.byType(LandscapeMiniPlayer), findsOneWidget);
+
+      tester
+          .widget<InkWell>(
+            find
+                .descendant(
+                  of: find.byType(LandscapeMiniPlayer),
+                  matching: find.byType(InkWell),
+                )
+                .first,
+          )
+          .onTap!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 1));
+      final wideRoute = ModalRoute.of(
+        tester.element(find.byType(PlayerScreen)),
+      )!;
+      expect(wideRoute.transitionDuration, AppMotion.page);
+      expect(wideRoute.animation!.value, lessThan(1));
+      await tester.pumpAndSettle();
+      _expectNoException(tester);
+    }, _mockClient);
   });
 
   testWidgets('clearing the query returns to the initial search view', (

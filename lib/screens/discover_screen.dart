@@ -6,6 +6,7 @@ import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
+import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 import '../widgets/favorite_playlist_card.dart';
 import '../widgets/song_tile.dart';
@@ -81,7 +82,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
           _buildFavoritePlaylistsBlock(),
           const SizedBox(height: 12),
           _buildSectionHeader('每日推荐', PlatformColors.kugou, '每天为你精选好音乐'),
-          _buildSongSection(
+          _buildAnimatedSongSection(
             _kugouDaily,
             _loadingKugouDaily,
             _errKugouDaily,
@@ -130,7 +131,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                     '每天为你精选好音乐',
                     compact: compact,
                   ),
-                  _buildSongSection(
+                  _buildAnimatedSongSection(
                     _kugouDaily,
                     _loadingKugouDaily,
                     _errKugouDaily,
@@ -316,7 +317,22 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               key: const ValueKey('home-favorites-header'),
               onTap: _openFavorites,
             ),
-            _buildFavoriteSection(favorites, compact: compact),
+            AnimatedSize(
+              duration: AppMotion.resolve(context, AppMotion.state),
+              curve: AppMotion.enterCurve,
+              child: AppMotionSwitcher(
+                child: KeyedSubtree(
+                  key: ValueKey(
+                    !favorites.loaded
+                        ? 'home-favorites-loading'
+                        : songs.isEmpty
+                        ? 'home-favorites-empty'
+                        : 'home-favorites-content',
+                  ),
+                  child: _buildFavoriteSection(favorites, compact: compact),
+                ),
+              ),
+            ),
           ],
         );
       },
@@ -399,7 +415,25 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               key: const ValueKey('home-favorite-playlists-header'),
               onTap: _openFavorites,
             ),
-            _buildFavoritePlaylistSection(favorites, compact: compact),
+            AnimatedSize(
+              duration: AppMotion.resolve(context, AppMotion.state),
+              curve: AppMotion.enterCurve,
+              child: AppMotionSwitcher(
+                child: KeyedSubtree(
+                  key: ValueKey(
+                    !favorites.loaded
+                        ? 'home-playlists-loading'
+                        : playlists.isEmpty
+                        ? 'home-playlists-empty'
+                        : 'home-playlists-content',
+                  ),
+                  child: _buildFavoritePlaylistSection(
+                    favorites,
+                    compact: compact,
+                  ),
+                ),
+              ),
+            ),
           ],
         );
       },
@@ -542,6 +576,31 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
             },
           );
         }).toList(),
+      ),
+    );
+  }
+
+  Widget _buildAnimatedSongSection(
+    List<SongSearchResult> songs,
+    bool loading,
+    String? error, {
+    Future<void> Function()? onRetry,
+  }) {
+    final stateKey = loading
+        ? 'loading'
+        : error != null
+        ? 'error'
+        : songs.isEmpty
+        ? 'empty'
+        : 'content';
+    return AnimatedSize(
+      duration: AppMotion.resolve(context, AppMotion.state),
+      curve: AppMotion.enterCurve,
+      child: AppMotionSwitcher(
+        child: KeyedSubtree(
+          key: ValueKey('home-daily-$stateKey'),
+          child: _buildSongSection(songs, loading, error, onRetry: onRetry),
+        ),
       ),
     );
   }

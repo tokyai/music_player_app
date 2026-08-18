@@ -10,14 +10,42 @@ import '../providers/search_session.dart';
 import '../services/api_service.dart';
 import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
+import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 import '../utils/color_extractor.dart';
 import '../utils/system_ui.dart';
+import '../widgets/cover_hero_tags.dart';
 import '../widgets/smart_cover.dart';
 import 'video_player_screen.dart';
 
 class PlayerScreen extends StatefulWidget {
   const PlayerScreen({super.key});
+
+  static Route<void> route(BuildContext context) {
+    final duration = AppMotion.resolve(context, AppMotion.page);
+    return PageRouteBuilder<void>(
+      transitionDuration: duration,
+      reverseTransitionDuration: duration,
+      pageBuilder: (_, _, _) => const PlayerScreen(),
+      transitionsBuilder: (_, animation, _, child) {
+        final curved = CurvedAnimation(
+          parent: animation,
+          curve: AppMotion.enterCurve,
+          reverseCurve: AppMotion.exitCurve,
+        );
+        return FadeTransition(
+          opacity: curved,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 0.025),
+              end: Offset.zero,
+            ).animate(curved),
+            child: child,
+          ),
+        );
+      },
+    );
+  }
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
@@ -209,7 +237,20 @@ class _LyricSearchDialogState extends State<_LyricSearchDialog> {
                   ],
                 ),
               ),
-            Expanded(child: _buildResults(compact)),
+            Expanded(
+              child: AppMotionSwitcher(
+                child: KeyedSubtree(
+                  key: ValueKey(
+                    _loading
+                        ? 'lyric-search-loading'
+                        : _results.isEmpty
+                        ? 'lyric-search-empty'
+                        : 'lyric-search-content',
+                  ),
+                  child: _buildResults(compact),
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -1135,39 +1176,45 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final lowerScrim = darkTheme
         ? const Color(0xF2131519)
         : const Color(0xFAF7F8FA);
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        ColoredBox(color: baseColor.withValues(alpha: 0.34)),
-        if (cover != null && cover.isNotEmpty)
+    return RepaintBoundary(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          AnimatedContainer(
+            duration: AppMotion.resolve(context, AppMotion.background),
+            curve: AppMotion.enterCurve,
+            color: baseColor.withValues(alpha: 0.34),
+          ),
+          if (cover != null && cover.isNotEmpty)
+            Positioned.fill(
+              child: ImageFiltered(
+                imageFilter: ui.ImageFilter.blur(sigmaX: 34, sigmaY: 34),
+                child: Transform.scale(
+                  scale: 1.12,
+                  child: SmartCover(
+                    url: cover,
+                    fit: BoxFit.cover,
+                    placeholder: () =>
+                        ColoredBox(color: baseColor.withValues(alpha: 0.28)),
+                  ),
+                ),
+              ),
+            ),
           Positioned.fill(
-            child: ImageFiltered(
-              imageFilter: ui.ImageFilter.blur(sigmaX: 34, sigmaY: 34),
-              child: Transform.scale(
-                scale: 1.12,
-                child: SmartCover(
-                  url: cover,
-                  fit: BoxFit.cover,
-                  placeholder: () =>
-                      ColoredBox(color: baseColor.withValues(alpha: 0.28)),
+            child: DecoratedBox(
+              key: const ValueKey('player-background-scrim'),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [scrim, scrim.withValues(alpha: 0.82), lowerScrim],
+                  stops: const [0, 0.56, 1],
                 ),
               ),
             ),
           ),
-        Positioned.fill(
-          child: DecoratedBox(
-            key: const ValueKey('player-background-scrim'),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [scrim, scrim.withValues(alpha: 0.82), lowerScrim],
-                stops: const [0, 0.56, 1],
-              ),
-            ),
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -1437,29 +1484,40 @@ class _PlayerScreenState extends State<PlayerScreen> {
     Color baseColor,
     double size,
   ) {
-    return Container(
-      key: const ValueKey('landscape-player-cover'),
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: baseColor.withOpacity(0.3),
-            blurRadius: 22,
-            offset: const Offset(0, 8),
+    return Hero(
+      tag: playerCoverHeroTag(song.platform, song.id),
+      transitionOnUserGestures: true,
+      child: Container(
+        key: const ValueKey('landscape-player-cover'),
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: baseColor.withOpacity(0.3),
+              blurRadius: 22,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: AnimatedSwitcher(
+            duration: AppMotion.resolve(context, AppMotion.page),
+            child: SizedBox.expand(
+              key: ValueKey('landscape-cover-${song.platform.code}:${song.id}'),
+              child: song.coverUrl != null && song.coverUrl!.isNotEmpty
+                  ? SmartCover(
+                      url: song.coverUrl,
+                      fit: BoxFit.cover,
+                      placeholder: () =>
+                          _buildDefaultCover(song, compact: true),
+                    )
+                  : _buildDefaultCover(song, compact: true),
+            ),
           ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(20),
-        child: song.coverUrl != null && song.coverUrl!.isNotEmpty
-            ? SmartCover(
-                url: song.coverUrl,
-                fit: BoxFit.cover,
-                placeholder: () => _buildDefaultCover(song, compact: true),
-              )
-            : _buildDefaultCover(song, compact: true),
+        ),
       ),
     );
   }
@@ -1483,62 +1541,70 @@ class _PlayerScreenState extends State<PlayerScreen> {
             largeUi ? 14 : 16,
             0,
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Stack(
-                alignment: Alignment.center,
-                children: [
-                  SizedBox(
-                    width: double.infinity,
-                    child: _buildSongNameLink(
-                      ctx,
-                      player,
-                      song,
-                      textColor,
-                      fontSize: largeUi
-                          ? 27
-                          : (layout.isCompactLandscape ? 18 : 20),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                  if (selection.$1)
-                    Positioned(
-                      right: 0,
-                      child: SizedBox(
-                        width: largeUi ? 22 : 18,
-                        height: largeUi ? 22 : 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: AppColors.primary,
-                        ),
+          child: AppMotionSwitcher(
+            beginOffset: const Offset(0, 0.04),
+            child: Column(
+              key: ValueKey(
+                'landscape-song-info-${song.platform.code}:${song.id}',
+              ),
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    SizedBox(
+                      width: double.infinity,
+                      child: _buildSongNameLink(
+                        ctx,
+                        player,
+                        song,
+                        textColor,
+                        fontSize: largeUi
+                            ? 27
+                            : (layout.isCompactLandscape ? 18 : 20),
+                        textAlign: TextAlign.center,
                       ),
                     ),
-                ],
-              ),
-              const SizedBox(height: 3),
-              _buildArtistAlbumLine(
-                ctx,
-                player,
-                song,
-                subColor,
-                fontSize: largeUi ? 20 : (layout.isCompactLandscape ? 15 : 17),
-              ),
-              if (selection.$2 != null) ...[
-                const SizedBox(height: 3),
-                Text(
-                  selection.$2!,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: Colors.redAccent,
-                    fontSize: largeUi
-                        ? 14
-                        : (layout.isCompactLandscape ? 11 : 12),
-                  ),
+                    if (selection.$1)
+                      Positioned(
+                        right: 0,
+                        child: SizedBox(
+                          width: largeUi ? 22 : 18,
+                          height: largeUi ? 22 : 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
+                const SizedBox(height: 3),
+                _buildArtistAlbumLine(
+                  ctx,
+                  player,
+                  song,
+                  subColor,
+                  fontSize: largeUi
+                      ? 20
+                      : (layout.isCompactLandscape ? 15 : 17),
+                ),
+                if (selection.$2 != null) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    selection.$2!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Colors.redAccent,
+                      fontSize: largeUi
+                          ? 14
+                          : (layout.isCompactLandscape ? 11 : 12),
+                    ),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         );
       },
@@ -1586,15 +1652,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
     bool toggleOnTap = true,
   }) {
     final song = player.currentSong;
+    final lyricStateKey = player.lyrics.isNotEmpty
+        ? 'content'
+        : player.lyricsLoading
+        ? 'loading'
+        : 'empty';
     return Stack(
       children: [
         Positioned.fill(
-          child: _buildLyricView(
-            ctx,
-            player,
-            textColor,
-            landscape: landscape,
-            toggleOnTap: toggleOnTap,
+          child: AppMotionSwitcher(
+            child: KeyedSubtree(
+              key: ValueKey('player-lyrics-$lyricStateKey'),
+              child: _buildLyricView(
+                ctx,
+                player,
+                textColor,
+                landscape: landscape,
+                toggleOnTap: toggleOnTap,
+              ),
+            ),
           ),
         ),
         if (song != null)
@@ -1757,29 +1833,41 @@ class _PlayerScreenState extends State<PlayerScreen> {
         return GestureDetector(
           onTap: () => player.toggleShowLyric(),
           child: Center(
-            child: Container(
-              width: coverSize,
-              height: coverSize,
-              margin: EdgeInsets.all(landscape ? 16 : 24),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(28),
-                boxShadow: [
-                  BoxShadow(
-                    color: baseColor.withOpacity(0.35),
-                    blurRadius: landscape ? 24 : 40,
-                    offset: Offset(0, landscape ? 8 : 16),
+            child: Hero(
+              tag: playerCoverHeroTag(song.platform, song.id),
+              transitionOnUserGestures: true,
+              child: Container(
+                width: coverSize,
+                height: coverSize,
+                margin: EdgeInsets.all(landscape ? 16 : 24),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(28),
+                  boxShadow: [
+                    BoxShadow(
+                      color: baseColor.withOpacity(0.35),
+                      blurRadius: landscape ? 24 : 40,
+                      offset: Offset(0, landscape ? 8 : 16),
+                    ),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(28),
+                  child: AnimatedSwitcher(
+                    duration: AppMotion.resolve(ctx, AppMotion.page),
+                    child: SizedBox.expand(
+                      key: ValueKey(
+                        'player-cover-${song.platform.code}:${song.id}',
+                      ),
+                      child: song.coverUrl != null && song.coverUrl!.isNotEmpty
+                          ? SmartCover(
+                              url: song.coverUrl,
+                              fit: BoxFit.cover,
+                              placeholder: () => _buildDefaultCover(song),
+                            )
+                          : _buildDefaultCover(song),
+                    ),
                   ),
-                ],
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(28),
-                child: song.coverUrl != null && song.coverUrl!.isNotEmpty
-                    ? SmartCover(
-                        url: song.coverUrl,
-                        fit: BoxFit.cover,
-                        placeholder: () => _buildDefaultCover(song),
-                      )
-                    : _buildDefaultCover(song),
+                ),
               ),
             ),
           ),
@@ -1955,56 +2043,65 @@ class _PlayerScreenState extends State<PlayerScreen> {
             horizontal: compact ? 20 : 32,
             vertical: compact ? 2 : 8,
           ),
-          child: Column(
-            children: [
-              _buildSongNameLink(
-                ctx,
-                player,
-                song,
-                textColor,
-                fontSize: largeUi ? 27 : (compact ? 21 : 24),
-                textAlign: TextAlign.center,
+          child: AppMotionSwitcher(
+            beginOffset: const Offset(0, 0.04),
+            child: Column(
+              key: ValueKey(
+                'portrait-song-info-${song.platform.code}:${song.id}',
               ),
-              const SizedBox(height: 4),
-              _buildArtistAlbumLine(
-                ctx,
-                player,
-                song,
-                subColor,
-                fontSize: largeUi ? 20 : (compact ? 17 : 18),
-                centered: true,
-              ),
-              if (isLoading) ...[
-                const SizedBox(height: 6),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SizedBox.square(
-                      dimension: 14,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: textColor.withOpacity(0.7),
-                      ),
-                    ),
-                    const SizedBox(width: 7),
-                    Text(
-                      '正在准备音频',
-                      style: TextStyle(
-                        color: subColor,
-                        fontSize: compact ? 12 : 13,
-                      ),
-                    ),
-                  ],
+              children: [
+                _buildSongNameLink(
+                  ctx,
+                  player,
+                  song,
+                  textColor,
+                  fontSize: largeUi ? 27 : (compact ? 21 : 24),
+                  textAlign: TextAlign.center,
                 ),
-              ],
-              if (errorMessage != null) ...[
                 const SizedBox(height: 4),
-                Text(
-                  errorMessage,
-                  style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+                _buildArtistAlbumLine(
+                  ctx,
+                  player,
+                  song,
+                  subColor,
+                  fontSize: largeUi ? 20 : (compact ? 17 : 18),
+                  centered: true,
                 ),
+                if (isLoading) ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox.square(
+                        dimension: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: textColor.withOpacity(0.7),
+                        ),
+                      ),
+                      const SizedBox(width: 7),
+                      Text(
+                        '正在准备音频',
+                        style: TextStyle(
+                          color: subColor,
+                          fontSize: compact ? 12 : 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                if (errorMessage != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    errorMessage,
+                    style: const TextStyle(
+                      color: Colors.redAccent,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         );
       },
@@ -2130,14 +2227,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
                 padding: EdgeInsets.zero,
                 tooltip: '播放模式',
-                icon: Icon(
-                  playMode == PlayMode.sequence
-                      ? Icons.repeat_rounded
-                      : playMode == PlayMode.repeat
-                      ? Icons.repeat_one_rounded
-                      : Icons.shuffle_rounded,
-                  color: textColor,
-                  size: largeUi ? 28 : (compact ? 22 : 28),
+                icon: AppAnimatedIcon(
+                  stateKey: playMode,
+                  child: Icon(
+                    playMode == PlayMode.sequence
+                        ? Icons.repeat_rounded
+                        : playMode == PlayMode.repeat
+                        ? Icons.repeat_one_rounded
+                        : Icons.shuffle_rounded,
+                    color: textColor,
+                    size: largeUi ? 28 : (compact ? 22 : 28),
+                  ),
                 ),
                 onPressed: player.togglePlayMode,
               ),
@@ -2173,10 +2273,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
                 child: IconButton(
                   tooltip: isPlaying ? '暂停' : '播放',
-                  icon: Icon(
-                    isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                    color: Colors.white,
-                    size: largeUi ? 38 : (compact ? 32 : 42),
+                  icon: AppAnimatedIcon(
+                    stateKey: isPlaying,
+                    child: Icon(
+                      isPlaying
+                          ? Icons.pause_rounded
+                          : Icons.play_arrow_rounded,
+                      color: Colors.white,
+                      size: largeUi ? 38 : (compact ? 32 : 42),
+                    ),
                   ),
                   onPressed: player.playPause,
                 ),
@@ -2273,6 +2378,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   icon: isFav ? Icons.favorite : Icons.favorite_border,
                   label: isFav ? '已收藏' : '收藏',
                   color: isFav ? Colors.redAccent : subColor,
+                  animationKey: isFav,
                 ),
               ),
               Expanded(
@@ -2300,6 +2406,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     required IconData icon,
     required String label,
     required Color color,
+    Object? animationKey,
   }) {
     final layout = AppLayout.fromContext(context);
     final largeUi = layout.usesLargeTypography;
@@ -2316,7 +2423,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
           minimumSize: Size(0, height),
           tapTargetSize: MaterialTapTargetSize.padded,
         ),
-        icon: Icon(icon, color: color, size: iconSize),
+        icon: animationKey == null
+            ? Icon(icon, color: color, size: iconSize)
+            : AppAnimatedIcon(
+                stateKey: animationKey,
+                child: Icon(icon, color: color, size: iconSize),
+              ),
         label: Text(
           label,
           maxLines: 1,
@@ -2330,10 +2442,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _showQueueSheet(BuildContext ctx, PlayerProvider player) {
     final isLandscape = MediaQuery.orientationOf(ctx) == Orientation.landscape;
     if (isLandscape) {
-      showDialog<void>(
+      showGeneralDialog<void>(
         context: ctx,
+        barrierDismissible: true,
+        barrierLabel: '关闭播放队列',
         barrierColor: Colors.black54,
-        builder: (dialogCtx) {
+        transitionDuration: AppMotion.resolve(ctx, AppMotion.page),
+        pageBuilder: (dialogCtx, _, _) {
           final size = MediaQuery.sizeOf(dialogCtx);
           final panelWidth = (size.width * 0.42).clamp(300.0, 420.0);
           return Align(
@@ -2359,6 +2474,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   ),
                 ),
               ),
+            ),
+          );
+        },
+        transitionBuilder: (_, animation, _, child) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: AppMotion.enterCurve,
+            reverseCurve: AppMotion.exitCurve,
+          );
+          return FadeTransition(
+            opacity: curved,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0.08, 0),
+                end: Offset.zero,
+              ).animate(curved),
+              child: child,
             ),
           );
         },

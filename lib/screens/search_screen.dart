@@ -7,7 +7,9 @@ import '../providers/player_provider.dart';
 import '../providers/search_session.dart';
 import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
+import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
+import '../widgets/cover_hero_tags.dart';
 import '../widgets/smart_cover.dart';
 import '../widgets/song_tile.dart';
 import 'playlist_detail_screen.dart';
@@ -401,71 +403,85 @@ class _SearchScreenState extends State<SearchScreen>
     final layout = AppLayout.fromContext(context);
     final optionList = options.toList(growable: false);
     final highlightedIndex = AutocompleteHighlightedOption.of(context);
-    return Material(
-      key: const ValueKey('search-suggestions'),
-      color: AppColors.surface,
-      elevation: 8,
-      shadowColor: AppColors.cardShadow,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppRadius.control),
-        side: BorderSide(color: AppColors.outline),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: layout.isCompactLandscape ? 220 : 320,
+    return TweenAnimationBuilder<double>(
+      duration: AppMotion.resolve(context, AppMotion.quick),
+      curve: AppMotion.enterCurve,
+      tween: Tween(begin: 0, end: 1),
+      builder: (context, value, child) => Opacity(
+        opacity: value,
+        child: Transform.translate(
+          offset: Offset(0, (1 - value) * 6),
+          child: child,
         ),
-        child: ListView.separated(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          shrinkWrap: true,
-          itemCount: optionList.length,
-          separatorBuilder: (_, _) =>
-              Divider(height: 1, thickness: 1, color: AppColors.outline),
-          itemBuilder: (context, index) {
-            final option = optionList[index];
-            final isHighlighted = index == highlightedIndex;
-            final isArtist = option.kind == _SearchSuggestionKind.artist;
-            final subtitle = isArtist
-                ? '歌手'
-                : option.detail == null || option.detail!.isEmpty
-                ? '曲目'
-                : '曲目 · ${option.detail}';
-            return Material(
-              color: isHighlighted ? AppColors.primarySoft : Colors.transparent,
-              child: ListTile(
-                key: ValueKey(
-                  'search-suggestion-${option.kind.name}-${option.keyword}',
-                ),
-                dense: layout.isCompactLandscape,
-                minTileHeight: layout.isCompactLandscape ? 48 : 58,
-                leading: Icon(
-                  isArtist ? Icons.person_rounded : Icons.music_note_rounded,
-                  size: layout.isCompactLandscape ? 24 : 28,
-                  color: isArtist ? PlatformColors.qq : AppColors.primary,
-                ),
-                title: Text(
-                  option.keyword,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: layout.bodySize,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
+      ),
+      child: Material(
+        key: const ValueKey('search-suggestions'),
+        color: AppColors.surface,
+        elevation: 8,
+        shadowColor: AppColors.cardShadow,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.control),
+          side: BorderSide(color: AppColors.outline),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: layout.isCompactLandscape ? 220 : 320,
+          ),
+          child: ListView.separated(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            shrinkWrap: true,
+            itemCount: optionList.length,
+            separatorBuilder: (_, _) =>
+                Divider(height: 1, thickness: 1, color: AppColors.outline),
+            itemBuilder: (context, index) {
+              final option = optionList[index];
+              final isHighlighted = index == highlightedIndex;
+              final isArtist = option.kind == _SearchSuggestionKind.artist;
+              final subtitle = isArtist
+                  ? '歌手'
+                  : option.detail == null || option.detail!.isEmpty
+                  ? '曲目'
+                  : '曲目 · ${option.detail}';
+              return Material(
+                color: isHighlighted
+                    ? AppColors.primarySoft
+                    : Colors.transparent,
+                child: ListTile(
+                  key: ValueKey(
+                    'search-suggestion-${option.kind.name}-${option.keyword}',
                   ),
-                ),
-                subtitle: Text(
-                  subtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: layout.secondarySize,
-                    color: AppColors.textSecondary,
+                  dense: layout.isCompactLandscape,
+                  minTileHeight: layout.isCompactLandscape ? 48 : 58,
+                  leading: Icon(
+                    isArtist ? Icons.person_rounded : Icons.music_note_rounded,
+                    size: layout.isCompactLandscape ? 24 : 28,
+                    color: isArtist ? PlatformColors.qq : AppColors.primary,
                   ),
+                  title: Text(
+                    option.keyword,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: layout.bodySize,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  subtitle: Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: layout.secondarySize,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                  onTap: () => onSelected(option),
                 ),
-                onTap: () => onSelected(option),
-              ),
-            );
-          },
+              );
+            },
+          ),
         ),
       ),
     );
@@ -481,17 +497,24 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Widget _buildResultsBody(bool hasSearched, {bool landscape = false}) {
-    return !hasSearched
-        ? (landscape ? _buildWelcomeBody() : _buildWelcome())
-        : TabBarView(
-            controller: _tabController,
-            children: musicPlatformDisplayOrder
-                .map(
-                  (platform) =>
-                      _buildPlatformPage(platform, showModeToggle: !landscape),
-                )
-                .toList(),
-          );
+    return AppMotionSwitcher(
+      child: KeyedSubtree(
+        key: ValueKey(hasSearched ? 'search-results' : 'search-welcome'),
+        child: !hasSearched
+            ? (landscape ? _buildWelcomeBody() : _buildWelcome())
+            : TabBarView(
+                controller: _tabController,
+                children: musicPlatformDisplayOrder
+                    .map(
+                      (platform) => _buildPlatformPage(
+                        platform,
+                        showModeToggle: !landscape,
+                      ),
+                    )
+                    .toList(),
+              ),
+      ),
+    );
   }
 
   Widget _buildModeToggle() {
@@ -575,12 +598,31 @@ class _SearchScreenState extends State<SearchScreen>
           const SizedBox(height: 4),
         ],
         Expanded(
-          child: _session.playlistMode
-              ? _buildPlaylistResults(platform)
-              : _buildSongResults(platform),
+          child: AppMotionSwitcher(
+            child: KeyedSubtree(
+              key: ValueKey(
+                'search-${platform.code}-${_session.playlistMode ? 'playlists' : 'songs'}-${_platformStateKey(platform)}',
+              ),
+              child: _session.playlistMode
+                  ? _buildPlaylistResults(platform)
+                  : _buildSongResults(platform),
+            ),
+          ),
         ),
       ],
     );
+  }
+
+  String _platformStateKey(MusicPlatform platform) {
+    final songs = _session.songsFor(platform);
+    final playlists = _session.playlistsFor(platform);
+    final targetEmpty = _session.playlistMode
+        ? playlists.isEmpty
+        : songs.isEmpty && playlists.isEmpty;
+    if (targetEmpty && _session.isLoading(platform)) return 'loading';
+    if (targetEmpty && _session.errorFor(platform) != null) return 'error';
+    if (targetEmpty) return 'empty';
+    return 'content';
   }
 
   Widget _buildSongResults(MusicPlatform platform) {
@@ -722,19 +764,33 @@ class _SearchScreenState extends State<SearchScreen>
                     children: [
                       Stack(
                         children: [
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(
-                              AppRadius.media,
-                            ),
-                            child: SizedBox(
-                              width: coverSize,
-                              height: coverSize,
-                              child:
-                                  p.coverUrl != null && p.coverUrl!.isNotEmpty
-                                  ? SmartCover(
-                                      url: p.coverUrl,
-                                      fit: BoxFit.cover,
-                                      placeholder: () => Container(
+                          Hero(
+                            tag: playlistCoverHeroTag(platform, p.id),
+                            transitionOnUserGestures: true,
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(
+                                AppRadius.media,
+                              ),
+                              child: SizedBox(
+                                width: coverSize,
+                                height: coverSize,
+                                child:
+                                    p.coverUrl != null && p.coverUrl!.isNotEmpty
+                                    ? SmartCover(
+                                        url: p.coverUrl,
+                                        fit: BoxFit.cover,
+                                        placeholder: () => Container(
+                                          color: platformColor.withOpacity(
+                                            0.12,
+                                          ),
+                                          child: Icon(
+                                            Icons.queue_music,
+                                            size: isLandscape ? 36 : 30,
+                                            color: platformColor,
+                                          ),
+                                        ),
+                                      )
+                                    : Container(
                                         color: platformColor.withOpacity(0.12),
                                         child: Icon(
                                           Icons.queue_music,
@@ -742,15 +798,7 @@ class _SearchScreenState extends State<SearchScreen>
                                           color: platformColor,
                                         ),
                                       ),
-                                    )
-                                  : Container(
-                                      color: platformColor.withOpacity(0.12),
-                                      child: Icon(
-                                        Icons.queue_music,
-                                        size: isLandscape ? 36 : 30,
-                                        color: platformColor,
-                                      ),
-                                    ),
+                              ),
                             ),
                           ),
                           Positioned(
@@ -826,16 +874,28 @@ class _SearchScreenState extends State<SearchScreen>
             horizontal: isLandscape ? layout.pagePadding : 16,
             vertical: isLandscape ? 6 : 2,
           ),
-          leading: ClipRRect(
-            borderRadius: BorderRadius.circular(AppRadius.media),
-            child: SizedBox(
-              width: coverSize,
-              height: coverSize,
-              child: p.coverUrl != null && p.coverUrl!.isNotEmpty
-                  ? SmartCover(
-                      url: p.coverUrl,
-                      fit: BoxFit.cover,
-                      placeholder: () => Container(
+          leading: Hero(
+            tag: playlistCoverHeroTag(platform, p.id),
+            transitionOnUserGestures: true,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(AppRadius.media),
+              child: SizedBox(
+                width: coverSize,
+                height: coverSize,
+                child: p.coverUrl != null && p.coverUrl!.isNotEmpty
+                    ? SmartCover(
+                        url: p.coverUrl,
+                        fit: BoxFit.cover,
+                        placeholder: () => Container(
+                          color: platformColor.withOpacity(0.12),
+                          child: Icon(
+                            Icons.queue_music,
+                            size: isLandscape ? 30 : 24,
+                            color: platformColor,
+                          ),
+                        ),
+                      )
+                    : Container(
                         color: platformColor.withOpacity(0.12),
                         child: Icon(
                           Icons.queue_music,
@@ -843,15 +903,7 @@ class _SearchScreenState extends State<SearchScreen>
                           color: platformColor,
                         ),
                       ),
-                    )
-                  : Container(
-                      color: platformColor.withOpacity(0.12),
-                      child: Icon(
-                        Icons.queue_music,
-                        size: isLandscape ? 30 : 24,
-                        color: platformColor,
-                      ),
-                    ),
+              ),
             ),
           ),
           title: Text(
@@ -926,14 +978,17 @@ class _SearchScreenState extends State<SearchScreen>
                 ),
               );
             },
-            icon: Icon(
-              isFavorite
-                  ? Icons.favorite_rounded
-                  : Icons.favorite_border_rounded,
-              size: overlay ? 24 : 28,
-              color: isFavorite
-                  ? Colors.redAccent
-                  : (overlay ? Colors.white : AppColors.textHint),
+            icon: AppAnimatedIcon(
+              stateKey: isFavorite,
+              child: Icon(
+                isFavorite
+                    ? Icons.favorite_rounded
+                    : Icons.favorite_border_rounded,
+                size: overlay ? 24 : 28,
+                color: isFavorite
+                    ? Colors.redAccent
+                    : (overlay ? Colors.white : AppColors.textHint),
+              ),
             ),
           ),
         );

@@ -11,6 +11,7 @@ import '../services/favorite_service.dart';
 import '../services/lan_backup_service.dart';
 import '../services/webdav_backup_service.dart';
 import '../theme/app_layout.dart';
+import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 
 class BackupRestoreScreen extends StatefulWidget {
@@ -450,7 +451,20 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         _buildCard(
           title: '手机局域网传输',
           icon: Icons.phone_android_outlined,
-          child: _buildLanContent(layout),
+          child: AnimatedSize(
+            duration: AppMotion.resolve(context, AppMotion.state),
+            curve: AppMotion.enterCurve,
+            child: AppMotionSwitcher(
+              child: KeyedSubtree(
+                key: ValueKey(
+                  _lanSession?.isActive == true
+                      ? 'backup-lan-active'
+                      : 'backup-lan-idle',
+                ),
+                child: _buildLanContent(layout),
+              ),
+            ),
+          ),
         ),
       ],
     );
@@ -544,101 +558,126 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (_loadingConfig)
-            const LinearProgressIndicator(minHeight: 2)
-          else ...[
-            TextField(
-              key: const ValueKey('backup-webdav-url'),
-              controller: _urlController,
-              keyboardType: TextInputType.url,
-              decoration: const InputDecoration(
-                labelText: 'WebDAV 地址',
-                hintText: 'https://服务器:端口/路径/',
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _usernameController,
-              decoration: const InputDecoration(labelText: '用户名'),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _passwordController,
-              obscureText: _obscurePassword,
-              decoration: InputDecoration(
-                labelText: '独立 WebDAV 密码',
-                suffixIcon: IconButton(
-                  tooltip: _obscurePassword ? '显示密码' : '隐藏密码',
-                  onPressed: () =>
-                      setState(() => _obscurePassword = !_obscurePassword),
-                  icon: Icon(
-                    _obscurePassword ? Icons.visibility : Icons.visibility_off,
+          AppMotionSwitcher(
+            child: _loadingConfig
+                ? const LinearProgressIndicator(
+                    key: ValueKey('backup-webdav-loading'),
+                    minHeight: 2,
+                  )
+                : Column(
+                    key: const ValueKey('backup-webdav-form'),
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      TextField(
+                        key: const ValueKey('backup-webdav-url'),
+                        controller: _urlController,
+                        keyboardType: TextInputType.url,
+                        decoration: const InputDecoration(
+                          labelText: 'WebDAV 地址',
+                          hintText: 'https://服务器:端口/路径/',
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: _usernameController,
+                        decoration: const InputDecoration(labelText: '用户名'),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: _passwordController,
+                        obscureText: _obscurePassword,
+                        decoration: InputDecoration(
+                          labelText: '独立 WebDAV 密码',
+                          suffixIcon: IconButton(
+                            tooltip: _obscurePassword ? '显示密码' : '隐藏密码',
+                            onPressed: () => setState(
+                              () => _obscurePassword = !_obscurePassword,
+                            ),
+                            icon: Icon(
+                              _obscurePassword
+                                  ? Icons.visibility
+                                  : Icons.visibility_off,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: _fingerprintController,
+                        decoration: const InputDecoration(
+                          labelText: 'HTTPS 证书 SHA-256 指纹',
+                          hintText: '64 位十六进制，可带冒号',
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        '自签名 HTTPS 必须填写指纹；不要填写服务器 root 密码。',
+                        style: TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: layout.secondarySize,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          OutlinedButton.icon(
+                            key: const ValueKey('backup-webdav-test'),
+                            onPressed: _busy ? null : _testWebDav,
+                            icon: const Icon(Icons.check_circle_outline),
+                            label: const Text('测试连接'),
+                          ),
+                          FilledButton.icon(
+                            key: const ValueKey('backup-webdav-upload'),
+                            onPressed: _busy ? null : _uploadWebDav,
+                            icon: const Icon(Icons.cloud_upload_outlined),
+                            label: const Text('上传备份'),
+                          ),
+                          OutlinedButton.icon(
+                            key: const ValueKey('backup-webdav-download'),
+                            onPressed: _busy ? null : _downloadWebDav,
+                            icon: const Icon(Icons.cloud_download_outlined),
+                            label: const Text('下载并恢复'),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
-                ),
-              ),
+          ),
+          AnimatedSize(
+            duration: AppMotion.resolve(context, AppMotion.state),
+            curve: AppMotion.enterCurve,
+            child: AppMotionSwitcher(
+              child: _status == null
+                  ? const SizedBox.shrink(key: ValueKey('backup-status-empty'))
+                  : Padding(
+                      key: ValueKey(
+                        'backup-status-${_statusError ? 'error' : 'success'}',
+                      ),
+                      padding: const EdgeInsets.only(top: 14),
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: (_statusError ? Colors.red : AppColors.primary)
+                              .withValues(alpha: .10),
+                          borderRadius: BorderRadius.circular(
+                            AppRadius.control,
+                          ),
+                        ),
+                        child: Text(
+                          _status!,
+                          style: TextStyle(
+                            color: _statusError
+                                ? Colors.red.shade700
+                                : AppColors.textPrimary,
+                            fontSize: layout.secondarySize,
+                          ),
+                        ),
+                      ),
+                    ),
             ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _fingerprintController,
-              decoration: const InputDecoration(
-                labelText: 'HTTPS 证书 SHA-256 指纹',
-                hintText: '64 位十六进制，可带冒号',
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              '自签名 HTTPS 必须填写指纹；不要填写服务器 root 密码。',
-              style: TextStyle(
-                color: AppColors.textSecondary,
-                fontSize: layout.secondarySize,
-              ),
-            ),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                OutlinedButton.icon(
-                  key: const ValueKey('backup-webdav-test'),
-                  onPressed: _busy ? null : _testWebDav,
-                  icon: const Icon(Icons.check_circle_outline),
-                  label: const Text('测试连接'),
-                ),
-                FilledButton.icon(
-                  key: const ValueKey('backup-webdav-upload'),
-                  onPressed: _busy ? null : _uploadWebDav,
-                  icon: const Icon(Icons.cloud_upload_outlined),
-                  label: const Text('上传备份'),
-                ),
-                OutlinedButton.icon(
-                  key: const ValueKey('backup-webdav-download'),
-                  onPressed: _busy ? null : _downloadWebDav,
-                  icon: const Icon(Icons.cloud_download_outlined),
-                  label: const Text('下载并恢复'),
-                ),
-              ],
-            ),
-          ],
-          if (_status != null) ...[
-            const SizedBox(height: 14),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: (_statusError ? Colors.red : AppColors.primary)
-                    .withValues(alpha: .10),
-                borderRadius: BorderRadius.circular(AppRadius.control),
-              ),
-              child: Text(
-                _status!,
-                style: TextStyle(
-                  color: _statusError
-                      ? Colors.red.shade700
-                      : AppColors.textPrimary,
-                  fontSize: layout.secondarySize,
-                ),
-              ),
-            ),
-          ],
+          ),
         ],
       ),
     );

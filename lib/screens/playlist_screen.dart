@@ -4,6 +4,7 @@ import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
+import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 import '../widgets/song_tile.dart';
 import '../widgets/playlist_import_dialog.dart';
@@ -174,7 +175,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
               style: const TextStyle(color: Colors.redAccent),
             ),
           ),
-        Expanded(child: _buildTrackArea()),
+        Expanded(child: _buildAnimatedTrackArea()),
       ],
     );
   }
@@ -223,26 +224,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
               thickness: 1,
               color: AppColors.surfaceSoft,
             ),
-            Expanded(
-              child: _loading
-                  ? Center(
-                      child: CircularProgressIndicator(
-                        strokeWidth: 3,
-                        color: AppColors.primary,
-                      ),
-                    )
-                  : _playlist == null
-                  ? Center(
-                      child: Text(
-                        '导入歌单后在这里查看歌曲',
-                        style: TextStyle(
-                          color: AppColors.textHint,
-                          fontSize: layout.bodySize,
-                        ),
-                      ),
-                    )
-                  : _buildTrackList(),
-            ),
+            Expanded(child: _buildAnimatedTrackArea(layout: layout)),
           ],
         );
       },
@@ -324,17 +306,41 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     );
   }
 
-  Widget _buildTrackArea() {
+  Widget _buildAnimatedTrackArea({AppLayout? layout}) {
+    final stateKey = _loading
+        ? 'loading'
+        : _playlist == null
+        ? 'empty'
+        : 'content';
+    final Widget content;
     if (_loading) {
-      return Center(
+      content = Center(
         child: CircularProgressIndicator(
-          strokeWidth: 2.5,
+          strokeWidth: layout == null ? 2.5 : 3,
           color: AppColors.primary,
         ),
       );
+    } else if (_playlist == null) {
+      content = layout == null
+          ? _buildEmpty()
+          : Center(
+              child: Text(
+                '导入歌单后在这里查看歌曲',
+                style: TextStyle(
+                  color: AppColors.textHint,
+                  fontSize: layout.bodySize,
+                ),
+              ),
+            );
+    } else {
+      content = _buildTrackList();
     }
-    if (_playlist == null) return _buildEmpty();
-    return _buildTrackList();
+    return AppMotionSwitcher(
+      child: KeyedSubtree(
+        key: ValueKey('imported-playlist-$stateKey'),
+        child: content,
+      ),
+    );
   }
 
   Widget _buildPlaylistHeader({AppLayout? layout}) {
@@ -479,16 +485,20 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 18),
             child: Center(
-              child: _loadingMore
-                  ? const SizedBox.square(
-                      dimension: 26,
-                      child: CircularProgressIndicator(strokeWidth: 2.5),
-                    )
-                  : TextButton(
-                      key: const ValueKey('playlist-load-more'),
-                      onPressed: _loadMoreTracks,
-                      child: const Text('加载更多'),
-                    ),
+              child: AppMotionSwitcher(
+                beginOffset: Offset.zero,
+                child: _loadingMore
+                    ? const SizedBox.square(
+                        key: ValueKey('imported-playlist-loading-more'),
+                        dimension: 26,
+                        child: CircularProgressIndicator(strokeWidth: 2.5),
+                      )
+                    : TextButton(
+                        key: const ValueKey('playlist-load-more'),
+                        onPressed: _loadMoreTracks,
+                        child: const Text('加载更多'),
+                      ),
+              ),
             ),
           );
         }
