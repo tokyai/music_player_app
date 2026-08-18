@@ -992,7 +992,7 @@ class PlayerProvider extends ChangeNotifier {
     await _playCurrent();
   }
 
-  Future<String> currentBilibiliVideoUrl() async {
+  Future<BilibiliVideoSource> currentBilibiliVideoSource() async {
     final song = currentSong;
     if (song == null || song.platform != MusicPlatform.bilibili) {
       throw const BilibiliApiException('VIDEO_CURRENT', '当前不是B站视频');
@@ -1001,7 +1001,11 @@ class PlayerProvider extends ChangeNotifier {
     if (cid == null || cid <= 0) {
       throw const BilibiliApiException('VIDEO_CID', '当前分P仍在加载');
     }
-    return _api.bilibili.videoUrl(song.id, cid, _bilibiliVideoQuality);
+    return _api.bilibili.videoSource(song.id, cid, _bilibiliVideoQuality);
+  }
+
+  Future<String> currentBilibiliVideoUrl() async {
+    return (await currentBilibiliVideoSource()).url;
   }
 
   Future<void> playPause() async {

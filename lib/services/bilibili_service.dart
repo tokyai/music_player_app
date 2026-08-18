@@ -23,6 +23,19 @@ class BilibiliQrCode {
   const BilibiliQrCode({required this.key, required this.url});
 }
 
+/// 可供内置视频播放器尝试的 B 站视频地址集合。
+///
+/// B 站会同时返回多个 CDN 地址，部分网络只能访问其中的 mcdn 地址，
+/// 因此不能像普通音乐源一样只保留一个 URL。
+class BilibiliVideoSource {
+  final List<String> urls;
+  final Map<String, String> headers;
+
+  const BilibiliVideoSource({required this.urls, required this.headers});
+
+  String get url => urls.first;
+}
+
 enum BilibiliQrStatus { waiting, scanned, expired, success }
 
 class BilibiliQrPollResult {
@@ -104,11 +117,21 @@ class BilibiliService extends ChangeNotifier {
   bool get accountLoading => _accountLoading;
   BilibiliUser? get user => _user;
 
-  Map<String, String> get playbackHeaders => const {
-    'User-Agent': _userAgent,
-    'Referer': 'https://www.bilibili.com/',
-    'Origin': 'https://www.bilibili.com',
-  };
+  Map<String, String> get playbackHeaders =>
+      _playbackHeaders(referer: 'https://www.bilibili.com/');
+
+  Map<String, String> playbackHeadersForVideo(String bvid) {
+    return _playbackHeaders(referer: 'https://www.bilibili.com/video/$bvid');
+  }
+
+  Map<String, String> _playbackHeaders({required String referer}) {
+    return {
+      'User-Agent': _userAgent,
+      'Referer': referer,
+      'Origin': 'https://www.bilibili.com',
+      if (hasCookie) 'Cookie': _cookie!,
+    };
+  }
 
   Future<void> _loadSession() async {
     final preferences = await SharedPreferences.getInstance();
@@ -342,10 +365,7 @@ class BilibiliService extends ChangeNotifier {
       throw const BilibiliApiException('PLAY_NO_AUDIO', '当前分P没有可播放的音频');
     }
     audio.sort((a, b) => b.bandwidth.compareTo(a.bandwidth));
-    video.sort((a, b) {
-      final quality = b.quality.compareTo(a.quality);
-      return quality != 0 ? quality : b.bandwidth.compareTo(a.bandwidth);
-    });
+    video.sort(_compareVideoStreams);
     return BilibiliPlayInfo(
       audioStreams: _deduplicateStreams(audio),
       videoStreams: _deduplicateStreams(video),
@@ -353,26 +373,81 @@ class BilibiliService extends ChangeNotifier {
     );
   }
 
-  Future<String> videoUrl(String bvid, int cid, int quality) async {
+  Future<BilibiliVideoSource> videoSource(
+    String bvid,
+    int cid,
+    int quality,
+  ) async {
     final response = await _bilibiliGet('/x/player/wbi/playurl', {
       'bvid': bvid,
       'cid': cid,
       'qn': quality,
       'fnver': 0,
-      'fnval': 0,
+      // DASH supplies multiple CDN URLs.  The first durl is frequently an
+      // upos address that returns 403 on mobile networks.
+      'fnval': 4048,
       'fourk': 1,
     }, wbi: true);
-    final data = response['data'];
-    final durl = data is Map ? data['durl'] as List? ?? const [] : const [];
-    if (durl.isEmpty || durl.first is! Map) {
-      throw const BilibiliApiException('PLAY_NO_VIDEO', '当前分P没有可播放的视频流');
+    final rawData = response['data'];
+    final data = rawData is Map
+        ? Map<String, dynamic>.from(rawData)
+        : <String, dynamic>{};
+    final rawDash = data['dash'];
+    final dash = rawDash is Map
+        ? Map<String, dynamic>.from(rawDash)
+        : <String, dynamic>{};
+    final streams = _parseStreams(dash['video'], audio: false)
+      ..sort(_compareVideoStreams);
+    if (streams.isNotEmpty) {
+      final availableQualities =
+          streams
+              .map((stream) => stream.quality)
+              .where((value) => value > 0)
+              .toSet()
+              .toList()
+            ..sort();
+      final targetQuality = availableQualities.isEmpty
+          ? 0
+          : availableQualities.lastWhere(
+              (value) => value <= quality,
+              orElse: () => availableQualities.first,
+            );
+      final selected = streams.where(
+        (stream) => stream.quality == targetQuality,
+      );
+      final urls = _orderedUrls(
+        selected.expand((stream) => stream.playUrls),
+      );
+      if (urls.isNotEmpty) {
+        return BilibiliVideoSource(
+          urls: urls,
+          headers: playbackHeadersForVideo(bvid),
+        );
+      }
     }
-    final first = durl.first as Map;
-    final url = first['url']?.toString() ?? '';
-    if (url.isEmpty) {
+
+    // A few older/paid videos still return only a progressive MP4.  Keep it
+    // as a compatibility fallback, including every backup_url supplied by
+    // the official endpoint.
+    final durl = data['durl'] is List ? data['durl'] as List : const [];
+    final urls = _orderedUrls(
+      durl.whereType<Map>().expand((row) {
+        final base = row['url']?.toString() ?? '';
+        final backups = _stringList(row['backupUrl'] ?? row['backup_url']);
+        return <String>[if (base.isNotEmpty) base, ...backups];
+      }),
+    );
+    if (urls.isEmpty) {
       throw const BilibiliApiException('PLAY_NO_VIDEO', 'B站未返回视频地址');
     }
-    return url;
+    return BilibiliVideoSource(
+      urls: urls,
+      headers: playbackHeadersForVideo(bvid),
+    );
+  }
+
+  Future<String> videoUrl(String bvid, int cid, int quality) async {
+    return (await videoSource(bvid, cid, quality)).url;
   }
 
   List<BilibiliStream> _parseStreams(dynamic raw, {required bool audio}) {
@@ -381,17 +456,69 @@ class BilibiliService extends ChangeNotifier {
         .whereType<Map>()
         .map((row) {
           final quality = _asInt(row['id']) ?? 0;
-          final url = (row['baseUrl'] ?? row['base_url'])?.toString() ?? '';
+          final base = (row['baseUrl'] ?? row['base_url'])?.toString() ?? '';
+          final urls = _orderedUrls([
+            if (base.isNotEmpty) base,
+            ..._stringList(row['backupUrl'] ?? row['backup_url']),
+          ]);
           return BilibiliStream(
             quality: quality,
             label: audio ? _audioLabel(quality) : _videoLabel(quality),
-            url: url,
+            url: urls.isEmpty ? '' : urls.first,
+            playUrls: urls,
             bandwidth: _asInt(row['bandwidth']) ?? 0,
             mimeType: (row['mimeType'] ?? row['mime_type'])?.toString(),
+            codecs: row['codecs']?.toString(),
           );
         })
         .where((stream) => stream.url.isNotEmpty)
         .toList(growable: false);
+  }
+
+  static List<String> _stringList(dynamic value) {
+    if (value is! List) return const [];
+    return value
+        .map((item) => item?.toString() ?? '')
+        .where((url) => url.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  static List<String> _deduplicateUrls(Iterable<String> urls) {
+    final seen = <String>{};
+    return urls
+        .where((url) => url.isNotEmpty && seen.add(url))
+        .toList(growable: false);
+  }
+
+  static List<String> _orderedUrls(Iterable<String> urls) {
+    final result = _deduplicateUrls(urls).toList();
+    result.sort((a, b) => _urlPriority(b).compareTo(_urlPriority(a)));
+    return result;
+  }
+
+  static int _compareVideoStreams(BilibiliStream a, BilibiliStream b) {
+    final quality = b.quality.compareTo(a.quality);
+    if (quality != 0) return quality;
+    final network = _urlPriority(b.url).compareTo(_urlPriority(a.url));
+    if (network != 0) return network;
+    final codec = _codecPriority(b.codecs).compareTo(_codecPriority(a.codecs));
+    if (codec != 0) return codec;
+    return b.bandwidth.compareTo(a.bandwidth);
+  }
+
+  static int _urlPriority(String url) {
+    final host = Uri.tryParse(url)?.host ?? '';
+    if (host.contains('.mcdn.bilivideo.')) return 3;
+    if (host.contains('bilivideo.')) return 2;
+    return 1;
+  }
+
+  static int _codecPriority(String? codecs) {
+    final value = codecs ?? '';
+    if (value.startsWith('avc1')) return 3;
+    if (value.startsWith('hev1') || value.startsWith('hvc1')) return 2;
+    if (value.startsWith('av01')) return 1;
+    return 0;
   }
 
   static List<BilibiliStream> _deduplicateStreams(

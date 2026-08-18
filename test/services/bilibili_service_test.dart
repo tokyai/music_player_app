@@ -65,16 +65,7 @@ void main() {
         if (path == '/x/player/wbi/playurl') {
           signedPaths.add(path);
           expect(request.url.queryParameters['w_rid'], isNotEmpty);
-          if (request.url.queryParameters['fnval'] == '0') {
-            return _json({
-              'code': 0,
-              'data': {
-                'durl': [
-                  {'url': 'https://example.com/video.mp4'},
-                ],
-              },
-            });
-          }
+          expect(request.url.queryParameters['fnval'], '4048');
           return _json({
             'code': 0,
             'data': {
@@ -91,7 +82,9 @@ void main() {
                   {
                     'id': 80,
                     'baseUrl': 'https://example.com/video.m4s',
+                    'backupUrl': ['https://backup.example.com/video.m4s'],
                     'bandwidth': 2500000,
+                    'codecs': 'avc1.64001E',
                   },
                 ],
               },
@@ -126,11 +119,31 @@ void main() {
     final play = await service.playInfo('BV1test', 101);
     expect(play.audioStreams.single.label, '192K');
     expect(play.videoStreams.single.label, '1080P');
-    expect(await service.videoUrl('BV1test', 101, 80), endsWith('video.mp4'));
+    final source = await service.videoSource('BV1test', 101, 80);
+    expect(source.url, endsWith('video.m4s'));
+    expect(source.urls, hasLength(2));
+    expect(source.headers['Origin'], 'https://www.bilibili.com');
+    expect(source.headers['Referer'], 'https://www.bilibili.com/video/BV1test');
+    expect(await service.videoUrl('BV1test', 101, 80), endsWith('video.m4s'));
     final qr = await service.createQrCode();
     expect(qr.key, 'qr-key');
     expect((await service.pollQrCode(qr.key)).status, BilibiliQrStatus.waiting);
-    expect(signedPaths, hasLength(3));
+    expect(signedPaths, hasLength(4));
+  });
+
+  test('video headers include the stored B站 session cookie', () async {
+    SharedPreferences.setMockInitialValues({
+      'bilibili_cookie': 'SESSDATA=session-token; bili_jct=csrf-token',
+    });
+    final service = BilibiliService(
+      client: MockClient((_) async => _json({'code': 0, 'data': {}})),
+    );
+    addTearDown(service.dispose);
+    await service.ready;
+
+    final headers = service.playbackHeadersForVideo('BVcookie');
+    expect(headers['Cookie'], contains('SESSDATA=session-token'));
+    expect(headers['Referer'], 'https://www.bilibili.com/video/BVcookie');
   });
 }
 

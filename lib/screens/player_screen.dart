@@ -8,6 +8,7 @@ import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../providers/search_session.dart';
 import '../services/api_service.dart';
+import '../services/bilibili_service.dart';
 import '../services/favorite_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
@@ -962,8 +963,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (_mvOpening) return;
     setState(() => _mvOpening = true);
     try {
+      BilibiliVideoSource? bilibiliSource;
       final url = song.platform == MusicPlatform.bilibili
-          ? await player.currentBilibiliVideoUrl()
+          ? (bilibiliSource = await player.currentBilibiliVideoSource()).url
           : await player.api.musicVideoUrl(
               platform: song.platform,
               songId: song.id,
@@ -977,6 +979,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
         MaterialPageRoute<void>(
           builder: (_) => VideoPlayerScreen(
             url: url,
+            alternateUrls:
+                bilibiliSource?.urls.skip(1).toList(growable: false) ??
+                const [],
+            headers: bilibiliSource?.headers,
             title: song.name,
             artist: song.artist,
             platform: song.platform,

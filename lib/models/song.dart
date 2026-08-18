@@ -135,16 +135,20 @@ class BilibiliStream {
   final int quality;
   final String label;
   final String url;
+  final List<String> playUrls;
   final int bandwidth;
   final String? mimeType;
+  final String? codecs;
 
   const BilibiliStream({
     required this.quality,
     required this.label,
     required this.url,
+    List<String>? playUrls,
     required this.bandwidth,
     this.mimeType,
-  });
+    this.codecs,
+  }) : playUrls = playUrls ?? const [];
 }
 
 class BilibiliPlayInfo {

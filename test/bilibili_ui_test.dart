@@ -11,6 +11,7 @@ import 'package:music_player_app/providers/theme_controller.dart';
 import 'package:music_player_app/screens/discover_screen.dart';
 import 'package:music_player_app/screens/player_screen.dart';
 import 'package:music_player_app/screens/settings_screen.dart';
+import 'package:music_player_app/screens/video_player_screen.dart';
 import 'package:music_player_app/services/bilibili_service.dart';
 import 'package:music_player_app/services/favorite_service.dart';
 import 'package:music_player_app/theme/app_layout.dart';
@@ -119,6 +120,24 @@ void main() {
         await tester.pump();
         expect(player.currentSong.name, '第二P标题');
         expect(find.text('第二P标题'), findsWidgets);
+        expect(tester.takeException(), isNull);
+
+        await tester.tap(
+          find.byKey(const ValueKey('player-mv-action')).hitTestable(),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        final videoScreen = tester.widget<VideoPlayerScreen>(
+          find.byType(VideoPlayerScreen),
+        );
+        expect(videoScreen.url, contains('.mcdn.bilivideo.cn'));
+        expect(videoScreen.alternateUrls, hasLength(1));
+        expect(
+          videoScreen.headers?['Referer'],
+          'https://www.bilibili.com/video/BV1player',
+        );
+        expect(videoScreen.headers?['Origin'], 'https://www.bilibili.com');
+        expect(find.byKey(const ValueKey('mv-player-back')), findsOneWidget);
         expect(tester.takeException(), isNull);
 
         await tester.pumpWidget(const SizedBox.shrink());
@@ -295,8 +314,17 @@ class _BilibiliPlayer extends PlayerProvider {
   }
 
   @override
-  Future<String> currentBilibiliVideoUrl() async =>
-      'https://example.com/video.mp4';
+  Future<BilibiliVideoSource> currentBilibiliVideoSource() async =>
+      const BilibiliVideoSource(
+        urls: [
+          'https://test.mcdn.bilivideo.cn/video.m4s',
+          'https://backup.bilivideo.com/video.m4s',
+        ],
+        headers: {
+          'Referer': 'https://www.bilibili.com/video/BV1player',
+          'Origin': 'https://www.bilibili.com',
+        },
+      );
 
   @override
   Future<BilibiliQrCode> createBilibiliQrCode() async => const BilibiliQrCode(

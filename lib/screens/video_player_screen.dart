@@ -212,6 +212,8 @@ class _MpvPlaybackController extends _MvPlaybackController {
 
 class VideoPlayerScreen extends StatefulWidget {
   final String url;
+  final List<String> alternateUrls;
+  final Map<String, String>? headers;
   final String title;
   final String artist;
   final MusicPlatform platform;
@@ -220,6 +222,8 @@ class VideoPlayerScreen extends StatefulWidget {
   const VideoPlayerScreen({
     super.key,
     required this.url,
+    this.alternateUrls = const [],
+    this.headers,
     required this.title,
     required this.artist,
     required this.platform,
@@ -232,6 +236,8 @@ class VideoPlayerScreen extends StatefulWidget {
 
 class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     with WidgetsBindingObserver {
+  late final List<String> _sourceUrls;
+  int _sourceIndex = 0;
   late _MvEngine _activeEngine;
   late _MvPlaybackController _controller;
   Timer? _controlsTimer;
@@ -259,6 +265,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   @override
   void initState() {
     super.initState();
+    _sourceUrls = <String>{
+      widget.url,
+      ...widget.alternateUrls,
+    }.where((url) => url.isNotEmpty).toList(growable: false);
     WidgetsBinding.instance.addObserver(this);
     applySystemUi(dark: true);
     _activeEngine = widget.mode == VideoPlayerMode.mpv
@@ -269,7 +279,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     unawaited(_initialize());
   }
 
-  static Map<String, String> _headersFor(MusicPlatform platform) {
+  static Map<String, String> _headersFor(
+    MusicPlatform platform,
+    Map<String, String>? customHeaders,
+  ) {
     return {
       'User-Agent':
           'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36',
@@ -279,14 +292,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         MusicPlatform.kugou => 'https://www.kugou.com/',
         MusicPlatform.bilibili => 'https://www.bilibili.com/',
       },
+      if (platform == MusicPlatform.bilibili)
+        'Origin': 'https://www.bilibili.com',
+      ...?customHeaders,
     };
   }
 
   _MvPlaybackController _createController(_MvEngine engine) {
-    final headers = _headersFor(widget.platform);
+    final headers = _headersFor(widget.platform, widget.headers);
+    final url = _sourceUrls[_sourceIndex];
     return switch (engine) {
-      _MvEngine.exo => _ExoPlaybackController(widget.url, headers),
-      _MvEngine.mpv => _MpvPlaybackController(widget.url, headers),
+      _MvEngine.exo => _ExoPlaybackController(url, headers),
+      _MvEngine.mpv => _MpvPlaybackController(url, headers),
     };
   }
 
@@ -389,6 +406,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   Future<void> _handlePlaybackFailure() async {
     if (_switchingEngine) return;
+    if (_sourceIndex + 1 < _sourceUrls.length) {
+      await _switchSource(notice: '当前 CDN 不可用，正在切换 B 站备用地址');
+      return;
+    }
     if (widget.mode == VideoPlayerMode.automatic &&
         !_automaticFallbackUsed &&
         _activeEngine == _MvEngine.exo) {
@@ -397,10 +418,36 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       return;
     }
     if (!mounted) return;
+    final detail = _controller.error;
     setState(() {
       _initializing = false;
-      _initializationError = '${_controller.label} 无法播放此 MV';
+      _initializationError = detail == null || detail.trim().isEmpty
+          ? '${_controller.label} 无法播放此 MV'
+          : '${_controller.label} 无法播放此 MV\n$detail';
     });
+  }
+
+  Future<void> _switchSource({String? notice}) async {
+    if (_switchingEngine || _sourceIndex + 1 >= _sourceUrls.length) return;
+    _switchingEngine = true;
+    _controlsTimer?.cancel();
+    _cancelVideoUiRefresh();
+    if (mounted) {
+      setState(() {
+        _initializing = true;
+        _initializationError = null;
+        _engineNotice = notice;
+      });
+    }
+    final previous = _controller;
+    previous.removeListener(_handleVideoChanged);
+    await previous.close();
+    if (!mounted) return;
+    _sourceIndex++;
+    _controller = _createController(_activeEngine)
+      ..addListener(_handleVideoChanged);
+    _switchingEngine = false;
+    await _initialize();
   }
 
   Future<void> _switchEngine(_MvEngine engine, {String? notice}) async {
@@ -419,6 +466,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     previous.removeListener(_handleVideoChanged);
     await previous.close();
     if (!mounted) return;
+    _sourceIndex = 0;
     _activeEngine = engine;
     _controller = _createController(engine)..addListener(_handleVideoChanged);
     _switchingEngine = false;
@@ -431,6 +479,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _controller.removeListener(_handleVideoChanged);
     await _controller.close();
     if (!mounted) return;
+    _sourceIndex = 0;
     _controller = _createController(_activeEngine)
       ..addListener(_handleVideoChanged);
     await _initialize();
