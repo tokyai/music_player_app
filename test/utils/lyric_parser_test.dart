@@ -60,6 +60,62 @@ void main() {
     expect(krc.words.last.time, const Duration(milliseconds: 2200));
   });
 
+  test('resolves relative YRC and QRC timing once for the whole line', () {
+    final yrc = LyricParser.parseEnhanced(
+      '[5000,800](0,300,0)你(300,500,0)好',
+    ).single;
+    final qrc = LyricParser.parseEnhanced(
+      '[2000,600]今(0,200)天(200,400)',
+    ).single;
+
+    expect(yrc.words.first.time, const Duration(seconds: 5));
+    expect(yrc.words.last.time, const Duration(milliseconds: 5300));
+    expect(qrc.words.first.time, const Duration(seconds: 2));
+    expect(qrc.words.last.time, const Duration(milliseconds: 2200));
+    expect(yrc.hasReliableWordTiming, isTrue);
+    expect(qrc.hasReliableWordTiming, isTrue);
+  });
+
+  test('rejects grouped, overlapping, and mixed-clock word timing', () {
+    final grouped = LyricParser.parseEnhanced(
+      '[1000,1000](1000,1000,0)你好',
+    ).single;
+    final overlapping = LyricParser.parseEnhanced(
+      '[1000,2000](1000,1500,0)你(1200,500,0)好',
+    ).single;
+    final mixedClock = LyricParser.parseEnhanced(
+      '[5000,1000](0,300,0)你(5500,300,0)好',
+    ).single;
+
+    expect(grouped.hasReliableWordTiming, isFalse);
+    expect(overlapping.hasReliableWordTiming, isFalse);
+    expect(mixedClock.words.first.time, Duration.zero);
+    expect(mixedClock.words.last.time, const Duration(milliseconds: 5500));
+    expect(mixedClock.hasReliableWordTiming, isFalse);
+  });
+
+  test('unreliable words use line timing instead of guessed glyph timing', () {
+    final line = LyricLine(
+      const Duration(seconds: 1),
+      '你好',
+      endTime: const Duration(seconds: 3),
+      declaredEndTime: const Duration(seconds: 3),
+      words: const [
+        LyricWord(
+          time: Duration(seconds: 2),
+          duration: Duration(seconds: 1),
+          text: '你好',
+        ),
+      ],
+    );
+
+    expect(line.hasReliableWordTiming, isFalse);
+    expect(
+      line.progressAt(const Duration(milliseconds: 1500)),
+      closeTo(0.25, 0.001),
+    );
+  });
+
   test('plain LRC progress falls back to the next line timestamp', () {
     final line = LyricParser.parse('[00:01.00]普通歌词').single;
 

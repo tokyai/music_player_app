@@ -464,6 +464,7 @@ class _AnimatedLyricLineText extends StatelessWidget {
   final int index;
   final String text;
   final bool isCurrent;
+  final bool wordTimingReliable;
   final double progress;
   final double currentFontSize;
   final double inactiveFontSize;
@@ -477,6 +478,7 @@ class _AnimatedLyricLineText extends StatelessWidget {
     required this.index,
     required this.text,
     required this.isCurrent,
+    required this.wordTimingReliable,
     required this.progress,
     required this.currentFontSize,
     required this.inactiveFontSize,
@@ -503,21 +505,22 @@ class _AnimatedLyricLineText extends StatelessWidget {
       style: style,
       textAlign: TextAlign.center,
       child: isCurrent
-          ? TweenAnimationBuilder<double>(
-              key: ValueKey('lyric-progress-animation-$index'),
-              tween: Tween<double>(begin: 0, end: progress.clamp(0.0, 1.0)),
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.linear,
-              builder: (context, animatedProgress, _) {
-                return _KaraokeProgressText(
-                  index: index,
-                  text: text,
-                  progress: animatedProgress,
-                  playedColor: playedColor,
-                  unplayedColor: unplayedColor,
-                );
-              },
-            )
+          ? wordTimingReliable
+                // Do not tween toward an already sampled audio position.  The
+                // previous 180 ms tween made the karaoke cursor permanently
+                // trail the singer even when the source timestamps were exact.
+                ? _KaraokeProgressText(
+                    index: index,
+                    text: text,
+                    progress: progress,
+                    playedColor: playedColor,
+                    unplayedColor: unplayedColor,
+                  )
+                : _SolidCurrentLyricText(
+                    index: index,
+                    text: text,
+                    color: playedColor,
+                  )
           : Builder(
               builder: (context) => Text(
                 text,
@@ -528,6 +531,42 @@ class _AnimatedLyricLineText extends StatelessWidget {
                 style: DefaultTextStyle.of(context).style,
               ),
             ),
+    );
+  }
+}
+
+/// Current-line fallback for plain LRC and coarse word/phrase timestamps.
+///
+/// There is deliberately no time-based transition here: the entire active
+/// line is rendered in the stronger color.  A single-color shader keeps the
+/// same glyph rendering path as karaoke lines without pretending that a
+/// phrase-level timestamp identifies the currently sung character.
+class _SolidCurrentLyricText extends StatelessWidget {
+  final int index;
+  final String text;
+  final Color color;
+
+  const _SolidCurrentLyricText({
+    required this.index,
+    required this.text,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final style = DefaultTextStyle.of(context).style;
+    return ShaderMask(
+      blendMode: BlendMode.srcIn,
+      shaderCallback: (bounds) =>
+          LinearGradient(colors: [color, color]).createShader(bounds),
+      child: Text(
+        text,
+        key: ValueKey('lyric-text-$index'),
+        textAlign: TextAlign.center,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: style.copyWith(foreground: Paint()..color = Colors.white),
+      ),
     );
   }
 }
@@ -640,6 +679,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _mvOpening = false;
   bool _lyricSearchDialogOpen = false;
   final ScrollController _lyricScrollController = ScrollController();
+  Animation<double>? _routeAnimation;
+  bool _routeTransitionComplete = false;
   String? _lastColorSongId;
   String? _lastAutoScrollSongKey;
   int? _lastAutoScrollLyricIndex;
@@ -652,6 +693,41 @@ class _PlayerScreenState extends State<PlayerScreen> {
     unawaited(_loadLandscapeSplitRatio());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _updateColor(context.read<PlayerProvider>().currentSong);
+    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    final nextAnimation = route?.animation;
+    if (identical(_routeAnimation, nextAnimation)) return;
+    _routeAnimation?.removeStatusListener(_handleRouteAnimationStatus);
+    _routeAnimation = nextAnimation;
+    if (nextAnimation == null) {
+      _routeTransitionComplete = true;
+      return;
+    }
+    nextAnimation.addStatusListener(_handleRouteAnimationStatus);
+    // A newly inserted route can briefly report `completed` before Navigator
+    // starts its forward controller.  Only the root route may eagerly build
+    // the expensive background; pushed player routes wait for the real
+    // completion callback below.
+    _routeTransitionComplete =
+        route?.isFirst == true &&
+        nextAnimation.status == AnimationStatus.completed;
+  }
+
+  void _handleRouteAnimationStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed || _routeTransitionComplete) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _routeTransitionComplete = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _updateColor(context.read<PlayerProvider>().currentSong);
+      }
     });
   }
 
@@ -783,16 +859,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void dispose() {
     // 离开播放页后恢复全局状态栏样式（跟随主题）
     applySystemUi(dark: AppColors.isDark);
+    _routeAnimation?.removeStatusListener(_handleRouteAnimationStatus);
     _lyricScrollController.dispose();
     super.dispose();
   }
 
   // 仅在歌曲切换时提取一次封面主色（防抖），避免每次重建都跑图像处理
   void _updateColor(PlayQueueItem? song) {
-    if (song == null) return;
+    // Hero 和页面淡入尚未结束时只绘制纯色背景；封面解码、调色板
+    // 提取与全屏模糊都错峰到转场完成后。
+    if (!_routeTransitionComplete || song == null) return;
     final id = '${song.platform}_${song.id}';
     if (id == _lastColorSongId) return;
     _lastColorSongId = id;
+    if (_dominantColor != null && mounted) {
+      setState(() => _dominantColor = null);
+    }
     final cover = song.coverUrl;
     if (cover == null || cover.isEmpty) {
       if (_dominantColor != null) setState(() => _dominantColor = null);
@@ -1197,6 +1279,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
         ? const Color(0xF2131519)
         : const Color(0xFAF7F8FA);
     return RepaintBoundary(
+      key: ValueKey(
+        _routeTransitionComplete
+            ? 'player-background-ready'
+            : 'player-background-deferred',
+      ),
       child: Stack(
         fit: StackFit.expand,
         children: [
@@ -1205,17 +1292,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
             curve: AppMotion.enterCurve,
             color: baseColor.withValues(alpha: 0.34),
           ),
-          if (cover != null && cover.isNotEmpty)
+          if (_routeTransitionComplete && cover != null && cover.isNotEmpty)
             Positioned.fill(
-              child: ImageFiltered(
-                imageFilter: ui.ImageFilter.blur(sigmaX: 34, sigmaY: 34),
-                child: Transform.scale(
-                  scale: 1.12,
-                  child: SmartCover(
-                    url: cover,
-                    fit: BoxFit.cover,
-                    placeholder: () =>
-                        ColoredBox(color: baseColor.withValues(alpha: 0.28)),
+              child: TweenAnimationBuilder<double>(
+                key: ValueKey(
+                  'player-background-cover-${song.platform.code}:${song.id}',
+                ),
+                tween: Tween<double>(begin: 0, end: 1),
+                duration: AppMotion.resolve(context, AppMotion.quick),
+                curve: AppMotion.enterCurve,
+                builder: (context, opacity, child) =>
+                    Opacity(opacity: opacity, child: child),
+                child: ImageFiltered(
+                  imageFilter: ui.ImageFilter.blur(sigmaX: 34, sigmaY: 34),
+                  child: Transform.scale(
+                    scale: 1.12,
+                    child: SmartCover(
+                      url: cover,
+                      fit: BoxFit.cover,
+                      maxDecodeWidth: 320,
+                      placeholder: () =>
+                          ColoredBox(color: baseColor.withValues(alpha: 0.28)),
+                    ),
                   ),
                 ),
               ),
@@ -1524,7 +1622,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
         child: ClipRRect(
           borderRadius: BorderRadius.circular(20),
           child: AnimatedSwitcher(
-            duration: AppMotion.resolve(context, AppMotion.page),
+            duration: _routeTransitionComplete
+                ? AppMotion.resolve(context, AppMotion.page)
+                : Duration.zero,
             child: SizedBox.expand(
               key: ValueKey('landscape-cover-${song.platform.code}:${song.id}'),
               child: song.coverUrl != null && song.coverUrl!.isNotEmpty
@@ -1873,7 +1973,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(28),
                   child: AnimatedSwitcher(
-                    duration: AppMotion.resolve(ctx, AppMotion.page),
+                    duration: _routeTransitionComplete
+                        ? AppMotion.resolve(ctx, AppMotion.page)
+                        : Duration.zero,
                     child: SizedBox.expand(
                       key: ValueKey(
                         'player-cover-${song.platform.code}:${song.id}',
@@ -2022,6 +2124,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         index: i,
                         text: lyric.primaryText,
                         isCurrent: isCurrent,
+                        wordTimingReliable: lyric.hasReliableWordTiming,
                         progress: progress,
                         currentFontSize: _lyricFontSize,
                         inactiveFontSize: inactiveFontSize,

@@ -13,23 +13,70 @@ class LyricWord {
   Duration get endTime => time + duration;
 }
 
+class _RawLyricWord {
+  final int startMs;
+  final int durationMs;
+  final String text;
+
+  const _RawLyricWord({
+    required this.startMs,
+    required this.durationMs,
+    required this.text,
+  });
+}
+
 /// 歌词解析工具：将 LRC / YRC / QRC / KRC 文本解析为时间轴歌词。
 class LyricLine {
   final Duration time;
   final String text;
   final Duration? endTime;
+  final Duration? declaredEndTime;
   final List<LyricWord> words;
 
-  const LyricLine(this.time, this.text, {this.endTime, this.words = const []});
+  const LyricLine(
+    this.time,
+    this.text, {
+    this.endTime,
+    this.declaredEndTime,
+    this.words = const [],
+  });
 
   String get primaryText => text.split('\n').first;
+
+  /// Whether every displayed rune has a trustworthy, non-overlapping timing
+  /// interval.
+  ///
+  /// Some providers label a whole word (or even a phrase) with one timestamp.
+  /// Splitting that interval evenly between its characters looks precise but
+  /// is only a guess, so those lines deliberately fall back to solid current-
+  /// line highlighting instead of showing a misleading karaoke cursor.
+  bool get hasReliableWordTiming {
+    if (words.isEmpty) return false;
+    final source = primaryText;
+    if (words.map((word) => word.text).join() != source) return false;
+    if (source.runes.length != words.length) return false;
+
+    final allowedEnd = declaredEndTime ?? endTime;
+    if (allowedEnd == null || allowedEnd <= time) return false;
+
+    var previousEnd = time;
+    for (final word in words) {
+      if (word.text.runes.length != 1 || word.duration <= Duration.zero) {
+        return false;
+      }
+      if (word.time < time || word.time < previousEnd) return false;
+      if (word.endTime > allowedEnd) return false;
+      previousEnd = word.endTime;
+    }
+    return true;
+  }
 
   /// 当前行的演唱进度。增强歌词按真实字词时间计算；普通 LRC 则在
   /// 当前行与下一行之间做连续估算。
   double progressAt(Duration position, {Duration? fallbackEnd}) {
     if (position <= time) return 0;
 
-    if (words.isNotEmpty) {
+    if (hasReliableWordTiming) {
       final totalWeight = words.fold<int>(
         0,
         (total, word) => total + _textWeight(word.text),
@@ -143,6 +190,7 @@ class LyricParser {
           lineStart,
           plainText.trim(),
           endTime: resolvedEnd > lineStart ? resolvedEnd : null,
+          declaredEndTime: declaredEnd > lineStart ? declaredEnd : null,
           words: words,
         ),
       );
@@ -185,28 +233,24 @@ class LyricParser {
     }
 
     // QRC 把时间写在对应字词之后。
-    final result = <LyricWord>[];
-    final qrcPattern = RegExp(r'([^()]+)\((\d+),(\d+)(?:,[^)]*)?\)');
-    for (final match in qrcPattern.allMatches(content)) {
+    final rawWords = <_RawLyricWord>[];
+    final pattern = RegExp(r'([^()]+)\((\d+),(\d+)(?:,[^)]*)?\)');
+    for (final match in pattern.allMatches(content)) {
       final text = match.group(1) ?? '';
       if (text.isEmpty) continue;
-      final rawStart = int.tryParse(match.group(2)!) ?? lineStartMs;
-      final duration = int.tryParse(match.group(3)!) ?? 0;
-      result.add(
-        LyricWord(
-          time: Duration(
-            milliseconds: _absoluteWordStart(
-              lineStartMs,
-              lineDurationMs,
-              rawStart,
-            ),
-          ),
-          duration: Duration(milliseconds: duration),
+      rawWords.add(
+        _RawLyricWord(
+          startMs: int.tryParse(match.group(2)!) ?? lineStartMs,
+          durationMs: int.tryParse(match.group(3)!) ?? 0,
           text: text,
         ),
       );
     }
-    return result;
+    return _resolveRawWords(
+      rawWords,
+      lineStartMs: lineStartMs,
+      lineDurationMs: lineDurationMs,
+    );
   }
 
   static List<LyricWord> _trimOuterWordWhitespace(List<LyricWord> words) {
@@ -236,37 +280,94 @@ class LyricParser {
     required int lineDurationMs,
     bool relative = false,
   }) {
-    final result = <LyricWord>[];
+    final rawWords = <_RawLyricWord>[];
     for (final match in pattern.allMatches(content)) {
       final rawStart = int.tryParse(match.group(1)!) ?? lineStartMs;
       final duration = int.tryParse(match.group(2)!) ?? 0;
       final text = match.group(3) ?? '';
       if (text.isEmpty) continue;
-      final absoluteStart = relative
-          ? lineStartMs + rawStart
-          : _absoluteWordStart(lineStartMs, lineDurationMs, rawStart);
-      result.add(
-        LyricWord(
-          time: Duration(milliseconds: absoluteStart),
-          duration: Duration(milliseconds: duration),
-          text: text,
-        ),
+      rawWords.add(
+        _RawLyricWord(startMs: rawStart, durationMs: duration, text: text),
       );
     }
-    return result;
+    return _resolveRawWords(
+      rawWords,
+      lineStartMs: lineStartMs,
+      lineDurationMs: lineDurationMs,
+      relative: relative,
+    );
   }
 
-  static int _absoluteWordStart(
-    int lineStartMs,
-    int lineDurationMs,
-    int rawStart,
-  ) {
-    // KRC/YRC 的部分实现会返回相对行首时间。若数值明显早于行首且落在
-    // 当前行时长内，则按相对值处理；其他情况视为歌曲绝对时间。
-    if (rawStart < lineStartMs && rawStart <= lineDurationMs + 1000) {
-      return lineStartMs + rawStart;
+  static List<LyricWord> _resolveRawWords(
+    List<_RawLyricWord> rawWords, {
+    required int lineStartMs,
+    required int lineDurationMs,
+    bool relative = false,
+  }) {
+    if (rawWords.isEmpty) return const [];
+
+    // YRC/QRC providers are inconsistent: some return song-absolute word
+    // positions while others return offsets from the start of the line.  Pick
+    // one interpretation for the whole line.  Resolving each token separately
+    // can mix the two clocks and is a major source of visibly wrong karaoke
+    // highlighting.
+    final useRelative =
+        relative ||
+        _timingPenalty(
+              rawWords,
+              lineStartMs: lineStartMs,
+              lineDurationMs: lineDurationMs,
+              relative: true,
+            ) <
+            _timingPenalty(
+              rawWords,
+              lineStartMs: lineStartMs,
+              lineDurationMs: lineDurationMs,
+              relative: false,
+            );
+    return rawWords
+        .map(
+          (word) => LyricWord(
+            time: Duration(
+              milliseconds: useRelative
+                  ? lineStartMs + word.startMs
+                  : word.startMs,
+            ),
+            duration: Duration(milliseconds: word.durationMs),
+            text: word.text,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  static int _timingPenalty(
+    List<_RawLyricWord> words, {
+    required int lineStartMs,
+    required int lineDurationMs,
+    required bool relative,
+  }) {
+    final lineEndMs = lineStartMs + lineDurationMs;
+    var penalty = 0;
+    int? previousStart;
+    for (final word in words) {
+      final start = relative ? lineStartMs + word.startMs : word.startMs;
+      final end = start + word.durationMs;
+      if (word.durationMs <= 0) penalty += 100000;
+      if (start < lineStartMs) {
+        penalty += 100000 + lineStartMs - start;
+      }
+      if (lineDurationMs > 0 && start > lineEndMs) {
+        penalty += 100000 + start - lineEndMs;
+      }
+      if (lineDurationMs > 0 && end > lineEndMs) {
+        penalty += 100000 + end - lineEndMs;
+      }
+      if (previousStart != null && start < previousStart) {
+        penalty += 100000 + previousStart - start;
+      }
+      previousStart = start;
     }
-    return rawStart;
+    return penalty;
   }
 
   static String _stripEnhancedTiming(String content) {
@@ -302,6 +403,7 @@ class LyricParser {
           o.time,
           trans != null ? '${o.text}\n$trans' : o.text,
           endTime: o.endTime,
+          declaredEndTime: o.declaredEndTime,
           words: o.words,
         ),
       );

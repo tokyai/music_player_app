@@ -314,6 +314,10 @@ void main() {
       expect(compactRoute.transitionDuration, AppMotion.page);
       expect(compactRoute.animation!.value, lessThan(1));
       expect(
+        find.byKey(const ValueKey('player-background-deferred')),
+        findsOneWidget,
+      );
+      expect(
         find.byWidgetPredicate(
           (widget) =>
               widget is Hero && widget.tag == 'player-cover-qq:first-song',
@@ -321,6 +325,10 @@ void main() {
         findsWidgets,
       );
       await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('player-background-ready')),
+        findsOneWidget,
+      );
       _expectNoException(tester);
 
       await tester.tap(find.byKey(const ValueKey('player-back')).hitTestable());
@@ -346,7 +354,15 @@ void main() {
       )!;
       expect(wideRoute.transitionDuration, AppMotion.page);
       expect(wideRoute.animation!.value, lessThan(1));
+      expect(
+        find.byKey(const ValueKey('player-background-deferred')),
+        findsOneWidget,
+      );
       await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('player-background-ready')),
+        findsOneWidget,
+      );
       _expectNoException(tester);
     }, _mockClient);
   });
@@ -1004,6 +1020,35 @@ void main() {
       tester.view.resetDevicePixelRatio();
     }, _mockClient);
   });
+
+  testWidgets(
+    'coarse lyric timing falls back to a solid active line in landscape',
+    (tester) async {
+      await http.runWithClient(() async {
+        for (final size in const [Size(640, 360), Size(1280, 800)]) {
+          final player = _CoarseKaraokePlayer();
+          final theme = ThemeController();
+
+          await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
+
+          expect(find.byKey(const ValueKey('lyric-text-0')), findsOneWidget);
+          expect(find.byKey(const ValueKey('lyric-progress-0')), findsNothing);
+          expect(
+            find.byKey(const ValueKey('lyric-progress-animation-0')),
+            findsNothing,
+          );
+          _expectNoException(tester);
+
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump();
+          player.dispose();
+          theme.dispose();
+        }
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      }, _mockClient);
+    },
+  );
 
   testWidgets('landscape player split resizes and persists safely', (
     tester,
@@ -2495,6 +2540,26 @@ class _KaraokePlayer extends _PlayerWithLyrics {
     _testPosition = position;
     notifyListeners();
   }
+}
+
+class _CoarseKaraokePlayer extends _PlayerWithLyrics {
+  late final List<LyricLine> _coarseLyrics = LyricParser.parseEnhanced(
+    '[1000,2000](1000,2000,0)你好\n'
+    '[4000,2000](4000,2000,0)今天',
+  );
+
+  @override
+  List<LyricLine> get lyrics => _coarseLyrics;
+
+  @override
+  Duration get position => const Duration(milliseconds: 1500);
+
+  @override
+  Duration get duration => const Duration(seconds: 7);
+
+  @override
+  int get currentLyricIndex =>
+      LyricParser.findCurrentIndex(_coarseLyrics, position);
 }
 
 class _CenteredLyricsPlayer extends _PlayerWithLyrics {

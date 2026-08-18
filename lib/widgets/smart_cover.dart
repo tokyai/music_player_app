@@ -44,11 +44,20 @@ class SmartCover extends StatefulWidget {
   final BoxFit fit;
   final Widget Function() placeholder;
 
+  /// Optional upper bound for the decoded image width in physical pixels.
+  ///
+  /// A cover used as a blurred background does not need the full screen
+  /// resolution.  Keeping this bound separate from the widget's layout width
+  /// prevents a large landscape display from decoding a multi-megapixel cover
+  /// just before a page transition.
+  final int? maxDecodeWidth;
+
   const SmartCover({
     super.key,
     required this.url,
     this.fit = BoxFit.cover,
     required this.placeholder,
+    this.maxDecodeWidth,
   });
 
   @override
@@ -102,15 +111,21 @@ class _SmartCoverState extends State<SmartCover> {
             ? constraints.maxWidth
             : null;
         final decodeWidth = logicalWidth != null && logicalWidth.isFinite
-            ? (logicalWidth * MediaQuery.devicePixelRatioOf(context))
+            ? ((logicalWidth * MediaQuery.devicePixelRatioOf(context))
                   .ceil()
                   .clamp(1, 2048)
-                  .toInt()
+                  .toInt())
             : null;
+        final configuredMaximum = widget.maxDecodeWidth?.clamp(1, 2048).toInt();
+        final boundedDecodeWidth = configuredMaximum == null
+            ? decodeWidth
+            : decodeWidth == null || decodeWidth > configuredMaximum
+            ? configuredMaximum
+            : decodeWidth;
         return CachedNetworkImage(
           imageUrl: url,
           fit: widget.fit,
-          memCacheWidth: decodeWidth,
+          memCacheWidth: boundedDecodeWidth,
           fadeInDuration: AppMotion.resolve(context, AppMotion.quick),
           fadeOutDuration: AppMotion.resolve(
             context,
