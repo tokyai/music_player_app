@@ -6,6 +6,9 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'tool/assets/app_logo_source.png'
+ADAPTIVE_FOREGROUND_SOURCE = (
+    ROOT / 'tool/assets/app_logo_adaptive_foreground.png'
+)
 MASTER_SIZE = 1024
 APP_ASSET_SIZE = 512
 BACKGROUND_LIMIT = 64
@@ -105,17 +108,6 @@ def _build_round_logo(logo: Image.Image) -> Image.Image:
     return result
 
 
-def _build_adaptive_foreground(logo: Image.Image) -> Image.Image:
-    canvas = Image.new('RGBA', logo.size, (0, 0, 0, 0))
-    size = round(MASTER_SIZE * 0.88)
-    inset = (MASTER_SIZE - size) // 2
-    canvas.alpha_composite(
-        logo.resize((size, size), Image.Resampling.LANCZOS),
-        (inset, inset),
-    )
-    return canvas
-
-
 def _save(image: Image.Image, path: Path, size: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     image.resize((size, size), Image.Resampling.LANCZOS).save(
@@ -128,8 +120,12 @@ def _save(image: Image.Image, path: Path, size: int) -> None:
 def main() -> None:
     with Image.open(SOURCE) as source:
         logo = _remove_connected_black_background(source)
+    with Image.open(ADAPTIVE_FOREGROUND_SOURCE) as source:
+        foreground = source.convert('RGBA').resize(
+            (MASTER_SIZE, MASTER_SIZE),
+            Image.Resampling.LANCZOS,
+        )
     round_logo = _build_round_logo(logo)
-    foreground = _build_adaptive_foreground(logo)
 
     _save(logo, ROOT / 'assets/images/app_logo.png', APP_ASSET_SIZE)
 
