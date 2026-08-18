@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -499,22 +498,7 @@ void main() {
   testWidgets(
     'landscape MV action resolves and opens the current platform MV',
     (tester) async {
-      const channel = MethodChannel('music_player/external_media');
-      String? openedUrl;
       final requestedUrls = <Uri>[];
-      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
-        call,
-      ) async {
-        expect(call.method, 'playVideo');
-        openedUrl = (call.arguments as Map)['url']?.toString();
-        return true;
-      });
-      addTearDown(() {
-        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-          channel,
-          null,
-        );
-      });
 
       await http.runWithClient(
         () async {
@@ -543,7 +527,11 @@ void main() {
             requestedUrls.map((url) => url.host),
             containsAllInOrder(['u.y.qq.com', 'u.y.qq.com']),
           );
-          expect(openedUrl, 'https://video.test/current-song.mp4');
+          final videoScreen = tester.widget<VideoPlayerScreen>(
+            find.byType(VideoPlayerScreen),
+          );
+          expect(videoScreen.url, 'https://video.test/current-song.mp4');
+          expect(videoScreen.mode, VideoPlayerMode.exo);
           _expectNoException(tester);
         },
         () => MockClient((request) async {
@@ -867,6 +855,81 @@ void main() {
     }, _mockClient);
   });
 
+  testWidgets('karaoke lyrics highlight by word and slide between lines', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      for (final size in const [Size(640, 360), Size(1280, 800)]) {
+        SharedPreferences.setMockInitialValues({'lyric_line_spacing': 160.0});
+        final player = _KaraokePlayer();
+        final theme = ThemeController();
+
+        await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
+
+        final currentText = tester.widget<Text>(
+          find.byKey(const ValueKey('lyric-text-0')),
+        );
+        expect(currentText.style?.fontSize, 42);
+        expect(currentText.style?.fontWeight, FontWeight.w800);
+        expect(
+          tester
+              .widget<Semantics>(find.byKey(const ValueKey('lyric-progress-0')))
+              .properties
+              .value,
+          '25%',
+        );
+        expect(find.byKey(const ValueKey('player-lyric-list')), findsOneWidget);
+        _expectNoException(tester);
+
+        player.moveTo(const Duration(milliseconds: 2500));
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widget<Semantics>(find.byKey(const ValueKey('lyric-progress-0')))
+              .properties
+              .value,
+          '75%',
+        );
+
+        if (size == const Size(640, 360)) {
+          final list = tester.widget<ListView>(
+            find.byKey(const ValueKey('player-lyric-list')),
+          );
+          final controller = list.controller!;
+          expect(controller.offset, closeTo(0, 0.1));
+          expect(controller.position.maxScrollExtent, greaterThan(0));
+
+          player.moveTo(const Duration(milliseconds: 4100));
+          await tester.pump();
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 140));
+          expect(controller.offset, greaterThan(0));
+          expect(
+            controller.offset,
+            lessThan(controller.position.maxScrollExtent),
+          );
+          await tester.pumpAndSettle();
+          expect(
+            controller.offset,
+            closeTo(controller.position.maxScrollExtent, 0.5),
+          );
+          expect(
+            find.byKey(const ValueKey('lyric-progress-1')),
+            findsOneWidget,
+          );
+          _expectNoException(tester);
+        }
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        player.dispose();
+        theme.dispose();
+      }
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    }, _mockClient);
+  });
+
   testWidgets('landscape player split resizes and persists safely', (
     tester,
   ) async {
@@ -1068,6 +1131,7 @@ void main() {
       final spacingSlider = tester.widget<Slider>(
         find.byKey(const ValueKey('lyric-line-spacing-slider')),
       );
+      expect(spacingSlider.max, 160);
       spacingSlider.onChanged!(64);
       spacingSlider.onChangeEnd!(64);
       await tester.pumpAndSettle();
@@ -1406,14 +1470,19 @@ void main() {
         ).scale(16);
         expect(theme.fontScale, ThemeController.defaultFontScale);
         expect(find.text('100%'), findsOneWidget);
+        expect(find.text('50%'), findsOneWidget);
+        expect(find.text('150%'), findsOneWidget);
 
         final sliderFinder = find.byKey(const ValueKey('font-scale-slider'));
+        final fontSlider = tester.widget<Slider>(sliderFinder);
+        expect(fontSlider.min, ThemeController.minFontScale);
+        expect(fontSlider.max, ThemeController.maxFontScale);
         final sliderRect = tester.getRect(sliderFinder);
         await tester.tapAt(Offset(sliderRect.right - 8, sliderRect.center.dy));
         await tester.pumpAndSettle();
 
         expect(theme.fontScale, ThemeController.maxFontScale);
-        expect(find.text('130%'), findsAtLeastNWidgets(2));
+        expect(find.text('150%'), findsAtLeastNWidgets(2));
         expect(
           MediaQuery.textScalerOf(
             tester.element(find.byType(SettingsScreen)),
@@ -1545,7 +1614,7 @@ void main() {
       expect(find.text('第一句歌词'), findsOneWidget);
       final lyric = tester.widget<Text>(find.text('第一句歌词'));
       expect(lyric.style?.fontSize, 42);
-      expect(lyric.style?.height, 1.25);
+      expect(lyric.style?.height, 1.18);
       final firstLyricRect = tester.getRect(find.text('第一句歌词'));
       final secondLyricRect = tester.getRect(find.text('第二句歌词'));
       expect(
@@ -1934,8 +2003,18 @@ void main() {
     }
 
     await pumpTheme(AppTheme.dark());
-    final darkLyric = tester.widget<Text>(find.text('第一句歌词'));
-    expect(darkLyric.style?.color, Colors.white);
+    final darkLyricStyle = tester
+        .widget<AnimatedDefaultTextStyle>(
+          find
+              .ancestor(
+                of: find.byKey(const ValueKey('lyric-text-0')),
+                matching: find.byType(AnimatedDefaultTextStyle),
+              )
+              .first,
+        )
+        .style;
+    expect(darkLyricStyle.color, Colors.white.withValues(alpha: 0.42));
+    expect(find.byType(ShaderMask), findsOneWidget);
     final darkScrim = tester.widget<DecoratedBox>(
       find.byKey(const ValueKey('player-background-scrim')),
     );
@@ -1944,8 +2023,20 @@ void main() {
     expect(darkGradient.colors.first.computeLuminance(), lessThan(0.1));
 
     await pumpTheme(AppTheme.light());
-    final lightLyric = tester.widget<Text>(find.text('第一句歌词'));
-    expect(lightLyric.style?.color, const Color(0xFF171A1F));
+    final lightLyricStyle = tester
+        .widget<AnimatedDefaultTextStyle>(
+          find
+              .ancestor(
+                of: find.byKey(const ValueKey('lyric-text-0')),
+                matching: find.byType(AnimatedDefaultTextStyle),
+              )
+              .first,
+        )
+        .style;
+    expect(
+      lightLyricStyle.color,
+      const Color(0xFF171A1F).withValues(alpha: 0.42),
+    );
     final lightScrim = tester.widget<DecoratedBox>(
       find.byKey(const ValueKey('player-background-scrim')),
     );
@@ -2130,6 +2221,33 @@ class _SecondPlayerWithLyrics extends _PlayerWithLyrics {
 
   @override
   List<PlayQueueItem> get queue => [_secondSong];
+}
+
+class _KaraokePlayer extends _PlayerWithLyrics {
+  Duration _testPosition = const Duration(milliseconds: 1500);
+
+  late final List<LyricLine> _karaokeLyrics = LyricParser.parseEnhanced(
+    '[1000,2000](1000,1000,0)你(2000,1000,0)好\n'
+    '[4000,2000](4000,1000,0)今(5000,1000,0)天',
+  );
+
+  @override
+  List<LyricLine> get lyrics => _karaokeLyrics;
+
+  @override
+  Duration get position => _testPosition;
+
+  @override
+  Duration get duration => const Duration(seconds: 7);
+
+  @override
+  int get currentLyricIndex =>
+      LyricParser.findCurrentIndex(_karaokeLyrics, _testPosition);
+
+  void moveTo(Duration position) {
+    _testPosition = position;
+    notifyListeners();
+  }
 }
 
 class _ControllablePlayer extends PlayerProvider {

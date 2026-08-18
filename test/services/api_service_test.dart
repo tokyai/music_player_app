@@ -343,7 +343,9 @@ void main() {
           final kugou = await api.getLyric(MusicPlatform.kugou, 'kg-hash');
 
           expect(netease.original, contains('网易直连歌词'));
+          expect(netease.wordSynced, contains('(1000,500,0)网'));
           expect(qq.original, contains('QQ & 直连歌词'));
+          expect(qq.wordSynced, contains('Q(1000,500)'));
           expect(kugou?.original, contains('酷狗直连歌词'));
         } finally {
           api.close();
@@ -356,6 +358,7 @@ void main() {
             'code': 200,
             'lrc': {'lyric': '[00:01.00]网易直连歌词'},
             'tlyric': {'lyric': '[00:01.00]Netease translation'},
+            'yrc': {'lyric': '[1000,1000](1000,500,0)网(1500,500,0)易'},
           });
         }
         if (request.url.host == 'c.y.qq.com') {
@@ -363,6 +366,7 @@ void main() {
             'code': 0,
             'lyric': '[00:01.00]QQ &#38; 直连歌词',
             'trans': '',
+            'qrc': '[1000,1000]Q(1000,500)Q(1500,500)',
           });
         }
         if (request.url.host == 'm.kugou.com') {

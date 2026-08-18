@@ -658,11 +658,15 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   _ResolvedLyrics? _resolveLyricData(LyricData data) {
-    final original = LyricParser.parse(data.original);
+    final enhanced = LyricParser.parseEnhanced(data.wordSynced);
+    final hasWordTiming = enhanced.any((line) => line.words.isNotEmpty);
+    final original = hasWordTiming
+        ? enhanced
+        : LyricParser.parseBestEffort(data.original);
     if (original.isEmpty) return null;
     final translated = LyricParser.parse(data.translated);
     return _ResolvedLyrics(
-      rawText: data.original,
+      rawText: hasWordTiming ? data.wordSynced : data.original,
       lines: LyricParser.mergeTranslation(original, translated),
     );
   }
@@ -934,6 +938,9 @@ class _ResolvedLyrics {
 
   static _ResolvedLyrics? fromPlainText(String? rawText) {
     if (rawText == null || rawText.trim().isEmpty) return null;
-    return _ResolvedLyrics(rawText: rawText, lines: LyricParser.parse(rawText));
+    return _ResolvedLyrics(
+      rawText: rawText,
+      lines: LyricParser.parseBestEffort(rawText),
+    );
   }
 }

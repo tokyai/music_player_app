@@ -379,7 +379,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     value: themeCtrl.fontScale,
                     min: ThemeController.minFontScale,
                     max: ThemeController.maxFontScale,
-                    divisions: 10,
+                    divisions: 20,
                     label: '$fontScalePercent%',
                     semanticFormatterCallback: (value) =>
                         '${(value * 100).round()}%',
@@ -392,14 +392,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          '80%',
+                          '50%',
                           style: TextStyle(
                             fontSize: layout.secondarySize,
                             color: AppColors.textSecondary,
                           ),
                         ),
                         Text(
-                          '130%',
+                          '150%',
                           style: TextStyle(
                             fontSize: layout.secondarySize,
                             color: AppColors.textSecondary,

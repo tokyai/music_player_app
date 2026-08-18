@@ -8,8 +8,8 @@ class ThemeController extends ChangeNotifier {
   static const String _modeSystem = 'system';
   static const String _modeLight = 'light';
   static const String _modeDark = 'dark';
-  static const double minFontScale = 0.8;
-  static const double maxFontScale = 1.3;
+  static const double minFontScale = 0.5;
+  static const double maxFontScale = 1.5;
   static const double defaultFontScale = 1;
 
   ThemeMode _mode = ThemeMode.system;

@@ -543,8 +543,9 @@ class LyricData {
   final String? original; // 原文歌词
   final String? translated; // 翻译歌词
   final String? romaji; // 罗马音歌词
+  final String? wordSynced; // YRC / QRC / KRC 等逐字歌词
 
-  LyricData({this.original, this.translated, this.romaji});
+  LyricData({this.original, this.translated, this.romaji, this.wordSynced});
 }
 
 /// 歌单模型

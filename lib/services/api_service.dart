@@ -843,7 +843,8 @@ class ApiService {
         maxAttempts: 1,
       );
       final result = _neteaseLyricData(json);
-      if (!_hasTimedLyric(result.original)) {
+      if (!_hasTimedLyric(result.original) &&
+          !_hasTimedLyric(result.wordSynced)) {
         throw const ApiException('NETEASE_LYRIC_EMPTY', '网易云歌词内容为空');
       }
       return result;
@@ -866,6 +867,14 @@ class ApiService {
     final rawLrc = data['lrc'];
     final rawTranslated = data['tlyric'];
     final rawRomaji = data['romalrc'];
+    final rawYrc = data['yrc'];
+    final rawKaraoke = data['klyric'];
+    final yrcText = rawYrc is Map
+        ? rawYrc['lyric']?.toString()
+        : rawYrc?.toString();
+    final karaokeText = rawKaraoke is Map
+        ? rawKaraoke['lyric']?.toString()
+        : rawKaraoke?.toString();
     return LyricData(
       original: rawLrc is Map
           ? rawLrc['lyric']?.toString()
@@ -876,6 +885,9 @@ class ApiService {
       romaji: rawRomaji is Map
           ? rawRomaji['lyric']?.toString()
           : rawRomaji?.toString(),
+      wordSynced: yrcText != null && yrcText.trim().isNotEmpty
+          ? yrcText
+          : karaokeText,
     );
   }
 
@@ -1434,13 +1446,15 @@ class ApiService {
           'notice': 0,
           'platform': 'yqq.json',
           'needNewCode': 0,
+          'qrc': 1,
         },
         timeout: _catalogTimeout,
         maxAttempts: 1,
         headers: _qqHeaders,
       );
       final result = _qqLyricData(json);
-      if (!_hasTimedLyric(result.original)) {
+      if (!_hasTimedLyric(result.original) &&
+          !_hasTimedLyric(result.wordSynced)) {
         throw const ApiException('QQ_LYRIC_EMPTY', 'QQ 音乐歌词内容为空');
       }
       return result;
@@ -1460,23 +1474,37 @@ class ApiService {
   static LyricData _qqLyricData(Map<String, dynamic> json) {
     final rawData = json['data'];
     final data = rawData is Map ? rawData : json;
+    final original = _decodeQqLyricText(data['lyric']);
+    final explicitQrc = _decodeQqLyricText(
+      data['qrc_lyric'] ?? (data['qrc'] is String ? data['qrc'] : null),
+    );
+    final embeddedQrc =
+        original != null && RegExp(r'\[\d+,\d+\]').hasMatch(original)
+        ? original
+        : null;
     return LyricData(
-      original: _decodeQqLyricText(data['lyric']),
+      original: original,
       translated: _decodeQqLyricText(data['trans']),
+      wordSynced: explicitQrc ?? embeddedQrc,
     );
   }
 
   static String? _decodeQqLyricText(dynamic value) {
+    if (value is num || value is bool) return null;
     var text = value?.toString() ?? '';
     if (text.isEmpty) return null;
     if (!text.contains('[')) {
       try {
         final decoded = utf8.decode(base64Decode(text));
-        if (decoded.contains('[')) text = decoded;
+        if (decoded.contains('[') || decoded.contains('LyricContent=')) {
+          text = decoded;
+        }
       } on FormatException {
         // nobase64=1 正常返回明文；不是 Base64 时保持原值。
       }
     }
+    final qrcXml = RegExp(r'LyricContent="([\s\S]*?)"').firstMatch(text);
+    if (qrcXml != null) text = qrcXml.group(1)!;
     text = text.replaceAllMapped(RegExp(r'&#(x?[0-9A-Fa-f]+);'), (match) {
       final raw = match.group(1)!;
       final radix = raw.startsWith('x') || raw.startsWith('X') ? 16 : 10;
@@ -1495,7 +1523,9 @@ class ApiService {
   }
 
   static bool _hasTimedLyric(String? value) {
-    return value != null && RegExp(r'\[\d{1,3}:\d{2}').hasMatch(value);
+    return value != null &&
+        (RegExp(r'\[\d{1,3}:\d{2}').hasMatch(value) ||
+            RegExp(r'\[\d+,\d+\]').hasMatch(value));
   }
 
   /// 解析QQ音乐播放地址 (ChKSz 兜底)

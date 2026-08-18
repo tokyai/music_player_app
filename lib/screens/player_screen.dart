@@ -402,7 +402,7 @@ class _LyricDisplaySettingsDialogState
                 value: _lineSpacing,
                 min: _PlayerScreenState._minimumLyricLineSpacing,
                 max: _PlayerScreenState._maximumLyricLineSpacing,
-                divisions: 15,
+                divisions: 28,
                 label: '${_lineSpacing.round()} px',
                 onChanged: (value) {
                   setState(() => _lineSpacing = value);
@@ -418,6 +418,156 @@ class _LyricDisplaySettingsDialogState
   }
 }
 
+class _AnimatedLyricLineText extends StatelessWidget {
+  final int index;
+  final String text;
+  final bool isCurrent;
+  final double progress;
+  final double currentFontSize;
+  final double inactiveFontSize;
+  final Color playedColor;
+  final Color unplayedColor;
+  final Color inactiveColor;
+
+  const _AnimatedLyricLineText({
+    required this.index,
+    required this.text,
+    required this.isCurrent,
+    required this.progress,
+    required this.currentFontSize,
+    required this.inactiveFontSize,
+    required this.playedColor,
+    required this.unplayedColor,
+    required this.inactiveColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final style = TextStyle(
+      color: isCurrent ? unplayedColor : inactiveColor,
+      fontSize: isCurrent ? currentFontSize : inactiveFontSize,
+      fontWeight: isCurrent ? FontWeight.w800 : FontWeight.w500,
+      height: 1.18,
+    );
+    return AnimatedDefaultTextStyle(
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOutCubic,
+      style: style,
+      textAlign: TextAlign.center,
+      child: isCurrent
+          ? TweenAnimationBuilder<double>(
+              key: ValueKey('lyric-progress-animation-$index'),
+              tween: Tween<double>(begin: 0, end: progress.clamp(0.0, 1.0)),
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.linear,
+              builder: (context, animatedProgress, _) {
+                return _KaraokeProgressText(
+                  index: index,
+                  text: text,
+                  progress: animatedProgress,
+                  playedColor: playedColor,
+                  unplayedColor: unplayedColor,
+                );
+              },
+            )
+          : Builder(
+              builder: (context) => Text(
+                text,
+                key: ValueKey('lyric-text-$index'),
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: DefaultTextStyle.of(context).style,
+              ),
+            ),
+    );
+  }
+}
+
+class _KaraokeProgressText extends StatelessWidget {
+  final int index;
+  final String text;
+  final double progress;
+  final Color playedColor;
+  final Color unplayedColor;
+
+  const _KaraokeProgressText({
+    required this.index,
+    required this.text,
+    required this.progress,
+    required this.playedColor,
+    required this.unplayedColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final style = DefaultTextStyle.of(context).style;
+    final textDirection = Directionality.of(context);
+    final textScaler = MediaQuery.textScalerOf(context);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MediaQuery.sizeOf(context).width;
+        final painter = TextPainter(
+          text: TextSpan(text: text, style: style),
+          maxLines: 1,
+          ellipsis: '…',
+          textDirection: textDirection,
+          textScaler: textScaler,
+        )..layout(maxWidth: maxWidth);
+        final textWidth = painter.width.clamp(1.0, maxWidth);
+        final resolvedProgress = progress.clamp(0.0, 1.0);
+        return SizedBox(
+          width: textWidth,
+          child: Semantics(
+            key: ValueKey('lyric-progress-$index'),
+            value: '${(resolvedProgress * 100).round()}%',
+            child: ShaderMask(
+              blendMode: BlendMode.srcIn,
+              shaderCallback: (bounds) {
+                if (resolvedProgress <= 0) {
+                  return LinearGradient(
+                    colors: [unplayedColor, unplayedColor],
+                  ).createShader(bounds);
+                }
+                if (resolvedProgress >= 1) {
+                  return LinearGradient(
+                    colors: [playedColor, playedColor],
+                  ).createShader(bounds);
+                }
+                return LinearGradient(
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                  colors: [
+                    playedColor,
+                    playedColor,
+                    unplayedColor,
+                    unplayedColor,
+                  ],
+                  stops: [0, resolvedProgress, resolvedProgress, 1],
+                ).createShader(bounds);
+              },
+              child: Text(
+                text,
+                key: ValueKey('lyric-text-$index'),
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                // ShaderMask 用字形 alpha 做遮罩；前景设为不透明，才能让
+                // 已唱部分真正显示为高亮色，而不是被未唱色的 alpha 再压暗。
+                style: style.copyWith(
+                  foreground: Paint()..color = Colors.white,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _PlayerScreenState extends State<PlayerScreen> {
   static const _lyricFontSizePreferenceKey = 'lyric_font_size';
   static const _lyricLineSpacingPreferenceKey = 'lyric_line_spacing';
@@ -425,7 +575,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       'player_landscape_split_ratio';
   static const _lyricFontSizes = <double>[32, 36, 42, 48, 54, 60];
   static const _minimumLyricLineSpacing = 20.0;
-  static const _maximumLyricLineSpacing = 80.0;
+  static const _maximumLyricLineSpacing = 160.0;
   static const _defaultLandscapeLeftRatio = 0.42;
   static const _minimumLandscapeLeftRatio = 0.32;
   static const _maximumLandscapeLeftRatio = 0.62;
@@ -443,6 +593,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _lyricSearchDialogOpen = false;
   final ScrollController _lyricScrollController = ScrollController();
   String? _lastColorSongId;
+  String? _lastAutoScrollSongKey;
+  int? _lastAutoScrollLyricIndex;
 
   @override
   void initState() {
@@ -486,7 +638,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (!_lyricFontSizes.contains(size)) return;
     _lyricFontSizeChangedByUser = true;
     if (_lyricFontSize != size) {
-      setState(() => _lyricFontSize = size);
+      setState(() {
+        _lyricFontSize = size;
+        _lastAutoScrollLyricIndex = null;
+      });
     }
     unawaited(_saveLyricFontSize(size));
   }
@@ -505,7 +660,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _maximumLyricLineSpacing,
     );
     if (_lyricLineSpacing != next) {
-      setState(() => _lyricLineSpacing = next);
+      setState(() {
+        _lyricLineSpacing = next;
+        _lastAutoScrollLyricIndex = null;
+      });
     }
   }
 
@@ -579,18 +737,42 @@ class _PlayerScreenState extends State<PlayerScreen> {
     });
   }
 
-  void _scrollToLyric(int index) {
+  void _scrollToLyric(PlayerProvider player) {
     if (!_lyricsAutoScroll) return;
+    final index = player.currentLyricIndex;
+    final song = player.currentSong;
+    final songKey = song == null ? null : '${song.platform.code}:${song.id}';
+    if (_lastAutoScrollSongKey == songKey &&
+        _lastAutoScrollLyricIndex == index) {
+      return;
+    }
     if (!_lyricScrollController.hasClients) return;
     final position = _lyricScrollController.position;
-    // 第 index 行顶部在内容坐标 = topPadding + index*行高；
-    // 让它滚到与首行初始位置（topPadding 处）重合，offset = index*行高。
-    // 用 jumpTo 瞬时定位，避免 animateTo 300ms 动画在快歌下“追不上”当前行。
     final target = (index * _lyricLineExtent).clamp(
       0.0,
       position.maxScrollExtent,
     );
-    position.jumpTo(target);
+    _lastAutoScrollSongKey = songKey;
+    _lastAutoScrollLyricIndex = index;
+
+    final distance = (position.pixels - target).abs();
+    if (distance > _lyricLineExtent * 4) {
+      // 初次打开或跨越多行跳转时直接定位，避免从列表顶部长距离飞过。
+      position.jumpTo(target);
+      return;
+    }
+    if (distance < 0.5) return;
+    // 相邻歌词使用与参考播放器一致的纵向滑行动画；新动画会平滑接管
+    // 上一行尚未结束的滚动，快歌下也不会堆积动画队列。
+    unawaited(
+      position
+          .animateTo(
+            target,
+            duration: const Duration(milliseconds: 360),
+            curve: Curves.easeOutCubic,
+          )
+          .catchError((_) {}),
+    );
   }
 
   void _openScopedSearch(
@@ -1355,13 +1537,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
     PlayerProvider player,
     Color textColor,
   ) {
-    return Selector<PlayerProvider, (int, int, bool)>(
-      selector: (_, p) =>
-          (p.lyrics.length, p.currentLyricIndex, p.lyricsLoading),
+    return Selector<PlayerProvider, (int, int, bool, Duration, String?)>(
+      selector: (_, p) {
+        final song = p.currentSong;
+        return (
+          p.lyrics.length,
+          p.currentLyricIndex,
+          p.lyricsLoading,
+          p.position,
+          song == null ? null : '${song.platform.code}:${song.id}',
+        );
+      },
       builder: (ctx, selection, _) {
         if (selection.$1 > 0) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            _scrollToLyric(selection.$2);
+            _scrollToLyric(player);
           });
         }
         return _buildLyricPane(
@@ -1451,13 +1641,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
     Color textColor, {
     bool landscape = false,
   }) {
-    return Selector<PlayerProvider, (bool, int, int, bool)>(
-      selector: (_, p) =>
-          (p.showLyric, p.currentLyricIndex, p.lyrics.length, p.lyricsLoading),
+    return Selector<PlayerProvider, (bool, int, int, bool, Duration, String?)>(
+      selector: (_, p) {
+        final song = p.currentSong;
+        return (
+          p.showLyric,
+          p.currentLyricIndex,
+          p.lyrics.length,
+          p.lyricsLoading,
+          p.showLyric ? p.position : Duration.zero,
+          song == null ? null : '${song.platform.code}:${song.id}',
+        );
+      },
       builder: (ctx, sel, _) {
         if (sel.$1) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            _scrollToLyric(sel.$2);
+            _scrollToLyric(player);
           });
           return _buildLyricPane(ctx, player, textColor, landscape: landscape);
         }
@@ -1661,6 +1860,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           onVerticalDragUpdate: (_) =>
               setState(() => _lyricsAutoScroll = false),
           child: ListView.builder(
+            key: const ValueKey('player-lyric-list'),
             controller: _lyricScrollController,
             padding: EdgeInsets.symmetric(
               vertical: landscape
@@ -1672,10 +1872,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
             itemBuilder: (ctx, i) {
               final lyric = player.lyrics[i];
               final isCurrent = i == player.currentLyricIndex;
+              final fallbackEnd = i + 1 < player.lyrics.length
+                  ? player.lyrics[i + 1].time
+                  : player.duration > lyric.time
+                  ? player.duration
+                  : null;
+              final progress = isCurrent
+                  ? lyric.progressAt(player.position, fallbackEnd: fallbackEnd)
+                  : 0.0;
+              final inactiveFontSize = (_lyricFontSize * 0.82).clamp(
+                20.0,
+                52.0,
+              );
               return GestureDetector(
                 onTap: () {
                   player.seekTo(lyric.time);
-                  setState(() => _lyricsAutoScroll = true);
+                  setState(() {
+                    _lyricsAutoScroll = true;
+                    _lastAutoScrollLyricIndex = null;
+                  });
                 },
                 child: SizedBox(
                   key: ValueKey('lyric-line-$i'),
@@ -1684,22 +1899,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     alignment: Alignment.center,
                     child: SizedBox(
                       width: double.infinity,
-                      child: Text(
-                        lyric.text,
-                        textAlign: TextAlign.center,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: isCurrent
-                              ? textColor
-                              : textColor.withOpacity(0.68),
-                          fontSize: isCurrent
-                              ? _lyricFontSize
-                              : (_lyricFontSize - 3).clamp(20.0, 40.0),
-                          fontWeight: isCurrent
-                              ? FontWeight.w700
-                              : FontWeight.w500,
-                          height: 1.18,
+                      child: _AnimatedLyricLineText(
+                        index: i,
+                        text: lyric.primaryText,
+                        isCurrent: isCurrent,
+                        progress: progress,
+                        currentFontSize: _lyricFontSize,
+                        inactiveFontSize: inactiveFontSize,
+                        playedColor: textColor,
+                        unplayedColor: textColor.withValues(alpha: 0.42),
+                        inactiveColor: textColor.withValues(
+                          alpha: i < player.currentLyricIndex ? 0.62 : 0.48,
                         ),
                       ),
                     ),
