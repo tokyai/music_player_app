@@ -59,6 +59,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     AppColors.syncWithTheme(context);
     final favorites = context.watch<FavoriteService>();
     final songs = favorites.favorites;
+    final bilibili = favorites.bilibiliFavorites;
     final playlists = favorites.favoritePlaylists;
     final isLandscape =
         MediaQuery.orientationOf(context) == Orientation.landscape;
@@ -68,9 +69,9 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       body: Stack(
         children: [
           if (isLandscape)
-            _buildLandscapeBody(songs, playlists)
+            _buildLandscapeBody(songs, playlists, bilibili)
           else
-            _buildPortraitBody(songs, playlists),
+            _buildPortraitBody(songs, playlists, bilibili),
           Positioned.fill(
             child: AppMotionSwitcher(
               beginOffset: Offset.zero,
@@ -198,11 +199,14 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   Widget _buildPortraitBody(
     List<SongSearchResult> songs,
     List<FavoritePlaylist> playlists,
+    List<SongSearchResult> bilibili,
   ) {
     return Column(
       children: [
         _buildOverview(songs),
-        Expanded(child: _buildAnimatedCollectionList(songs, playlists)),
+        Expanded(
+          child: _buildAnimatedCollectionList(songs, playlists, bilibili),
+        ),
       ],
     );
   }
@@ -210,6 +214,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   Widget _buildLandscapeBody(
     List<SongSearchResult> songs,
     List<FavoritePlaylist> playlists,
+    List<SongSearchResult> bilibili,
   ) {
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -248,7 +253,9 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
               thickness: 1,
               color: AppColors.surfaceSoft,
             ),
-            Expanded(child: _buildAnimatedCollectionList(songs, playlists)),
+            Expanded(
+              child: _buildAnimatedCollectionList(songs, playlists, bilibili),
+            ),
           ],
         );
       },
@@ -260,7 +267,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     final isLandscape = layout != null;
     final isCompact = layout?.isCompactLandscape ?? false;
     final counts = {
-      for (final platform in musicPlatformDisplayOrder)
+      for (final platform in configurableMusicPlatforms)
         platform: songs.where((song) => song.platform == platform).length,
     };
     return Padding(
@@ -295,7 +302,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           Wrap(
             spacing: 8,
             runSpacing: 8,
-            children: musicPlatformDisplayOrder.map((platform) {
+            children: configurableMusicPlatforms.map((platform) {
               return Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -318,6 +325,27 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                 ],
               );
             }).toList(),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: const BoxDecoration(
+                  color: PlatformColors.bilibili,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 5),
+              Text(
+                'B站收藏由独立栏目管理',
+                style: TextStyle(
+                  fontSize: metrics.secondarySize,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ],
           ),
           SizedBox(height: isLandscape ? (isCompact ? 14 : 22) : 16),
           SizedBox(
@@ -469,6 +497,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   Widget _buildCollectionList(
     List<SongSearchResult> songs,
     List<FavoritePlaylist> playlists,
+    List<SongSearchResult> bilibili,
   ) {
     if (_selecting) return _buildSongList(songs);
     return CustomScrollView(
@@ -482,6 +511,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
             itemBuilder: (context, index) => _buildSongTile(songs, index),
           ),
         SliverToBoxAdapter(child: _buildFavoritePlaylistsSection(playlists)),
+        SliverToBoxAdapter(child: _buildBilibiliFavoritesSection(bilibili)),
       ],
     );
   }
@@ -489,13 +519,14 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   Widget _buildAnimatedCollectionList(
     List<SongSearchResult> songs,
     List<FavoritePlaylist> playlists,
+    List<SongSearchResult> bilibili,
   ) {
     return AppMotionSwitcher(
       child: KeyedSubtree(
         key: ValueKey(
           _selecting ? 'favorites-selecting-list' : 'favorites-library-list',
         ),
-        child: _buildCollectionList(songs, playlists),
+        child: _buildCollectionList(songs, playlists, bilibili),
       ),
     );
   }
@@ -640,6 +671,91 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                 },
               ),
             ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBilibiliFavoritesSection(List<SongSearchResult> videos) {
+    final layout = AppLayout.fromContext(context);
+    return Container(
+      key: const ValueKey('favorites-bilibili-section'),
+      padding: EdgeInsets.only(
+        top: layout.isLandscape ? 18 : 14,
+        bottom: layout.isLandscape ? 24 : 18,
+      ),
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: AppColors.surfaceSoft)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: layout.isLandscape ? layout.pagePadding : 20,
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.video_library_outlined,
+                  color: PlatformColors.bilibili,
+                  size: layout.isLandscape ? 26 : 22,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'B站收藏',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: layout.sectionTitleSize,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '${videos.length} 个',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: layout.secondarySize,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          if (videos.isEmpty)
+            SizedBox(
+              height: layout.isLandscape ? 94 : 82,
+              child: Center(
+                child: Text(
+                  '在 B站搜索结果或播放页点击收藏按钮',
+                  style: TextStyle(
+                    color: AppColors.textHint,
+                    fontSize: layout.bodySize,
+                  ),
+                ),
+              ),
+            )
+          else
+            ...videos.indexed.map((entry) {
+              final index = entry.$1;
+              final video = entry.$2;
+              return SongTile(
+                key: ValueKey('favorite-bilibili-${video.id}'),
+                song: video,
+                showPlatformTag: true,
+                showFavorite: true,
+                onTap: () => context.read<PlayerProvider>().playFromPlaylist(
+                  videos,
+                  index,
+                ),
+                onAddToQueue: () {
+                  context.read<PlayerProvider>().addToQueue(video);
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text('已添加: ${video.name}')));
+                },
+              );
+            }),
         ],
       ),
     );
@@ -885,7 +1001,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       context: context,
       builder: (dialogContext) => SimpleDialog(
         title: const Text('切换到'),
-        children: musicPlatformDisplayOrder.map((platform) {
+        children: configurableMusicPlatforms.map((platform) {
           return SimpleDialogOption(
             onPressed: () => Navigator.pop(dialogContext, platform),
             child: Row(

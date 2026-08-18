@@ -277,6 +277,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         MusicPlatform.qq => 'https://y.qq.com/',
         MusicPlatform.netease => 'https://music.163.com/',
         MusicPlatform.kugou => 'https://www.kugou.com/',
+        MusicPlatform.bilibili => 'https://www.bilibili.com/',
       },
     };
   }

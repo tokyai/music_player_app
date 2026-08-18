@@ -962,12 +962,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (_mvOpening) return;
     setState(() => _mvOpening = true);
     try {
-      final url = await player.api.musicVideoUrl(
-        platform: song.platform,
-        songId: song.id,
-        songName: song.name,
-        artist: song.artist,
-      );
+      final url = song.platform == MusicPlatform.bilibili
+          ? await player.currentBilibiliVideoUrl()
+          : await player.api.musicVideoUrl(
+              platform: song.platform,
+              songId: song.id,
+              songName: song.name,
+              artist: song.artist,
+            );
       if (!context.mounted) return;
       if (player.isPlaying) await player.pause();
       if (!context.mounted) return;
@@ -984,7 +986,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       );
     } catch (error) {
       if (!context.mounted) return;
-      final message = error is ApiException ? error.message : 'MV 加载失败，请稍后重试';
+      final message = error is ApiException
+          ? error.message
+          : song.platform == MusicPlatform.bilibili
+          ? error.toString()
+          : 'MV 加载失败，请稍后重试';
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(message)));
@@ -1786,6 +1792,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
     bool toggleOnTap = true,
   }) {
     final song = player.currentSong;
+    if (song?.platform == MusicPlatform.bilibili) {
+      return _buildBilibiliInfoPane(
+        ctx,
+        player,
+        song!,
+        textColor,
+        landscape: landscape,
+      );
+    }
     final lyricStateKey = player.lyrics.isNotEmpty
         ? 'content'
         : player.lyricsLoading
@@ -1827,6 +1842,300 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ),
         ],
       ),
+    );
+  }
+
+  Widget _buildBilibiliInfoPane(
+    BuildContext ctx,
+    PlayerProvider player,
+    PlayQueueItem song,
+    Color textColor, {
+    required bool landscape,
+  }) {
+    final subColor = textColor.withValues(alpha: 0.7);
+    final pages = song.bilibiliPages;
+    final currentPageIndex = pages.indexWhere(
+      (page) => page.cid == song.bilibiliCid,
+    );
+    final audioLabel = _bilibiliQualityLabel(
+      player.bilibiliAudioQualities,
+      player.bilibiliAudioQuality,
+      fallback: '自动',
+    );
+    final videoLabel = _bilibiliQualityLabel(
+      player.bilibiliVideoQualities,
+      player.bilibiliVideoQuality,
+      fallback: '自动',
+    );
+    return RepaintBoundary(
+      key: const ValueKey('bilibili-info-pane'),
+      child: SingleChildScrollView(
+        padding: EdgeInsets.fromLTRB(
+          landscape ? 12 : 20,
+          landscape ? 4 : 12,
+          landscape ? 12 : 20,
+          landscape ? 12 : 24,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '视频信息',
+                    style: TextStyle(
+                      color: textColor,
+                      fontSize: landscape ? 22 : 20,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  key: const ValueKey('bilibili-quality-action'),
+                  tooltip: '音频和视频清晰度',
+                  onPressed: () => _showBilibiliQualityDialog(ctx, player),
+                  icon: Icon(Icons.tune_rounded, color: textColor),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              song.bilibiliVideoTitle ?? song.album,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: textColor,
+                fontSize: landscape ? 17 : 16,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 16),
+            _buildBilibiliSectionTitle(
+              '分P',
+              pages.isEmpty ? '加载中' : '${pages.length} P',
+              textColor,
+              subColor,
+            ),
+            const SizedBox(height: 6),
+            if (pages.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                child: Center(
+                  child: SizedBox.square(
+                    dimension: 24,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: PlatformColors.bilibili,
+                    ),
+                  ),
+                ),
+              )
+            else
+              ...pages.indexed.map((entry) {
+                final index = entry.$1;
+                final page = entry.$2;
+                final selected = index == currentPageIndex;
+                return ListTile(
+                  key: ValueKey('bilibili-page-${page.cid}'),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                  dense: landscape,
+                  selected: selected,
+                  selectedColor: PlatformColors.bilibili,
+                  leading: SizedBox(
+                    width: 42,
+                    child: Text(
+                      'P${page.page}',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: selected ? PlatformColors.bilibili : subColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  title: Text(
+                    page.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: selected ? null : textColor),
+                  ),
+                  trailing: page.duration == null
+                      ? null
+                      : Text(
+                          _formatDuration(Duration(seconds: page.duration!)),
+                          style: TextStyle(color: subColor),
+                        ),
+                  onTap: selected
+                      ? null
+                      : () => player.selectBilibiliPage(index),
+                );
+              }),
+            const SizedBox(height: 14),
+            _buildBilibiliSectionTitle('清晰度', null, textColor, subColor),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  key: const ValueKey('bilibili-audio-quality-action'),
+                  onPressed: () => _showBilibiliQualityDialog(ctx, player),
+                  icon: const Icon(Icons.graphic_eq_rounded),
+                  label: Text('音频 $audioLabel'),
+                ),
+                OutlinedButton.icon(
+                  key: const ValueKey('bilibili-video-quality-action'),
+                  onPressed: () => _showBilibiliQualityDialog(ctx, player),
+                  icon: const Icon(Icons.ondemand_video_rounded),
+                  label: Text('视频 $videoLabel'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 18),
+            _buildBilibiliSectionTitle('视频简介', null, textColor, subColor),
+            const SizedBox(height: 8),
+            SelectableText(
+              song.bilibiliDescription?.trim().isNotEmpty == true
+                  ? song.bilibiliDescription!.trim()
+                  : '暂无简介',
+              style: TextStyle(color: subColor, height: 1.55),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBilibiliSectionTitle(
+    String title,
+    String? trailing,
+    Color textColor,
+    Color subColor,
+  ) {
+    return Row(
+      children: [
+        Container(
+          width: 4,
+          height: 18,
+          decoration: BoxDecoration(
+            color: PlatformColors.bilibili,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            title,
+            style: TextStyle(color: textColor, fontWeight: FontWeight.w700),
+          ),
+        ),
+        if (trailing != null) Text(trailing, style: TextStyle(color: subColor)),
+      ],
+    );
+  }
+
+  String _bilibiliQualityLabel(
+    List<BilibiliStream> streams,
+    int quality, {
+    required String fallback,
+  }) {
+    for (final stream in streams) {
+      if (stream.quality == quality) return stream.label;
+    }
+    return streams.isEmpty ? fallback : streams.first.label;
+  }
+
+  Future<void> _showBilibiliQualityDialog(
+    BuildContext context,
+    PlayerProvider player,
+  ) {
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) => Consumer<PlayerProvider>(
+        builder: (context, current, _) {
+          return AlertDialog(
+            key: const ValueKey('bilibili-quality-dialog'),
+            title: const Text('B站播放清晰度'),
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460, maxHeight: 480),
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildBilibiliQualityGroup(
+                      title: '音频',
+                      emptyText: '音频流加载后显示可选音质',
+                      streams: current.bilibiliAudioQualities,
+                      selectedQuality: current.bilibiliAudioQuality,
+                      onSelected: current.setBilibiliAudioQuality,
+                    ),
+                    const Divider(height: 28),
+                    _buildBilibiliQualityGroup(
+                      title: '视频',
+                      emptyText: '视频流加载后显示可选清晰度',
+                      streams: current.bilibiliVideoQualities,
+                      selectedQuality: current.bilibiliVideoQuality,
+                      onSelected: current.setBilibiliVideoQuality,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('完成'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildBilibiliQualityGroup({
+    required String title,
+    required String emptyText,
+    required List<BilibiliStream> streams,
+    required int selectedQuality,
+    required Future<void> Function(int quality) onSelected,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 4),
+        if (streams.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Text(
+              emptyText,
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
+          )
+        else
+          ...streams.map((stream) {
+            final selected = stream.quality == selectedQuality;
+            return ListTile(
+              key: ValueKey('$title-quality-${stream.quality}'),
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              title: Text(stream.label),
+              subtitle: stream.bandwidth <= 0
+                  ? null
+                  : Text('${(stream.bandwidth / 1000).round()} kbps'),
+              trailing: Icon(
+                selected ? Icons.check_circle_rounded : Icons.circle_outlined,
+                color: selected
+                    ? PlatformColors.bilibili
+                    : AppColors.textSecondary,
+              ),
+              onTap: selected
+                  ? null
+                  : () => unawaited(onSelected(stream.quality)),
+            );
+          }),
+      ],
     );
   }
 
@@ -2446,13 +2755,30 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
                 onPressed: player.playNext,
               ),
-              // 字号只保留图标，紧跟在下一首右侧。
-              _buildLyricFontControlButton(
-                textColor,
-                width: iconButtonWidth,
-                height: iconButtonHeight,
-                iconSize: largeUi ? 30 : (compact ? 24 : 28),
-              ),
+              if (player.currentSong?.platform == MusicPlatform.bilibili)
+                SizedBox(
+                  key: const ValueKey('player-bilibili-quality-control'),
+                  width: iconButtonWidth,
+                  height: iconButtonHeight,
+                  child: IconButton(
+                    tooltip: '音频和视频清晰度',
+                    padding: EdgeInsets.zero,
+                    onPressed: () => _showBilibiliQualityDialog(ctx, player),
+                    icon: Icon(
+                      Icons.tune_rounded,
+                      color: textColor,
+                      size: largeUi ? 30 : (compact ? 24 : 28),
+                    ),
+                  ),
+                )
+              else
+                // 字号只保留图标，紧跟在下一首右侧。
+                _buildLyricFontControlButton(
+                  textColor,
+                  width: iconButtonWidth,
+                  height: iconButtonHeight,
+                  iconSize: largeUi ? 30 : (compact ? 24 : 28),
+                ),
             ],
           ),
         );
@@ -2470,6 +2796,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     // 收藏状态跟随 FavoriteService（点击收藏/取消收藏实时刷新）
     final fav = ctx.watch<FavoriteService>();
     final song = player.currentSong;
+    final isBilibili = song?.platform == MusicPlatform.bilibili;
     final isFav = song != null && fav.isFavorite(song.platform, song.id);
     return Selector<PlayerProvider, bool>(
       selector: (_, p) => p.showLyric,
@@ -2484,8 +2811,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     context: ctx,
                     compact: compact,
                     onPressed: player.toggleShowLyric,
-                    icon: Icons.text_snippet_rounded,
-                    label: '歌词',
+                    icon: isBilibili
+                        ? Icons.video_library_outlined
+                        : Icons.text_snippet_rounded,
+                    label: isBilibili ? '视频信息' : '歌词',
                     color: showLyric ? AppColors.primary : subColor,
                   ),
                 ),

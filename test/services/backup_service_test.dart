@@ -35,6 +35,15 @@ void main() {
             album: 'Album',
           ).toJson(),
         ],
+        'bilibili': [
+          SongSearchResult(
+            platform: MusicPlatform.bilibili,
+            id: 'BV1backup',
+            name: 'Backup Video',
+            artist: 'UP',
+            album: 'Backup Video',
+          ).toJson(),
+        ],
         'playlists': [
           FavoritePlaylist(
             platform: MusicPlatform.netease,
@@ -58,8 +67,10 @@ void main() {
 
       expect(player.apiKey, 'restored-key');
       expect(favorites.favorites.single.id, 'song-1');
+      expect(favorites.bilibiliFavorites.single.id, 'BV1backup');
       expect(favorites.favoritePlaylists.single.id, 'playlist-1');
       expect(result.apiKeyRestored, isTrue);
+      expect(result.bilibiliAdded, 1);
     },
   );
 }

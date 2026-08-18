@@ -5,8 +5,15 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/services/api_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   test(
     'falls back when the official QQ recommendation request fails',
     () async {
@@ -625,6 +632,59 @@ void main() {
       requests.any((request) => request.host == '161.118.252.183'),
       isFalse,
     );
+  });
+
+  test('rejects an empty Netease playlist response', () async {
+    await http.runWithClient(() async {
+      final api = ApiService(apiKey: '');
+      try {
+        await expectLater(
+          api.neteasePlaylistSummary('12345'),
+          throwsA(
+            isA<ApiException>()
+                .having((error) => error.code, 'code', 'PLAYLIST_NOT_FOUND')
+                .having((error) => error.message, 'message', contains('未找到歌单')),
+          ),
+        );
+      } finally {
+        api.close();
+      }
+    }, () => MockClient((_) async => _jsonResponse({'code': 200})));
+  });
+
+  test('rejects empty QQ playlist responses from both routes', () async {
+    var requests = 0;
+    await http.runWithClient(
+      () async {
+        final api = ApiService(apiKey: '');
+        try {
+          await expectLater(
+            api.qqPlaylist('12345'),
+            throwsA(
+              isA<ApiException>()
+                  .having((error) => error.code, 'code', 'PLAYLIST_NOT_FOUND')
+                  .having(
+                    (error) => error.message,
+                    'message',
+                    contains('未找到歌单'),
+                  ),
+            ),
+          );
+        } finally {
+          api.close();
+        }
+      },
+      () => MockClient((request) async {
+        requests++;
+        if (request.url.host == 'u.y.qq.com') {
+          return _jsonResponse({
+            'req_0': {'code': 0, 'data': <String, dynamic>{}},
+          });
+        }
+        return _jsonResponse({'data': <String, dynamic>{}});
+      }),
+    );
+    expect(requests, 2);
   });
 }
 

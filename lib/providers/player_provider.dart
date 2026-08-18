@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
 import '../services/api_service.dart';
 import '../services/audio_cache_service.dart';
+import '../services/bilibili_service.dart';
 import '../services/floating_capsule_service.dart';
 import '../utils/lyric_parser.dart';
 
@@ -49,6 +50,10 @@ class PlayerProvider extends ChangeNotifier {
   PlaybackSource _qqPlaybackSource = PlaybackSource.chksz;
   PlaybackSource _kugouPlaybackSource = PlaybackSource.chksz;
   VideoPlayerMode _videoPlayerMode = VideoPlayerMode.automatic;
+  List<BilibiliStream> _bilibiliAudioQualities = const [];
+  List<BilibiliStream> _bilibiliVideoQualities = const [];
+  int _bilibiliAudioQuality = 30280;
+  int _bilibiliVideoQuality = 80;
 
   // API Key
   String _apiKey = '';
@@ -65,8 +70,13 @@ class PlayerProvider extends ChangeNotifier {
 
   PlayerProvider() {
     _api = ApiService(apiKey: '');
+    _api.bilibili.addListener(_handleBilibiliChanged);
     _initAudioPlayer();
     settingsReady = _loadSettings();
+  }
+
+  void _handleBilibiliChanged() {
+    if (!_disposed) notifyListeners();
   }
 
   // ==================== Getters ====================
@@ -92,11 +102,19 @@ class PlayerProvider extends ChangeNotifier {
   bool get lyricsLoading => _lyricsLoading;
   NeteaseLevel get neteaseLevel => _neteaseLevel;
   CommonLevel get commonLevel => _commonLevel;
+  List<BilibiliStream> get bilibiliAudioQualities => _bilibiliAudioQualities;
+  List<BilibiliStream> get bilibiliVideoQualities => _bilibiliVideoQualities;
+  int get bilibiliAudioQuality => _bilibiliAudioQuality;
+  int get bilibiliVideoQuality => _bilibiliVideoQuality;
+  BilibiliUser? get bilibiliUser => _api.bilibili.user;
+  bool get bilibiliLoggedIn => _api.bilibili.isLoggedIn;
+  bool get bilibiliAccountLoading => _api.bilibili.accountLoading;
   PlaybackSource playbackSourceFor(MusicPlatform platform) {
     return switch (platform) {
       MusicPlatform.netease => _neteasePlaybackSource,
       MusicPlatform.qq => _qqPlaybackSource,
       MusicPlatform.kugou => _kugouPlaybackSource,
+      MusicPlatform.bilibili => PlaybackSource.chksz,
     };
   }
 
@@ -179,6 +197,8 @@ class PlayerProvider extends ChangeNotifier {
           orElse: () => CommonLevel.flac,
         );
       }
+      _bilibiliAudioQuality = prefs.getInt('bilibili_audio_quality') ?? 30280;
+      _bilibiliVideoQuality = prefs.getInt('bilibili_video_quality') ?? 80;
       _neteasePlaybackSource = _readPlaybackSource(
         prefs.getString(_playbackSourcePreferenceKey(MusicPlatform.netease)),
       );
@@ -194,6 +214,10 @@ class PlayerProvider extends ChangeNotifier {
         // 旧版的 built_in/system 都迁移到不依赖系统播放器的自动兼容模式。
         orElse: () => VideoPlayerMode.automatic,
       );
+      await _api.bilibili.ready;
+      if (_api.bilibili.hasCookie) {
+        unawaited(_api.bilibili.refreshAccount());
+      }
     } catch (e) {
       debugPrint('读取播放器设置失败: $e');
     }
@@ -235,7 +259,11 @@ class PlayerProvider extends ChangeNotifier {
     PlaybackSource source,
   ) async {
     await settingsReady;
-    if (_disposed || playbackSourceFor(platform) == source) return;
+    if (_disposed ||
+        platform == MusicPlatform.bilibili ||
+        playbackSourceFor(platform) == source) {
+      return;
+    }
     switch (platform) {
       case MusicPlatform.netease:
         _neteasePlaybackSource = source;
@@ -243,6 +271,8 @@ class PlayerProvider extends ChangeNotifier {
         _qqPlaybackSource = source;
       case MusicPlatform.kugou:
         _kugouPlaybackSource = source;
+      case MusicPlatform.bilibili:
+        return;
     }
     _playUrlResolvedAt.removeWhere(
       (key, _) => key.startsWith('${platform.code}:'),
@@ -258,6 +288,43 @@ class PlayerProvider extends ChangeNotifier {
     _videoPlayerMode = mode;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('video_player_mode', mode.value);
+    notifyListeners();
+  }
+
+  Future<BilibiliQrCode> createBilibiliQrCode() => _api.bilibili.createQrCode();
+
+  Future<BilibiliQrPollResult> pollBilibiliQrCode(String key) =>
+      _api.bilibili.pollQrCode(key);
+
+  Future<void> refreshBilibiliAccount() => _api.bilibili.refreshAccount();
+
+  Future<void> logoutBilibili() => _api.bilibili.logout();
+
+  Future<void> setBilibiliAudioQuality(int quality) async {
+    await settingsReady;
+    if (_disposed || _bilibiliAudioQuality == quality) return;
+    _bilibiliAudioQuality = quality;
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setInt('bilibili_audio_quality', quality);
+    final song = currentSong;
+    if (song?.platform == MusicPlatform.bilibili) {
+      _playUrlResolvedAt.removeWhere(
+        (key, _) => key.startsWith('${MusicPlatform.bilibili.code}:'),
+      );
+      _queue[_currentIndex] = song!.copyWith(clearPlayUrl: true);
+      notifyListeners();
+      await _playCurrent();
+    } else {
+      notifyListeners();
+    }
+  }
+
+  Future<void> setBilibiliVideoQuality(int quality) async {
+    await settingsReady;
+    if (_disposed || _bilibiliVideoQuality == quality) return;
+    _bilibiliVideoQuality = quality;
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setInt('bilibili_video_quality', quality);
     notifyListeners();
   }
 
@@ -328,6 +395,7 @@ class PlayerProvider extends ChangeNotifier {
         MusicPlatform.netease => 'playback_source_netease',
         MusicPlatform.qq => 'playback_source_qq',
         MusicPlatform.kugou => 'playback_source_kugou',
+        MusicPlatform.bilibili => throw UnsupportedError('B站不使用第三方播放源'),
       };
 
   static PlaybackSource _readPlaybackSource(String? value) {
@@ -397,15 +465,15 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> _playCurrent() async {
     if (_currentIndex < 0 || _currentIndex >= _queue.length) return;
-    final item = _queue[_currentIndex];
+    var item = _queue[_currentIndex];
     final requestId = ++_playRequestId;
-    final itemKey = _itemKey(item);
     final immediateLyrics = _cachedLyrics(item);
 
     _isLoading = true;
     _errorMessage = null;
     _lyrics = immediateLyrics?.lines ?? [];
-    _lyricsLoading = immediateLyrics == null;
+    _lyricsLoading =
+        item.platform != MusicPlatform.bilibili && immediateLyrics == null;
     _currentLyricIndex = 0;
     _position = Duration.zero;
 
@@ -422,8 +490,15 @@ class PlayerProvider extends ChangeNotifier {
       await settingsReady;
       if (!_isCurrentRequest(requestId, item)) return;
 
-      final playbackSource = playbackSourceFor(item.platform);
-      if (playbackSource == PlaybackSource.chksz && _apiKey.isEmpty) {
+      if (item.platform == MusicPlatform.bilibili) {
+        item = await _prepareBilibiliItem(requestId, item);
+        if (!_isCurrentRequest(requestId, item)) return;
+      }
+      final itemKey = _itemKey(item);
+      final usesChksz =
+          item.platform != MusicPlatform.bilibili &&
+          playbackSourceFor(item.platform) == PlaybackSource.chksz;
+      if (usesChksz && _apiKey.isEmpty) {
         throw ApiException('API_KEY_REQUIRED', '播放需要配置 API Key（设置 → API 配置）');
       }
 
@@ -441,7 +516,7 @@ class PlayerProvider extends ChangeNotifier {
       // 直接播放本地文件，不再为了封面、歌手、专辑等已有信息请求详情。
       final cachedPath = await AudioCacheService.getCachedPath(
         platformCode: item.platform.code,
-        songId: item.id,
+        songId: _audioCacheSongId(item),
       );
       if (!_isCurrentRequest(requestId, item)) return;
 
@@ -495,7 +570,7 @@ class PlayerProvider extends ChangeNotifier {
           audioUri,
           headers: playbackHeaders,
           tag: MediaItem(
-            id: '${item.platform.code}_${item.id}',
+            id: '${item.platform.code}_${_audioCacheSongId(item)}',
             title: item.name,
             artist: item.artist,
             album: item.album,
@@ -540,7 +615,14 @@ class PlayerProvider extends ChangeNotifier {
       // 等音频源已预加载并开始播放后再启动后台下载，避免缓存下载与首包
       // 缓冲争抢带宽。
       if (shouldCacheAudio && resolvedUrl != null) {
-        unawaited(_cacheAudioAfterPlaybackStarts(requestId, item, resolvedUrl));
+        unawaited(
+          _cacheAudioAfterPlaybackStarts(
+            requestId,
+            item,
+            resolvedUrl,
+            headers: playbackHeaders,
+          ),
+        );
       }
 
       // 系统悬浮胶囊：显示/更新当前歌曲
@@ -573,7 +655,56 @@ class PlayerProvider extends ChangeNotifier {
     }
   }
 
-  String _itemKey(PlayQueueItem item) => '${item.platform.code}:${item.id}';
+  String _itemKey(PlayQueueItem item) {
+    if (item.platform == MusicPlatform.bilibili) {
+      return '${item.platform.code}:${item.id}:${item.bilibiliCid ?? 0}:'
+          'q$_bilibiliAudioQuality';
+    }
+    return '${item.platform.code}:${item.id}';
+  }
+
+  String _audioCacheSongId(PlayQueueItem item) {
+    if (item.platform == MusicPlatform.bilibili) {
+      return '${item.id}_${item.bilibiliCid ?? 0}_q$_bilibiliAudioQuality';
+    }
+    return item.id;
+  }
+
+  Future<PlayQueueItem> _prepareBilibiliItem(
+    int requestId,
+    PlayQueueItem item,
+  ) async {
+    var pages = item.bilibiliPages;
+    var description = item.bilibiliDescription;
+    var videoTitle = item.bilibiliVideoTitle ?? item.album;
+    var coverUrl = item.coverUrl;
+    if (pages.isEmpty || description == null) {
+      final info = await _api.bilibili.videoInfo(item.id);
+      if (!_isCurrentRequest(requestId, item)) return item;
+      pages = info.pages;
+      description = info.description;
+      videoTitle = info.title;
+      coverUrl = _preferExisting(coverUrl, info.coverUrl);
+    }
+    final selected = pages.firstWhere(
+      (page) => page.cid == item.bilibiliCid,
+      orElse: () => pages.first,
+    );
+    final prepared = item.copyWith(
+      name: selected.title,
+      album: videoTitle,
+      coverUrl: coverUrl,
+      duration: selected.duration,
+      bilibiliVideoTitle: videoTitle,
+      bilibiliDescription: description,
+      bilibiliCid: selected.cid,
+      bilibiliPage: selected.page,
+      bilibiliPages: pages,
+    );
+    _queue[_currentIndex] = prepared;
+    notifyListeners();
+    return prepared;
+  }
 
   String? _preferExisting(String? existing, String? fallback) {
     if (existing != null && existing.trim().isNotEmpty) return existing;
@@ -592,9 +723,37 @@ class PlayerProvider extends ChangeNotifier {
     return url;
   }
 
-  Future<SongDetail> _resolveSongDetail(PlayQueueItem item) {
+  Future<SongDetail> _resolveSongDetail(PlayQueueItem item) async {
+    if (item.platform == MusicPlatform.bilibili) {
+      final cid = item.bilibiliCid;
+      if (cid == null || cid <= 0) {
+        throw const BilibiliApiException('VIDEO_CID', '当前分P信息不完整');
+      }
+      final playInfo = await _api.bilibili.playInfo(item.id, cid);
+      _bilibiliAudioQualities = playInfo.audioStreams;
+      _bilibiliVideoQualities = playInfo.videoStreams;
+      final selected = playInfo.audioStreams.firstWhere(
+        (stream) => stream.quality == _bilibiliAudioQuality,
+        orElse: () => playInfo.audioStreams.first,
+      );
+      if (!playInfo.audioStreams.any(
+        (stream) => stream.quality == _bilibiliAudioQuality,
+      )) {
+        _bilibiliAudioQuality = selected.quality;
+      }
+      return SongDetail(
+        name: item.name,
+        artist: item.artist,
+        album: item.album,
+        url: selected.url,
+        duration: playInfo.duration,
+        bitrate: selected.bandwidth.toString(),
+        format: selected.mimeType?.split('/').last,
+        playbackHeaders: _api.bilibili.playbackHeaders,
+      );
+    }
     if (playbackSourceFor(item.platform) == PlaybackSource.qingMusic) {
-      return _api.qingMusic(
+      return await _api.qingMusic(
         item.platform,
         item.id,
         quality: item.platform == MusicPlatform.netease
@@ -608,7 +767,9 @@ class PlayerProvider extends ChangeNotifier {
       case MusicPlatform.qq:
         return _api.qqMusic(item.id, size: _commonLevel.value);
       case MusicPlatform.kugou:
-        return _api.kugouMusic(item.id, size: _commonLevel.value);
+        return await _api.kugouMusic(item.id, size: _commonLevel.value);
+      case MusicPlatform.bilibili:
+        throw StateError('B站播放已在专用分支处理');
     }
   }
 
@@ -630,6 +791,8 @@ class PlayerProvider extends ChangeNotifier {
         return _fetchQqLyrics(item.id);
       case MusicPlatform.kugou:
         return _fetchKugouLyrics(item.id);
+      case MusicPlatform.bilibili:
+        return null;
     }
   }
 
@@ -733,16 +896,18 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> _cacheAudioAfterPlaybackStarts(
     int requestId,
     PlayQueueItem item,
-    String url,
-  ) async {
+    String url, {
+    Map<String, String>? headers,
+  }) async {
     await Future<void>.delayed(const Duration(milliseconds: 1200));
     if (!_isCurrentRequest(requestId, item)) return;
     final localPath = await AudioCacheService.cacheAudio(
       platformCode: item.platform.code,
-      songId: item.id,
+      songId: _audioCacheSongId(item),
       url: url,
       name: item.name,
       artist: item.artist,
+      headers: headers,
     );
     if (localPath != null) debugPrint('后台缓存完成: $localPath');
   }
@@ -801,6 +966,42 @@ class PlayerProvider extends ChangeNotifier {
         }
         break;
     }
+  }
+
+  Future<void> selectBilibiliPage(int pageIndex) async {
+    final song = currentSong;
+    if (song == null ||
+        song.platform != MusicPlatform.bilibili ||
+        pageIndex < 0 ||
+        pageIndex >= song.bilibiliPages.length) {
+      return;
+    }
+    final page = song.bilibiliPages[pageIndex];
+    if (page.cid == song.bilibiliCid) return;
+    _queue[_currentIndex] = song.copyWith(
+      name: page.title,
+      duration: page.duration,
+      bilibiliCid: page.cid,
+      bilibiliPage: page.page,
+      clearPlayUrl: true,
+      clearPlaybackHeaders: true,
+    );
+    _lyrics.clear();
+    _lyricsLoading = false;
+    notifyListeners();
+    await _playCurrent();
+  }
+
+  Future<String> currentBilibiliVideoUrl() async {
+    final song = currentSong;
+    if (song == null || song.platform != MusicPlatform.bilibili) {
+      throw const BilibiliApiException('VIDEO_CURRENT', '当前不是B站视频');
+    }
+    final cid = song.bilibiliCid;
+    if (cid == null || cid <= 0) {
+      throw const BilibiliApiException('VIDEO_CID', '当前分P仍在加载');
+    }
+    return _api.bilibili.videoUrl(song.id, cid, _bilibiliVideoQuality);
   }
 
   Future<void> playPause() async {
@@ -923,6 +1124,7 @@ class PlayerProvider extends ChangeNotifier {
     _positionSub?.cancel();
     _bufferSub?.cancel();
     _errorSub?.cancel();
+    _api.bilibili.removeListener(_handleBilibiliChanged);
     _api.close();
     _audioPlayer.dispose();
     super.dispose();

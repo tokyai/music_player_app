@@ -128,6 +128,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
           page: offset ~/ _pageSize + 1,
           limit: _pageSize,
         );
+      case MusicPlatform.bilibili:
+        return Future.value(const PlaylistTrackPage(tracks: [], total: 0));
     }
   }
 

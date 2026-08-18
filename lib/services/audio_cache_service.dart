@@ -152,6 +152,7 @@ class AudioCacheService {
     required String url,
     String name = '未知歌曲',
     String artist = '未知歌手',
+    Map<String, String>? headers,
     void Function(int received, int total)? onProgress,
   }) async {
     try {
@@ -186,6 +187,7 @@ class AudioCacheService {
         tempPath,
         onReceiveProgress: onProgress,
         options: Options(
+          headers: headers,
           receiveTimeout: const Duration(seconds: 30),
           sendTimeout: const Duration(seconds: 10),
         ),

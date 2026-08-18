@@ -2,7 +2,8 @@
 enum MusicPlatform {
   netease('网易云', '163'),
   qq('QQ音乐', 'qq'),
-  kugou('酷狗', 'kugou');
+  kugou('酷狗', 'kugou'),
+  bilibili('B站', 'bilibili');
 
   final String label;
   final String code;
@@ -11,6 +12,14 @@ enum MusicPlatform {
 
 /// 面向用户的平台展示顺序；不改变底层枚举值及接口映射。
 const musicPlatformDisplayOrder = <MusicPlatform>[
+  MusicPlatform.qq,
+  MusicPlatform.netease,
+  MusicPlatform.kugou,
+  MusicPlatform.bilibili,
+];
+
+/// 支持第三方播放源和跨音乐平台匹配的传统音乐平台。
+const configurableMusicPlatforms = <MusicPlatform>[
   MusicPlatform.qq,
   MusicPlatform.netease,
   MusicPlatform.kugou,
@@ -89,6 +98,96 @@ enum CommonLevel {
   const CommonLevel(this.label, this.value);
 }
 
+class BilibiliPageInfo {
+  final int cid;
+  final int page;
+  final String title;
+  final int? duration;
+
+  const BilibiliPageInfo({
+    required this.cid,
+    required this.page,
+    required this.title,
+    this.duration,
+  });
+
+  factory BilibiliPageInfo.fromJson(Map<String, dynamic> json) {
+    final page = _intValue(json['page']) ?? 1;
+    return BilibiliPageInfo(
+      cid: _intValue(json['cid']) ?? 0,
+      page: page,
+      title: json['part']?.toString().trim().isNotEmpty == true
+          ? json['part'].toString().trim()
+          : 'P$page',
+      duration: _intValue(json['duration']),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'cid': cid,
+    'page': page,
+    'part': title,
+    'duration': duration,
+  };
+}
+
+class BilibiliStream {
+  final int quality;
+  final String label;
+  final String url;
+  final int bandwidth;
+  final String? mimeType;
+
+  const BilibiliStream({
+    required this.quality,
+    required this.label,
+    required this.url,
+    required this.bandwidth,
+    this.mimeType,
+  });
+}
+
+class BilibiliPlayInfo {
+  final List<BilibiliStream> audioStreams;
+  final List<BilibiliStream> videoStreams;
+  final int? duration;
+
+  const BilibiliPlayInfo({
+    required this.audioStreams,
+    required this.videoStreams,
+    this.duration,
+  });
+}
+
+class BilibiliVideoInfo {
+  final String bvid;
+  final String title;
+  final String description;
+  final String ownerName;
+  final String? coverUrl;
+  final int? duration;
+  final int? viewCount;
+  final int? likeCount;
+  final List<BilibiliPageInfo> pages;
+
+  const BilibiliVideoInfo({
+    required this.bvid,
+    required this.title,
+    required this.description,
+    required this.ownerName,
+    this.coverUrl,
+    this.duration,
+    this.viewCount,
+    this.likeCount,
+    required this.pages,
+  });
+}
+
+int? _intValue(dynamic value) {
+  if (value is num) return value.toInt();
+  return int.tryParse(value?.toString() ?? '');
+}
+
 /// 统一歌曲模型（搜索结果）
 class SongSearchResult {
   final MusicPlatform platform;
@@ -98,6 +197,11 @@ class SongSearchResult {
   final String album;
   final String? coverUrl;
   final int? duration; // 秒
+  final String? bilibiliVideoTitle;
+  final String? bilibiliDescription;
+  final int? bilibiliCid;
+  final int? bilibiliPage;
+  final List<BilibiliPageInfo> bilibiliPages;
 
   SongSearchResult({
     required this.platform,
@@ -107,6 +211,11 @@ class SongSearchResult {
     required this.album,
     this.coverUrl,
     this.duration,
+    this.bilibiliVideoTitle,
+    this.bilibiliDescription,
+    this.bilibiliCid,
+    this.bilibiliPage,
+    this.bilibiliPages = const [],
   });
 
   factory SongSearchResult.fromNetease(Map<String, dynamic> json) {
@@ -387,6 +496,55 @@ class SongSearchResult {
     );
   }
 
+  factory SongSearchResult.fromBilibili(Map<String, dynamic> json) {
+    final title = _cleanBilibiliText(json['title']);
+    final author = _cleanBilibiliText(json['author']);
+    final rawCover = json['pic']?.toString().trim() ?? '';
+    final coverUrl = rawCover.startsWith('//')
+        ? 'https:$rawCover'
+        : CoverHelper.normalize(rawCover);
+    return SongSearchResult(
+      platform: MusicPlatform.bilibili,
+      id: json['bvid']?.toString() ?? '',
+      name: title.isEmpty ? '未知视频' : title,
+      artist: author.isEmpty ? '未知UP主' : author,
+      album: title,
+      coverUrl: coverUrl?.isEmpty == true ? null : coverUrl,
+      duration: _parseBilibiliDuration(json['duration']),
+      bilibiliVideoTitle: title,
+    );
+  }
+
+  static String _cleanBilibiliText(dynamic value) {
+    var text = value?.toString() ?? '';
+    text = text.replaceAll(RegExp(r'<[^>]*>'), '');
+    const entities = {
+      '&amp;': '&',
+      '&quot;': '"',
+      '&#39;': "'",
+      '&lt;': '<',
+      '&gt;': '>',
+      '&nbsp;': ' ',
+    };
+    for (final entry in entities.entries) {
+      text = text.replaceAll(entry.key, entry.value);
+    }
+    return text.trim();
+  }
+
+  static int? _parseBilibiliDuration(dynamic value) {
+    if (value is num) return value.toInt();
+    final raw = value?.toString().trim() ?? '';
+    if (raw.isEmpty) return null;
+    final parts = raw.split(':').map(int.tryParse).toList();
+    if (parts.any((part) => part == null)) return int.tryParse(raw);
+    var seconds = 0;
+    for (final part in parts) {
+      seconds = seconds * 60 + part!;
+    }
+    return seconds;
+  }
+
   /// 从播放队列项构造（收藏用）
   factory SongSearchResult.fromQueueItem(PlayQueueItem item) {
     return SongSearchResult(
@@ -397,6 +555,11 @@ class SongSearchResult {
       album: item.album,
       coverUrl: item.coverUrl,
       duration: item.duration,
+      bilibiliVideoTitle: item.bilibiliVideoTitle,
+      bilibiliDescription: item.bilibiliDescription,
+      bilibiliCid: item.bilibiliCid,
+      bilibiliPage: item.bilibiliPage,
+      bilibiliPages: item.bilibiliPages,
     );
   }
 
@@ -409,6 +572,12 @@ class SongSearchResult {
     'album': album,
     'coverUrl': coverUrl,
     'duration': duration,
+    if (bilibiliVideoTitle != null) 'bilibiliVideoTitle': bilibiliVideoTitle,
+    if (bilibiliDescription != null) 'bilibiliDescription': bilibiliDescription,
+    if (bilibiliCid != null) 'bilibiliCid': bilibiliCid,
+    if (bilibiliPage != null) 'bilibiliPage': bilibiliPage,
+    if (bilibiliPages.isNotEmpty)
+      'bilibiliPages': bilibiliPages.map((page) => page.toJson()).toList(),
   };
 
   /// 反序列化（收藏本地持久化用）
@@ -427,6 +596,17 @@ class SongSearchResult {
       duration: json['duration'] is num
           ? (json['duration'] as num).toInt()
           : int.tryParse(json['duration']?.toString() ?? ''),
+      bilibiliVideoTitle: json['bilibiliVideoTitle']?.toString(),
+      bilibiliDescription: json['bilibiliDescription']?.toString(),
+      bilibiliCid: _intValue(json['bilibiliCid']),
+      bilibiliPage: _intValue(json['bilibiliPage']),
+      bilibiliPages: (json['bilibiliPages'] as List? ?? const [])
+          .whereType<Map>()
+          .map(
+            (page) =>
+                BilibiliPageInfo.fromJson(Map<String, dynamic>.from(page)),
+          )
+          .toList(growable: false),
     );
   }
 }
@@ -734,6 +914,11 @@ class PlayQueueItem {
   final String artist;
   final String album;
   final String? coverUrl;
+  final String? bilibiliVideoTitle;
+  final String? bilibiliDescription;
+  final int? bilibiliCid;
+  final int? bilibiliPage;
+  final List<BilibiliPageInfo> bilibiliPages;
 
   String? playUrl; // 解析后填充
   String? lyric; // 歌词
@@ -749,6 +934,11 @@ class PlayQueueItem {
     required this.artist,
     required this.album,
     this.coverUrl,
+    this.bilibiliVideoTitle,
+    this.bilibiliDescription,
+    this.bilibiliCid,
+    this.bilibiliPage,
+    this.bilibiliPages = const [],
     this.playUrl,
     this.lyric,
     this.playbackHeaders,
@@ -766,10 +956,17 @@ class PlayQueueItem {
       album: r.album,
       coverUrl: r.coverUrl,
       duration: r.duration,
+      bilibiliVideoTitle: r.bilibiliVideoTitle,
+      bilibiliDescription: r.bilibiliDescription,
+      bilibiliCid: r.bilibiliCid,
+      bilibiliPage: r.bilibiliPage,
+      bilibiliPages: r.bilibiliPages,
     );
   }
 
   PlayQueueItem copyWith({
+    String? name,
+    String? album,
     String? playUrl,
     String? lyric,
     Map<String, String>? playbackHeaders,
@@ -777,17 +974,28 @@ class PlayQueueItem {
     bool? loading,
     String? error,
     String? coverUrl,
+    String? bilibiliVideoTitle,
+    String? bilibiliDescription,
+    int? bilibiliCid,
+    int? bilibiliPage,
+    List<BilibiliPageInfo>? bilibiliPages,
     bool clearError = false,
     bool clearPlaybackHeaders = false,
+    bool clearPlayUrl = false,
   }) {
     return PlayQueueItem(
       platform: platform,
       id: id,
-      name: name,
+      name: name ?? this.name,
       artist: artist,
-      album: album,
+      album: album ?? this.album,
       coverUrl: coverUrl ?? this.coverUrl,
-      playUrl: playUrl ?? this.playUrl,
+      bilibiliVideoTitle: bilibiliVideoTitle ?? this.bilibiliVideoTitle,
+      bilibiliDescription: bilibiliDescription ?? this.bilibiliDescription,
+      bilibiliCid: bilibiliCid ?? this.bilibiliCid,
+      bilibiliPage: bilibiliPage ?? this.bilibiliPage,
+      bilibiliPages: bilibiliPages ?? this.bilibiliPages,
+      playUrl: clearPlayUrl ? null : playUrl ?? this.playUrl,
       lyric: lyric ?? this.lyric,
       playbackHeaders: clearPlaybackHeaders
           ? null

@@ -55,6 +55,7 @@ class PlatformColors {
   static const netease = Color(0xFFE84D3D); // 网易云红
   static const qq = Color(0xFF31C27C); // QQ 绿
   static const kugou = Color(0xFF2CA2F9); // 酷狗蓝
+  static const bilibili = Color(0xFFFB7299); // B站粉
 
   static Color of(MusicPlatform p) {
     switch (p) {
@@ -64,6 +65,8 @@ class PlatformColors {
         return qq;
       case MusicPlatform.kugou:
         return kugou;
+      case MusicPlatform.bilibili:
+        return bilibili;
     }
   }
 }

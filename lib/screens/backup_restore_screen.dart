@@ -84,7 +84,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('导入方式'),
-        content: const Text('合并会保留现有收藏；覆盖会替换歌曲、歌单及备份中的 API Key。'),
+        content: const Text('合并会保留现有收藏；覆盖会替换歌曲、B站收藏、歌单及备份中的 API Key。'),
         actions: [
           TextButton(
             onPressed: () =>
@@ -121,9 +121,10 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       setState(() {
         _busy = false;
         _status =
-            '恢复完成：歌曲 ${result.songsAdded} 首，歌单 ${result.playlistsAdded} 个'
+            '恢复完成：歌曲 ${result.songsAdded} 首，B站 ${result.bilibiliAdded} 个，'
+            '歌单 ${result.playlistsAdded} 个'
             '${result.apiKeyRestored ? '，API Key 已恢复' : ''}'
-            '${result.songsSkipped + result.playlistsSkipped > 0 ? '（重复或无效项目已跳过）' : ''}';
+            '${result.songsSkipped + result.bilibiliSkipped + result.playlistsSkipped > 0 ? '（重复或无效项目已跳过）' : ''}';
         _statusError = false;
       });
     } on FormatException catch (error) {
@@ -681,6 +682,10 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
           runSpacing: 8,
           children: [
             _summaryChip(Icons.favorite, '${favorites.favorites.length} 首歌曲'),
+            _summaryChip(
+              Icons.video_collection_outlined,
+              '${favorites.bilibiliFavorites.length} 个B站收藏',
+            ),
             _summaryChip(
               Icons.queue_music,
               '${favorites.favoritePlaylists.length} 个歌单',

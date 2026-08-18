@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../models/song.dart';
+import 'bilibili_service.dart';
 
 /// 音乐 API 服务层
 /// - 网易云: interface.music.163.com 官方公开目录接口
@@ -45,15 +46,20 @@ class ApiService {
 
   final http.Client _client = http.Client();
   final Map<String, Future<_NeteasePlaylistIndex>> _neteasePlaylistIndexes = {};
+  final BilibiliService bilibili;
   String apiKey;
 
-  ApiService({required this.apiKey});
+  ApiService({required this.apiKey, BilibiliService? bilibili})
+    : bilibili = bilibili ?? BilibiliService();
 
   void setApiKey(String key) {
     apiKey = key;
   }
 
-  void close() => _client.close();
+  void close() {
+    _client.close();
+    bilibili.dispose();
+  }
 
   Future<http.Response> _get(
     Uri uri, {
@@ -179,6 +185,7 @@ class ApiService {
         MusicPlatform.qq => 'tx',
         MusicPlatform.netease => 'wy',
         MusicPlatform.kugou => 'kg',
+        MusicPlatform.bilibili => throw UnsupportedError('B站使用官方播放接口'),
       },
       'rid': id,
       'level': _qingMusicLevel(platform, quality),
@@ -255,6 +262,8 @@ class ApiService {
           'master' => 'clear',
           _ => 'lossless',
         };
+      case MusicPlatform.bilibili:
+        throw UnsupportedError('B站不使用第三方音质参数');
     }
   }
 
@@ -272,6 +281,7 @@ class ApiService {
       MusicPlatform.qq => _qqMusicVideoUrl(songId, songName, artist),
       MusicPlatform.netease => _neteaseMusicVideoUrl(songId),
       MusicPlatform.kugou => _kugouMusicVideoUrl(songId, songName, artist),
+      MusicPlatform.bilibili => throw UnsupportedError('B站视频需要当前分P信息'),
     };
   }
 
@@ -925,6 +935,17 @@ class ApiService {
     return result;
   }
 
+  /// 获取网易云歌单元数据，不解析完整曲目列表。
+  Future<PlaylistInfo> neteasePlaylistSummary(String id) async {
+    final index = await _neteasePlaylistIndex(id);
+    final summary = index.summary;
+    if (summary == null) {
+      _neteasePlaylistIndexes.remove(id);
+      throw const ApiException('PLAYLIST_NOT_FOUND', '未找到歌单，请检查链接或 ID');
+    }
+    return summary;
+  }
+
   /// 网易云歌单曲目分页。
   ///
   /// 首次只从官方详情取得轻量曲目 ID，并缓存本次会话的索引；每一页再按
@@ -1000,7 +1021,29 @@ class ApiService {
     final total = rawTotal is num
         ? rawTotal.toInt()
         : int.tryParse(rawTotal?.toString() ?? '') ?? trackIds.length;
-    return _NeteasePlaylistIndex(trackIds: trackIds, total: total);
+    final rawId = playlist['id']?.toString().trim() ?? '';
+    final name = playlist['name']?.toString().trim() ?? '';
+    final summary = rawId.isNotEmpty && name.isNotEmpty
+        ? PlaylistInfo(
+            id: rawId,
+            name: name,
+            coverUrl: CoverHelper.normalize(
+              playlist['coverImgUrl']?.toString() ??
+                  playlist['picUrl']?.toString(),
+            ),
+            creator: playlist['creator'] is Map
+                ? playlist['creator']['nickname']?.toString()
+                : null,
+            trackCount: total,
+            description: playlist['description']?.toString(),
+            tracks: const [],
+          )
+        : null;
+    return _NeteasePlaylistIndex(
+      trackIds: trackIds,
+      total: total,
+      summary: summary,
+    );
   }
 
   // ======================== 酷狗 (mobilecdn 官方接口, ChKSz解析) ========================
@@ -1314,9 +1357,13 @@ class ApiService {
       final rawCreator = dirInfo['creator'];
       final creator = dirInfo['host_nick']?.toString().trim();
       final rawTotal = dirInfo['songnum'];
+      final title = dirInfo['title']?.toString().trim() ?? '';
+      if (dirInfo.isEmpty || title.isEmpty) {
+        throw const ApiException('PLAYLIST_NOT_FOUND', '未找到歌单，请检查链接或 ID');
+      }
       return PlaylistInfo(
         id: (dirInfo['id'] ?? tid).toString(),
-        name: dirInfo['title']?.toString() ?? 'QQ歌单',
+        name: title,
         coverUrl: CoverHelper.normalize(dirInfo['picurl']?.toString()),
         creator: creator != null && creator.isNotEmpty
             ? creator
@@ -1338,8 +1385,17 @@ class ApiService {
         timeout: _catalogFallbackTimeout,
         maxAttempts: 1,
       );
-      final data = json['data'] ?? json;
-      return PlaylistInfo.fromQQDetail(data as Map<String, dynamic>);
+      final rawData = json['data'] ?? json;
+      if (rawData is! Map) {
+        throw const ApiException('PLAYLIST_NOT_FOUND', '未找到歌单，请检查链接或 ID');
+      }
+      final data = Map<String, dynamic>.from(rawData);
+      final rawId = data['dissid'] ?? data['dirid'];
+      final rawName = data['dissname']?.toString().trim() ?? '';
+      if (rawId == null || rawId.toString().trim().isEmpty || rawName.isEmpty) {
+        throw const ApiException('PLAYLIST_NOT_FOUND', '未找到歌单，请检查链接或 ID');
+      }
+      return PlaylistInfo.fromQQDetail(data);
     }
   }
 
@@ -1552,6 +1608,8 @@ class ApiService {
         return qqSearch(keyword);
       case MusicPlatform.kugou:
         return kugouSearch(keyword);
+      case MusicPlatform.bilibili:
+        return bilibili.search(keyword);
     }
   }
 
@@ -1644,6 +1702,8 @@ class ApiService {
         return qqMusic(id);
       case MusicPlatform.kugou:
         return kugouMusic(id);
+      case MusicPlatform.bilibili:
+        throw UnsupportedError('B站播放需要当前分P信息');
     }
   }
 
@@ -1653,6 +1713,7 @@ class ApiService {
       MusicPlatform.netease => neteaseLyric(id),
       MusicPlatform.qq => qqLyric(id),
       MusicPlatform.kugou => kugouPublicLyric(id),
+      MusicPlatform.bilibili => null,
     };
   }
 }
@@ -1660,8 +1721,13 @@ class ApiService {
 class _NeteasePlaylistIndex {
   final List<String> trackIds;
   final int total;
+  final PlaylistInfo? summary;
 
-  const _NeteasePlaylistIndex({required this.trackIds, required this.total});
+  const _NeteasePlaylistIndex({
+    required this.trackIds,
+    required this.total,
+    required this.summary,
+  });
 }
 
 class ApiException implements Exception {
