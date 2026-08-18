@@ -65,6 +65,25 @@ void main() {
         if (path == '/x/player/wbi/playurl') {
           signedPaths.add(path);
           expect(request.url.queryParameters['w_rid'], isNotEmpty);
+          if (request.url.queryParameters['fnval'] == '0') {
+            expect(request.url.queryParameters['platform'], 'html5');
+            expect(request.url.queryParameters['high_quality'], '1');
+            return _json({
+              'code': 0,
+              'data': {
+                'quality': 80,
+                'format': 'mp4',
+                'durl': [
+                  {
+                    'url': 'https://example.com/video-with-audio.mp4',
+                    'backup_url': [
+                      'https://backup.example.com/video-with-audio.mp4',
+                    ],
+                  },
+                ],
+              },
+            });
+          }
           expect(request.url.queryParameters['fnval'], '4048');
           return _json({
             'code': 0,
@@ -120,17 +139,78 @@ void main() {
     expect(play.audioStreams.single.label, '192K');
     expect(play.videoStreams.single.label, '1080P');
     final source = await service.videoSource('BV1test', 101, 80);
-    expect(source.url, endsWith('video.m4s'));
+    expect(source.url, endsWith('video-with-audio.mp4'));
     expect(source.urls, hasLength(2));
-    expect(source.audioUrl, endsWith('audio.m4s'));
-    expect(source.audioUrls, hasLength(1));
+    expect(source.audioUrl, isNull);
+    expect(source.audioUrls, isEmpty);
     expect(source.headers['Origin'], 'https://www.bilibili.com');
     expect(source.headers['Referer'], 'https://www.bilibili.com/video/BV1test');
-    expect(await service.videoUrl('BV1test', 101, 80), endsWith('video.m4s'));
+    expect(
+      await service.videoUrl('BV1test', 101, 80),
+      endsWith('video-with-audio.mp4'),
+    );
     final qr = await service.createQrCode();
     expect(qr.key, 'qr-key');
     expect((await service.pollQrCode(qr.key)).status, BilibiliQrStatus.waiting);
     expect(signedPaths, hasLength(4));
+  });
+
+  test('falls back to separate DASH streams when merged MP4 is absent', () async {
+    final service = BilibiliService(
+      client: MockClient((request) async {
+        if (request.url.path == '/x/web-interface/nav') {
+          return _json({
+            'code': 0,
+            'data': {
+              'wbi_img': {
+                'img_url':
+                    'https://i0.hdslb.com/bfs/wbi/abcdefghijklmnopqrstuvwxyz012345.png',
+                'sub_url':
+                    'https://i0.hdslb.com/bfs/wbi/9876543210abcdefghijklmnopqrstuvwxyz.png',
+              },
+            },
+          });
+        }
+        if (request.url.path == '/x/player/wbi/playurl') {
+          if (request.url.queryParameters['fnval'] == '0') {
+            return _json({'code': 0, 'data': {}});
+          }
+          return _json({
+            'code': 0,
+            'data': {
+              'dash': {
+                'audio': [
+                  {
+                    'id': 30280,
+                    'base_url': 'https://example.com/audio.m4s',
+                    'bandwidth': 192000,
+                  },
+                ],
+                'video': [
+                  {
+                    'id': 80,
+                    'base_url': 'https://example.com/video.m4s',
+                    'bandwidth': 2500000,
+                    'codecs': 'avc1.64001E',
+                  },
+                ],
+              },
+            },
+          });
+        }
+        return _json({'code': -404, 'message': 'not found'});
+      }),
+    );
+    addTearDown(service.dispose);
+
+    final source = await service.videoSource(
+      'BV1dash',
+      202,
+      80,
+      audioQuality: 30280,
+    );
+    expect(source.url, endsWith('video.m4s'));
+    expect(source.audioUrl, endsWith('audio.m4s'));
   });
 
   test('video headers include the stored B站 session cookie', () async {

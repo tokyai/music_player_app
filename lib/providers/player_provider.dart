@@ -16,6 +16,12 @@ enum PlayMode { sequence, repeat, shuffle }
 /// 全局播放器状态管理
 class PlayerProvider extends ChangeNotifier {
   static const _resolvedUrlLifetime = Duration(minutes: 5);
+  static const _bilibiliLyricPlatformOrderKey = 'bilibili_lyric_platform_order';
+  static const _defaultBilibiliLyricPlatformOrder = <MusicPlatform>[
+    MusicPlatform.qq,
+    MusicPlatform.kugou,
+    MusicPlatform.netease,
+  ];
 
   final AudioPlayer _audioPlayer = AudioPlayer();
   late ApiService _api;
@@ -50,6 +56,9 @@ class PlayerProvider extends ChangeNotifier {
   PlaybackSource _neteasePlaybackSource = PlaybackSource.chksz;
   PlaybackSource _qqPlaybackSource = PlaybackSource.chksz;
   PlaybackSource _kugouPlaybackSource = PlaybackSource.chksz;
+  List<MusicPlatform> _bilibiliLyricPlatformOrder = List<MusicPlatform>.from(
+    _defaultBilibiliLyricPlatformOrder,
+  );
   VideoPlayerMode _videoPlayerMode = VideoPlayerMode.automatic;
   List<BilibiliStream> _bilibiliAudioQualities = const [];
   List<BilibiliStream> _bilibiliVideoQualities = const [];
@@ -118,6 +127,9 @@ class PlayerProvider extends ChangeNotifier {
       MusicPlatform.bilibili => PlaybackSource.chksz,
     };
   }
+
+  List<MusicPlatform> get bilibiliLyricPlatformOrder =>
+      List.unmodifiable(_bilibiliLyricPlatformOrder);
 
   VideoPlayerMode get videoPlayerMode => _videoPlayerMode;
 
@@ -209,6 +221,9 @@ class PlayerProvider extends ChangeNotifier {
       _kugouPlaybackSource = _readPlaybackSource(
         prefs.getString(_playbackSourcePreferenceKey(MusicPlatform.kugou)),
       );
+      _bilibiliLyricPlatformOrder = _readBilibiliLyricPlatformOrder(
+        prefs.getStringList(_bilibiliLyricPlatformOrderKey),
+      );
       final savedVideoPlayerMode = prefs.getString('video_player_mode');
       _videoPlayerMode = VideoPlayerMode.values.firstWhere(
         (mode) => mode.value == savedVideoPlayerMode,
@@ -280,6 +295,19 @@ class PlayerProvider extends ChangeNotifier {
     );
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_playbackSourcePreferenceKey(platform), source.value);
+    notifyListeners();
+  }
+
+  Future<void> setBilibiliLyricPlatformOrder(List<MusicPlatform> order) async {
+    await settingsReady;
+    if (_disposed) return;
+    final normalized = _normalizeBilibiliLyricPlatformOrder(order);
+    _bilibiliLyricPlatformOrder = normalized;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _bilibiliLyricPlatformOrderKey,
+      normalized.map((platform) => platform.code).toList(growable: false),
+    );
     notifyListeners();
   }
 
@@ -367,7 +395,9 @@ class PlayerProvider extends ChangeNotifier {
             platform: platform,
             keyword: cleanedKeyword,
             currentName: cleanedKeyword,
-            currentArtist: '',
+            // B站的 artist 通常是 UP 主，不一定是真实歌手。搜索仍只用
+            // 标题关键词，歌手/UP主在本地评分，避免把跨平台歌词搜索限制得过窄。
+            currentArtist: song.artist,
             currentAlbum: '',
           );
         } catch (error) {
@@ -384,11 +414,24 @@ class PlayerProvider extends ChangeNotifier {
         )
         .toList();
     candidates.sort((a, b) {
-      final score = _bilibiliLyricMatchScore(
-        b,
-        cleanedKeyword,
-        song.duration,
-      ).compareTo(_bilibiliLyricMatchScore(a, cleanedKeyword, song.duration));
+      final platformPriority = _bilibiliLyricPlatformOrder
+          .indexOf(a.platform)
+          .compareTo(_bilibiliLyricPlatformOrder.indexOf(b.platform));
+      if (platformPriority != 0) return platformPriority;
+      final score =
+          _bilibiliLyricMatchScore(
+            b,
+            cleanedKeyword,
+            song.duration,
+            expectedArtist: song.artist,
+          ).compareTo(
+            _bilibiliLyricMatchScore(
+              a,
+              cleanedKeyword,
+              song.duration,
+              expectedArtist: song.artist,
+            ),
+          );
       return score != 0 ? score : a.platform.index.compareTo(b.platform.index);
     });
     return candidates.take(30).toList(growable: false);
@@ -464,32 +507,108 @@ class PlayerProvider extends ChangeNotifier {
   static int _bilibiliLyricMatchScore(
     SongSearchResult candidate,
     String keyword,
-    int? expectedDuration,
-  ) {
-    final expected = _normalizeLyricMatchText(keyword);
-    final name = _normalizeLyricMatchText(candidate.name);
-    var score = 0;
-    if (expected.isNotEmpty && name == expected) {
-      score = 1200;
-    } else if (expected.length >= 6 && name.startsWith(expected)) {
-      score = 850;
-    } else if (name.length >= 6 && expected.startsWith(name)) {
-      score = 720;
-    } else if (expected.length >= 8 && name.contains(expected)) {
-      score = 650;
+    int? expectedDuration, {
+    String? expectedArtist,
+  }) {
+    var score = _bilibiliLyricTitleMatchScore(candidate.name, keyword);
+    if (expectedArtist != null) {
+      score += _bilibiliLyricArtistMatchScore(candidate.artist, expectedArtist);
     }
 
     final candidateDuration = candidate.duration;
     if (expectedDuration != null && candidateDuration != null) {
       final difference = (candidateDuration - expectedDuration).abs();
-      final tolerance = (expectedDuration * 0.15).round().clamp(10, 30).toInt();
+      final tolerance = (expectedDuration * 0.2).round().clamp(10, 45).toInt();
       if (difference <= tolerance) {
-        score += 300 - (difference * 5).clamp(0, 200).toInt();
-      } else {
-        score -= difference.clamp(0, 300).toInt();
+        score += 240 - (difference * 4).clamp(0, 200).toInt();
       }
     }
     return score;
+  }
+
+  static int _bilibiliLyricTitleMatchScore(
+    String candidateTitle,
+    String keyword,
+  ) {
+    final expected = _normalizeLyricMatchText(keyword);
+    final name = _normalizeLyricMatchText(candidateTitle);
+    if (expected.isEmpty || name.isEmpty) return 0;
+    if (name == expected) return 1200;
+    if (expected.length >= 2 && name.startsWith(expected)) return 850;
+    if (name.length >= 2 && expected.startsWith(name)) return 720;
+    if (expected.length >= 2 && name.contains(expected)) return 650;
+
+    final expectedTokens = _lyricMatchTokens(keyword);
+    final candidateTokens = _lyricMatchTokens(candidateTitle);
+    if (expectedTokens.isEmpty || candidateTokens.isEmpty) return 0;
+    final overlap = expectedTokens
+        .where(
+          (token) => candidateTokens.any(
+            (candidateToken) =>
+                candidateToken == token ||
+                candidateToken.contains(token) ||
+                token.contains(candidateToken),
+          ),
+        )
+        .length;
+    final requiredOverlap = expectedTokens.length >= 3 ? 2 : 1;
+    if (overlap < requiredOverlap) return 0;
+    return 420 + overlap * 80;
+  }
+
+  static int _bilibiliLyricArtistMatchScore(
+    String candidateArtist,
+    String expectedArtist,
+  ) {
+    final expected = _normalizeLyricMatchText(expectedArtist);
+    final artist = _normalizeLyricMatchText(candidateArtist);
+    if (!_isUsefulLyricArtist(expected) || artist.isEmpty) return 0;
+    if (artist == expected) return 360;
+    if (artist.contains(expected) || expected.contains(artist)) return 180;
+
+    final expectedTokens = _lyricMatchTokens(expectedArtist);
+    final artistTokens = _lyricMatchTokens(candidateArtist);
+    final overlap = expectedTokens
+        .where(
+          (token) => artistTokens.any(
+            (artistToken) =>
+                artistToken == token ||
+                artistToken.contains(token) ||
+                token.contains(artistToken),
+          ),
+        )
+        .length;
+    return overlap > 0 ? 100 : 0;
+  }
+
+  @visibleForTesting
+  static bool bilibiliLyricTitleMatches(
+    String candidateTitle,
+    String keyword,
+  ) => _bilibiliLyricTitleMatchScore(candidateTitle, keyword) > 0;
+
+  static bool _isUsefulLyricArtist(String normalizedArtist) {
+    if (normalizedArtist.isEmpty) return false;
+    const placeholders = {
+      '未知歌手',
+      '未知up主',
+      'up主',
+      'uploader',
+      'unknown',
+      'bilibili',
+    };
+    return !placeholders.contains(normalizedArtist);
+  }
+
+  static List<String> _lyricMatchTokens(String value) {
+    return RegExp(r'[a-z0-9]+|[\u4e00-\u9fff]')
+        .allMatches(_cleanBilibiliLyricTitle(value).toLowerCase())
+        .map((match) => match.group(0)!)
+        .where(
+          (token) =>
+              token.length >= 2 || RegExp(r'[\u4e00-\u9fff]').hasMatch(token),
+        )
+        .toList(growable: false);
   }
 
   static String _normalizeLyricMatchText(String value) {
@@ -511,6 +630,39 @@ class PlayerProvider extends ChangeNotifier {
       (source) => source.value == value,
       orElse: () => PlaybackSource.chksz,
     );
+  }
+
+  static List<MusicPlatform> _readBilibiliLyricPlatformOrder(
+    List<String>? values,
+  ) {
+    if (values == null) {
+      return List<MusicPlatform>.from(_defaultBilibiliLyricPlatformOrder);
+    }
+    final parsed = values
+        .map(
+          (value) => MusicPlatform.values.cast<MusicPlatform?>().firstWhere(
+            (platform) => platform?.code == value,
+            orElse: () => null,
+          ),
+        )
+        .whereType<MusicPlatform>();
+    return _normalizeBilibiliLyricPlatformOrder(parsed);
+  }
+
+  static List<MusicPlatform> _normalizeBilibiliLyricPlatformOrder(
+    Iterable<MusicPlatform> order,
+  ) {
+    final normalized = <MusicPlatform>[];
+    for (final platform in order) {
+      if (configurableMusicPlatforms.contains(platform) &&
+          !normalized.contains(platform)) {
+        normalized.add(platform);
+      }
+    }
+    for (final platform in _defaultBilibiliLyricPlatformOrder) {
+      if (!normalized.contains(platform)) normalized.add(platform);
+    }
+    return normalized;
   }
 
   // ==================== 播放控制 ====================
@@ -892,33 +1044,20 @@ class PlayerProvider extends ChangeNotifier {
       final query = lyricSearchQueryFor(item);
       final candidates = await _searchBilibiliLyricCandidates(item, query);
       if (!_isCurrentRequest(requestId, item)) return;
-      final exactCandidates = candidates
-          .where((candidate) {
-            final expectedTitle = _normalizeLyricMatchText(query);
-            final candidateTitle = _normalizeLyricMatchText(candidate.name);
-            final sameTitle = candidateTitle == expectedTitle;
-            final compatibleTitle =
-                expectedTitle.length >= 10 &&
-                (candidateTitle.startsWith(expectedTitle) ||
-                    expectedTitle.startsWith(candidateTitle));
-            final expectedDuration = item.duration;
-            final candidateDuration = candidate.duration;
-            if ((!sameTitle && !compatibleTitle) ||
-                expectedDuration == null ||
-                candidateDuration == null) {
-              return false;
-            }
-            final tolerance = (expectedDuration * 0.15).round().clamp(10, 30);
-            return (candidateDuration - expectedDuration).abs() <= tolerance;
-          })
-          .take(4);
+      // B站分P标题常带编号、版本说明，跨平台歌词候选的时长也经常缺失。
+      // 标题关键字是自动匹配的必要条件；歌手/UP主和时长只参与上面的排序。
+      final matchedCandidates = candidates
+          .where(
+            (candidate) => bilibiliLyricTitleMatches(candidate.name, query),
+          )
+          .take(8);
 
-      for (final candidate in exactCandidates) {
+      for (final candidate in matchedCandidates) {
         try {
           final data = await _api.getLyric(candidate.platform, candidate.id);
           if (!_isCurrentRequest(requestId, item)) return;
           final resolved = data == null ? null : _resolveLyricData(data);
-          if (resolved != null && resolved.lines.length >= 3) {
+          if (resolved != null && resolved.lines.isNotEmpty) {
             _applyLyrics(requestId, item, resolved);
             return;
           }

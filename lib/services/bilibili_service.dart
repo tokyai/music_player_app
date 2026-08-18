@@ -388,6 +388,35 @@ class BilibiliService extends ChangeNotifier {
     int quality, {
     int? audioQuality,
   }) async {
+    // The HTML5 route returns a progressive MP4 containing both video and
+    // audio. Prefer it for the built-in MV players: it avoids DASH stream
+    // merging and is supported by both Media3 and libmpv.
+    try {
+      final progressiveResponse = await _bilibiliGet('/x/player/wbi/playurl', {
+        'bvid': bvid,
+        'cid': cid,
+        'qn': quality,
+        'fnver': 0,
+        'fnval': 0,
+        'fourk': 1,
+        'platform': 'html5',
+        'high_quality': 1,
+      }, wbi: true);
+      final rawProgressiveData = progressiveResponse['data'];
+      final progressiveData = rawProgressiveData is Map
+          ? Map<String, dynamic>.from(rawProgressiveData)
+          : <String, dynamic>{};
+      final progressiveUrls = _durlUrls(progressiveData);
+      if (progressiveUrls.isNotEmpty) {
+        return BilibiliVideoSource(
+          urls: progressiveUrls,
+          headers: playbackHeadersForVideo(bvid),
+        );
+      }
+    } catch (_) {
+      // Some videos do not expose an HTML5 MP4. Continue with DASH below.
+    }
+
     final response = await _bilibiliGet('/x/player/wbi/playurl', {
       'bvid': bvid,
       'cid': cid,
@@ -461,14 +490,7 @@ class BilibiliService extends ChangeNotifier {
     // A few older/paid videos still return only a progressive MP4.  Keep it
     // as a compatibility fallback, including every backup_url supplied by
     // the official endpoint.
-    final durl = data['durl'] is List ? data['durl'] as List : const [];
-    final urls = _orderedUrls(
-      durl.whereType<Map>().expand((row) {
-        final base = row['url']?.toString() ?? '';
-        final backups = _stringList(row['backupUrl'] ?? row['backup_url']);
-        return <String>[if (base.isNotEmpty) base, ...backups];
-      }),
-    );
+    final urls = _durlUrls(data);
     if (urls.isEmpty) {
       throw const BilibiliApiException('PLAY_NO_VIDEO', 'B站未返回视频地址');
     }
@@ -481,6 +503,19 @@ class BilibiliService extends ChangeNotifier {
 
   Future<String> videoUrl(String bvid, int cid, int quality) async {
     return (await videoSource(bvid, cid, quality)).url;
+  }
+
+  List<String> _durlUrls(Map<String, dynamic> data) {
+    final rows = data['durl'] is List
+        ? (data['durl'] as List).whereType<Map>()
+        : const Iterable<Map>.empty();
+    for (final row in rows) {
+      final base = row['url']?.toString() ?? '';
+      final backups = _stringList(row['backupUrl'] ?? row['backup_url']);
+      final urls = _orderedUrls([if (base.isNotEmpty) base, ...backups]);
+      if (urls.isNotEmpty) return urls;
+    }
+    return const [];
   }
 
   List<BilibiliStream> _parseStreams(dynamic raw, {required bool audio}) {

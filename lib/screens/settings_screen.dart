@@ -574,8 +574,116 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
         ),
+        const Divider(height: 1),
+        Consumer<PlayerProvider>(
+          builder: (context, player, _) {
+            final order = player.bilibiliLyricPlatformOrder;
+            return ListTile(
+              key: const ValueKey('bilibili-lyric-platform-order-setting'),
+              dense: compact,
+              leading: const Icon(Icons.swap_vert_rounded),
+              title: const Text(
+                'B站歌词平台权重',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                '${order.map((platform) => platform.label).join(' > ')} · 仅影响B站歌词匹配',
+                maxLines: compact ? 1 : 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () => _showBilibiliLyricPlatformOrderPicker(player),
+            );
+          },
+        ),
       ],
     );
+  }
+
+  Future<void> _showBilibiliLyricPlatformOrderPicker(
+    PlayerProvider player,
+  ) async {
+    final selected = await showDialog<List<MusicPlatform>>(
+      context: context,
+      builder: (dialogContext) {
+        var order = player.bilibiliLyricPlatformOrder;
+        return StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            key: const ValueKey('bilibili-lyric-platform-order-dialog'),
+            title: const Text('B站歌词平台优先级'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var index = 0; index < order.length; index++)
+                  ListTile(
+                    key: ValueKey(
+                      'bilibili-lyric-platform-order-${order[index].code}',
+                    ),
+                    dense: true,
+                    leading: Text(
+                      '${index + 1}',
+                      style: const TextStyle(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    title: Text(order[index].label),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          key: ValueKey(
+                            'bilibili-lyric-platform-order-${order[index].code}-up',
+                          ),
+                          tooltip: '上移',
+                          onPressed: index == 0
+                              ? null
+                              : () => setDialogState(() {
+                                  final next = List<MusicPlatform>.from(order);
+                                  final moved = next.removeAt(index);
+                                  next.insert(index - 1, moved);
+                                  order = next;
+                                }),
+                          icon: const Icon(Icons.keyboard_arrow_up_rounded),
+                        ),
+                        IconButton(
+                          key: ValueKey(
+                            'bilibili-lyric-platform-order-${order[index].code}-down',
+                          ),
+                          tooltip: '下移',
+                          onPressed: index == order.length - 1
+                              ? null
+                              : () => setDialogState(() {
+                                  final next = List<MusicPlatform>.from(order);
+                                  final moved = next.removeAt(index);
+                                  next.insert(index + 1, moved);
+                                  order = next;
+                                }),
+                          icon: const Icon(Icons.keyboard_arrow_down_rounded),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, order),
+                child: const Text('保存'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (selected != null) {
+      await player.setBilibiliLyricPlatformOrder(selected);
+    }
   }
 
   Future<void> _showLyricFontFamilyPicker() async {

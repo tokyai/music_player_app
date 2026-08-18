@@ -198,8 +198,8 @@ class _MpvPlaybackController extends _MvPlaybackController {
     _controller = media_kit_video.VideoController(
       _player,
       configuration: const media_kit_video.VideoControllerConfiguration(
-        hwdec: 'auto-safe',
         enableHardwareAcceleration: true,
+        androidAttachSurfaceAfterVideoParameters: false,
       ),
     );
     _subscriptions.addAll([
@@ -255,6 +255,17 @@ class _MpvPlaybackController extends _MvPlaybackController {
     final source = audioUrl == null || audioUrl!.isEmpty
         ? url
         : _edlSource(url, audioUrl!);
+    final nativePlayer = _player.platform;
+    if (nativePlayer is media_kit.NativePlayer) {
+      final userAgent = headers['User-Agent'];
+      final referer = headers['Referer'];
+      if (userAgent != null) {
+        await nativePlayer.setProperty('user-agent', userAgent);
+      }
+      if (referer != null) {
+        await nativePlayer.setProperty('referrer', referer);
+      }
+    }
     await _player.open(
       media_kit.Media(source, httpHeaders: headers),
       play: true,

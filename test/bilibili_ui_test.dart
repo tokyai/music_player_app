@@ -28,6 +28,280 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
+  test('Bilibili lyric title matching accepts meaningful keywords', () {
+    expect(
+      PlayerProvider.bilibiliLyricTitleMatches(
+        "If You're Happy And You Know It",
+        '001. If You,re Happy',
+      ),
+      isTrue,
+    );
+    expect(
+      PlayerProvider.bilibiliLyricTitleMatches('完全不同的歌曲', 'SSS儿歌'),
+      isFalse,
+    );
+  });
+
+  test(
+    'Bilibili lyric ranking favors matching artist without duration',
+    () async {
+      await http.runWithClient(
+        () async {
+          final player = _BilibiliLyricSearchPlayer();
+          addTearDown(player.dispose);
+
+          final results = await player.searchLyricCandidates(
+            '001. If You,re Happy',
+          );
+
+          expect(results.first.id, 'artist-match');
+          expect(results.first.duration, isNull);
+        },
+        () => MockClient((request) async {
+          if (request.url.host == 'u.y.qq.com') {
+            return http.Response(
+              jsonEncode({
+                'req_1': {
+                  'code': 0,
+                  'data': {
+                    'body': {
+                      'song': {
+                        'list': [
+                          {
+                            'mid': 'duration-match',
+                            'name': "If You're Happy And You Know It",
+                            'singer': [
+                              {'name': '其他歌手'},
+                            ],
+                            'album': {'name': '儿歌'},
+                            'interval': 120,
+                          },
+                          {
+                            'mid': 'artist-match',
+                            'name': "If You're Happy And You Know It",
+                            'singer': [
+                              {'name': '测试UP主'},
+                            ],
+                            'album': {'name': '儿歌'},
+                          },
+                        ],
+                      },
+                    },
+                  },
+                },
+              }),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          if (request.url.host == 'interface.music.163.com') {
+            return http.Response(
+              jsonEncode({
+                'result': {'songs': <Object>[]},
+              }),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          if (request.url.host == 'mobilecdn.kugou.com') {
+            return http.Response(
+              jsonEncode({
+                'data': {'info': <Object>[]},
+              }),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          return http.Response('{}', 200);
+        }),
+      );
+    },
+  );
+
+  test('Bilibili lyric platform order is persisted independently', () async {
+    SharedPreferences.setMockInitialValues({
+      'bilibili_lyric_platform_order': ['kugou', '163', 'qq'],
+    });
+    final player = PlayerProvider();
+    await player.settingsReady;
+    expect(player.bilibiliLyricPlatformOrder, [
+      MusicPlatform.kugou,
+      MusicPlatform.netease,
+      MusicPlatform.qq,
+    ]);
+
+    await player.setBilibiliLyricPlatformOrder([
+      MusicPlatform.netease,
+      MusicPlatform.qq,
+      MusicPlatform.kugou,
+    ]);
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getStringList('bilibili_lyric_platform_order'), [
+      '163',
+      'qq',
+      'kugou',
+    ]);
+    player.dispose();
+  });
+
+  test(
+    'Bilibili lyric candidates follow the configured platform order',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'bilibili_lyric_platform_order': ['kugou', '163', 'qq'],
+      });
+      await http.runWithClient(
+        () async {
+          final player = _BilibiliLyricSearchPlayer();
+          addTearDown(player.dispose);
+          final results = await player.searchLyricCandidates('晴天');
+          expect(results.take(3).map((song) => song.platform), [
+            MusicPlatform.kugou,
+            MusicPlatform.netease,
+            MusicPlatform.qq,
+          ]);
+        },
+        () => MockClient((request) async {
+          if (request.url.host == 'mobilecdn.kugou.com') {
+            return http.Response(
+              jsonEncode({
+                'data': {
+                  'info': [
+                    {
+                      'hash': 'kugou-lyric',
+                      'songname': '晴天',
+                      'singername': '其他歌手',
+                      'album_name': '专辑',
+                      'duration': 120,
+                    },
+                  ],
+                },
+              }),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          if (request.url.host == 'interface.music.163.com') {
+            return http.Response(
+              jsonEncode({
+                'result': {
+                  'songs': [
+                    {
+                      'id': 163001,
+                      'name': '晴天',
+                      'dt': 120000,
+                      'ar': [
+                        {'name': '测试UP主'},
+                      ],
+                      'al': {'name': '专辑', 'picUrl': 'https://cover.test/163'},
+                    },
+                  ],
+                },
+              }),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          if (request.url.host == 'u.y.qq.com') {
+            return http.Response(
+              jsonEncode({
+                'req_1': {
+                  'code': 0,
+                  'data': {
+                    'body': {
+                      'song': {
+                        'list': [
+                          {
+                            'mid': 'qq-lyric',
+                            'name': '晴天',
+                            'interval': 120,
+                            'singer': [
+                              {'name': '其他歌手'},
+                            ],
+                            'album': {'name': '专辑'},
+                          },
+                        ],
+                      },
+                    },
+                  },
+                },
+              }),
+              200,
+              headers: {'content-type': 'application/json; charset=utf-8'},
+            );
+          }
+          return http.Response('{}', 200);
+        }),
+      );
+    },
+  );
+
+  testWidgets('Bilibili lyric platform order is usable in landscape settings', (
+    tester,
+  ) async {
+    for (final size in const [Size(640, 360), Size(1280, 800)]) {
+      SharedPreferences.setMockInitialValues({});
+      final player = PlayerProvider();
+      final favorites = FavoriteService();
+      final theme = ThemeController();
+      await _pump(
+        tester,
+        const SettingsScreen(),
+        player,
+        favorites,
+        theme,
+        size,
+      );
+
+      final setting = find.byKey(
+        const ValueKey('bilibili-lyric-platform-order-setting'),
+      );
+      expect(setting, findsOneWidget);
+      final preferencesPane = find.descendant(
+        of: find.byKey(const PageStorageKey('settings-landscape-preferences')),
+        matching: find.byType(Scrollable),
+      );
+      expect(preferencesPane, findsOneWidget);
+      await tester.scrollUntilVisible(
+        setting,
+        240,
+        scrollable: preferencesPane,
+      );
+      await tester.pumpAndSettle();
+      expect(setting.hitTestable(), findsOneWidget);
+      expect(find.textContaining('QQ音乐 > 酷狗 > 网易云'), findsOneWidget);
+      await tester.tap(setting);
+      await tester.pumpAndSettle();
+      final dialog = find.byKey(
+        const ValueKey('bilibili-lyric-platform-order-dialog'),
+      );
+      expect(dialog, findsOneWidget);
+
+      await tester.tap(
+        find
+            .byKey(const ValueKey('bilibili-lyric-platform-order-qq-down'))
+            .hitTestable(),
+      );
+      await tester.pump();
+      await tester.tap(
+        find.descendant(of: dialog, matching: find.text('保存')).hitTestable(),
+      );
+      await tester.pumpAndSettle();
+      expect(player.bilibiliLyricPlatformOrder, [
+        MusicPlatform.kugou,
+        MusicPlatform.qq,
+        MusicPlatform.netease,
+      ]);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      player.dispose();
+      favorites.dispose();
+      theme.dispose();
+    }
+    tester.view.resetPhysicalSize();
+    tester.view.resetDevicePixelRatio();
+  });
+
   testWidgets('large landscape keeps all three favorite previews on screen', (
     tester,
   ) async {
@@ -413,4 +687,19 @@ class _BilibiliPlayer extends PlayerProvider {
     key: 'test-key',
     url: 'https://passport.bilibili.com/test-login',
   );
+}
+
+class _BilibiliLyricSearchPlayer extends PlayerProvider {
+  final PlayQueueItem _song = PlayQueueItem(
+    platform: MusicPlatform.bilibili,
+    id: 'BV1lyrics',
+    name: '001. If You,re Happy',
+    artist: '测试UP主',
+    album: '测试儿歌',
+    duration: 120,
+    bilibiliCid: 101,
+  );
+
+  @override
+  PlayQueueItem get currentSong => _song;
 }
