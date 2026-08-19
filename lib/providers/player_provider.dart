@@ -197,10 +197,20 @@ class PlayerProvider extends ChangeNotifier {
         _isLoading = false;
         _errorMessage = '播放错误: $e';
         _lastError = '播放出错：音源可能已失效，已停止播放';
-        _audioPlayer.stop();
+        unawaited(_stopAfterPlaybackError());
         notifyListeners();
       },
     );
+  }
+
+  Future<void> _stopAfterPlaybackError() async {
+    try {
+      await _audioPlayer.stop();
+    } catch (error) {
+      // The original playback error is already surfaced to the UI. A second
+      // stop failure must not become an unhandled async exception.
+      debugPrint('播放错误后的停止失败: $error');
+    }
   }
 
   /// UI 消费完错误后调用，防止重复弹提示

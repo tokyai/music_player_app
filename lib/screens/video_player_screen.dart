@@ -403,6 +403,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   _MvPlaybackController _createController(_MvEngine engine) {
+    // MPV is a native backend. Keep its initialization off the ordinary audio
+    // startup path and pay the cost only when an MV actually needs it.
+    if (engine == _MvEngine.mpv) {
+      media_kit.MediaKit.ensureInitialized();
+    }
     final headers = _headersFor(widget.platform, widget.headers);
     final url = _sourceUrls[_sourceIndex];
     return switch (engine) {
