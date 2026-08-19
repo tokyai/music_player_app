@@ -1,6 +1,7 @@
+import 'package:audio_service/audio_service.dart';
+import 'package:audio_session/audio_session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:just_audio_background/just_audio_background.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -14,6 +15,7 @@ import 'screens/playlist_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/favorite_service.dart';
 import 'services/floating_capsule_service.dart';
+import 'services/player_media_handler.dart';
 import 'theme/app_layout.dart';
 import 'theme/app_motion.dart';
 import 'theme/app_theme.dart';
@@ -27,14 +29,20 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // 全面屏适配：内容延伸到状态栏/导航栏区域（各页面已用 SafeArea 保护内容）
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-  // 系统媒体通知：播放时通知栏/锁屏显示媒体控制（系统级胶囊体验）
-  await JustAudioBackground.init(
-    androidNotificationChannelId: 'com.example.music_player_app.audio',
-    androidNotificationChannelName: '库仔音乐播放',
-    androidNotificationOngoing: true,
-    // 车机通知只需要小尺寸缩略图，避免音频服务完整解码高分辨率封面。
-    artDownscaleWidth: 256,
-    artDownscaleHeight: 256,
+  final player = PlayerProvider();
+  final audioSession = await AudioSession.instance;
+  await audioSession.configure(const AudioSessionConfiguration.music());
+  // 系统媒体会话：通知栏、锁屏和车机方向盘共用应用内播放队列。
+  await AudioService.init(
+    builder: () => PlayerMediaHandler(player),
+    config: const AudioServiceConfig(
+      androidNotificationChannelId: 'com.example.music_player_app.audio',
+      androidNotificationChannelName: '库仔音乐播放',
+      androidNotificationOngoing: true,
+      // 车机通知只需要小尺寸缩略图，避免音频服务完整解码高分辨率封面。
+      artDownscaleWidth: 256,
+      artDownscaleHeight: 256,
+    ),
   );
   // Android 13+ 请求通知权限（否则系统媒体通知不显示）
   try {
@@ -48,17 +56,19 @@ void main() async {
       prefs.getBool('floating_capsule_enabled') ?? false,
     );
   } catch (_) {}
-  runApp(const MusicPlayerApp());
+  runApp(MusicPlayerApp(player: player));
 }
 
 class MusicPlayerApp extends StatelessWidget {
-  const MusicPlayerApp({super.key});
+  const MusicPlayerApp({super.key, required this.player});
+
+  final PlayerProvider player;
 
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => PlayerProvider()),
+        ChangeNotifierProvider<PlayerProvider>.value(value: player),
         ChangeNotifierProvider(create: (_) => SearchSession()),
         ChangeNotifierProvider(create: (_) => ThemeController()),
         ChangeNotifierProvider(create: (_) => FavoriteService()..load()),

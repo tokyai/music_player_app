@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
-import 'package:just_audio_background/just_audio_background.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
 import '../services/api_service.dart';
@@ -1011,24 +1010,12 @@ class PlayerProvider extends ChangeNotifier {
         clearError: true,
       );
 
-      // 设置音频源并播放（tag: MediaItem 用于系统媒体通知显示歌曲信息）
+      // 系统媒体会话由 PlayerMediaHandler 同步当前歌曲元数据。
       final audioUri = playPath.startsWith('/')
           ? Uri.file(playPath)
           : Uri.parse(playPath);
       await _audioPlayer.setAudioSource(
-        AudioSource.uri(
-          audioUri,
-          headers: playbackHeaders,
-          tag: MediaItem(
-            id: '${item.platform.code}_${_audioCacheSongId(item)}',
-            title: item.name,
-            artist: item.artist,
-            album: item.album,
-            artUri: effectiveCover != null && effectiveCover.isNotEmpty
-                ? Uri.parse(effectiveCover)
-                : null,
-          ),
-        ),
+        AudioSource.uri(audioUri, headers: playbackHeaders),
         preload: true,
       );
       if (!_isCurrentRequest(requestId, item)) return;
@@ -1549,6 +1536,11 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> pause() async {
     await _audioPlayer.pause();
     _recordCurrentHistory(immediate: true);
+  }
+
+  Future<void> stop() async {
+    _recordCurrentHistory(immediate: true);
+    await _audioPlayer.stop();
   }
 
   Future<void> playNext() async {
