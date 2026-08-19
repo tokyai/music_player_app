@@ -9,10 +9,12 @@ import 'package:music_player_app/providers/player_provider.dart';
 import 'package:music_player_app/providers/search_session.dart';
 import 'package:music_player_app/providers/theme_controller.dart';
 import 'package:music_player_app/screens/discover_screen.dart';
+import 'package:music_player_app/screens/playback_history_screen.dart';
 import 'package:music_player_app/screens/playlist_screen.dart';
 import 'package:music_player_app/screens/search_screen.dart';
 import 'package:music_player_app/screens/settings_screen.dart';
 import 'package:music_player_app/services/favorite_service.dart';
+import 'package:music_player_app/services/playback_history_service.dart';
 import 'package:music_player_app/services/update_service.dart';
 import 'package:music_player_app/theme/app_theme.dart';
 import 'package:music_player_app/widgets/remote_focusable.dart';
@@ -428,6 +430,67 @@ void main() {
   });
 
   for (final size in const [Size(640, 360), Size(1280, 800)]) {
+    testWidgets('playback history opens with the D-pad at $size', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = size;
+      final entry = PlaybackHistoryEntry(
+        song: SongSearchResult(
+          platform: MusicPlatform.qq,
+          id: 'remote-history-song',
+          name: '遥控器历史歌曲',
+          artist: '测试歌手',
+          album: '测试专辑',
+          duration: 240,
+        ),
+        position: const Duration(seconds: 35),
+        playedAt: DateTime(2026, 8, 19),
+      );
+      final player = _RemoteHistoryPlayer(entry);
+      final navigatorKey = GlobalKey<NavigatorState>();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        player.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider<PlayerProvider>.value(
+          value: player,
+          child: MaterialApp(
+            navigatorKey: navigatorKey,
+            theme: AppTheme.light(),
+            home: TvRemoteScope(
+              navigatorKey: navigatorKey,
+              child: const PlaybackHistoryScreen(),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final historyTile = find.byKey(
+        const ValueKey('playback-history-qq:remote-history-song'),
+      );
+      expect(historyTile, findsOneWidget);
+      for (
+        var step = 0;
+        step < 4 && !_focusIsWithin(tester, historyTile);
+        step++
+      ) {
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pump();
+      }
+      expect(_focusIsWithin(tester, historyTile), isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.select);
+      expect(player.playFromHistoryCalls, 1);
+    });
+  }
+
+  for (final size in const [Size(640, 360), Size(1280, 800)]) {
     testWidgets('update notes scroll with the D-pad at $size', (tester) async {
       tester.view.devicePixelRatio = 1;
       tester.view.physicalSize = size;
@@ -479,6 +542,22 @@ void main() {
   }
 }
 
+bool _focusIsWithin(WidgetTester tester, Finder target) {
+  final focusContext = FocusManager.instance.primaryFocus?.context;
+  if (focusContext == null) return false;
+  final targetElement = tester.element(target);
+  if (identical(focusContext, targetElement)) return true;
+  var found = false;
+  focusContext.visitAncestorElements((ancestor) {
+    if (identical(ancestor, targetElement)) {
+      found = true;
+      return false;
+    }
+    return true;
+  });
+  return found;
+}
+
 http.Client _emptyClient() => MockClient((_) async => http.Response('{}', 200));
 
 class _RemoteTestPlayer extends PlayerProvider {
@@ -515,4 +594,22 @@ class _RemoteTestPlayer extends PlayerProvider {
 
   @override
   Future<void> playPrevious() async => previousCalls++;
+}
+
+class _RemoteHistoryPlayer extends PlayerProvider {
+  _RemoteHistoryPlayer(this.entry);
+
+  final PlaybackHistoryEntry entry;
+  int playFromHistoryCalls = 0;
+
+  @override
+  List<PlaybackHistoryEntry> get playbackHistory => [entry];
+
+  @override
+  int get playbackHistoryRevision => 1;
+
+  @override
+  Future<void> playFromHistory(PlaybackHistoryEntry entry) async {
+    playFromHistoryCalls++;
+  }
 }

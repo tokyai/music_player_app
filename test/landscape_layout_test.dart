@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -1198,7 +1199,13 @@ void main() {
           ),
         );
 
-        await tester.tap(later);
+        final laterLabel = find.descendant(
+          of: later,
+          matching: find.text(size.height <= 420 ? '+0.5s' : '延后 0.5s'),
+        );
+        Focus.of(tester.element(laterLabel)).requestFocus();
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.select);
         await tester.pump();
         expect(player.lyricOffset, const Duration(milliseconds: 500));
         expect(player.lyricPosition, const Duration(seconds: 1));
@@ -1217,14 +1224,16 @@ void main() {
           '0%',
         );
 
-        await tester.tap(
-          find.byKey(const ValueKey('player-lyric-offset-reset')),
-        );
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.select);
         await tester.pump();
         expect(player.lyricOffset, Duration.zero);
         expect(find.text('同步'), findsOneWidget);
 
-        await tester.tap(earlier);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.select);
         await tester.pump();
         expect(player.lyricOffset, const Duration(milliseconds: -500));
         expect(player.lyricPosition, const Duration(seconds: 2));
