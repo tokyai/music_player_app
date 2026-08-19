@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
@@ -8,6 +9,7 @@ import '../providers/theme_controller.dart';
 import '../services/audio_cache_service.dart';
 import '../services/favorite_service.dart';
 import '../services/floating_capsule_service.dart';
+import '../services/lan_api_key_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../theme/lyric_style.dart';
@@ -141,6 +143,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('缓存已清除')));
+  }
+
+  Future<void> _showApiKeyQrInput(PlayerProvider player) async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    late final LanApiKeySession session;
+    try {
+      session = await LanApiKeyService.start();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('启动扫码输入失败：$error')));
+      return;
+    }
+    if (!mounted) {
+      await session.stop();
+      return;
+    }
+
+    final saveFuture = _receiveAndSaveApiKey(session, player);
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) =>
+          _ApiKeyQrDialog(session: session, saveFuture: saveFuture),
+    );
+    await session.stop();
+    if (mounted) FocusManager.instance.primaryFocus?.unfocus();
+  }
+
+  Future<bool> _receiveAndSaveApiKey(
+    LanApiKeySession session,
+    PlayerProvider player,
+  ) async {
+    final apiKey = await session.receivedApiKey;
+    if (apiKey == null) return false;
+    await player.setApiKey(apiKey);
+    if (!mounted) return true;
+    setState(() {
+      _apiKeyController.text = apiKey;
+      _apiKeyEdited = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('手机提交的 API Key 已保存'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+    return true;
   }
 
   @override
@@ -1271,6 +1322,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     label: const Text('保存'),
                   ),
                   OutlinedButton.icon(
+                    key: const ValueKey('api-key-qr-input'),
+                    onPressed: () =>
+                        _showApiKeyQrInput(context.read<PlayerProvider>()),
+                    icon: const Icon(Icons.qr_code_scanner_rounded),
+                    label: const Text('手机扫码输入'),
+                  ),
+                  OutlinedButton.icon(
                     onPressed: () => _showApiKeyHelp(context),
                     icon: const Icon(Icons.help_outline),
                     label: const Text('如何获取？'),
@@ -1527,6 +1585,145 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ApiKeyQrDialog extends StatelessWidget {
+  final LanApiKeySession session;
+  final Future<bool> saveFuture;
+
+  const _ApiKeyQrDialog({required this.session, required this.saveFuture});
+
+  @override
+  Widget build(BuildContext context) {
+    final layout = AppLayout.fromContext(context);
+    final compact = layout.isCompactLandscape;
+    final qrSize = compact ? 150.0 : 210.0;
+    final status = FutureBuilder<bool>(
+      future: saveFuture,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return const _ApiKeyQrStatus(
+            icon: Icons.error_outline_rounded,
+            message: '保存失败，请关闭后重试',
+            color: Colors.redAccent,
+          );
+        }
+        if (snapshot.connectionState == ConnectionState.done) {
+          return _ApiKeyQrStatus(
+            icon: snapshot.data == true
+                ? Icons.check_circle_outline_rounded
+                : Icons.timer_off_outlined,
+            message: snapshot.data == true ? 'API Key 已保存到车机' : '本次扫码输入已结束',
+            color: snapshot.data == true
+                ? AppColors.primary
+                : AppColors.textHint,
+          );
+        }
+        return const _ApiKeyQrStatus(
+          icon: Icons.phone_android_rounded,
+          message: '手机扫码后输入 Key 并提交',
+          color: AppColors.primary,
+        );
+      },
+    );
+
+    final qrCode = Container(
+      padding: const EdgeInsets.all(10),
+      color: Colors.white,
+      child: QrImageView(
+        key: const ValueKey('api-key-qr-code'),
+        data: session.url,
+        version: QrVersions.auto,
+        size: qrSize,
+        backgroundColor: Colors.white,
+      ),
+    );
+    final details = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          '扫码输入 API Key',
+          style: TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: layout.sectionTitleSize,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 10),
+        status,
+        const SizedBox(height: 10),
+        Text(
+          '手机与车机需连接同一个 Wi-Fi，二维码约 10 分钟后失效。',
+          style: TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: layout.secondarySize,
+          ),
+        ),
+        const SizedBox(height: 14),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            key: const ValueKey('api-key-qr-close'),
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.close_rounded),
+            label: const Text('关闭'),
+          ),
+        ),
+      ],
+    );
+
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: Padding(
+          padding: EdgeInsets.all(compact ? 12 : 20),
+          child: MediaQuery.orientationOf(context) == Orientation.landscape
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    qrCode,
+                    SizedBox(width: compact ? 12 : 20),
+                    Flexible(child: details),
+                  ],
+                )
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [qrCode, const SizedBox(height: 16), details],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ApiKeyQrStatus extends StatelessWidget {
+  final IconData icon;
+  final String message;
+  final Color color;
+
+  const _ApiKeyQrStatus({
+    required this.icon,
+    required this.message,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, color: color, size: 22),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            message,
+            key: const ValueKey('api-key-qr-status'),
+            style: TextStyle(color: AppColors.textPrimary),
+          ),
+        ),
+      ],
     );
   }
 }
