@@ -331,15 +331,6 @@ class _SearchScreenState extends State<SearchScreen>
               color: AppColors.textPrimary,
             ),
           ),
-          const Spacer(),
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(
-              color: AppColors.primary,
-              shape: BoxShape.circle,
-            ),
-          ),
         ],
       ),
     );
