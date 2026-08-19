@@ -4,6 +4,7 @@ import '../models/song.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import 'cover_hero_tags.dart';
+import 'remote_focusable.dart';
 import 'smart_cover.dart';
 
 /// 收藏歌单卡片：封面在上，歌单名和创建者在下。
@@ -37,8 +38,9 @@ class FavoritePlaylistCard extends StatelessWidget {
       child: Material(
         color: Colors.transparent,
         borderRadius: BorderRadius.circular(AppRadius.card),
-        child: InkWell(
-          onTap: onTap,
+        child: RemoteFocusable(
+          onPressed: onTap,
+          semanticLabel: '打开歌单 ${playlist.name}',
           borderRadius: BorderRadius.circular(AppRadius.card),
           child: Padding(
             padding: const EdgeInsets.only(bottom: 6),

@@ -152,6 +152,8 @@ class AppTheme {
         onSurface: textPrimary,
       ),
       scaffoldBackgroundColor: background,
+      focusColor: AppColors.primary.withValues(alpha: 0.28),
+      hoverColor: AppColors.primary.withValues(alpha: 0.12),
       fontFamily: 'PingFang SC',
       fontFamilyFallback: const [
         'Noto Sans CJK SC',

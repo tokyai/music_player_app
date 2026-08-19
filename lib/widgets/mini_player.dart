@@ -8,6 +8,7 @@ import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 import 'cover_hero_tags.dart';
+import 'remote_focusable.dart';
 import 'smart_cover.dart';
 
 /// 迷你播放器（底部悬浮圆角卡片）
@@ -35,96 +36,103 @@ class MiniPlayer extends StatelessWidget {
     final coverSize = layout.songCoverSize;
     final songKey = '${song.platform.code}:${song.id}';
 
-    return GestureDetector(
-      key: ValueKey('mini-player-$songKey'),
-      onTap: () => Navigator.push(context, PlayerScreen.route(context)),
-      child: Container(
-        margin: EdgeInsets.fromLTRB(
-          compact ? 8 : 12,
-          compact ? 2 : 4,
-          compact ? 8 : 12,
-          compact ? 3 : 6,
-        ),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(AppRadius.card),
-          border: Border.all(color: AppColors.outline),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.cardShadow,
-              blurRadius: 14,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _MiniProgressBar(platformColor: platformColor),
-            Padding(
-              padding: EdgeInsets.symmetric(
-                horizontal: compact ? 10 : 12,
-                vertical: compact ? 5 : 8,
+    void openPlayer() => Navigator.push(context, PlayerScreen.route(context));
+    return RemoteFocusable(
+      onPressed: openPlayer,
+      semanticLabel: '打开正在播放的歌曲',
+      borderRadius: BorderRadius.circular(AppRadius.card),
+      child: GestureDetector(
+        key: ValueKey('mini-player-$songKey'),
+        behavior: HitTestBehavior.opaque,
+        onTap: openPlayer,
+        child: Container(
+          margin: EdgeInsets.fromLTRB(
+            compact ? 8 : 12,
+            compact ? 2 : 4,
+            compact ? 8 : 12,
+            compact ? 3 : 6,
+          ),
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(AppRadius.card),
+            border: Border.all(color: AppColors.outline),
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.cardShadow,
+                blurRadius: 14,
+                offset: const Offset(0, 4),
               ),
-              child: Row(
-                children: [
-                  Hero(
-                    tag: playerCoverHeroTag(song.platform, song.id),
-                    transitionOnUserGestures: true,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(AppRadius.media),
-                      child: SizedBox(
-                        width: coverSize,
-                        height: coverSize,
-                        child:
-                            song.coverUrl != null && song.coverUrl!.isNotEmpty
-                            ? SmartCover(
-                                url: song.coverUrl,
-                                fit: BoxFit.cover,
-                                placeholder: () =>
-                                    _defaultCover(song, platformColor),
-                              )
-                            : _defaultCover(song, platformColor),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _MiniProgressBar(platformColor: platformColor),
+              Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: compact ? 10 : 12,
+                  vertical: compact ? 5 : 8,
+                ),
+                child: Row(
+                  children: [
+                    Hero(
+                      tag: playerCoverHeroTag(song.platform, song.id),
+                      transitionOnUserGestures: true,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(AppRadius.media),
+                        child: SizedBox(
+                          width: coverSize,
+                          height: coverSize,
+                          child:
+                              song.coverUrl != null && song.coverUrl!.isNotEmpty
+                              ? SmartCover(
+                                  url: song.coverUrl,
+                                  fit: BoxFit.cover,
+                                  placeholder: () =>
+                                      _defaultCover(song, platformColor),
+                                )
+                              : _defaultCover(song, platformColor),
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          song.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: layout.songTitleSize,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.textPrimary,
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            song.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: layout.songTitleSize,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.textPrimary,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          '${song.platform.label} · ${song.artist}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: layout.songSubtitleSize,
-                            color: AppColors.textSecondary,
+                          const SizedBox(height: 2),
+                          Text(
+                            '${song.platform.label} · ${song.artist}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: layout.songSubtitleSize,
+                              color: AppColors.textSecondary,
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                  _MiniPlaybackControls(
-                    loading: song.loading,
-                    compact: compact,
-                  ),
-                ],
+                    _MiniPlaybackControls(
+                      loading: song.loading,
+                      compact: compact,
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

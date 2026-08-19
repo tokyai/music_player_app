@@ -10,6 +10,7 @@ import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 import '../widgets/cover_hero_tags.dart';
+import '../widgets/remote_focusable.dart';
 import '../widgets/smart_cover.dart';
 import '../widgets/song_tile.dart';
 import 'playlist_detail_screen.dart';
@@ -735,8 +736,10 @@ class _SearchScreenState extends State<SearchScreen>
             itemCount: playlists.length,
             itemBuilder: (ctx, i) {
               final p = playlists[i];
-              return GestureDetector(
-                onTap: () {
+              return RemoteFocusable(
+                semanticLabel: '打开歌单 ${p.name}',
+                borderRadius: BorderRadius.circular(AppRadius.card),
+                onPressed: () {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
@@ -1063,8 +1066,10 @@ class _SearchScreenState extends State<SearchScreen>
             spacing: 8,
             runSpacing: 8,
             children: _hotSearches.map((suggestion) {
-              return GestureDetector(
-                onTap: () => unawaited(_search(suggestion.keyword)),
+              return RemoteFocusable(
+                semanticLabel: '搜索 ${suggestion.keyword}',
+                borderRadius: BorderRadius.circular(AppRadius.control),
+                onPressed: () => unawaited(_search(suggestion.keyword)),
                 child: Container(
                   padding: EdgeInsets.symmetric(
                     horizontal: compact ? 9 : 13,

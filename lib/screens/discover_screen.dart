@@ -9,6 +9,7 @@ import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 import '../widgets/favorite_playlist_card.dart';
+import '../widgets/remote_focusable.dart';
 import '../widgets/song_tile.dart';
 import '../widgets/smart_cover.dart';
 import 'favorites_screen.dart';
@@ -711,9 +712,10 @@ class _FavoriteSongCard extends StatelessWidget {
     final cardSize = this.cardSize ?? layout.mediaCardWidth;
     final compactPreview = cardSize < layout.mediaCardWidth;
     final platformColor = PlatformColors.of(song.platform);
-    return InkWell(
+    return RemoteFocusable(
       key: ValueKey('home-favorite-${song.platform.code}-${song.id}'),
-      onTap: onTap,
+      onPressed: onTap,
+      semanticLabel: '播放 ${song.name}',
       borderRadius: BorderRadius.circular(AppRadius.card),
       child: Container(
         width: cardSize,

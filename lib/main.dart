@@ -20,6 +20,7 @@ import 'theme/app_motion.dart';
 import 'theme/app_theme.dart';
 import 'utils/system_ui.dart';
 import 'widgets/mini_player.dart';
+import 'widgets/remote_focusable.dart';
 
 final _navigatorKey = GlobalKey<NavigatorState>();
 
@@ -90,12 +91,15 @@ class MusicPlayerApp extends StatelessWidget {
               }
               // 在车机大屏上统一放大未显式使用 AppLayout 尺寸令牌的文字，
               // 同时合并系统无障碍字号和用户设置的整体字号比例。
-              return MediaQuery(
-                data: AppLayout.adaptiveMediaQueryOf(
-                  context,
-                  fontScale: themeCtrl.fontScale,
+              return TvRemoteScope(
+                navigatorKey: _navigatorKey,
+                child: MediaQuery(
+                  data: AppLayout.adaptiveMediaQueryOf(
+                    context,
+                    fontScale: themeCtrl.fontScale,
+                  ),
+                  child: child!,
                 ),
-                child: child!,
               );
             },
             home: const MainScreen(),
@@ -297,7 +301,7 @@ class _MainScreenState extends State<MainScreen>
                           NavigationRailDestination(
                             icon: Icon(Icons.explore_outlined),
                             selectedIcon: Icon(Icons.explore),
-                            label: Text('发现'),
+                            label: Focus(autofocus: true, child: Text('发现')),
                           ),
                           NavigationRailDestination(
                             icon: Icon(Icons.search_outlined),

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
@@ -17,6 +18,7 @@ import '../theme/lyric_style.dart';
 import '../utils/color_extractor.dart';
 import '../utils/system_ui.dart';
 import '../widgets/cover_hero_tags.dart';
+import '../widgets/remote_focusable.dart';
 import '../widgets/smart_cover.dart';
 import 'video_player_screen.dart';
 
@@ -1523,36 +1525,61 @@ class _PlayerScreenState extends State<PlayerScreen> {
     required ValueChanged<double> onDragUpdate,
     required VoidCallback onDragEnd,
   }) {
+    const keyboardStep = 24.0;
+    void adjust(double delta) {
+      onDragUpdate(delta);
+      onDragEnd();
+    }
+
     return Semantics(
       label: '播放页左右分栏比例',
       value: '左侧 ${(ratio * 100).round()}%',
-      child: MouseRegion(
-        cursor: SystemMouseCursors.resizeColumn,
-        child: GestureDetector(
-          key: const ValueKey('landscape-player-divider'),
-          behavior: HitTestBehavior.opaque,
-          onHorizontalDragUpdate: (details) => onDragUpdate(details.delta.dx),
-          onHorizontalDragEnd: (_) => onDragEnd(),
-          onHorizontalDragCancel: onDragEnd,
-          child: SizedBox(
-            width: width,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                Container(
-                  width: 1,
-                  margin: const EdgeInsets.symmetric(vertical: 8),
-                  color: color.withValues(alpha: 0.16),
-                ),
-                Container(
-                  width: 5,
-                  height: 58,
-                  decoration: BoxDecoration(
-                    color: color.withValues(alpha: 0.32),
-                    borderRadius: BorderRadius.circular(3),
+      increasedValue: '左侧区域加宽',
+      decreasedValue: '左侧区域缩窄',
+      onIncrease: () => adjust(keyboardStep),
+      onDecrease: () => adjust(-keyboardStep),
+      child: RemoteFocusable(
+        onKeyEvent: (_, event) {
+          final isPress = event is KeyDownEvent || event is KeyRepeatEvent;
+          if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+            if (isPress) adjust(-keyboardStep);
+            return KeyEventResult.handled;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+            if (isPress) adjust(keyboardStep);
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        },
+        borderRadius: BorderRadius.circular(6),
+        child: MouseRegion(
+          cursor: SystemMouseCursors.resizeColumn,
+          child: GestureDetector(
+            key: const ValueKey('landscape-player-divider'),
+            behavior: HitTestBehavior.opaque,
+            onHorizontalDragUpdate: (details) => onDragUpdate(details.delta.dx),
+            onHorizontalDragEnd: (_) => onDragEnd(),
+            onHorizontalDragCancel: onDragEnd,
+            child: SizedBox(
+              width: width,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Container(
+                    width: 1,
+                    margin: const EdgeInsets.symmetric(vertical: 8),
+                    color: color.withValues(alpha: 0.16),
                   ),
-                ),
-              ],
+                  Container(
+                    width: 5,
+                    height: 58,
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.32),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -2295,8 +2322,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
         final coverSize = landscape
             ? (constraints.biggest.shortestSide - 32).clamp(96.0, 300.0)
             : 300.0;
-        return GestureDetector(
-          onTap: () => player.toggleShowLyric(),
+        return RemoteFocusable(
+          onPressed: player.toggleShowLyric,
+          semanticLabel: '显示歌词',
+          borderRadius: BorderRadius.circular(28),
           child: Center(
             child: Hero(
               tag: playerCoverHeroTag(song.platform, song.id),
@@ -2450,8 +2479,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 20.0,
                 52.0,
               );
-              return GestureDetector(
-                onTap: () {
+              return RemoteFocusable(
+                semanticLabel: '跳转到歌词 ${lyric.primaryText}',
+                borderRadius: BorderRadius.circular(AppRadius.small),
+                onFocusChange: (focused) {
+                  if (focused && _lyricsAutoScroll) {
+                    setState(() => _lyricsAutoScroll = false);
+                  }
+                },
+                onPressed: () {
                   player.seekTo(lyric.time);
                   setState(() {
                     _lyricsAutoScroll = true;

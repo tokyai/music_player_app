@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:media_kit/media_kit.dart' as media_kit;
 import 'package:media_kit_video/media_kit_video.dart' as media_kit_video;
@@ -11,6 +12,7 @@ import '../models/song.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 import '../utils/system_ui.dart';
+import '../widgets/remote_focusable.dart';
 
 enum _MvEngine { exo, mpv }
 
@@ -347,6 +349,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   Timer? _controlsTimer;
   bool _initializing = true;
   bool _controlsVisible = true;
+  bool _topControlsFocused = false;
+  bool _bottomControlsFocused = false;
   bool _switchingEngine = false;
   bool _automaticFallbackUsed = false;
   String? _initializationError;
@@ -626,10 +630,43 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   void _scheduleControlsHide() {
     _controlsTimer?.cancel();
-    if (!_controller.isPlaying) return;
+    if (!_controller.isPlaying || _controlsHaveFocus) return;
     _controlsTimer = Timer(const Duration(seconds: 4), () {
-      if (mounted) setState(() => _controlsVisible = false);
+      if (mounted && !_controlsHaveFocus) {
+        setState(() => _controlsVisible = false);
+      }
     });
+  }
+
+  bool get _controlsHaveFocus => _topControlsFocused || _bottomControlsFocused;
+
+  void _handleControlsFocus({required bool top, required bool focused}) {
+    if (top) {
+      _topControlsFocused = focused;
+    } else {
+      _bottomControlsFocused = focused;
+    }
+    if (focused) {
+      _showControls();
+    } else if (!_controlsHaveFocus) {
+      _scheduleControlsHide();
+    }
+  }
+
+  KeyEventResult _handleRemoteKey(FocusNode _, KeyEvent event) {
+    final isPress = event is KeyDownEvent || event is KeyRepeatEvent;
+    if (event.logicalKey == LogicalKeyboardKey.mediaPlayPause) {
+      if (isPress && _controller.isInitialized) unawaited(_togglePlayback());
+      return KeyEventResult.handled;
+    }
+    if (isPress &&
+        (event.logicalKey == LogicalKeyboardKey.arrowUp ||
+            event.logicalKey == LogicalKeyboardKey.arrowDown ||
+            event.logicalKey == LogicalKeyboardKey.arrowLeft ||
+            event.logicalKey == LogicalKeyboardKey.arrowRight)) {
+      _showControls();
+    }
+    return KeyEventResult.ignored;
   }
 
   Future<void> _togglePlayback() async {
@@ -673,9 +710,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       key: const ValueKey('built-in-mv-player'),
       backgroundColor: Colors.black,
       body: SafeArea(
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: _controller.isInitialized ? _toggleControls : null,
+        child: RemoteFocusable(
+          autofocus: true,
+          enabled: true,
+          onKeyEvent: _handleRemoteKey,
+          onPressed: _controller.isInitialized ? _toggleControls : null,
+          semanticLabel: '视频播放区域',
+          borderRadius: BorderRadius.zero,
           child: Stack(
             fit: StackFit.expand,
             children: [
@@ -743,69 +784,78 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Widget _buildTopControls(bool compact) {
-    return IgnorePointer(
-      ignoring: !_controlsVisible,
-      child: AnimatedOpacity(
-        opacity: _controlsVisible ? 1 : 0,
-        duration: AppMotion.resolve(context, AppMotion.state),
-        child: Align(
-          alignment: Alignment.topCenter,
-          child: Container(
-            padding: EdgeInsets.fromLTRB(
-              compact ? 4 : 12,
-              compact ? 2 : 8,
-              compact ? 8 : 16,
-              compact ? 18 : 28,
-            ),
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Color(0xD9000000), Color(0x00000000)],
-              ),
-            ),
-            child: Row(
-              children: [
-                IconButton(
-                  key: const ValueKey('mv-player-back'),
-                  tooltip: '返回',
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.arrow_back_rounded),
-                  color: Colors.white,
-                  iconSize: compact ? 26 : 32,
+    return ExcludeFocus(
+      excluding: !_controlsVisible,
+      child: Focus(
+        canRequestFocus: false,
+        onFocusChange: (focused) =>
+            _handleControlsFocus(top: true, focused: focused),
+        child: IgnorePointer(
+          ignoring: !_controlsVisible,
+          child: AnimatedOpacity(
+            opacity: _controlsVisible ? 1 : 0,
+            duration: AppMotion.resolve(context, AppMotion.state),
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: Container(
+                padding: EdgeInsets.fromLTRB(
+                  compact ? 4 : 12,
+                  compact ? 2 : 8,
+                  compact ? 8 : 16,
+                  compact ? 18 : 28,
                 ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        widget.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: compact ? 17 : 22,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      Text(
-                        [
-                          if (widget.artist.trim().isNotEmpty) widget.artist,
-                          _controller.label,
-                        ].join(' · '),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: Colors.white70,
-                          fontSize: compact ? 13 : 16,
-                        ),
-                      ),
-                    ],
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Color(0xD9000000), Color(0x00000000)],
                   ),
                 ),
-              ],
+                child: Row(
+                  children: [
+                    IconButton(
+                      key: const ValueKey('mv-player-back'),
+                      tooltip: '返回',
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.arrow_back_rounded),
+                      color: Colors.white,
+                      iconSize: compact ? 26 : 32,
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            widget.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: compact ? 17 : 22,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          Text(
+                            [
+                              if (widget.artist.trim().isNotEmpty)
+                                widget.artist,
+                              _controller.label,
+                            ].join(' · '),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: compact ? 13 : 16,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
         ),
@@ -816,87 +866,97 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   Widget _buildBottomControls(bool compact) {
     final durationMs = _controller.duration.inMilliseconds.clamp(1, 1 << 31);
     final positionMs = _controller.position.inMilliseconds.clamp(0, durationMs);
-    return IgnorePointer(
-      ignoring: !_controlsVisible,
-      child: AnimatedOpacity(
-        opacity: _controlsVisible ? 1 : 0,
-        duration: AppMotion.resolve(context, AppMotion.state),
-        child: Align(
-          alignment: Alignment.bottomCenter,
-          child: Container(
-            padding: EdgeInsets.fromLTRB(
-              compact ? 8 : 18,
-              compact ? 18 : 28,
-              compact ? 8 : 18,
-              compact ? 4 : 10,
-            ),
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Color(0x00000000), Color(0xE6000000)],
-              ),
-            ),
-            child: Row(
-              children: [
-                IconButton(
-                  tooltip: '快退 10 秒',
-                  onPressed: () => _seekRelative(const Duration(seconds: -10)),
-                  icon: const Icon(Icons.replay_10_rounded),
-                  color: Colors.white,
-                  iconSize: compact ? 25 : 31,
+    return ExcludeFocus(
+      excluding: !_controlsVisible,
+      child: Focus(
+        canRequestFocus: false,
+        onFocusChange: (focused) =>
+            _handleControlsFocus(top: false, focused: focused),
+        child: IgnorePointer(
+          ignoring: !_controlsVisible,
+          child: AnimatedOpacity(
+            opacity: _controlsVisible ? 1 : 0,
+            duration: AppMotion.resolve(context, AppMotion.state),
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: Container(
+                padding: EdgeInsets.fromLTRB(
+                  compact ? 8 : 18,
+                  compact ? 18 : 28,
+                  compact ? 8 : 18,
+                  compact ? 4 : 10,
                 ),
-                IconButton(
-                  tooltip: _controller.isPlaying ? '暂停' : '播放',
-                  onPressed: _togglePlayback,
-                  icon: AppAnimatedIcon(
-                    stateKey: _controller.isPlaying,
-                    child: Icon(
-                      _controller.isPlaying
-                          ? Icons.pause_circle_filled_rounded
-                          : Icons.play_circle_fill_rounded,
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Color(0x00000000), Color(0xE6000000)],
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    IconButton(
+                      tooltip: '快退 10 秒',
+                      onPressed: () =>
+                          _seekRelative(const Duration(seconds: -10)),
+                      icon: const Icon(Icons.replay_10_rounded),
+                      color: Colors.white,
+                      iconSize: compact ? 25 : 31,
                     ),
-                  ),
-                  color: Colors.white,
-                  iconSize: compact ? 35 : 44,
-                ),
-                IconButton(
-                  tooltip: '快进 10 秒',
-                  onPressed: () => _seekRelative(const Duration(seconds: 10)),
-                  icon: const Icon(Icons.forward_10_rounded),
-                  color: Colors.white,
-                  iconSize: compact ? 25 : 31,
-                ),
-                Text(
-                  _formatDuration(_controller.position),
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: compact ? 12 : 15,
-                  ),
-                ),
-                Expanded(
-                  child: Slider(
-                    value: positionMs.toDouble(),
-                    max: durationMs.toDouble(),
-                    onChanged: (next) {
-                      unawaited(
-                        _controller.seekTo(
-                          Duration(milliseconds: next.round()),
+                    IconButton(
+                      tooltip: _controller.isPlaying ? '暂停' : '播放',
+                      onPressed: _togglePlayback,
+                      icon: AppAnimatedIcon(
+                        stateKey: _controller.isPlaying,
+                        child: Icon(
+                          _controller.isPlaying
+                              ? Icons.pause_circle_filled_rounded
+                              : Icons.play_circle_fill_rounded,
                         ),
-                      );
-                    },
-                    onChangeStart: (_) => _showControls(),
-                    onChangeEnd: (_) => _scheduleControlsHide(),
-                  ),
+                      ),
+                      color: Colors.white,
+                      iconSize: compact ? 35 : 44,
+                    ),
+                    IconButton(
+                      tooltip: '快进 10 秒',
+                      onPressed: () =>
+                          _seekRelative(const Duration(seconds: 10)),
+                      icon: const Icon(Icons.forward_10_rounded),
+                      color: Colors.white,
+                      iconSize: compact ? 25 : 31,
+                    ),
+                    Text(
+                      _formatDuration(_controller.position),
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: compact ? 12 : 15,
+                      ),
+                    ),
+                    Expanded(
+                      child: Slider(
+                        value: positionMs.toDouble(),
+                        max: durationMs.toDouble(),
+                        onChanged: (next) {
+                          unawaited(
+                            _controller.seekTo(
+                              Duration(milliseconds: next.round()),
+                            ),
+                          );
+                        },
+                        onChangeStart: (_) => _showControls(),
+                        onChangeEnd: (_) => _scheduleControlsHide(),
+                      ),
+                    ),
+                    Text(
+                      _formatDuration(_controller.duration),
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: compact ? 12 : 15,
+                      ),
+                    ),
+                  ],
                 ),
-                Text(
-                  _formatDuration(_controller.duration),
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: compact ? 12 : 15,
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
         ),
