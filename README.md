@@ -142,110 +142,25 @@ IOS_EXPORT_METHOD=app-store \
 
 本项目仅供学习交流使用，不提供任何音乐内容服务。所有音乐版权归原作者所有，请支持正版音乐。
 
-Mac 安装 Flutter 和 CocoaPods
-前置准备
-安装 Homebrew（macOS 包管理器）
-如果还没装过 Homebrew，先装它：
-bash
+第一步：修复并更新 Homebrew
+在终端中复制并运行以下命令（修复你 26.5.2 系统版本导致的报错）：
+cd /opt/homebrew && git fetch --all && git reset --hard origin/master
+brew update
 
-编辑
-
-
-
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-安装完成后根据终端提示，把 brew 加入 PATH（M 系列芯片通常需要）：
-bash
-
-编辑
-
-
-
-echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
-eval "$(/opt/homebrew/bin/brew shellenv)"
-安装 Xcode
-从 App Store 搜索 Xcode 安装即可（免费下载），安装完成后执行：
-bash
-
-编辑
-
-
-
-sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
-sudo xcodebuild -license accept
-安装 Flutter
-方式一：用 Homebrew 安装（推荐）
-bash
-
-编辑
-
-
-
-brew install --cask flutter
-方式二：手动下载
-前往 Flutter 官网 下载 macOS 版本
-解压到你想放的位置，比如 ~/development/flutter
-把 Flutter 加入 PATH：
-bash
-
-编辑
-
-
-
-echo 'export PATH="$HOME/development/flutter/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-国内用户配置镜像源
-由于网络原因，国内需要配置镜像：
-bash
-
-编辑
-
-
-
+第二步：配置 Flutter 国内镜像（防止下载卡死）
+因为国内网络原因，直接安装 Flutter 容易卡在拉取依赖上。请运行以下命令配置官方国内镜像：
+export PUB_HOSTED_URL="https://pub.flutter-io.cn"
+export FLUTTER_STORAGE_BASE_URL="https://storage.flutter-io.cn"
 echo 'export PUB_HOSTED_URL="https://pub.flutter-io.cn"' >> ~/.zshrc
 echo 'export FLUTTER_STORAGE_BASE_URL="https://storage.flutter-io.cn"' >> ~/.zshrc
-source ~/.zshrc
-验证安装
-bash
 
-编辑
+第三步：安装 Flutter 和 CocoaPods
+# 1. 安装 Flutter
+brew install --cask flutter
 
+# 2. 安装 CocoaPods (用于管理 iOS 依赖)
+sudo gem install cocoapods
 
-
+第四步：验证环境
+安装完成后，运行以下命令查看是否一切正常：
 flutter doctor
-这个命令会检查所有依赖项的状态，按提示修复标红的项目即可。
-安装 CocoaPods
-bash
-
-编辑
-
-
-
-brew install cocoapods
-验证：
-bash
-
-编辑
-
-
-
-pod --version
-最终验证
-全部装完后，再跑一次：
-bash
-
-编辑
-
-
-
-flutter doctor
-正常情况下你应该看到类似输出：
-文本
-
-编辑
-
-
-
-[✓] Flutter (Channel stable, x.x.x)
-[✓] Xcode - develop for iOS and macOS
-[✓] CocoaPods
-全部打 ✓ 就说明环境就绪，可以重新执行你的 build_ipa.sh 脚本了。
