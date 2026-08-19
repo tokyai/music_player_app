@@ -197,21 +197,26 @@ class _LyricSearchDialogState extends State<_LyricSearchDialog> {
                 horizontal: compact ? 14 : 20,
                 vertical: compact ? 2 : 6,
               ),
-              child: TextField(
-                key: const ValueKey('lyric-search-field'),
+              child: RemoteTextFieldTraversal(
                 controller: _queryController,
-                autofocus: false,
-                textInputAction: TextInputAction.search,
-                enabled: _applyingId == null,
-                onSubmitted: (_) => _search(),
-                decoration: InputDecoration(
-                  hintText: '歌曲名',
-                  prefixIcon: const Icon(Icons.search_rounded),
-                  suffixIcon: IconButton(
-                    key: const ValueKey('lyric-search-submit'),
-                    tooltip: '搜索歌词',
-                    onPressed: _loading || _applyingId != null ? null : _search,
-                    icon: const Icon(Icons.arrow_forward_rounded),
+                child: TextField(
+                  key: const ValueKey('lyric-search-field'),
+                  controller: _queryController,
+                  autofocus: false,
+                  textInputAction: TextInputAction.search,
+                  enabled: _applyingId == null,
+                  onSubmitted: (_) => _search(),
+                  decoration: InputDecoration(
+                    hintText: '歌曲名',
+                    prefixIcon: const Icon(Icons.search_rounded),
+                    suffixIcon: IconButton(
+                      key: const ValueKey('lyric-search-submit'),
+                      tooltip: '搜索歌词',
+                      onPressed: _loading || _applyingId != null
+                          ? null
+                          : _search,
+                      icon: const Icon(Icons.arrow_forward_rounded),
+                    ),
                   ),
                 ),
               ),
@@ -2040,11 +2045,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
             const SizedBox(height: 18),
             _buildBilibiliSectionTitle('视频简介', null, textColor, subColor),
             const SizedBox(height: 8),
-            SelectableText(
-              song.bilibiliDescription?.trim().isNotEmpty == true
-                  ? song.bilibiliDescription!.trim()
-                  : '暂无简介',
-              style: TextStyle(color: subColor, height: 1.55),
+            RemoteTextFieldTraversal(
+              child: SelectableText(
+                song.bilibiliDescription?.trim().isNotEmpty == true
+                    ? song.bilibiliDescription!.trim()
+                    : '暂无简介',
+                style: TextStyle(color: subColor, height: 1.55),
+              ),
             ),
           ],
         ),

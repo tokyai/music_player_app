@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/song.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
+import 'remote_focusable.dart';
 
 /// 歌单导入对话框（支持 QQ音乐 / 网易云）
 class PlaylistImportDialog extends StatefulWidget {
@@ -88,22 +89,27 @@ class _PlaylistImportDialogState extends State<PlaylistImportDialog> {
                 style: TextStyle(fontSize: layout.bodySize, height: 1.35),
               ),
               const SizedBox(height: 16),
-              TextFormField(
+              RemoteTextFieldTraversal(
                 controller: _controller,
-                decoration: InputDecoration(
-                  labelText: isQQ ? 'QQ 歌单链接 / ID' : '歌单 ID',
-                  border: const OutlineInputBorder(),
-                  hintText: isQQ ? '粘贴链接或输入 ID' : '例如: 5202687076',
+                child: TextFormField(
+                  controller: _controller,
+                  decoration: InputDecoration(
+                    labelText: isQQ ? 'QQ 歌单链接 / ID' : '歌单 ID',
+                    border: const OutlineInputBorder(),
+                    hintText: isQQ ? '粘贴链接或输入 ID' : '例如: 5202687076',
+                  ),
+                  keyboardType: TextInputType.url,
+                  validator: (v) {
+                    if (v == null || v.trim().isEmpty) {
+                      return '请输入歌单 ID 或链接';
+                    }
+                    final id = _extractId(v);
+                    if (!RegExp(r'^\d{5,}$').hasMatch(id)) {
+                      return '请输入有效的歌单 ID 或链接';
+                    }
+                    return null;
+                  },
                 ),
-                keyboardType: TextInputType.url,
-                validator: (v) {
-                  if (v == null || v.trim().isEmpty) return '请输入歌单 ID 或链接';
-                  final id = _extractId(v);
-                  if (!RegExp(r'^\d{5,}$').hasMatch(id)) {
-                    return '请输入有效的歌单 ID 或链接';
-                  }
-                  return null;
-                },
               ),
             ],
           ),

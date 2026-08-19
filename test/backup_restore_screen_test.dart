@@ -36,6 +36,8 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byKey(const ValueKey('backup-file-export')), findsOneWidget);
+      expect(find.byKey(const ValueKey('backup-copy-json')), findsOneWidget);
+      expect(find.byKey(const ValueKey('backup-paste-json')), findsOneWidget);
       expect(find.byKey(const ValueKey('backup-lan-start')), findsOneWidget);
       expect(find.byKey(const ValueKey('backup-webdav-url')), findsOneWidget);
       expect(

@@ -358,38 +358,41 @@ class _SearchScreenState extends State<SearchScreen>
         optionsViewOpenDirection: OptionsViewOpenDirection.mostSpace,
         optionsViewBuilder: _buildSuggestionOptions,
         fieldViewBuilder: (context, textController, focusNode, _) {
-          return TextField(
-            key: const ValueKey('search-field'),
+          return RemoteTextFieldTraversal(
             controller: textController,
-            focusNode: focusNode,
-            decoration: InputDecoration(
-              hintText: '搜索歌曲、歌手...',
-              prefixIcon: Icon(Icons.search, color: AppColors.textSecondary),
-              suffixIcon: textController.text.isNotEmpty
-                  ? IconButton(
-                      tooltip: '清空输入',
-                      icon: Icon(
-                        Icons.clear,
-                        size: layout.isCompactLandscape ? 24 : 28,
-                        color: AppColors.textSecondary,
-                      ),
-                      onPressed: _clearSearch,
-                    )
-                  : null,
-              hintStyle: TextStyle(
-                color: AppColors.textHint,
-                fontSize: layout.bodySize,
+            child: TextField(
+              key: const ValueKey('search-field'),
+              controller: textController,
+              focusNode: focusNode,
+              decoration: InputDecoration(
+                hintText: '搜索歌曲、歌手...',
+                prefixIcon: Icon(Icons.search, color: AppColors.textSecondary),
+                suffixIcon: textController.text.isNotEmpty
+                    ? IconButton(
+                        tooltip: '清空输入',
+                        icon: Icon(
+                          Icons.clear,
+                          size: layout.isCompactLandscape ? 24 : 28,
+                          color: AppColors.textSecondary,
+                        ),
+                        onPressed: _clearSearch,
+                      )
+                    : null,
+                hintStyle: TextStyle(
+                  color: AppColors.textHint,
+                  fontSize: layout.bodySize,
+                ),
               ),
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: layout.bodySize,
+                height: 1.2,
+              ),
+              textInputAction: TextInputAction.search,
+              onSubmitted: (value) => unawaited(_search(value)),
+              onChanged: _handleQueryChanged,
+              onTapOutside: (_) => focusNode.unfocus(),
             ),
-            style: TextStyle(
-              color: AppColors.textPrimary,
-              fontSize: layout.bodySize,
-              height: 1.2,
-            ),
-            textInputAction: TextInputAction.search,
-            onSubmitted: (value) => unawaited(_search(value)),
-            onChanged: _handleQueryChanged,
-            onTapOutside: (_) => focusNode.unfocus(),
           );
         },
       ),

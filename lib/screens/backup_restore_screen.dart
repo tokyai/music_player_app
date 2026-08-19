@@ -13,6 +13,7 @@ import '../services/webdav_backup_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
+import '../widgets/remote_focusable.dart';
 
 class BackupRestoreScreen extends StatefulWidget {
   const BackupRestoreScreen({super.key});
@@ -150,12 +151,15 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('粘贴备份 JSON'),
-        content: TextField(
+        content: RemoteTextFieldTraversal(
           controller: controller,
-          autofocus: true,
-          minLines: 6,
-          maxLines: 12,
-          decoration: const InputDecoration(hintText: 'JSON 内容'),
+          child: TextField(
+            controller: controller,
+            autofocus: true,
+            minLines: 6,
+            maxLines: 12,
+            decoration: const InputDecoration(hintText: 'JSON 内容'),
+          ),
         ),
         actions: [
           TextButton(
@@ -199,6 +203,31 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         _status = '导出失败：$error';
         _statusError = true;
       });
+    }
+  }
+
+  Future<void> _copyBackupJson() async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _status = null;
+    });
+    try {
+      await _prepareExport();
+      await Clipboard.setData(ClipboardData(text: _backupJson()));
+      if (mounted) _showStatus('备份 JSON 已复制');
+    } catch (error) {
+      if (mounted) _showStatus('复制失败：$error', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _importPastedJson() async {
+    if (_busy) return;
+    final raw = await _showPasteDialog();
+    if (raw != null && raw.trim().isNotEmpty) {
+      await _restoreRaw(raw, source: '粘贴内容');
     }
   }
 
@@ -444,6 +473,18 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
                     icon: const Icon(Icons.file_open_outlined),
                     label: const Text('导入备份'),
                   ),
+                  OutlinedButton.icon(
+                    key: const ValueKey('backup-copy-json'),
+                    onPressed: _busy ? null : _copyBackupJson,
+                    icon: const Icon(Icons.content_copy_rounded),
+                    label: const Text('复制 JSON'),
+                  ),
+                  OutlinedButton.icon(
+                    key: const ValueKey('backup-paste-json'),
+                    onPressed: _busy ? null : _importPastedJson,
+                    icon: const Icon(Icons.content_paste_rounded),
+                    label: const Text('粘贴恢复'),
+                  ),
                 ],
               ),
             ],
@@ -495,13 +536,15 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       children: [
         Text('手机浏览器打开：', style: TextStyle(fontSize: layout.bodySize)),
         const SizedBox(height: 6),
-        SelectableText(
-          session.url,
-          key: const ValueKey('backup-lan-url'),
-          style: TextStyle(
-            color: AppColors.primary,
-            fontSize: layout.bodySize,
-            fontWeight: FontWeight.w700,
+        RemoteTextFieldTraversal(
+          child: SelectableText(
+            session.url,
+            key: const ValueKey('backup-lan-url'),
+            style: TextStyle(
+              color: AppColors.primary,
+              fontSize: layout.bodySize,
+              fontWeight: FontWeight.w700,
+            ),
           ),
         ),
         const SizedBox(height: 8),
@@ -565,45 +608,57 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
                     key: const ValueKey('backup-webdav-form'),
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      TextField(
-                        key: const ValueKey('backup-webdav-url'),
+                      RemoteTextFieldTraversal(
                         controller: _urlController,
-                        keyboardType: TextInputType.url,
-                        decoration: const InputDecoration(
-                          labelText: 'WebDAV 地址',
-                          hintText: 'https://服务器:端口/路径/',
+                        child: TextField(
+                          key: const ValueKey('backup-webdav-url'),
+                          controller: _urlController,
+                          keyboardType: TextInputType.url,
+                          decoration: const InputDecoration(
+                            labelText: 'WebDAV 地址',
+                            hintText: 'https://服务器:端口/路径/',
+                          ),
                         ),
                       ),
                       const SizedBox(height: 10),
-                      TextField(
+                      RemoteTextFieldTraversal(
                         controller: _usernameController,
-                        decoration: const InputDecoration(labelText: '用户名'),
+                        child: TextField(
+                          controller: _usernameController,
+                          decoration: const InputDecoration(labelText: '用户名'),
+                        ),
                       ),
                       const SizedBox(height: 10),
-                      TextField(
+                      RemoteTextFieldTraversal(
                         controller: _passwordController,
-                        obscureText: _obscurePassword,
-                        decoration: InputDecoration(
-                          labelText: '独立 WebDAV 密码',
-                          suffixIcon: IconButton(
-                            tooltip: _obscurePassword ? '显示密码' : '隐藏密码',
-                            onPressed: () => setState(
-                              () => _obscurePassword = !_obscurePassword,
-                            ),
-                            icon: Icon(
-                              _obscurePassword
-                                  ? Icons.visibility
-                                  : Icons.visibility_off,
+                        child: TextField(
+                          controller: _passwordController,
+                          obscureText: _obscurePassword,
+                          decoration: InputDecoration(
+                            labelText: '独立 WebDAV 密码',
+                            suffixIcon: IconButton(
+                              tooltip: _obscurePassword ? '显示密码' : '隐藏密码',
+                              onPressed: () => setState(
+                                () => _obscurePassword = !_obscurePassword,
+                              ),
+                              icon: Icon(
+                                _obscurePassword
+                                    ? Icons.visibility
+                                    : Icons.visibility_off,
+                              ),
                             ),
                           ),
                         ),
                       ),
                       const SizedBox(height: 10),
-                      TextField(
+                      RemoteTextFieldTraversal(
                         controller: _fingerprintController,
-                        decoration: const InputDecoration(
-                          labelText: 'HTTPS 证书 SHA-256 指纹',
-                          hintText: '64 位十六进制，可带冒号',
+                        child: TextField(
+                          controller: _fingerprintController,
+                          decoration: const InputDecoration(
+                            labelText: 'HTTPS 证书 SHA-256 指纹',
+                            hintText: '64 位十六进制，可带冒号',
+                          ),
                         ),
                       ),
                       const SizedBox(height: 6),

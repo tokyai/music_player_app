@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../services/update_service.dart';
 import '../theme/app_theme.dart';
+import 'remote_focusable.dart';
 
 /// 弹出更新提示对话框（仿 momo 的更新体验）。
 /// [info] 为服务器返回的新版本信息。
@@ -23,9 +25,40 @@ class _UpdateDialog extends StatefulWidget {
 }
 
 class _UpdateDialogState extends State<_UpdateDialog> {
+  final _scrollController = ScrollController();
   double _progress = 0;
   bool _downloading = false;
   String? _error;
+
+  KeyEventResult _handleScrollKey(FocusNode _, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final direction = switch (event.logicalKey) {
+      LogicalKeyboardKey.arrowUp => -1.0,
+      LogicalKeyboardKey.arrowDown => 1.0,
+      _ => null,
+    };
+    if (direction == null || !_scrollController.hasClients) {
+      return KeyEventResult.ignored;
+    }
+
+    final position = _scrollController.position;
+    final step = position.viewportDimension.clamp(80.0, 240.0) * 0.7;
+    final target = (position.pixels + direction * step).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    if (target == position.pixels) return KeyEventResult.ignored;
+    _scrollController.jumpTo(target);
+    return KeyEventResult.handled;
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
 
   Future<void> _start() async {
     setState(() {
@@ -33,8 +66,10 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       _error = null;
     });
     try {
-      final path =
-          await UpdateService.downloadApk(widget.info, (received, total) {
+      final path = await UpdateService.downloadApk(widget.info, (
+        received,
+        total,
+      ) {
         if (mounted && total > 0) {
           setState(() => _progress = received / total);
         }
@@ -64,30 +99,40 @@ class _UpdateDialogState extends State<_UpdateDialog> {
     final info = widget.info;
     return AlertDialog(
       title: Text('发现新版本 v${info.versionName}'),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (info.updateLog.isNotEmpty) ...[
-                const Text('更新内容：',
-                    style: TextStyle(fontWeight: FontWeight.w600)),
-                const SizedBox(height: 6),
-                Text(info.updateLog),
-                const SizedBox(height: 12),
+      content: RemoteFocusable(
+        key: const ValueKey('update-log-scroll'),
+        autofocus: true,
+        onKeyEvent: _handleScrollKey,
+        semanticLabel: '更新内容，可使用上下键滚动',
+        borderRadius: BorderRadius.circular(4),
+        child: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            controller: _scrollController,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (info.updateLog.isNotEmpty) ...[
+                  const Text(
+                    '更新内容：',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(info.updateLog),
+                  const SizedBox(height: 12),
+                ],
+                if (_downloading) ...[
+                  LinearProgressIndicator(value: _progress),
+                  const SizedBox(height: 6),
+                  Text('下载中 ${(_progress * 100).toInt()}%'),
+                ],
+                if (_error != null)
+                  Text(
+                    _error!,
+                    style: const TextStyle(color: Colors.redAccent),
+                  ),
               ],
-              if (_downloading) ...[
-                LinearProgressIndicator(value: _progress),
-                const SizedBox(height: 6),
-                Text('下载中 ${(_progress * 100).toInt()}%'),
-              ],
-              if (_error != null)
-                Text(
-                  _error!,
-                  style: const TextStyle(color: Colors.redAccent),
-                ),
-            ],
+            ),
           ),
         ),
       ),

@@ -15,6 +15,7 @@ import '../theme/app_theme.dart';
 import '../utils/song_source_matcher.dart';
 import '../widgets/favorite_playlist_card.dart';
 import '../widgets/mini_player.dart';
+import '../widgets/remote_focusable.dart';
 import '../widgets/song_tile.dart';
 import 'backup_restore_screen.dart';
 import 'playlist_detail_screen.dart';
@@ -1149,12 +1150,15 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('粘贴收藏备份'),
-        content: TextField(
+        content: RemoteTextFieldTraversal(
           controller: controller,
-          autofocus: true,
-          minLines: 5,
-          maxLines: 10,
-          decoration: const InputDecoration(hintText: 'JSON 内容'),
+          child: TextField(
+            controller: controller,
+            autofocus: true,
+            minLines: 5,
+            maxLines: 10,
+            decoration: const InputDecoration(hintText: 'JSON 内容'),
+          ),
         ),
         actions: [
           TextButton(

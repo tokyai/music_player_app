@@ -12,6 +12,7 @@ import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../theme/lyric_style.dart';
 import '../widgets/bilibili_login_dialog.dart';
+import '../widgets/remote_focusable.dart';
 import 'backup_restore_screen.dart';
 import 'cache_list_screen.dart';
 import 'favorites_screen.dart';
@@ -1100,16 +1101,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
               const SizedBox(height: 12),
-              TextField(
+              RemoteTextFieldTraversal(
                 controller: _apiKeyController,
-                obscureText: _obscureKey,
-                onChanged: (_) => _apiKeyEdited = true,
-                decoration: InputDecoration(
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _obscureKey ? Icons.visibility : Icons.visibility_off,
+                child: TextField(
+                  controller: _apiKeyController,
+                  obscureText: _obscureKey,
+                  onChanged: (_) => _apiKeyEdited = true,
+                  decoration: InputDecoration(
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _obscureKey ? Icons.visibility : Icons.visibility_off,
+                      ),
+                      onPressed: () =>
+                          setState(() => _obscureKey = !_obscureKey),
                     ),
-                    onPressed: () => setState(() => _obscureKey = !_obscureKey),
                   ),
                 ),
               ),

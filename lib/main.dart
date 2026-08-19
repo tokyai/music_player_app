@@ -301,7 +301,19 @@ class _MainScreenState extends State<MainScreen>
                           NavigationRailDestination(
                             icon: Icon(Icons.explore_outlined),
                             selectedIcon: Icon(Icons.explore),
-                            label: Focus(autofocus: true, child: Text('发现')),
+                            label: RemoteFocusable(
+                              key: ValueKey(
+                                'landscape-navigation-initial-focus',
+                              ),
+                              autofocus: true,
+                              borderRadius: BorderRadius.all(
+                                Radius.circular(6),
+                              ),
+                              child: Padding(
+                                padding: EdgeInsets.symmetric(horizontal: 4),
+                                child: Text('发现'),
+                              ),
+                            ),
                           ),
                           NavigationRailDestination(
                             icon: Icon(Icons.search_outlined),

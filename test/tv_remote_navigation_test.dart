@@ -8,10 +8,15 @@ import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/providers/player_provider.dart';
 import 'package:music_player_app/providers/search_session.dart';
 import 'package:music_player_app/providers/theme_controller.dart';
+import 'package:music_player_app/screens/discover_screen.dart';
+import 'package:music_player_app/screens/playlist_screen.dart';
 import 'package:music_player_app/screens/search_screen.dart';
+import 'package:music_player_app/screens/settings_screen.dart';
 import 'package:music_player_app/services/favorite_service.dart';
+import 'package:music_player_app/services/update_service.dart';
 import 'package:music_player_app/theme/app_theme.dart';
 import 'package:music_player_app/widgets/remote_focusable.dart';
+import 'package:music_player_app/widgets/update_dialog.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -58,6 +63,177 @@ void main() {
   });
 
   for (final size in const [Size(640, 360), Size(1280, 800)]) {
+    testWidgets('D-pad leaves a focused text field vertically at $size', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = size;
+      final controller = TextEditingController(text: 'remote input');
+      final fieldFocus = FocusNode();
+      final downFocus = FocusNode();
+      addTearDown(() {
+        controller.dispose();
+        fieldFocus.dispose();
+        downFocus.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 280,
+                    child: RemoteTextFieldTraversal(
+                      controller: controller,
+                      child: TextField(
+                        focusNode: fieldFocus,
+                        controller: controller,
+                        autofocus: true,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    focusNode: downFocus,
+                    onPressed: () {},
+                    child: const Text('下方'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(fieldFocus.hasFocus, isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(fieldFocus.hasFocus, isFalse);
+      expect(downFocus.hasFocus, isTrue);
+    });
+
+    for (final direction in const [
+      LogicalKeyboardKey.arrowLeft,
+      LogicalKeyboardKey.arrowRight,
+    ]) {
+      testWidgets('D-pad leaves a text boundary with $direction at $size', (
+        tester,
+      ) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = size;
+        final controller = TextEditingController(text: 'remote input');
+        final fieldFocus = FocusNode();
+        final buttonFocus = FocusNode();
+        addTearDown(() {
+          controller.dispose();
+          fieldFocus.dispose();
+          buttonFocus.dispose();
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        final exitsLeft = direction == LogicalKeyboardKey.arrowLeft;
+        final button = FilledButton(
+          focusNode: buttonFocus,
+          onPressed: () {},
+          child: Text(exitsLeft ? '左侧' : '右侧'),
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: Center(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (exitsLeft) ...[button, const SizedBox(width: 12)],
+                    SizedBox(
+                      width: 280,
+                      child: RemoteTextFieldTraversal(
+                        controller: controller,
+                        child: TextField(
+                          focusNode: fieldFocus,
+                          controller: controller,
+                          autofocus: true,
+                        ),
+                      ),
+                    ),
+                    if (!exitsLeft) ...[const SizedBox(width: 12), button],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(fieldFocus.hasFocus, isTrue);
+        controller.selection = TextSelection.collapsed(
+          offset: exitsLeft ? 0 : controller.text.length,
+        );
+
+        await tester.sendKeyEvent(direction);
+        await tester.pump();
+        expect(fieldFocus.hasFocus, isFalse);
+        expect(buttonFocus.hasFocus, isTrue);
+      });
+    }
+
+    testWidgets('D-pad leaves selectable text horizontally at $size', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = size;
+      final selectableFocus = FocusNode();
+      final buttonFocus = FocusNode();
+      addTearDown(() {
+        selectableFocus.dispose();
+        buttonFocus.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  RemoteTextFieldTraversal(
+                    child: SelectableText(
+                      'https://example.com/backup',
+                      focusNode: selectableFocus,
+                      autofocus: true,
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  FilledButton(
+                    focusNode: buttonFocus,
+                    onPressed: () {},
+                    child: const Text('复制'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(selectableFocus.hasFocus, isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(selectableFocus.hasFocus, isFalse);
+      expect(buttonFocus.hasFocus, isTrue);
+    });
+  }
+
+  for (final size in const [Size(640, 360), Size(1280, 800)]) {
     testWidgets('main shell switches pages with a TV remote at $size', (
       tester,
     ) async {
@@ -100,16 +276,72 @@ void main() {
         );
         await tester.pumpAndSettle();
 
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.pump();
+        final initialFocus = find.byKey(
+          const ValueKey('landscape-navigation-initial-focus'),
+        );
+        final focusDecoration = tester
+            .widget<AnimatedContainer>(
+              find.descendant(
+                of: initialFocus,
+                matching: find.byType(AnimatedContainer),
+              ),
+            )
+            .foregroundDecoration;
+        expect(initialFocus, findsOneWidget);
+        expect((focusDecoration! as BoxDecoration).border, isNotNull);
+
         await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
         await tester.sendKeyEvent(LogicalKeyboardKey.enter);
         await tester.pumpAndSettle();
         expect(find.byType(SearchScreen), findsOneWidget);
-        expect(find.byType(NavigationRail), findsOneWidget);
+        expect(
+          tester
+              .widget<NavigationRail>(find.byType(NavigationRail))
+              .selectedIndex,
+          1,
+        );
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pumpAndSettle();
+        expect(find.byType(PlaylistScreen), findsOneWidget);
+        expect(
+          tester
+              .widget<NavigationRail>(find.byType(NavigationRail))
+              .selectedIndex,
+          2,
+        );
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pumpAndSettle();
+        expect(find.byType(SettingsScreen), findsOneWidget);
+        expect(
+          tester
+              .widget<NavigationRail>(find.byType(NavigationRail))
+              .selectedIndex,
+          3,
+        );
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pumpAndSettle();
+        expect(find.byType(DiscoverScreen), findsOneWidget);
+        expect(
+          tester
+              .widget<NavigationRail>(find.byType(NavigationRail))
+              .selectedIndex,
+          0,
+        );
 
         await tester.sendKeyEvent(LogicalKeyboardKey.escape);
         await tester.pumpAndSettle();
         expect(find.byType(MainScreen), findsOneWidget);
-        expect(find.byType(SearchScreen), findsOneWidget);
+        expect(find.byType(DiscoverScreen), findsOneWidget);
         expect(tester.takeException(), isNull);
       }, _emptyClient);
     });
@@ -118,9 +350,11 @@ void main() {
   testWidgets('remote back key pops the current route', (tester) async {
     final player = _RemoteTestPlayer();
     final navigatorKey = GlobalKey<NavigatorState>();
+    final editorFocus = FocusNode();
     addTearDown(() async {
       await tester.pumpWidget(const SizedBox.shrink());
       player.dispose();
+      editorFocus.dispose();
     });
     await tester.pumpWidget(
       ChangeNotifierProvider<PlayerProvider>.value(
@@ -135,16 +369,23 @@ void main() {
     );
     final routeResult = navigatorKey.currentState!.push<void>(
       MaterialPageRoute<void>(
-        builder: (_) => const Scaffold(
-          body: Focus(
+        builder: (_) => Scaffold(
+          body: TextField(
+            focusNode: editorFocus,
             autofocus: true,
-            child: SizedBox(key: ValueKey('remote-detail')),
+            key: const ValueKey('remote-detail'),
           ),
         ),
       ),
     );
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('remote-detail')), findsOneWidget);
+    expect(editorFocus.hasFocus, isTrue);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('remote-detail')), findsOneWidget);
+    expect(editorFocus.hasFocus, isFalse);
 
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pumpAndSettle();
@@ -185,6 +426,57 @@ void main() {
     expect(player.nextCalls, 1);
     expect(player.previousCalls, 1);
   });
+
+  for (final size in const [Size(640, 360), Size(1280, 800)]) {
+    testWidgets('update notes scroll with the D-pad at $size', (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = size;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      final info = UpdateInfo(
+        versionName: '9.9.9',
+        versionCode: 999,
+        apkUrl: 'https://example.com/app.apk',
+        apkSize: 1,
+        md5: '',
+        sha256: '',
+        forceUpdate: false,
+        updateLog: List.generate(
+          80,
+          (index) => '第 ${index + 1} 项电视遥控器更新内容',
+        ).join('\n'),
+        publishTime: '',
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => FilledButton(
+                onPressed: () => showUpdateDialog(context, info),
+                child: const Text('检查更新'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('检查更新'));
+      await tester.pumpAndSettle();
+
+      final scrollable = find.descendant(
+        of: find.byKey(const ValueKey('update-log-scroll')),
+        matching: find.byType(Scrollable),
+      );
+      final scrollState = tester.state<ScrollableState>(scrollable);
+      expect(scrollState.position.maxScrollExtent, greaterThan(0));
+      expect(scrollState.position.pixels, 0);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(scrollState.position.pixels, greaterThan(0));
+    });
+  }
 }
 
 http.Client _emptyClient() => MockClient((_) async => http.Response('{}', 200));
