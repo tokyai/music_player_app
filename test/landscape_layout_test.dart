@@ -11,6 +11,7 @@ import 'package:music_player_app/providers/search_session.dart';
 import 'package:music_player_app/providers/theme_controller.dart';
 import 'package:music_player_app/screens/discover_screen.dart';
 import 'package:music_player_app/screens/favorites_screen.dart';
+import 'package:music_player_app/screens/playback_history_screen.dart';
 import 'package:music_player_app/screens/player_screen.dart';
 import 'package:music_player_app/screens/playlist_detail_screen.dart';
 import 'package:music_player_app/screens/playlist_screen.dart';
@@ -775,6 +776,28 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(FavoritesScreen), findsOneWidget);
       _expectNoException(tester);
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      final libraryPane = find.byKey(
+        const PageStorageKey('discover-landscape-library'),
+      );
+      final libraryList = find
+          .descendant(of: libraryPane, matching: find.byType(Scrollable))
+          .first;
+      final historyHeader = find.byKey(
+        const ValueKey('home-playback-history-header'),
+      );
+      await tester.scrollUntilVisible(
+        historyHeader,
+        180,
+        scrollable: libraryList,
+      );
+      expect(historyHeader.hitTestable(), findsOneWidget);
+      await tester.tap(historyHeader.hitTestable());
+      await tester.pumpAndSettle();
+      expect(find.byType(PlaybackHistoryScreen), findsOneWidget);
+      _expectNoException(tester);
     }, _mockClient);
   });
 
@@ -945,6 +968,61 @@ void main() {
       _expectNoException(tester);
     }, _mockClient);
   });
+
+  testWidgets(
+    'portrait lyric mode hides song metadata while landscape keeps it',
+    (tester) async {
+      await http.runWithClient(() async {
+        final player = _PlayerWithLyrics();
+        final theme = ThemeController();
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          player.dispose();
+          theme.dispose();
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        await _pumpScreen(
+          tester,
+          const PlayerScreen(),
+          player,
+          theme,
+          const Size(360, 640),
+        );
+        expect(
+          find.byKey(const ValueKey('player-song-search')),
+          findsOneWidget,
+        );
+        await tester.tap(find.text('歌词').hitTestable());
+        await tester.pumpAndSettle();
+        expect(find.byKey(const ValueKey('player-lyric-list')), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('portrait-lyric-info-hidden')),
+          findsOneWidget,
+        );
+        expect(find.byKey(const ValueKey('player-song-search')), findsNothing);
+        expect(find.text('测试歌手'), findsNothing);
+        expect(find.text('测试专辑'), findsNothing);
+        _expectNoException(tester);
+
+        for (final size in const [Size(640, 360), Size(1280, 800)]) {
+          await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
+          expect(
+            find.byKey(const ValueKey('landscape-player-lyrics')),
+            findsOneWidget,
+          );
+          expect(
+            find.byKey(const ValueKey('player-song-search')),
+            findsOneWidget,
+          );
+          expect(find.text('测试歌手'), findsOneWidget);
+          expect(find.text('测试专辑'), findsOneWidget);
+          _expectNoException(tester);
+        }
+      }, _mockClient);
+    },
+  );
 
   testWidgets('karaoke lyrics highlight by word and slide between lines', (
     tester,

@@ -8,6 +8,7 @@ import '../services/api_service.dart';
 import '../services/audio_cache_service.dart';
 import '../services/bilibili_service.dart';
 import '../services/floating_capsule_service.dart';
+import '../services/playback_history_service.dart';
 import '../utils/lyric_parser.dart';
 
 /// 播放模式
@@ -21,6 +22,7 @@ class PlayerProvider extends ChangeNotifier {
   static const maxLyricOffsetStep = Duration(seconds: 2);
   static const lyricOffsetLimit = Duration(seconds: 10);
   static const _lyricOffsetStepKey = 'lyric_offset_step_ms';
+  static const _historyPersistDelay = Duration(seconds: 2);
   static const _bilibiliLyricPlatformOrderKey = 'bilibili_lyric_platform_order';
   static const _defaultBilibiliLyricPlatformOrder = <MusicPlatform>[
     MusicPlatform.qq,
@@ -56,6 +58,12 @@ class PlayerProvider extends ChangeNotifier {
   final Map<String, Duration> _lyricOffsets = {};
   final Set<String> _bilibiliLyricAutoAttempted = {};
   final Map<String, DateTime> _playUrlResolvedAt = {};
+  List<PlaybackHistoryEntry> _playbackHistory = [];
+  int _playbackHistoryRevision = 0;
+  Timer? _historyPersistTimer;
+  bool _historyPersistInFlight = false;
+  bool _historyPersistAgain = false;
+  bool _historyLoaded = false;
 
   // 音质
   NeteaseLevel _neteaseLevel = NeteaseLevel.jymaster;
@@ -89,8 +97,11 @@ class PlayerProvider extends ChangeNotifier {
     _api = ApiService(apiKey: '');
     _api.bilibili.addListener(_handleBilibiliChanged);
     _initAudioPlayer();
+    historyReady = _loadPlaybackHistory();
     settingsReady = _loadSettings();
   }
+
+  late final Future<void> historyReady;
 
   void _handleBilibiliChanged() {
     if (!_disposed) notifyListeners();
@@ -153,11 +164,22 @@ class PlayerProvider extends ChangeNotifier {
 
   VideoPlayerMode get videoPlayerMode => _videoPlayerMode;
 
+  List<PlaybackHistoryEntry> get playbackHistory =>
+      List.unmodifiable(_playbackHistory);
+  int get playbackHistoryRevision => _playbackHistoryRevision;
+
   String get apiKey => _apiKey;
   AudioPlayer get audioPlayer => _audioPlayer;
   ApiService get api => _api;
 
   // ==================== 初始化 ====================
+
+  Future<void> _loadPlaybackHistory() async {
+    _playbackHistory = await PlaybackHistoryService.load();
+    _playbackHistoryRevision++;
+    _historyLoaded = true;
+    if (!_disposed) notifyListeners();
+  }
 
   void _initAudioPlayer() {
     _playerSub = _audioPlayer.playerStateStream.listen((state) {
@@ -169,7 +191,13 @@ class PlayerProvider extends ChangeNotifier {
       // 空音频/加载失败保护：加载或解码失败（如 404、空文件、格式不支持）
       // 会触发 playbackEventStream 的 onError（下方 _errorSub 统一处理：停止 + 提示）
       if (state.processingState == ProcessingState.completed) {
+        _recordCurrentHistory(position: Duration.zero, immediate: true);
         _onSongComplete();
+      } else if (!state.playing &&
+          state.processingState != ProcessingState.idle) {
+        // A pause is an explicit persistence boundary, so a resumed session
+        // does not lose the latest position while waiting for the debounce.
+        _recordCurrentHistory(immediate: true);
       }
       notifyListeners();
     });
@@ -182,6 +210,7 @@ class PlayerProvider extends ChangeNotifier {
     _positionSub = _audioPlayer.positionStream.listen((p) {
       _position = p;
       _updateLyricIndex();
+      if (_isPlaying) _recordCurrentHistory(position: p);
       notifyListeners();
     });
 
@@ -211,6 +240,95 @@ class PlayerProvider extends ChangeNotifier {
       // stop failure must not become an unhandled async exception.
       debugPrint('播放错误后的停止失败: $error');
     }
+  }
+
+  void _recordCurrentHistory({Duration? position, bool immediate = false}) {
+    final item = currentSong;
+    if (item == null) return;
+    _recordHistory(item, position ?? _position, immediate: immediate);
+  }
+
+  void _recordHistory(
+    PlayQueueItem item,
+    Duration position, {
+    bool immediate = false,
+  }) {
+    if (!_historyLoaded || _disposed) return;
+    final song = SongSearchResult.fromQueueItem(item);
+    var positionMs = position.inMilliseconds;
+    if (positionMs < 0) positionMs = 0;
+    final durationMs = (item.duration ?? 0) * 1000;
+    if (durationMs > 0 && positionMs > durationMs) positionMs = durationMs;
+    final entry = PlaybackHistoryEntry(
+      song: song,
+      position: Duration(milliseconds: positionMs),
+      playedAt: DateTime.now(),
+    );
+    final existingIndex = _playbackHistory.indexWhere(
+      (current) => current.key == entry.key,
+    );
+    final historyViewChanged = existingIndex != 0 || immediate;
+    if (existingIndex >= 0) _playbackHistory.removeAt(existingIndex);
+    _playbackHistory.insert(0, entry);
+    if (_playbackHistory.length > PlaybackHistoryService.maxEntries) {
+      _playbackHistory = _playbackHistory
+          .take(PlaybackHistoryService.maxEntries)
+          .toList(growable: true);
+    }
+    if (historyViewChanged) _playbackHistoryRevision++;
+    if (immediate) {
+      _historyPersistTimer?.cancel();
+      _historyPersistTimer = null;
+      unawaited(_persistPlaybackHistory());
+      notifyListeners();
+    } else {
+      _schedulePlaybackHistoryPersist();
+    }
+  }
+
+  void _schedulePlaybackHistoryPersist() {
+    if (_disposed) return;
+    if (_historyPersistInFlight) {
+      _historyPersistAgain = true;
+      return;
+    }
+    if (_historyPersistTimer != null) return;
+    _historyPersistTimer = Timer(_historyPersistDelay, () {
+      _historyPersistTimer = null;
+      unawaited(_persistPlaybackHistory());
+    });
+  }
+
+  Future<void> _persistPlaybackHistory() async {
+    if (_historyPersistInFlight) {
+      _historyPersistAgain = true;
+      return;
+    }
+    _historyPersistInFlight = true;
+    final snapshot = List<PlaybackHistoryEntry>.of(_playbackHistory);
+    try {
+      await PlaybackHistoryService.save(snapshot);
+    } catch (error) {
+      debugPrint('保存播放历史失败: $error');
+    } finally {
+      _historyPersistInFlight = false;
+      if (_historyPersistAgain && !_disposed) {
+        _historyPersistAgain = false;
+        _schedulePlaybackHistoryPersist();
+      } else {
+        _historyPersistAgain = false;
+      }
+    }
+  }
+
+  Future<void> clearPlaybackHistory() async {
+    if (_playbackHistory.isEmpty) return;
+    _playbackHistory = [];
+    _playbackHistoryRevision++;
+    _historyPersistTimer?.cancel();
+    _historyPersistTimer = null;
+    notifyListeners();
+    await _persistPlaybackHistory();
   }
 
   /// UI 消费完错误后调用，防止重复弹提示
@@ -731,6 +849,7 @@ class PlayerProvider extends ChangeNotifier {
     int index,
   ) async {
     if (index < 0 || index >= results.length) return;
+    _recordCurrentHistory(immediate: true);
     _queueSessionId++;
     _queue = results.map((e) => PlayQueueItem.fromSearchResult(e)).toList();
     _currentIndex = index;
@@ -740,6 +859,7 @@ class PlayerProvider extends ChangeNotifier {
 
   /// 添加到队列并播放
   Future<void> playSingle(SongSearchResult result) async {
+    _recordCurrentHistory(immediate: true);
     _queueSessionId++;
     _queue = [PlayQueueItem.fromSearchResult(result)];
     _currentIndex = 0;
@@ -774,6 +894,7 @@ class PlayerProvider extends ChangeNotifier {
     int index,
   ) async {
     if (index < 0 || index >= tracks.length) return;
+    _recordCurrentHistory(immediate: true);
     _queueSessionId++;
     _queue = tracks.map((e) => PlayQueueItem.fromSearchResult(e)).toList();
     _currentIndex = index;
@@ -781,7 +902,17 @@ class PlayerProvider extends ChangeNotifier {
     await _playCurrent();
   }
 
-  Future<void> _playCurrent() async {
+  /// 从历史记录重新播放，并在音源准备完成后跳回上次断点。
+  Future<void> playFromHistory(PlaybackHistoryEntry entry) async {
+    _recordCurrentHistory(immediate: true);
+    _queueSessionId++;
+    _queue = [PlayQueueItem.fromSearchResult(entry.song)];
+    _currentIndex = 0;
+    notifyListeners();
+    await _playCurrent(resumePosition: entry.position);
+  }
+
+  Future<void> _playCurrent({Duration? resumePosition}) async {
     if (_currentIndex < 0 || _currentIndex >= _queue.length) return;
     var item = _queue[_currentIndex];
     final requestId = ++_playRequestId;
@@ -806,6 +937,7 @@ class PlayerProvider extends ChangeNotifier {
 
     try {
       await settingsReady;
+      await historyReady;
       if (!_isCurrentRequest(requestId, item)) return;
 
       if (item.platform == MusicPlatform.bilibili) {
@@ -901,6 +1033,13 @@ class PlayerProvider extends ChangeNotifier {
       );
       if (!_isCurrentRequest(requestId, item)) return;
 
+      final startPosition = _normalizeResumePosition(resumePosition, item);
+      if (startPosition > Duration.zero) {
+        await _audioPlayer.seek(startPosition);
+      }
+      _position = startPosition;
+      _recordCurrentHistory(position: startPosition, immediate: true);
+
       // just_audio 的 play() Future 会在暂停、停止或播放结束时才完成。
       // 音源准备完成即结束“加载中”，播放过程放到后台等待。
       _isLoading = false;
@@ -981,6 +1120,26 @@ class PlayerProvider extends ChangeNotifier {
           'q$_bilibiliAudioQuality';
     }
     return '${item.platform.code}:${item.id}';
+  }
+
+  Duration _normalizeResumePosition(Duration? requested, PlayQueueItem item) {
+    if (requested == null || requested <= Duration.zero) {
+      return Duration.zero;
+    }
+    final loadedDuration = _audioPlayer.duration;
+    final declaredDuration = item.duration == null
+        ? Duration.zero
+        : Duration(seconds: item.duration!);
+    final total = loadedDuration != null && loadedDuration > Duration.zero
+        ? loadedDuration
+        : declaredDuration;
+    if (total > Duration.zero) {
+      if (requested >= total - const Duration(seconds: 3)) {
+        return Duration.zero;
+      }
+      if (requested >= total) return Duration.zero;
+    }
+    return requested;
   }
 
   String _audioCacheSongId(PlayQueueItem item) {
@@ -1340,6 +1499,7 @@ class PlayerProvider extends ChangeNotifier {
     }
     final page = song.bilibiliPages[pageIndex];
     if (page.cid == song.bilibiliCid) return;
+    _recordCurrentHistory(immediate: true);
     _queue[_currentIndex] = song.copyWith(
       name: page.title,
       duration: page.duration,
@@ -1380,15 +1540,20 @@ class PlayerProvider extends ChangeNotifier {
     if (currentSong == null || _isLoading) return;
     if (_isPlaying) {
       await _audioPlayer.pause();
+      _recordCurrentHistory(immediate: true);
     } else {
       await _audioPlayer.play();
     }
   }
 
-  Future<void> pause() => _audioPlayer.pause();
+  Future<void> pause() async {
+    await _audioPlayer.pause();
+    _recordCurrentHistory(immediate: true);
+  }
 
   Future<void> playNext() async {
     if (_queue.isEmpty) return;
+    _recordCurrentHistory(immediate: true);
     if (_playMode == PlayMode.shuffle) {
       _currentIndex = DateTime.now().millisecondsSinceEpoch % _queue.length;
     } else {
@@ -1400,6 +1565,7 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> playPrevious() async {
     if (_queue.isEmpty) return;
+    _recordCurrentHistory(immediate: true);
     _currentIndex = (_currentIndex - 1 + _queue.length) % _queue.length;
     notifyListeners();
     await _playCurrent();
@@ -1459,6 +1625,7 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> playQueueItem(int index) async {
     if (index < 0 || index >= _queue.length) return;
+    _recordCurrentHistory(immediate: true);
     _currentIndex = index;
     notifyListeners();
     await _playCurrent();
@@ -1466,6 +1633,7 @@ class PlayerProvider extends ChangeNotifier {
 
   void removeFromQueue(int index) {
     if (index < 0 || index >= _queue.length) return;
+    if (index == _currentIndex) _recordCurrentHistory(immediate: true);
     _queue.removeAt(index);
     if (index < _currentIndex) {
       _currentIndex--;
@@ -1482,6 +1650,7 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   void clearQueue() {
+    _recordCurrentHistory(immediate: true);
     _playRequestId++;
     _queueSessionId++;
     _queue.clear();
@@ -1513,7 +1682,13 @@ class PlayerProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    // Mark the provider first so a final audio position event cannot schedule
+    // another history persistence timer while the subscriptions are stopping.
     _disposed = true;
+    _historyPersistTimer?.cancel();
+    _historyPersistTimer = null;
+    _historyPersistAgain = false;
+    unawaited(_persistPlaybackHistory());
     _playRequestId++;
     _queueSessionId++;
     _playerSub?.cancel();

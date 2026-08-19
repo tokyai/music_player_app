@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../providers/player_provider.dart';
 import '../services/backup_service.dart';
@@ -493,6 +494,34 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        Center(
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(AppRadius.control),
+              border: Border.all(color: AppColors.surfaceSoft),
+            ),
+            child: QrImageView(
+              key: const ValueKey('backup-lan-qr'),
+              data: session.qrUrl,
+              version: QrVersions.auto,
+              size: layout.usesLargeTypography ? 220 : 190,
+              backgroundColor: Colors.white,
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Center(
+          child: Text(
+            '扫码打开备份页面（PIN 已自动填入）',
+            style: TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: layout.secondarySize,
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
         Text('手机浏览器打开：', style: TextStyle(fontSize: layout.bodySize)),
         const SizedBox(height: 6),
         SelectableText(

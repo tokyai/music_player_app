@@ -348,6 +348,10 @@ void main() {
       expect(find.text('收藏歌曲'), findsWidgets);
       expect(find.text('收藏歌单'), findsWidgets);
       expect(find.text('B站收藏'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('home-playback-history-header')),
+        findsOneWidget,
+      );
       for (final key in const [
         'home-favorites-carousel',
         'home-favorite-playlists-carousel',

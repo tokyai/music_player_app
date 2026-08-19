@@ -118,6 +118,11 @@ class LanBackupSession {
   }
 
   String get url => 'http://$host:${_server.port}/$_token/';
+
+  /// QR code target. The PIN is scoped to this short-lived session and is
+  /// filled into the browser page after scanning.
+  String get qrUrl =>
+      Uri.parse(url).replace(queryParameters: {'pin': pin}).toString();
   Future<String> get restored => _restoreCompleter.future;
   bool get isActive => !_stopped;
 
@@ -180,6 +185,7 @@ label{display:block;font-weight:600;margin:14px 0 6px}input,button,textarea{font
 <label for="file">向车机恢复 JSON 文件</label><input id="file" type="file" accept="application/json,.json">
 <button onclick="uploadBackup()">上传并在车机上确认恢复</button><div id="status" class="status"></div>
 <small>本页面仅在当前局域网临时有效，传输服务将在 10 分钟后自动关闭。</small></main><script>
+const initialPin=new URLSearchParams(location.search).get('pin')||'';if(/^\\d{6}\$/.test(initialPin))document.getElementById('pin').value=initialPin;
 const pin=()=>document.getElementById('pin').value.trim();const status=t=>document.getElementById('status').textContent=t;
 function downloadBackup(){if(!/^\\d{6}\$/.test(pin())){status('请输入 6 位 PIN');return;}location.href='backup?pin='+encodeURIComponent(pin());}
 async function uploadBackup(){if(!/^\\d{6}\$/.test(pin())){status('请输入 6 位 PIN');return;}const f=document.getElementById('file').files[0];if(!f){status('请选择 JSON 文件');return;}if(f.size>5242880){status('文件不能超过 5 MB');return;}status('正在上传…');try{const r=await fetch('restore?pin='+encodeURIComponent(pin()),{method:'POST',headers:{'Content-Type':'application/json'},body:await f.text()});status(await r.text());}catch(e){status('上传失败：'+e);}}
