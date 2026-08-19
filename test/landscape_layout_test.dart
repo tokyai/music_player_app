@@ -1242,6 +1242,14 @@ void main() {
               .value,
           '50%',
         );
+
+        player.setLyricOffset(const Duration(minutes: 2));
+        await tester.pump();
+        expect(player.lyricOffset, const Duration(minutes: 1));
+        player.setLyricOffset(const Duration(minutes: -2));
+        await tester.pump();
+        expect(player.lyricOffset, const Duration(minutes: -1));
+        player.resetLyricOffset();
         _expectNoException(tester);
 
         await tester.pumpWidget(const SizedBox.shrink());

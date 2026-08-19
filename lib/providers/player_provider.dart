@@ -20,7 +20,7 @@ class PlayerProvider extends ChangeNotifier {
   static const defaultLyricOffsetStep = Duration(milliseconds: 500);
   static const minLyricOffsetStep = Duration(milliseconds: 100);
   static const maxLyricOffsetStep = Duration(seconds: 2);
-  static const lyricOffsetLimit = Duration(seconds: 10);
+  static const lyricOffsetLimit = Duration(minutes: 1);
   static const _lyricOffsetStepKey = 'lyric_offset_step_ms';
   static const _historyPersistDelay = Duration(seconds: 2);
   static const _bilibiliLyricPlatformOrderKey = 'bilibili_lyric_platform_order';
