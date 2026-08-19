@@ -7,6 +7,7 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.view.KeyEvent
 import androidx.annotation.NonNull
 import androidx.core.content.FileProvider
 import com.ryanheise.audioservice.AudioServiceActivity
@@ -26,10 +27,26 @@ class MainActivity : AudioServiceActivity() {
 
     private var pendingFileResult: MethodChannel.Result? = null
     private var pendingExportContent: String? = null
+    private var foregroundMediaKeyChannel: MethodChannel? = null
+    private var foregroundMediaKeysEnabled = false
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val appContext = applicationContext
+
+        foregroundMediaKeyChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "music_player/foreground_media_keys"
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                if (call.method == "setEnabled") {
+                    foregroundMediaKeysEnabled = call.argument<Boolean>("enabled") == true
+                    result.success(null)
+                } else {
+                    result.notImplemented()
+                }
+            }
+        }
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, INSTALL_CHANNEL)
             .setMethodCallHandler { call, result ->
@@ -121,6 +138,30 @@ class MainActivity : AudioServiceActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (foregroundMediaKeysEnabled) {
+            val method = when (event.keyCode) {
+                KeyEvent.KEYCODE_MEDIA_NEXT -> "next"
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> "previous"
+                else -> null
+            }
+            if (method != null) {
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                    foregroundMediaKeyChannel?.invokeMethod(method, null)
+                }
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun onDestroy() {
+        foregroundMediaKeysEnabled = false
+        foregroundMediaKeyChannel?.setMethodCallHandler(null)
+        foregroundMediaKeyChannel = null
+        super.onDestroy()
     }
 
     private fun openFavoriteBackup(result: MethodChannel.Result) {

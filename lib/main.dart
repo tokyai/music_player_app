@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/material.dart';
@@ -24,6 +26,9 @@ import 'widgets/mini_player.dart';
 import 'widgets/remote_focusable.dart';
 
 final _navigatorKey = GlobalKey<NavigatorState>();
+const _foregroundMediaKeyChannel = MethodChannel(
+  'music_player/foreground_media_keys',
+);
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -44,6 +49,37 @@ void main() async {
       artDownscaleHeight: 256,
     ),
   );
+  // Some car launchers deliver next/previous to the foreground Activity
+  // instead of the active MediaSession. Keep a narrow fallback for that path.
+  _foregroundMediaKeyChannel.setMethodCallHandler((call) async {
+    try {
+      switch (call.method) {
+        case 'next':
+          await player.playNext();
+          break;
+        case 'previous':
+          await player.playPrevious();
+          break;
+      }
+    } catch (error) {
+      debugPrint('前台车机媒体键处理失败: $error');
+    }
+    return null;
+  });
+  bool? foregroundMediaKeysEnabled;
+  void syncForegroundMediaKeys() {
+    final enabled = player.currentSong != null && player.isPlaying;
+    if (foregroundMediaKeysEnabled == enabled) return;
+    foregroundMediaKeysEnabled = enabled;
+    unawaited(
+      _foregroundMediaKeyChannel
+          .invokeMethod<void>('setEnabled', {'enabled': enabled})
+          .catchError((_) {}),
+    );
+  }
+
+  player.addListener(syncForegroundMediaKeys);
+  syncForegroundMediaKeys();
   // Android 13+ 请求通知权限（否则系统媒体通知不显示）
   try {
     await Permission.notification.request();

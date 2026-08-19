@@ -1577,6 +1577,12 @@ void main() {
       findsOneWidget,
     );
     _expectNoException(tester);
+
+    // Leaving while the native player is still resolving must not surface a
+    // late platform exception on either landscape size.
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    _expectNoException(tester);
   });
 
   testWidgets('lyric font size persists for every song and player screen', (

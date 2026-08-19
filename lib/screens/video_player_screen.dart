@@ -39,7 +39,10 @@ class _ExoPlaybackController extends _MvPlaybackController {
   final String? _audioUrl;
   final Map<String, String> _headers;
   AudioPlayer? _audioPlayer;
-  bool _syncingAudio = false;
+  Future<void>? _audioSyncOperation;
+  Future<void>? _audioPlayOperation;
+  Future<void>? _closeFuture;
+  final Completer<void> _closedSignal = Completer<void>();
   bool _closed = false;
   String? _audioError;
 
@@ -91,14 +94,25 @@ class _ExoPlaybackController extends _MvPlaybackController {
 
   void _handleChanged() {
     if (_closed) return;
-    if (_audioPlayer != null) unawaited(_syncExternalAudio());
+    _scheduleExternalAudioSync();
     notifyListeners();
+  }
+
+  void _scheduleExternalAudioSync() {
+    if (_closed || _audioPlayer == null || _audioSyncOperation != null) return;
+    late final Future<void> operation;
+    operation = _syncExternalAudio().whenComplete(() {
+      if (identical(_audioSyncOperation, operation)) {
+        _audioSyncOperation = null;
+      }
+    });
+    _audioSyncOperation = operation;
+    unawaited(operation);
   }
 
   Future<void> _syncExternalAudio() async {
     final audioPlayer = _audioPlayer;
-    if (_closed || _syncingAudio || audioPlayer == null) return;
-    _syncingAudio = true;
+    if (_closed || audioPlayer == null) return;
     try {
       final value = _controller.value;
       if (!value.isInitialized) return;
@@ -110,20 +124,31 @@ class _ExoPlaybackController extends _MvPlaybackController {
       if (drift > const Duration(milliseconds: 650)) {
         await audioPlayer.seek(value.position);
       }
-      if (!audioPlayer.playing) unawaited(_playExternalAudio());
+      if (!_closed && !audioPlayer.playing) _startExternalAudio();
     } catch (error) {
       if (!_closed) {
         _audioError = 'B站音轨播放失败：$error';
         notifyListeners();
       }
-    } finally {
-      _syncingAudio = false;
     }
   }
 
-  Future<void> _playExternalAudio() async {
+  void _startExternalAudio() {
+    final audioPlayer = _audioPlayer;
+    if (_closed || audioPlayer == null || _audioPlayOperation != null) return;
+    late final Future<void> operation;
+    operation = _playExternalAudio(audioPlayer).whenComplete(() {
+      if (identical(_audioPlayOperation, operation)) {
+        _audioPlayOperation = null;
+      }
+    });
+    _audioPlayOperation = operation;
+    unawaited(operation);
+  }
+
+  Future<void> _playExternalAudio(AudioPlayer audioPlayer) async {
     try {
-      await _audioPlayer?.play();
+      await audioPlayer.play();
     } catch (error) {
       if (!_closed) {
         _audioError = 'B站音轨播放失败：$error';
@@ -134,34 +159,46 @@ class _ExoPlaybackController extends _MvPlaybackController {
 
   @override
   Future<void> initialize() async {
-    await _controller.initialize();
+    await Future.any<void>([_controller.initialize(), _closedSignal.future]);
+    if (_closed) return;
     final audioUrl = _audioUrl;
     if (audioUrl != null && audioUrl.isNotEmpty) {
       final audioPlayer = AudioPlayer();
       _audioPlayer = audioPlayer;
-      await audioPlayer.setAudioSource(
-        AudioSource.uri(Uri.parse(audioUrl), headers: _headers),
-      );
+      await Future.any<Object?>([
+        audioPlayer.setAudioSource(
+          AudioSource.uri(Uri.parse(audioUrl), headers: _headers),
+        ),
+        _closedSignal.future,
+      ]);
+      if (_closed) return;
     }
     await _controller.play();
-    if (_audioPlayer != null) unawaited(_syncExternalAudio());
+    if (_closed) return;
+    _scheduleExternalAudioSync();
   }
 
   @override
   Future<void> play() async {
+    if (_closed) return;
     await _controller.play();
-    if (_audioPlayer != null) unawaited(_syncExternalAudio());
+    if (_closed) return;
+    _scheduleExternalAudioSync();
   }
 
   @override
   Future<void> pause() async {
+    if (_closed) return;
     await _controller.pause();
+    if (_closed) return;
     await _audioPlayer?.pause();
   }
 
   @override
   Future<void> seekTo(Duration position) async {
+    if (_closed) return;
     await _controller.seekTo(position);
+    if (_closed) return;
     await _audioPlayer?.seek(position);
   }
 
@@ -169,13 +206,31 @@ class _ExoPlaybackController extends _MvPlaybackController {
   Widget buildSurface(Key key) => VideoPlayer(_controller, key: key);
 
   @override
-  Future<void> close() async {
-    if (_closed) return;
+  Future<void> close() => _closeFuture ??= _close();
+
+  Future<void> _close() async {
     _closed = true;
+    _closedSignal.complete();
     _controller.removeListener(_handleChanged);
-    await _audioPlayer?.dispose();
-    await _controller.dispose();
-    dispose();
+    final audioPlayer = _audioPlayer;
+    // just_audio.play() completes when playback is stopped or paused. Stop it
+    // before waiting for an in-flight play operation during teardown.
+    try {
+      await audioPlayer?.stop();
+    } catch (_) {}
+    try {
+      await _audioSyncOperation;
+    } catch (_) {}
+    try {
+      await _audioPlayOperation;
+    } catch (_) {}
+    try {
+      await audioPlayer?.dispose();
+    } catch (_) {}
+    try {
+      await _controller.dispose();
+    } catch (_) {}
+    super.dispose();
   }
 }
 
@@ -188,14 +243,13 @@ class _MpvPlaybackController extends _MvPlaybackController {
   final Map<String, String> headers;
   bool _initialized = false;
   bool _closed = false;
+  Future<void>? _closeFuture;
+  final Completer<void> _closedSignal = Completer<void>();
   String? _error;
 
   _MpvPlaybackController(this.url, this.headers, {this.audioUrl}) {
     _player = media_kit.Player(
-      configuration: const media_kit.PlayerConfiguration(
-        title: '库仔音乐 MV',
-        bufferSize: 64 * 1024 * 1024,
-      ),
+      configuration: const media_kit.PlayerConfiguration(title: '库仔音乐 MV'),
     );
     _controller = media_kit_video.VideoController(
       _player,
@@ -253,6 +307,7 @@ class _MpvPlaybackController extends _MvPlaybackController {
 
   @override
   Future<void> initialize() async {
+    if (_closed) return;
     _error = null;
     final source = audioUrl == null || audioUrl!.isEmpty
         ? url
@@ -263,15 +318,18 @@ class _MpvPlaybackController extends _MvPlaybackController {
       final referer = headers['Referer'];
       if (userAgent != null) {
         await nativePlayer.setProperty('user-agent', userAgent);
+        if (_closed) return;
       }
       if (referer != null) {
         await nativePlayer.setProperty('referrer', referer);
+        if (_closed) return;
       }
     }
-    await _player.open(
-      media_kit.Media(source, httpHeaders: headers),
-      play: true,
-    );
+    await Future.any<void>([
+      _player.open(media_kit.Media(source, httpHeaders: headers), play: true),
+      _closedSignal.future,
+    ]);
+    if (_closed) return;
     _initialized = true;
     _changed();
   }
@@ -286,13 +344,14 @@ class _MpvPlaybackController extends _MvPlaybackController {
   }
 
   @override
-  Future<void> play() => _player.play();
+  Future<void> play() => _closed ? Future.value() : _player.play();
 
   @override
-  Future<void> pause() => _player.pause();
+  Future<void> pause() => _closed ? Future.value() : _player.pause();
 
   @override
-  Future<void> seekTo(Duration position) => _player.seek(position);
+  Future<void> seekTo(Duration position) =>
+      _closed ? Future.value() : _player.seek(position);
 
   @override
   Widget buildSurface(Key key) => media_kit_video.Video(
@@ -303,14 +362,20 @@ class _MpvPlaybackController extends _MvPlaybackController {
   );
 
   @override
-  Future<void> close() async {
-    if (_closed) return;
+  Future<void> close() => _closeFuture ??= _close();
+
+  Future<void> _close() async {
     _closed = true;
+    _closedSignal.complete();
     for (final subscription in _subscriptions) {
-      await subscription.cancel();
+      try {
+        await subscription.cancel();
+      } catch (_) {}
     }
-    await _player.dispose();
-    dispose();
+    try {
+      await _player.dispose();
+    } catch (_) {}
+    super.dispose();
   }
 }
 
@@ -352,6 +417,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _topControlsFocused = false;
   bool _bottomControlsFocused = false;
   bool _switchingEngine = false;
+  bool _handlingPlaybackFailure = false;
   bool _automaticFallbackUsed = false;
   String? _initializationError;
   String? _engineNotice;
@@ -451,9 +517,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       _lastVideoUiState = _readVideoUiState();
       _lastVideoUiRefreshMs = _videoUiClock.elapsedMilliseconds;
       _scheduleControlsHide();
-    } catch (_) {
+    } catch (error) {
       if (!mounted || initializingController != _controller) return;
-      await _handlePlaybackFailure();
+      await _handlePlaybackFailure(error);
     }
   }
 
@@ -525,24 +591,42 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _lastVideoUiState = null;
   }
 
-  Future<void> _handlePlaybackFailure() async {
-    if (_switchingEngine) return;
-    if (_sourceIndex + 1 < _sourceUrls.length) {
-      await _switchSource(notice: '当前 CDN 不可用，正在切换 B 站备用地址');
-      return;
+  Future<void> _handlePlaybackFailure([Object? cause]) async {
+    if (!mounted || _switchingEngine || _handlingPlaybackFailure) return;
+    _handlingPlaybackFailure = true;
+    try {
+      if (_sourceIndex + 1 < _sourceUrls.length) {
+        // _switchSource initializes the replacement controller. Release this
+        // guard first so a real error from that new controller can be handled.
+        _handlingPlaybackFailure = false;
+        await _switchSource(notice: '当前 CDN 不可用，正在切换 B 站备用地址');
+        return;
+      }
+      if (widget.mode == VideoPlayerMode.automatic &&
+          !_automaticFallbackUsed &&
+          _activeEngine == _MvEngine.exo) {
+        _automaticFallbackUsed = true;
+        _handlingPlaybackFailure = false;
+        await _switchEngine(_MvEngine.mpv, notice: 'ExoPlayer 播放失败，正在切换 MPV');
+        return;
+      }
+      _showPlaybackError(cause);
+    } catch (error) {
+      _showPlaybackError(error);
+    } finally {
+      _handlingPlaybackFailure = false;
     }
-    if (widget.mode == VideoPlayerMode.automatic &&
-        !_automaticFallbackUsed &&
-        _activeEngine == _MvEngine.exo) {
-      _automaticFallbackUsed = true;
-      await _switchEngine(_MvEngine.mpv, notice: 'ExoPlayer 播放失败，正在切换 MPV');
-      return;
-    }
+  }
+
+  void _showPlaybackError(Object? cause) {
     if (!mounted) return;
-    final detail = _controller.error;
+    final controllerDetail = _controller.error;
+    final detail = controllerDetail == null || controllerDetail.trim().isEmpty
+        ? cause?.toString().trim()
+        : controllerDetail.trim();
     setState(() {
       _initializing = false;
-      _initializationError = detail == null || detail.trim().isEmpty
+      _initializationError = detail == null || detail.isEmpty
           ? '${_controller.label} 无法播放此 MV'
           : '${_controller.label} 无法播放此 MV\n$detail';
     });
@@ -561,14 +645,27 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       });
     }
     final previous = _controller;
-    previous.removeListener(_handleVideoChanged);
-    await previous.close();
+    Object? transitionError;
+    var controllerReplaced = false;
+    try {
+      previous.removeListener(_handleVideoChanged);
+      await previous.close();
+      if (!mounted) return;
+      _sourceIndex++;
+      _controller = _createController(_activeEngine)
+        ..addListener(_handleVideoChanged);
+      controllerReplaced = true;
+    } catch (error) {
+      transitionError = error;
+    } finally {
+      _switchingEngine = false;
+    }
     if (!mounted) return;
-    _sourceIndex++;
-    _controller = _createController(_activeEngine)
-      ..addListener(_handleVideoChanged);
-    _switchingEngine = false;
-    await _initialize();
+    if (transitionError != null) {
+      _showPlaybackError(transitionError);
+    } else if (controllerReplaced) {
+      await _initialize();
+    }
   }
 
   Future<void> _switchEngine(_MvEngine engine, {String? notice}) async {
@@ -584,26 +681,63 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       });
     }
     final previous = _controller;
-    previous.removeListener(_handleVideoChanged);
-    await previous.close();
+    Object? transitionError;
+    var controllerReplaced = false;
+    try {
+      previous.removeListener(_handleVideoChanged);
+      await previous.close();
+      if (!mounted) return;
+      _sourceIndex = 0;
+      _activeEngine = engine;
+      _controller = _createController(engine)..addListener(_handleVideoChanged);
+      controllerReplaced = true;
+    } catch (error) {
+      transitionError = error;
+    } finally {
+      _switchingEngine = false;
+    }
     if (!mounted) return;
-    _sourceIndex = 0;
-    _activeEngine = engine;
-    _controller = _createController(engine)..addListener(_handleVideoChanged);
-    _switchingEngine = false;
-    await _initialize();
+    if (transitionError != null) {
+      _showPlaybackError(transitionError);
+    } else if (controllerReplaced) {
+      await _initialize();
+    }
   }
 
   Future<void> _retry() async {
     if (_switchingEngine) return;
+    _switchingEngine = true;
+    _controlsTimer?.cancel();
     _cancelVideoUiRefresh();
-    _controller.removeListener(_handleVideoChanged);
-    await _controller.close();
+    if (mounted) {
+      setState(() {
+        _initializing = true;
+        _initializationError = null;
+        _engineNotice = null;
+      });
+    }
+    final previous = _controller;
+    Object? transitionError;
+    var controllerReplaced = false;
+    try {
+      previous.removeListener(_handleVideoChanged);
+      await previous.close();
+      if (!mounted) return;
+      _sourceIndex = 0;
+      _controller = _createController(_activeEngine)
+        ..addListener(_handleVideoChanged);
+      controllerReplaced = true;
+    } catch (error) {
+      transitionError = error;
+    } finally {
+      _switchingEngine = false;
+    }
     if (!mounted) return;
-    _sourceIndex = 0;
-    _controller = _createController(_activeEngine)
-      ..addListener(_handleVideoChanged);
-    await _initialize();
+    if (transitionError != null) {
+      _showPlaybackError(transitionError);
+    } else if (controllerReplaced) {
+      await _initialize();
+    }
   }
 
   Future<void> _tryAlternateEngine() {
@@ -615,8 +749,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed && _controller.isPlaying) {
-      unawaited(_controller.pause());
+      final controller = _controller;
+      unawaited(_pauseForLifecycle(controller));
       _showControls();
+    }
+  }
+
+  Future<void> _pauseForLifecycle(_MvPlaybackController controller) async {
+    try {
+      await controller.pause();
+    } catch (error) {
+      debugPrint('MV 进入后台时暂停失败: $error');
     }
   }
 
@@ -676,11 +819,37 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   Future<void> _togglePlayback() async {
     _showControls();
-    if (_controller.isPlaying) {
-      await _controller.pause();
-    } else {
-      await _controller.play();
+    final wasPlaying = _controller.isPlaying;
+    final succeeded = await _runControllerCommand(
+      (controller) => wasPlaying ? controller.pause() : controller.play(),
+    );
+    if (!succeeded) return;
+    if (!wasPlaying) {
       _scheduleControlsHide();
+    }
+  }
+
+  Future<bool> _runControllerCommand(
+    Future<void> Function(_MvPlaybackController controller) command,
+  ) async {
+    final controller = _controller;
+    try {
+      await command(controller);
+      return mounted && identical(controller, _controller);
+    } catch (error) {
+      if (mounted && identical(controller, _controller)) {
+        await _handlePlaybackFailure(error);
+      }
+      return false;
+    }
+  }
+
+  Future<void> _seekAbsolute(Duration position) async {
+    final succeeded = await _runControllerCommand(
+      (controller) => controller.seekTo(position),
+    );
+    if (succeeded) {
+      _showControls();
     }
   }
 
@@ -689,18 +858,25 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     var target = _controller.position + delta;
     if (target < Duration.zero) target = Duration.zero;
     if (target > duration) target = duration;
-    await _controller.seekTo(target);
-    _showControls();
-    _scheduleControlsHide();
+    final succeeded = await _runControllerCommand(
+      (controller) => controller.seekTo(target),
+    );
+    if (succeeded) {
+      _showControls();
+      _scheduleControlsHide();
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _switchingEngine = true;
+    _handlingPlaybackFailure = true;
     _controlsTimer?.cancel();
     _cancelVideoUiRefresh();
-    _controller.removeListener(_handleVideoChanged);
-    unawaited(_controller.close());
+    final controller = _controller;
+    controller.removeListener(_handleVideoChanged);
+    unawaited(controller.close());
     applySystemUi(dark: AppColors.isDark);
     super.dispose();
   }
@@ -758,7 +934,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               if (!_initializing && error == null && _controller.isBuffering)
                 const Center(child: CircularProgressIndicator()),
               _buildTopControls(compact),
-              if (_controller.isInitialized && error == null)
+              if (error == null && _controller.isInitialized)
                 _buildBottomControls(compact),
             ],
           ),
@@ -943,9 +1119,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         max: durationMs.toDouble(),
                         onChanged: (next) {
                           unawaited(
-                            _controller.seekTo(
-                              Duration(milliseconds: next.round()),
-                            ),
+                            _seekAbsolute(Duration(milliseconds: next.round())),
                           );
                         },
                         onChangeStart: (_) => _showControls(),
