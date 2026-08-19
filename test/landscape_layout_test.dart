@@ -1975,6 +1975,49 @@ void main() {
     }, _mockClient);
   });
 
+  testWidgets('closing playback source picker does not restore API key focus', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      for (final size in const [Size(640, 360), Size(1280, 800)]) {
+        SharedPreferences.setMockInitialValues({});
+        final player = PlayerProvider();
+        final theme = ThemeController();
+        await player.settingsReady;
+
+        await _pumpScreen(tester, const SettingsScreen(), player, theme, size);
+        final apiKeyField = find.byType(TextField);
+        await tester.ensureVisible(apiKeyField);
+        await tester.tap(apiKeyField);
+        await tester.pump();
+        expect(FocusManager.instance.primaryFocus, isNotNull);
+
+        final source = find.byKey(const ValueKey('playback-source-qq'));
+        await tester.ensureVisible(source);
+        await tester.tap(source);
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const ValueKey('playback-source-qq-qing_music')),
+        );
+        await tester.pumpAndSettle();
+
+        final focusedContext = FocusManager.instance.primaryFocus?.context;
+        expect(
+          focusedContext == null || focusedContext.widget is! EditableText,
+          isTrue,
+        );
+        _expectNoException(tester);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        player.dispose();
+        theme.dispose();
+      }
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    }, _mockClient);
+  });
+
   testWidgets('lyric font family and weight persist in both landscapes', (
     tester,
   ) async {

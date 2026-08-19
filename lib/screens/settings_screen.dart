@@ -1437,12 +1437,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _showPlaybackSourcePicker(
+  Future<void> _showPlaybackSourcePicker(
     BuildContext context,
     PlayerProvider player,
     MusicPlatform platform,
-  ) {
-    showDialog<void>(
+  ) async {
+    // Do not restore the API Key TextField focus when this settings dialog
+    // closes. This is especially visible on TV/car displays with a keyboard.
+    FocusManager.instance.primaryFocus?.unfocus();
+    await showDialog<void>(
       context: context,
       builder: (dialogContext) => SimpleDialog(
         title: Text('${platform.label}播放源'),
@@ -1467,6 +1470,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         }).toList(),
       ),
     );
+    if (mounted) FocusManager.instance.primaryFocus?.unfocus();
   }
 
   void _showVideoPlayerModePicker(BuildContext context, PlayerProvider player) {
