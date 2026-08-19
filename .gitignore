@@ -47,3 +47,7 @@ release/
 reference/
 update*.json
 *.key
+
+# Account backend local state
+backend/node_modules/
+backend/.env

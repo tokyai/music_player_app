@@ -37,6 +37,7 @@ dependencies:
 
   # 本地存储
   shared_preferences: ^2.3.2
+  flutter_secure_storage: ^9.2.4
 
   # UI
   qr_flutter: ^4.1.0

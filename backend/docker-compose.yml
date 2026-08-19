@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kuzai_music
+      POSTGRES_USER: kuzai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - kuzai_postgres:/var/lib/postgresql/data
+      - ./sql/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kuzai -d kuzai_music"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  account-server:
+    build: .
+    restart: unless-stopped
+    environment:
+      PORT: 8787
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: kuzai_music
+      PGUSER: kuzai
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      DATABASE_SSL: "false"
+      SESSION_DAYS: 30
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8787:8787"
+
+volumes:
+  kuzai_postgres:

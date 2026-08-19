@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>库仔音乐管理后台</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, "Microsoft YaHei", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f4f6f8; color: #1d252c; }
+    main { max-width: 1100px; margin: 0 auto; padding: 28px 18px 48px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 22px; }
+    h1 { font-size: 24px; margin: 0; } h2 { font-size: 18px; margin: 0 0 14px; }
+    .panel { background: #fff; border: 1px solid #dfe5eb; border-radius: 10px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px #18212b0b; }
+    .login { max-width: 420px; margin: 12vh auto; }
+    label { display: block; font-weight: 650; margin: 12px 0 5px; }
+    input, select, button { width: 100%; padding: 10px 12px; font: inherit; border: 1px solid #c9d1da; border-radius: 7px; background: #fff; }
+    button { cursor: pointer; background: #1769aa; color: #fff; border-color: #1769aa; font-weight: 700; }
+    button.secondary { background: #fff; color: #1769aa; }
+    button.danger { background: #b3261e; border-color: #b3261e; }
+    button.small { width: auto; padding: 6px 9px; font-size: 13px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr 150px; gap: 10px; align-items: end; }
+    .toolbar { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; }
+    .toolbar > * { flex: 1 1 180px; }
+    .toolbar button { flex: 0 0 auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 11px 8px; border-bottom: 1px solid #edf0f3; vertical-align: middle; }
+    th { color: #5d6974; font-size: 12px; }
+    .status { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #edf1f4; }
+    .status.active { color: #176b3a; background: #e4f5ea; } .status.disabled { color: #9b281f; background: #fde7e5; }
+    .muted { color: #68737d; font-size: 13px; } .error { color: #b3261e; min-height: 20px; margin-top: 8px; }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    @media (max-width: 720px) { main { padding: 16px 10px 32px; } .grid { grid-template-columns: 1fr; } table { display: block; overflow-x: auto; white-space: nowrap; } }
+  </style>
+</head>
+<body>
+  <main>
+    <section id="loginPanel" class="panel login">
+      <h1>库仔音乐管理后台</h1>
+      <p class="muted">使用管理员账号登录。建议只通过 HTTPS 暴露本页面。</p>
+      <label for="loginName">用户名</label><input id="loginName" autocomplete="username">
+      <label for="loginPassword">密码</label><input id="loginPassword" type="password" autocomplete="current-password">
+      <button id="loginButton" style="margin-top:16px">登录</button>
+      <div id="loginError" class="error"></div>
+    </section>
+
+    <section id="appPanel" hidden>
+      <header><div><h1>账号管理</h1><div id="adminIdentity" class="muted"></div></div><button id="logoutButton" class="secondary small">退出登录</button></header>
+      <section class="panel">
+        <h2>创建用户</h2>
+        <div class="grid">
+          <div><label for="newName">用户名</label><input id="newName" placeholder="例如: user01"></div>
+          <div><label for="newPassword">初始密码</label><input id="newPassword" type="password" placeholder="至少 10 位"></div>
+          <div><label for="newStatus">状态</label><select id="newStatus"><option value="pending">待启用</option><option value="active">立即启用</option></select></div>
+        </div>
+        <button id="createButton" style="margin-top:14px;max-width:160px">创建用户</button>
+        <div id="createError" class="error"></div>
+      </section>
+      <section class="panel">
+        <div class="toolbar"><div><label for="query">搜索用户</label><input id="query" placeholder="用户名"></div><div><label for="statusFilter">状态</label><select id="statusFilter"><option value="">全部</option><option value="pending">待启用</option><option value="active">可用</option><option value="disabled">已禁用</option><option value="deleted">已删除</option></select></div><button id="refreshButton" class="secondary small">刷新</button></div>
+        <div id="usersError" class="error"></div>
+        <div style="overflow-x:auto;margin-top:12px"><table><thead><tr><th>用户名</th><th>状态</th><th>创建时间</th><th>最近登录</th><th>操作</th></tr></thead><tbody id="usersBody"></tbody></table></div>
+      </section>
+    </section>
+  </main>
+  <script>
+    const tokenKey = 'kuzai_admin_token';
+    const $ = id => document.getElementById(id);
+    const labels = { pending: '待启用', active: '可用', disabled: '已禁用', deleted: '已删除' };
+    const token = () => sessionStorage.getItem(tokenKey) || '';
+    async function api(path, options = {}) {
+      const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+      if (token()) headers.Authorization = 'Bearer ' + token();
+      const response = await fetch(path, { ...options, headers });
+      const body = response.status === 204 ? {} : await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.message || '请求失败');
+      return body;
+    }
+    function formatDate(value) { return value ? new Date(value).toLocaleString() : '-'; }
+    function showApp(user) { $('loginPanel').hidden = true; $('appPanel').hidden = false; $('adminIdentity').textContent = user.username + ' · 管理员'; loadUsers(); }
+    async function login() {
+      $('loginError').textContent = '';
+      try { const result = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username: $('loginName').value, password: $('loginPassword').value, deviceName: '管理后台', platform: 'web' }) }); sessionStorage.setItem(tokenKey, result.token); showApp(result.user); }
+      catch (error) { $('loginError').textContent = error.message; }
+    }
+    async function loadUsers() {
+      $('usersError').textContent = '';
+      try {
+        const query = new URLSearchParams({ q: $('query').value, status: $('statusFilter').value });
+        const result = await api('/api/admin/users?' + query);
+        $('usersBody').innerHTML = result.users.map(user => `<tr><td>${escapeHtml(user.username)}</td><td><span class="status ${user.status}">${labels[user.status] || user.status}</span>${user.statusReason ? `<div class="muted">${escapeHtml(user.statusReason)}</div>` : ''}</td><td>${formatDate(user.createdAt)}</td><td>${formatDate(user.lastLoginAt)}</td><td><div class="actions">${user.status !== 'active' ? `<button class="small" onclick="setStatus('${user.id}','active')">启用</button>` : ''}${user.status !== 'disabled' ? `<button class="small danger" onclick="setStatus('${user.id}','disabled')">禁用</button>` : ''}${user.status === 'disabled' ? `<button class="small secondary" onclick="setStatus('${user.id}','active')">恢复</button>` : ''}<button class="small secondary" onclick="resetPassword('${user.id}')">重置密码</button></div></td></tr>`).join('');
+      } catch (error) { $('usersError').textContent = error.message; if (error.message.includes('登录')) logout(); }
+    }
+    async function setStatus(id, status) { const reason = status === 'disabled' ? (prompt('禁用原因（可选）') || '') : ''; try { await api('/api/admin/users/' + id + '/status', { method: 'PATCH', body: JSON.stringify({ status, reason }) }); await loadUsers(); } catch (error) { $('usersError').textContent = error.message; } }
+    async function resetPassword(id) { const password = prompt('输入至少 10 位的新密码'); if (!password) return; try { await api('/api/admin/users/' + id + '/reset-password', { method: 'POST', body: JSON.stringify({ password }) }); alert('密码已更新，该用户的现有会话已撤销'); } catch (error) { $('usersError').textContent = error.message; } }
+    async function createUser() { $('createError').textContent = ''; try { await api('/api/admin/users', { method: 'POST', body: JSON.stringify({ username: $('newName').value, password: $('newPassword').value, status: $('newStatus').value }) }); $('newName').value = ''; $('newPassword').value = ''; await loadUsers(); } catch (error) { $('createError').textContent = error.message; } }
+    async function logout() { try { await api('/api/auth/logout', { method: 'POST' }); } catch (_) {} sessionStorage.removeItem(tokenKey); $('appPanel').hidden = true; $('loginPanel').hidden = false; }
+    function escapeHtml(value) { return String(value).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c])); }
+    $('loginButton').onclick = login; $('loginPassword').onkeydown = e => { if (e.key === 'Enter') login(); }; $('logoutButton').onclick = logout; $('refreshButton').onclick = loadUsers; $('createButton').onclick = createUser; $('statusFilter').onchange = loadUsers;
+    if (token()) api('/api/me').then(result => showApp(result.user)).catch(logout);
+  </script>
+</body>
+</html>

@@ -9,15 +9,20 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'providers/player_provider.dart';
 import 'providers/search_session.dart';
+import 'providers/sync_controller.dart';
 import 'providers/theme_controller.dart';
+import 'screens/login_screen.dart';
 import 'screens/discover_screen.dart';
 import 'screens/player_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/playlist_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/favorite_service.dart';
+import 'services/account_service.dart';
+import 'services/account_sync_service.dart';
 import 'services/floating_capsule_service.dart';
 import 'services/player_media_handler.dart';
+import 'services/user_profile_store.dart';
 import 'theme/app_layout.dart';
 import 'theme/app_motion.dart';
 import 'theme/app_theme.dart';
@@ -34,6 +39,16 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // 全面屏适配：内容延伸到状态栏/导航栏区域（各页面已用 SafeArea 保护内容）
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  final account = AccountService();
+  await account.initialize();
+  if (account.isAuthenticated && account.user != null) {
+    await UserProfileStore.activate(account.user!.id);
+    try {
+      await AccountSyncService(account).bootstrap();
+    } catch (error) {
+      debugPrint('启动账号同步失败: $error');
+    }
+  }
   final player = PlayerProvider();
   final audioSession = await AudioSession.instance;
   await audioSession.configure(const AudioSessionConfiguration.music());
@@ -92,22 +107,36 @@ void main() async {
       prefs.getBool('floating_capsule_enabled') ?? false,
     );
   } catch (_) {}
-  runApp(MusicPlayerApp(player: player));
+  runApp(MusicPlayerApp(player: player, account: account));
 }
 
 class MusicPlayerApp extends StatelessWidget {
-  const MusicPlayerApp({super.key, required this.player});
+  const MusicPlayerApp({super.key, required this.player, this.account});
 
   final PlayerProvider player;
+  final AccountService? account;
 
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
+        if (account != null)
+          ChangeNotifierProvider<AccountService>.value(value: account!),
         ChangeNotifierProvider<PlayerProvider>.value(value: player),
         ChangeNotifierProvider(create: (_) => SearchSession()),
         ChangeNotifierProvider(create: (_) => ThemeController()),
         ChangeNotifierProvider(create: (_) => FavoriteService()..load()),
+        if (account != null)
+          ChangeNotifierProvider(
+            lazy: false,
+            create: (context) => SyncController(
+              service: AccountSyncService(account!),
+              favorites: context.read<FavoriteService>(),
+              player: player,
+              search: context.read<SearchSession>(),
+              theme: context.read<ThemeController>(),
+            ),
+          ),
       ],
       child: Consumer<ThemeController>(
         builder: (context, themeCtrl, _) {
@@ -149,9 +178,158 @@ class MusicPlayerApp extends StatelessWidget {
                 ),
               );
             },
-            home: const MainScreen(),
+            home: account == null
+                ? const MainScreen()
+                : AccountGate(
+                    initiallyReady: account!.isAuthenticated,
+                    child: const MainScreen(),
+                  ),
           );
         },
+      ),
+    );
+  }
+}
+
+class AccountGate extends StatefulWidget {
+  final bool initiallyReady;
+  final Widget child;
+
+  const AccountGate({
+    super.key,
+    required this.initiallyReady,
+    required this.child,
+  });
+
+  @override
+  State<AccountGate> createState() => _AccountGateState();
+}
+
+class _AccountGateState extends State<AccountGate> {
+  late bool _ready;
+  bool _preparing = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _ready = widget.initiallyReady;
+  }
+
+  Future<void> _login(String server, String username, String password) async {
+    final account = context.read<AccountService>();
+    final player = context.read<PlayerProvider>();
+    final favorites = context.read<FavoriteService>();
+    final search = context.read<SearchSession>();
+    final theme = context.read<ThemeController>();
+    setState(() {
+      _preparing = true;
+      _ready = false;
+      _error = null;
+    });
+    try {
+      await player.prepareForAccountSwitch();
+      await account.login(
+        serverUrl: server,
+        username: username,
+        password: password,
+      );
+      final user = account.user!;
+      await UserProfileStore.activate(user.id);
+      try {
+        await AccountSyncService(account).bootstrap();
+      } catch (error) {
+        debugPrint('登录后同步失败，将使用本地账号数据: $error');
+      }
+      await Future.wait([
+        favorites.reloadForAccount(),
+        search.reloadForAccount(),
+        theme.reloadForAccount(),
+        player.reloadForAccount(),
+      ]);
+      if (!mounted) return;
+      setState(() => _ready = true);
+    } on AccountException {
+      rethrow;
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _error = '账号数据初始化失败：$error');
+      rethrow;
+    } finally {
+      if (mounted) setState(() => _preparing = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final account = context.watch<AccountService>();
+    if (account.status == AccountStatus.disabled) {
+      return _AccountUnavailableScreen(message: account.message ?? '当前账号不可用');
+    }
+    if (!account.isAuthenticated) {
+      return LoginScreen(onLogin: _login);
+    }
+    if (_preparing || !_ready) {
+      return Scaffold(
+        body: SafeArea(
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 16),
+                Text(_error ?? '正在同步账号数据...'),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    return widget.child;
+  }
+}
+
+class _AccountUnavailableScreen extends StatelessWidget {
+  final String message;
+
+  const _AccountUnavailableScreen({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.block_outlined,
+                    size: 56,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    '账号不可用',
+                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(message, textAlign: TextAlign.center),
+                  const SizedBox(height: 20),
+                  FilledButton.icon(
+                    key: const ValueKey('disabled-account-logout'),
+                    onPressed: context.read<AccountService>().logout,
+                    icon: const Icon(Icons.logout),
+                    label: const Text('退出账号'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

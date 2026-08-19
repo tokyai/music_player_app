@@ -180,6 +180,32 @@ class PlayerProvider extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
+  Future<void> prepareForAccountSwitch() async {
+    _historyPersistTimer?.cancel();
+    _historyPersistTimer = null;
+    _playRequestId++;
+    _queueSessionId++;
+    _queue.clear();
+    _currentIndex = -1;
+    _lyrics.clear();
+    _position = Duration.zero;
+    _duration = Duration.zero;
+    _buffered = Duration.zero;
+    _isPlaying = false;
+    _isLoading = false;
+    try {
+      await _audioPlayer.stop();
+    } catch (_) {}
+    notifyListeners();
+  }
+
+  Future<void> reloadForAccount() async {
+    _playbackHistory = await PlaybackHistoryService.load();
+    _playbackHistoryRevision++;
+    await _loadSettings();
+    if (!_disposed) notifyListeners();
+  }
+
   void _initAudioPlayer() {
     _playerSub = _audioPlayer.playerStateStream.listen((state) {
       _isPlaying = state.playing;
@@ -341,6 +367,18 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> _loadSettings() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      _neteaseLevel = NeteaseLevel.jymaster;
+      _commonLevel = CommonLevel.flac;
+      _neteasePlaybackSource = PlaybackSource.chksz;
+      _qqPlaybackSource = PlaybackSource.chksz;
+      _kugouPlaybackSource = PlaybackSource.chksz;
+      _bilibiliLyricPlatformOrder = List<MusicPlatform>.from(
+        _defaultBilibiliLyricPlatformOrder,
+      );
+      _lyricOffsetStep = defaultLyricOffsetStep;
+      _videoPlayerMode = VideoPlayerMode.automatic;
+      _bilibiliAudioQuality = 30280;
+      _bilibiliVideoQuality = 80;
       _apiKey = prefs.getString('api_key') ?? '';
       _api.setApiKey(_apiKey);
       final levelStr = prefs.getString('netease_level');

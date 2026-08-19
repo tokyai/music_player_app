@@ -5,11 +5,14 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
+import '../providers/sync_controller.dart';
 import '../providers/theme_controller.dart';
+import '../services/account_service.dart';
 import '../services/audio_cache_service.dart';
 import '../services/favorite_service.dart';
 import '../services/floating_capsule_service.dart';
 import '../services/lan_api_key_service.dart';
+import '../services/user_profile_store.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../theme/lyric_style.dart';
@@ -258,6 +261,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       padding: const EdgeInsets.only(bottom: 24),
       children: [
         _buildPageTitle(),
+        if (context.watch<AccountService?>() != null) _buildAccountCard(),
         _buildAppearanceCard(),
         _buildLyricsCard(),
         _buildLibraryCard(),
@@ -316,6 +320,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       child: Column(
                         children: [
+                          if (context.watch<AccountService?>() != null)
+                            _buildAccountCard(compact: compact),
                           _buildBilibiliAccountCard(compact: compact),
                           _buildApiCard(compact: compact),
                           _buildAboutCard(compact: compact),
@@ -330,6 +336,112 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       },
     );
+  }
+
+  Widget _buildAccountCard({bool compact = false}) {
+    final account = context.watch<AccountService?>();
+    final sync = context.watch<SyncController?>();
+    if (account == null) return const SizedBox.shrink();
+    final user = account.user;
+    final syncText = switch (sync?.status) {
+      SyncStatus.syncing => '正在同步',
+      SyncStatus.offline => '等待联网重试',
+      SyncStatus.error => '同步失败',
+      _ =>
+        sync?.lastSyncedAt == null
+            ? '已开启自动同步'
+            : '上次同步 ${_formatSyncTime(sync!.lastSyncedAt!)}',
+    };
+    return _buildCard(
+      compact: compact,
+      children: [
+        _buildSectionHeader(
+          icon: Icons.account_circle_outlined,
+          title: '账号与同步',
+        ),
+        ListTile(
+          key: const ValueKey('settings-account-summary'),
+          leading: const Icon(Icons.person_outline),
+          title: Text(user?.username ?? '未登录'),
+          subtitle: Text(sync?.message ?? syncText),
+          trailing: sync?.status == SyncStatus.syncing
+              ? const SizedBox.square(
+                  dimension: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Icon(
+                  sync?.status == SyncStatus.offline
+                      ? Icons.cloud_off_outlined
+                      : Icons.cloud_done_outlined,
+                ),
+        ),
+        ListTile(
+          key: const ValueKey('settings-sync-now'),
+          leading: const Icon(Icons.sync),
+          title: const Text('立即同步'),
+          enabled: sync != null && sync.status != SyncStatus.syncing,
+          onTap: sync == null ? null : _syncNow,
+        ),
+        ListTile(
+          key: const ValueKey('settings-account-logout'),
+          leading: const Icon(Icons.logout),
+          title: const Text('退出账号'),
+          onTap: _logoutAccount,
+        ),
+      ],
+    );
+  }
+
+  String _formatSyncTime(DateTime value) {
+    final local = value.toLocal();
+    return '${local.month.toString().padLeft(2, '0')}-'
+        '${local.day.toString().padLeft(2, '0')} '
+        '${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _syncNow() async {
+    final sync = context.read<SyncController?>();
+    if (sync == null) return;
+    await sync.syncNow();
+    if (!mounted) return;
+    final failed =
+        sync.status == SyncStatus.offline || sync.status == SyncStatus.error;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(failed ? (sync.message ?? '同步失败') : '同步完成')),
+    );
+  }
+
+  Future<void> _logoutAccount() async {
+    final account = context.read<AccountService?>();
+    if (account == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('退出账号'),
+        content: const Text('本机个人数据会保留在当前账号资料中，下次登录可继续使用。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('退出'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final sync = context.read<SyncController?>();
+    final player = context.read<PlayerProvider>();
+    try {
+      await sync?.syncNow();
+    } catch (_) {}
+    final userId = account.user?.id;
+    if (userId != null) await UserProfileStore.checkpoint(userId);
+    await player.prepareForAccountSwitch();
+    await account.logout();
   }
 
   Widget _buildPageTitle({bool compact = false, AppLayout? layout}) {

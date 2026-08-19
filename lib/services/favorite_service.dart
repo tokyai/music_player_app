@@ -98,6 +98,13 @@ class FavoriteService extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> reloadForAccount() async {
+    _favorites.clear();
+    _favoritePlaylists.clear();
+    _loaded = false;
+    await load();
+  }
+
   bool isFavorite(MusicPlatform platform, String id) {
     final key = songKey(platform, id);
     return _favorites.any((song) => keyOf(song) == key);

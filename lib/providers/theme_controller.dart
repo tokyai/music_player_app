@@ -26,6 +26,9 @@ class ThemeController extends ChangeNotifier {
   Future<void> _load() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      _mode = ThemeMode.system;
+      _fontScale = defaultFontScale;
+      _fontScaleChangedByUser = false;
       final v = prefs.getString(_prefKey);
       switch (v) {
         case _modeLight:
@@ -44,6 +47,8 @@ class ThemeController extends ChangeNotifier {
       notifyListeners();
     } catch (_) {}
   }
+
+  Future<void> reloadForAccount() => _load();
 
   Future<void> setMode(ThemeMode mode) async {
     if (_mode == mode) return;

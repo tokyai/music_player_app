@@ -330,6 +330,11 @@ class SearchSession extends ChangeNotifier {
     } catch (_) {}
   }
 
+  Future<void> reloadForAccount() async {
+    _searchHistory.clear();
+    await _loadSearchHistory();
+  }
+
   Future<void> _rememberSearch(String keyword) async {
     await _historyReady;
     if (_disposed) return;
