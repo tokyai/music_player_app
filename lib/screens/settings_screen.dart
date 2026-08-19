@@ -15,6 +15,7 @@ import '../widgets/bilibili_login_dialog.dart';
 import 'backup_restore_screen.dart';
 import 'cache_list_screen.dart';
 import 'favorites_screen.dart';
+import 'playback_history_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -1045,6 +1046,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const FavoritesScreen()),
+            ),
+          ),
+        ),
+        const Divider(height: 1),
+        Consumer<PlayerProvider>(
+          builder: (context, player, _) => ListTile(
+            dense: compact,
+            leading: const Icon(Icons.history_rounded),
+            title: const Text('播放历史'),
+            subtitle: Text('${player.playbackHistory.length} 条记录，可从断点继续'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const PlaybackHistoryScreen(),
+              ),
             ),
           ),
         ),

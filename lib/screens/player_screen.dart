@@ -1277,12 +1277,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
                               textColor,
                             ),
                           ),
-                          _buildSongInfo(
-                            ctx,
-                            player,
-                            song,
-                            textColor,
-                            subTextColor,
+                          Selector<PlayerProvider, bool>(
+                            selector: (_, p) => p.showLyric,
+                            builder: (ctx, showLyric, _) => showLyric
+                                ? const SizedBox(
+                                    key: ValueKey('portrait-lyric-info-hidden'),
+                                  )
+                                : _buildSongInfo(
+                                    ctx,
+                                    player,
+                                    song,
+                                    textColor,
+                                    subTextColor,
+                                  ),
                           ),
                           _buildProgressBar(
                             ctx,

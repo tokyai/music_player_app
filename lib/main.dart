@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:just_audio_background/just_audio_background.dart';
-import 'package:media_kit/media_kit.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -25,7 +24,6 @@ final _navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  MediaKit.ensureInitialized();
   // 全面屏适配：内容延伸到状态栏/导航栏区域（各页面已用 SafeArea 保护内容）
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   // 系统媒体通知：播放时通知栏/锁屏显示媒体控制（系统级胶囊体验）
@@ -33,6 +31,9 @@ void main() async {
     androidNotificationChannelId: 'com.example.music_player_app.audio',
     androidNotificationChannelName: '库仔音乐播放',
     androidNotificationOngoing: true,
+    // 车机通知只需要小尺寸缩略图，避免音频服务完整解码高分辨率封面。
+    artDownscaleWidth: 256,
+    artDownscaleHeight: 256,
   );
   // Android 13+ 请求通知权限（否则系统媒体通知不显示）
   try {

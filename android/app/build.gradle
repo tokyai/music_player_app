@@ -78,6 +78,18 @@ android {
     }
 }
 
+// just_audio currently requests Media3 1.4.1 while video_player_android uses
+// 1.9.2. Keep every Media3 module on one explicit runtime version so a future
+// plugin update cannot silently introduce a different mixed graph.
+configurations.configureEach {
+    resolutionStrategy.eachDependency { details ->
+        if (details.requested.group == "androidx.media3") {
+            details.useVersion("1.9.2")
+            details.because("Align just_audio and video_player Media3 modules")
+        }
+    }
+}
+
 // 跳过 JNI CMake 构建
 subprojects {
     afterEvaluate { project ->
