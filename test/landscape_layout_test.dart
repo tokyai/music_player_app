@@ -27,6 +27,7 @@ import 'package:music_player_app/theme/lyric_style.dart';
 import 'package:music_player_app/utils/lyric_parser.dart';
 import 'package:music_player_app/widgets/mini_player.dart';
 import 'package:provider/provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -2025,6 +2026,50 @@ void main() {
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
     }, _mockClient);
+  });
+
+  testWidgets('API key QR input is usable in both landscapes', (tester) async {
+    for (final size in const [Size(640, 360), Size(1280, 800)]) {
+      SharedPreferences.setMockInitialValues({});
+      final player = PlayerProvider();
+      final theme = ThemeController();
+      await player.settingsReady;
+
+      await _pumpScreen(tester, const SettingsScreen(), player, theme, size);
+      final qrInput = find.byKey(const ValueKey('api-key-qr-input'));
+      await tester.ensureVisible(qrInput);
+      await tester.pumpAndSettle();
+      expect(qrInput.hitTestable(), findsOneWidget);
+
+      await tester.tap(qrInput);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)),
+      );
+      await tester.pumpAndSettle();
+
+      final qrCode = find.byKey(const ValueKey('api-key-qr-code'));
+      final close = find.byKey(const ValueKey('api-key-qr-close'));
+      expect(qrCode, findsOneWidget);
+      expect(
+        tester.widget<QrImageView>(qrCode).size,
+        size == const Size(640, 360) ? 150 : 210,
+      );
+      expect(find.text('手机扫码后输入 Key 并提交'), findsOneWidget);
+      expect(close.hitTestable(), findsOneWidget);
+      _expectNoException(tester);
+
+      await tester.tap(close);
+      await tester.pumpAndSettle();
+      expect(qrCode, findsNothing);
+      _expectNoException(tester);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      player.dispose();
+      theme.dispose();
+    }
+    tester.view.resetPhysicalSize();
+    tester.view.resetDevicePixelRatio();
   });
 
   testWidgets('lyric font family and weight persist in both landscapes', (
