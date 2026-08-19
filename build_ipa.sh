@@ -9,6 +9,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
+command_name=""
 for command_name in flutter xcodebuild pod; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "ERROR: 缺少命令 $command_name，请先安装并配置 Flutter、Xcode 和 CocoaPods。" >&2
