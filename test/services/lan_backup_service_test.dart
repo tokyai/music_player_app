@@ -16,6 +16,8 @@ void main() {
       final home = await http.get(localUri).timeout(const Duration(seconds: 5));
       expect(home.statusCode, 200);
       expect(home.body, contains('库仔音乐备份'));
+      expect(Uri.parse(session.qrUrl).queryParameters['pin'], session.pin);
+      expect(home.body, contains('initialPin'));
 
       final denied = await http
           .get(localUri.resolve('backup?pin=000000'))

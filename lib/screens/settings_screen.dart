@@ -16,6 +16,7 @@ import '../widgets/remote_focusable.dart';
 import 'backup_restore_screen.dart';
 import 'cache_list_screen.dart';
 import 'favorites_screen.dart';
+import 'playback_history_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -578,6 +579,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const Divider(height: 1),
         Consumer<PlayerProvider>(
           builder: (context, player, _) {
+            final stepLabel = _formatLyricOffsetStep(player.lyricOffsetStep);
+            return ListTile(
+              key: const ValueKey('lyric-offset-step-setting'),
+              dense: compact,
+              leading: const Icon(Icons.timer_outlined),
+              title: const Text(
+                '歌词时延单次调节',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                '播放页每次提前/延后 $stepLabel 秒',
+                maxLines: compact ? 1 : 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('$stepLabel 秒'),
+                  const SizedBox(width: 4),
+                  const Icon(Icons.chevron_right_rounded),
+                ],
+              ),
+              onTap: () => _showLyricOffsetStepPicker(player),
+            );
+          },
+        ),
+        const Divider(height: 1),
+        Consumer<PlayerProvider>(
+          builder: (context, player, _) {
             final order = player.bilibiliLyricPlatformOrder;
             return ListTile(
               key: const ValueKey('bilibili-lyric-platform-order-setting'),
@@ -600,6 +631,95 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ],
     );
+  }
+
+  Future<void> _showLyricOffsetStepPicker(PlayerProvider player) async {
+    final selected = await showDialog<Duration>(
+      context: context,
+      builder: (dialogContext) {
+        var milliseconds = player.lyricOffsetStep.inMilliseconds;
+        final minimum = PlayerProvider.minLyricOffsetStep.inMilliseconds;
+        final maximum = PlayerProvider.maxLyricOffsetStep.inMilliseconds;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final value = Duration(milliseconds: milliseconds);
+            final valueLabel = _formatLyricOffsetStep(value);
+            return AlertDialog(
+              key: const ValueKey('lyric-offset-step-dialog'),
+              title: const Text('歌词时延单次调节'),
+              content: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(child: Text('每次提前或延后')),
+                        Text(
+                          '$valueLabel 秒',
+                          key: const ValueKey('lyric-offset-step-value'),
+                          style: const TextStyle(
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Slider(
+                      key: const ValueKey('lyric-offset-step-slider'),
+                      value: milliseconds.toDouble(),
+                      min: minimum.toDouble(),
+                      max: maximum.toDouble(),
+                      divisions: (maximum - minimum) ~/ 100,
+                      label: '$valueLabel 秒',
+                      semanticFormatterCallback: (rawValue) =>
+                          '${_formatLyricOffsetStep(Duration(milliseconds: rawValue.round()))} 秒',
+                      onChanged: (rawValue) => setDialogState(() {
+                        milliseconds = (rawValue / 100).round() * 100;
+                      }),
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: const [Text('0.1 秒'), Text('2.0 秒')],
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => setDialogState(() {
+                    milliseconds =
+                        PlayerProvider.defaultLyricOffsetStep.inMilliseconds;
+                  }),
+                  child: const Text('恢复默认'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  key: const ValueKey('lyric-offset-step-save'),
+                  onPressed: () => Navigator.pop(
+                    dialogContext,
+                    Duration(milliseconds: milliseconds),
+                  ),
+                  child: const Text('保存'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (selected != null) await player.setLyricOffsetStep(selected);
+  }
+
+  String _formatLyricOffsetStep(Duration step) {
+    final milliseconds = step.inMilliseconds;
+    return milliseconds % 1000 == 0
+        ? '${milliseconds ~/ 1000}'
+        : (milliseconds / 1000).toStringAsFixed(1);
   }
 
   Future<void> _showBilibiliLyricPlatformOrderPicker(
@@ -927,6 +1047,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const FavoritesScreen()),
+            ),
+          ),
+        ),
+        const Divider(height: 1),
+        Consumer<PlayerProvider>(
+          builder: (context, player, _) => ListTile(
+            dense: compact,
+            leading: const Icon(Icons.history_rounded),
+            title: const Text('播放历史'),
+            subtitle: Text('${player.playbackHistory.length} 条记录，可从断点继续'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const PlaybackHistoryScreen(),
+              ),
             ),
           ),
         ),
@@ -1306,12 +1442,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _showPlaybackSourcePicker(
+  Future<void> _showPlaybackSourcePicker(
     BuildContext context,
     PlayerProvider player,
     MusicPlatform platform,
-  ) {
-    showDialog<void>(
+  ) async {
+    // Do not restore the API Key TextField focus when this settings dialog
+    // closes. This is especially visible on TV/car displays with a keyboard.
+    FocusManager.instance.primaryFocus?.unfocus();
+    await showDialog<void>(
       context: context,
       builder: (dialogContext) => SimpleDialog(
         title: Text('${platform.label}播放源'),
@@ -1336,6 +1475,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         }).toList(),
       ),
     );
+    if (mounted) FocusManager.instance.primaryFocus?.unfocus();
   }
 
   void _showVideoPlayerModePicker(BuildContext context, PlayerProvider player) {

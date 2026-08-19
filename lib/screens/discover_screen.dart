@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../services/favorite_service.dart';
+import '../services/playback_history_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
@@ -13,6 +14,8 @@ import '../widgets/remote_focusable.dart';
 import '../widgets/song_tile.dart';
 import '../widgets/smart_cover.dart';
 import 'favorites_screen.dart';
+import 'playback_history_screen.dart';
+import 'player_screen.dart';
 import 'playlist_detail_screen.dart';
 
 class DiscoverScreen extends StatefulWidget {
@@ -84,6 +87,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
           const SizedBox(height: 12),
           _buildBilibiliFavoritesBlock(),
           const SizedBox(height: 12),
+          _buildPlaybackHistoryBlock(),
+          const SizedBox(height: 12),
           _buildSectionHeader('每日推荐', PlatformColors.kugou, '每天为你精选好音乐'),
           _buildAnimatedSongSection(
             _kugouDaily,
@@ -115,6 +120,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                   _buildFavoritePlaylistsBlock(compact: compact),
                   const SizedBox.shrink(),
                   _buildBilibiliFavoritesBlock(compact: compact),
+                  const SizedBox.shrink(),
+                  _buildPlaybackHistoryBlock(compact: compact),
                   const SizedBox(height: 24),
                 ],
               ),
@@ -589,6 +596,118 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     );
   }
 
+  Widget _buildPlaybackHistoryBlock({bool compact = false}) {
+    return Selector<PlayerProvider, int>(
+      selector: (_, player) => player.playbackHistoryRevision,
+      builder: (context, _, __) {
+        final player = context.read<PlayerProvider>();
+        final history = player.playbackHistory;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildSectionHeader(
+              '播放历史',
+              AppColors.primary,
+              '${history.length} 条',
+              compact: compact,
+              key: const ValueKey('home-playback-history-header'),
+              onTap: _openPlaybackHistory,
+            ),
+            FutureBuilder<void>(
+              future: player.historyReady,
+              builder: (context, snapshot) {
+                final loading =
+                    snapshot.connectionState != ConnectionState.done;
+                return AppMotionSwitcher(
+                  child: KeyedSubtree(
+                    key: ValueKey(
+                      loading
+                          ? 'home-playback-history-loading'
+                          : history.isEmpty
+                          ? 'home-playback-history-empty'
+                          : 'home-playback-history-content',
+                    ),
+                    child: _buildPlaybackHistorySection(
+                      player,
+                      loading: loading,
+                      compact: compact,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildPlaybackHistorySection(
+    PlayerProvider player, {
+    required bool loading,
+    bool compact = false,
+  }) {
+    final layout = AppLayout.fromContext(context);
+    final cardSize = _favoritePreviewSize(layout);
+    final sectionHeight =
+        cardSize + (layout.usesLargeTypography ? 62 : (compact ? 54 : 60));
+    if (loading) {
+      return SizedBox(
+        height: sectionHeight,
+        child: Center(
+          child: CircularProgressIndicator(
+            strokeWidth: 2.5,
+            color: AppColors.primary,
+          ),
+        ),
+      );
+    }
+    final history = player.playbackHistory;
+    if (history.isEmpty) {
+      return SizedBox(
+        height: layout.usesLargeTypography ? 88 : (compact ? 76 : 96),
+        child: Center(
+          child: TextButton.icon(
+            onPressed: _openPlaybackHistory,
+            icon: const Icon(Icons.history_rounded, size: 21),
+            label: const Text('查看播放历史'),
+          ),
+        ),
+      );
+    }
+    final display = history.length > 8 ? history.sublist(0, 8) : history;
+    return SizedBox(
+      height: sectionHeight,
+      child: ListView.builder(
+        key: const ValueKey('home-playback-history-carousel'),
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: display.length,
+        itemBuilder: (context, index) {
+          final entry = display[index];
+          return _PlaybackHistoryCard(
+            entry: entry,
+            cardSize: cardSize,
+            onTap: () => _playPlaybackHistory(entry),
+          );
+        },
+      ),
+    );
+  }
+
+  void _openPlaybackHistory() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const PlaybackHistoryScreen()),
+    );
+  }
+
+  void _playPlaybackHistory(PlaybackHistoryEntry entry) {
+    final player = context.read<PlayerProvider>();
+    unawaited(player.playFromHistory(entry));
+    Navigator.push(context, PlayerScreen.route(context));
+  }
+
   double _favoritePreviewSize(AppLayout layout) {
     if (!layout.isLandscape) return layout.mediaCardWidth.clamp(110.0, 144.0);
     if (layout.usesLargeTypography) return 92;
@@ -765,6 +884,27 @@ class _FavoriteSongCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _PlaybackHistoryCard extends StatelessWidget {
+  final PlaybackHistoryEntry entry;
+  final double cardSize;
+  final VoidCallback onTap;
+
+  const _PlaybackHistoryCard({
+    required this.entry,
+    required this.cardSize,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return _FavoriteSongCard(
+      song: entry.song,
+      cardSize: cardSize,
+      onTap: onTap,
     );
   }
 }

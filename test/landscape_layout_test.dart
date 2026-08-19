@@ -11,6 +11,7 @@ import 'package:music_player_app/providers/search_session.dart';
 import 'package:music_player_app/providers/theme_controller.dart';
 import 'package:music_player_app/screens/discover_screen.dart';
 import 'package:music_player_app/screens/favorites_screen.dart';
+import 'package:music_player_app/screens/playback_history_screen.dart';
 import 'package:music_player_app/screens/player_screen.dart';
 import 'package:music_player_app/screens/playlist_detail_screen.dart';
 import 'package:music_player_app/screens/playlist_screen.dart';
@@ -775,6 +776,28 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(FavoritesScreen), findsOneWidget);
       _expectNoException(tester);
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      final libraryPane = find.byKey(
+        const PageStorageKey('discover-landscape-library'),
+      );
+      final libraryList = find
+          .descendant(of: libraryPane, matching: find.byType(Scrollable))
+          .first;
+      final historyHeader = find.byKey(
+        const ValueKey('home-playback-history-header'),
+      );
+      await tester.scrollUntilVisible(
+        historyHeader,
+        180,
+        scrollable: libraryList,
+      );
+      expect(historyHeader.hitTestable(), findsOneWidget);
+      await tester.tap(historyHeader.hitTestable());
+      await tester.pumpAndSettle();
+      expect(find.byType(PlaybackHistoryScreen), findsOneWidget);
+      _expectNoException(tester);
     }, _mockClient);
   });
 
@@ -946,6 +969,61 @@ void main() {
     }, _mockClient);
   });
 
+  testWidgets(
+    'portrait lyric mode hides song metadata while landscape keeps it',
+    (tester) async {
+      await http.runWithClient(() async {
+        final player = _PlayerWithLyrics();
+        final theme = ThemeController();
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          player.dispose();
+          theme.dispose();
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        await _pumpScreen(
+          tester,
+          const PlayerScreen(),
+          player,
+          theme,
+          const Size(360, 640),
+        );
+        expect(
+          find.byKey(const ValueKey('player-song-search')),
+          findsOneWidget,
+        );
+        await tester.tap(find.text('歌词').hitTestable());
+        await tester.pumpAndSettle();
+        expect(find.byKey(const ValueKey('player-lyric-list')), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('portrait-lyric-info-hidden')),
+          findsOneWidget,
+        );
+        expect(find.byKey(const ValueKey('player-song-search')), findsNothing);
+        expect(find.text('测试歌手'), findsNothing);
+        expect(find.text('测试专辑'), findsNothing);
+        _expectNoException(tester);
+
+        for (final size in const [Size(640, 360), Size(1280, 800)]) {
+          await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
+          expect(
+            find.byKey(const ValueKey('landscape-player-lyrics')),
+            findsOneWidget,
+          );
+          expect(
+            find.byKey(const ValueKey('player-song-search')),
+            findsOneWidget,
+          );
+          expect(find.text('测试歌手'), findsOneWidget);
+          expect(find.text('测试专辑'), findsOneWidget);
+          _expectNoException(tester);
+        }
+      }, _mockClient);
+    },
+  );
+
   testWidgets('karaoke lyrics highlight by word and slide between lines', (
     tester,
   ) async {
@@ -1018,6 +1096,271 @@ void main() {
       }
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
+    }, _mockClient);
+  });
+
+  testWidgets('lyric timing toolbar aligns lyrics in both landscapes', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      for (final size in const [Size(640, 360), Size(1280, 800)]) {
+        SharedPreferences.setMockInitialValues({});
+        final player = _KaraokePlayer();
+        final theme = ThemeController();
+
+        await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
+
+        final toolbar = find.byKey(
+          const ValueKey('player-lyric-bottom-toolbar'),
+        );
+        final earlier = find.byKey(
+          const ValueKey('player-lyric-offset-earlier'),
+        );
+        final later = find.byKey(const ValueKey('player-lyric-offset-later'));
+        expect(toolbar, findsOneWidget);
+        expect(tester.widget<Row>(toolbar), isA<Row>());
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('player-lyric-search-action')),
+            matching: find.byType(TextButton),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('player-mv-action')),
+            matching: find.byType(TextButton),
+          ),
+          findsOneWidget,
+        );
+        final leftAction = find.byKey(const ValueKey('player-mv-action'));
+        final rightAction = find.byKey(
+          const ValueKey('player-lyric-search-action'),
+        );
+        final leftButton = find.descendant(
+          of: leftAction,
+          matching: find.byType(TextButton),
+        );
+        final rightButton = find.descendant(
+          of: rightAction,
+          matching: find.byType(TextButton),
+        );
+        final leftFooter = find.byKey(
+          const ValueKey('landscape-player-left-footer-frame'),
+        );
+        final rightFooter = find.byKey(
+          const ValueKey('landscape-player-right-footer-frame'),
+        );
+        expect(
+          tester.getTopLeft(rightFooter).dy,
+          closeTo(tester.getTopLeft(leftFooter).dy, 0.1),
+        );
+        expect(
+          tester.getSize(rightFooter).height,
+          closeTo(tester.getSize(leftFooter).height, 0.1),
+        );
+        expect(
+          tester.getSize(rightButton).height,
+          closeTo(tester.getSize(leftButton).height, 0.1),
+        );
+        expect(
+          tester.getCenter(rightButton).dy,
+          closeTo(tester.getCenter(leftButton).dy, 0.1),
+          reason:
+              'left=${tester.getCenter(leftButton).dy}, '
+              'right=${tester.getCenter(rightButton).dy}',
+        );
+        expect(
+          find
+              .byKey(const ValueKey('player-lyric-search-action'))
+              .hitTestable(),
+          findsOneWidget,
+        );
+        expect(earlier.hitTestable(), findsOneWidget);
+        expect(later.hitTestable(), findsOneWidget);
+        expect(find.text('同步'), findsOneWidget);
+        expect(
+          find.text(size.height <= 420 ? '-0.5s' : '提前 0.5s'),
+          findsOneWidget,
+        );
+        expect(
+          find.text(size.height <= 420 ? '+0.5s' : '延后 0.5s'),
+          findsOneWidget,
+        );
+        expect(
+          tester.getBottomRight(toolbar).dy,
+          lessThanOrEqualTo(
+            tester
+                .getBottomRight(
+                  find.byKey(const ValueKey('landscape-player-lyrics')),
+                )
+                .dy,
+          ),
+        );
+
+        await tester.tap(later);
+        await tester.pump();
+        expect(player.lyricOffset, const Duration(milliseconds: 500));
+        expect(player.lyricPosition, const Duration(seconds: 1));
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('player-lyric-offset-reset')),
+            matching: find.text(size.height <= 420 ? '+0.5s' : '延后 0.5s'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          tester
+              .widget<Semantics>(find.byKey(const ValueKey('lyric-progress-0')))
+              .properties
+              .value,
+          '0%',
+        );
+
+        await tester.tap(
+          find.byKey(const ValueKey('player-lyric-offset-reset')),
+        );
+        await tester.pump();
+        expect(player.lyricOffset, Duration.zero);
+        expect(find.text('同步'), findsOneWidget);
+
+        await tester.tap(earlier);
+        await tester.pump();
+        expect(player.lyricOffset, const Duration(milliseconds: -500));
+        expect(player.lyricPosition, const Duration(seconds: 2));
+        expect(
+          find.descendant(
+            of: find.byKey(const ValueKey('player-lyric-offset-reset')),
+            matching: find.text(size.height <= 420 ? '-0.5s' : '提前 0.5s'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          tester
+              .widget<Semantics>(find.byKey(const ValueKey('lyric-progress-0')))
+              .properties
+              .value,
+          '50%',
+        );
+
+        player.setLyricOffset(const Duration(minutes: 2));
+        await tester.pump();
+        expect(player.lyricOffset, const Duration(minutes: 1));
+        player.setLyricOffset(const Duration(minutes: -2));
+        await tester.pump();
+        expect(player.lyricOffset, const Duration(minutes: -1));
+        player.resetLyricOffset();
+        _expectNoException(tester);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        player.dispose();
+        theme.dispose();
+      }
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    }, _mockClient);
+  });
+
+  testWidgets('lyric timing step persists and updates both landscapes', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      SharedPreferences.setMockInitialValues({'lyric_offset_step_ms': 700});
+      final player = _KaraokePlayer();
+      final theme = ThemeController();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        player.dispose();
+        theme.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      await player.settingsReady;
+      expect(player.lyricOffsetStep, const Duration(milliseconds: 700));
+
+      await _pumpScreen(
+        tester,
+        const SettingsScreen(),
+        player,
+        theme,
+        const Size(640, 360),
+      );
+      final setting = find.byKey(const ValueKey('lyric-offset-step-setting'));
+      Finder preferencesScroll() => find.descendant(
+        of: find.byKey(const PageStorageKey('settings-landscape-preferences')),
+        matching: find.byType(Scrollable),
+      );
+      await tester.scrollUntilVisible(
+        setting,
+        120,
+        scrollable: preferencesScroll(),
+      );
+      expect(setting.hitTestable(), findsOneWidget);
+      expect(find.text('0.7 秒'), findsOneWidget);
+      await tester.tap(setting);
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('lyric-offset-step-dialog')),
+        findsOneWidget,
+      );
+      final slider = find.byKey(const ValueKey('lyric-offset-step-slider'));
+      expect(tester.widget<Slider>(slider).value, 700);
+      tester.widget<Slider>(slider).onChanged!(1200);
+      await tester.pump();
+      expect(find.text('1.2 秒'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('lyric-offset-step-save')));
+      await tester.pumpAndSettle();
+      expect(player.lyricOffsetStep, const Duration(milliseconds: 1200));
+      final preferences = await SharedPreferences.getInstance();
+      expect(preferences.getInt('lyric_offset_step_ms'), 1200);
+
+      await _pumpScreen(
+        tester,
+        const PlayerScreen(),
+        player,
+        theme,
+        const Size(640, 360),
+      );
+      expect(find.text('-1.2s'), findsOneWidget);
+      expect(find.text('+1.2s'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('player-lyric-offset-later')));
+      await tester.pump();
+      expect(player.lyricOffset, const Duration(milliseconds: 1200));
+      player.resetLyricOffset();
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      await _pumpScreen(
+        tester,
+        const SettingsScreen(),
+        player,
+        theme,
+        const Size(1280, 800),
+      );
+      await tester.scrollUntilVisible(
+        setting,
+        120,
+        scrollable: preferencesScroll(),
+      );
+      expect(setting.hitTestable(), findsOneWidget);
+      expect(find.text('1.2 秒'), findsOneWidget);
+
+      await _pumpScreen(
+        tester,
+        const PlayerScreen(),
+        player,
+        theme,
+        const Size(1280, 800),
+      );
+      expect(find.text('提前 1.2s'), findsOneWidget);
+      expect(find.text('延后 1.2s'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const ValueKey('player-lyric-offset-earlier')),
+      );
+      await tester.pump();
+      expect(player.lyricOffset, const Duration(milliseconds: -1200));
+      _expectNoException(tester);
     }, _mockClient);
   });
 
@@ -1173,11 +1516,18 @@ void main() {
       await tester.pumpAndSettle();
       expect(player.appliedLyricId, 'lyric-candidate');
       expect(find.byKey(const ValueKey('lyric-search-dialog')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('player-lyric-search-action')).hitTestable(),
+        findsOneWidget,
+      );
       _expectNoException(tester);
 
       _setViewSize(tester, const Size(1280, 800));
       await tester.pumpAndSettle();
-      expect(action.hitTestable(), findsOneWidget);
+      final resizedSearchAction = find.byKey(
+        const ValueKey('player-lyric-search-action'),
+      );
+      expect(resizedSearchAction.hitTestable(), findsOneWidget);
       _expectNoException(tester);
     }, _mockClient);
   });
@@ -1625,6 +1975,49 @@ void main() {
     }, _mockClient);
   });
 
+  testWidgets('closing playback source picker does not restore API key focus', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      for (final size in const [Size(640, 360), Size(1280, 800)]) {
+        SharedPreferences.setMockInitialValues({});
+        final player = PlayerProvider();
+        final theme = ThemeController();
+        await player.settingsReady;
+
+        await _pumpScreen(tester, const SettingsScreen(), player, theme, size);
+        final apiKeyField = find.byType(TextField);
+        await tester.ensureVisible(apiKeyField);
+        await tester.tap(apiKeyField);
+        await tester.pump();
+        expect(FocusManager.instance.primaryFocus, isNotNull);
+
+        final source = find.byKey(const ValueKey('playback-source-qq'));
+        await tester.ensureVisible(source);
+        await tester.tap(source);
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const ValueKey('playback-source-qq-qing_music')),
+        );
+        await tester.pumpAndSettle();
+
+        final focusedContext = FocusManager.instance.primaryFocus?.context;
+        expect(
+          focusedContext == null || focusedContext.widget is! EditableText,
+          isTrue,
+        );
+        _expectNoException(tester);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        player.dispose();
+        theme.dispose();
+      }
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    }, _mockClient);
+  });
+
   testWidgets('lyric font family and weight persist in both landscapes', (
     tester,
   ) async {
@@ -2009,9 +2402,38 @@ void main() {
       expect(playerLayout.isHighDensityCarDisplay, isTrue);
       expect(playerLayout.usesLargeTypography, isTrue);
       expect(find.text('第一句歌词'), findsOneWidget);
-      expect(find.text('收藏').hitTestable(), findsOneWidget);
-      expect(find.text('MV').hitTestable(), findsOneWidget);
-      expect(find.byTooltip('歌词字号和间距').hitTestable(), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('player-mv-action')).hitTestable(),
+        findsOneWidget,
+      );
+      expect(
+        tester
+            .getRect(find.byKey(const ValueKey('landscape-player-buttons')))
+            .bottom,
+        lessThanOrEqualTo(
+          tester
+              .getRect(
+                find.byKey(
+                  const ValueKey('landscape-player-left-content-frame'),
+                ),
+              )
+              .bottom,
+        ),
+      );
+      await tester.tap(find.byKey(const ValueKey('player-lyric-font-action')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('lyric-display-settings-dialog')),
+        findsOneWidget,
+      );
+      await tester.tap(
+        find.byKey(const ValueKey('lyric-display-settings-close')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('收藏'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, '收藏'));
+      await tester.pumpAndSettle();
+      expect(find.text('已收藏'), findsOneWidget);
       expect(
         tester
             .getRect(find.byKey(const ValueKey('player-lyric-font-action')))
