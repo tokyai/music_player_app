@@ -35,22 +35,6 @@ class AiSongResolver implements AiSongPlaybackResolver {
     }
 
     final query = '$artist $title';
-    final results = <SongSearchResult>[];
-    await Future.wait(
-      musicPlatformDisplayOrder
-          .where((platform) => platform != MusicPlatform.bilibili)
-          .map((platform) async {
-            try {
-              results.addAll(await player.api.search(platform, query));
-            } catch (_) {
-              // 单个平台不可用时继续尝试其他目录。
-            }
-          }),
-    );
-    final unique = <String, SongSearchResult>{};
-    for (final song in results) {
-      unique['${song.platform.code}:${song.id}'] = song;
-    }
     final target = SongSearchResult(
       platform: MusicPlatform.qq,
       id: 'ai-target',
@@ -58,22 +42,75 @@ class AiSongResolver implements AiSongPlaybackResolver {
       artist: artist,
       album: '',
     );
-    final candidates = unique.values
-        .where((song) => _allowedVersion(song.name, title))
-        .toList();
-    final matched = SongSourceMatcher.bestMatch(target, candidates);
-    if (matched == null) {
-      return AiSongResolution(
-        song: null,
-        message: '没有找到与“$artist - $title”高度匹配的歌曲，请换一个版本或补充信息。',
-      );
+    String? lastPlaybackError;
+    for (final platform in musicPlatformDisplayOrder) {
+      List<SongSearchResult> results;
+      try {
+        results = await player.api.search(platform, query);
+      } catch (_) {
+        continue;
+      }
+      final unique = <String, SongSearchResult>{};
+      for (final song in results) {
+        unique['${song.platform.code}:${song.id}'] = song;
+      }
+      final candidates = unique.values
+          .where((song) => _allowedVersion(song.name, title))
+          .toList(growable: false);
+      final matched = platform == MusicPlatform.bilibili
+          ? _bestBilibiliMatch(candidates, title, artist)
+          : SongSourceMatcher.bestMatch(target, candidates);
+      if (matched == null) continue;
+      try {
+        await player.playSingle(matched);
+        final current = player.currentSong;
+        final selected =
+            current?.platform == matched.platform && current?.id == matched.id;
+        if (selected && player.errorMessage == null) {
+          return AiSongResolution(
+            song: matched,
+            message: '正在播放《${matched.name}》',
+          );
+        }
+        lastPlaybackError = player.errorMessage ?? '${platform.label}播放启动失败';
+      } catch (error) {
+        lastPlaybackError = error.toString();
+      }
     }
-    try {
-      await player.playSingle(matched);
-      return AiSongResolution(song: matched, message: '正在播放《${matched.name}》');
-    } catch (error) {
-      return AiSongResolution(song: null, message: '歌曲已找到，但播放失败：$error');
+    return AiSongResolution(
+      song: null,
+      message: lastPlaybackError == null
+          ? '没有找到与“$artist - $title”高度匹配的歌曲，请换一个版本或补充信息。'
+          : '已按 QQ音乐、网易云、酷狗和B站依次尝试，但都未能播放：$lastPlaybackError',
+    );
+  }
+
+  SongSearchResult? _bestBilibiliMatch(
+    Iterable<SongSearchResult> candidates,
+    String requestedTitle,
+    String requestedArtist,
+  ) {
+    final title = _normalize(requestedTitle);
+    final artist = _normalize(requestedArtist);
+    SongSearchResult? best;
+    var bestScore = 0;
+    for (final candidate in candidates) {
+      final candidateTitle = _normalize(candidate.name);
+      var score = 0;
+      if (candidateTitle == title) {
+        score = 100;
+      } else if (title.isNotEmpty && candidateTitle.contains(title)) {
+        score = 80;
+      }
+      if (score > 0 && artist.isNotEmpty && candidateTitle.contains(artist)) {
+        score += 15;
+      }
+      if (score > bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
     }
+    return bestScore >= 80 ? best : null;
   }
 
   bool _allowedVersion(String candidateTitle, String requestedTitle) {

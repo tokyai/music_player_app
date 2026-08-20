@@ -51,6 +51,71 @@ void main() {
     expect(fixture.speech.listenCalls, greaterThanOrEqualTo(4));
   });
 
+  test('waits for continued speech and sends combined text once', () async {
+    final fixture = await _Fixture.create(
+      speechCommitDelay: const Duration(milliseconds: 80),
+      gatewayResults: const [AiChatResult(reply: '收到完整问题。')],
+    );
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('我想听周杰伦的', isFinal: true);
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    expect(fixture.gateway.requests, isEmpty);
+    fixture.speech.emit('夜曲', isFinal: false);
+    fixture.speech.emit('夜曲', isFinal: true);
+
+    await _waitFor(() => fixture.gateway.requests.length == 1);
+    expect(fixture.gateway.requests.single.single.text, '我想听周杰伦的 夜曲');
+  });
+
+  test('recovers from silence errors but keeps fatal errors visible', () async {
+    final fixture = await _Fixture.create();
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    fixture.speech.emitError('error_speech_timeout');
+    await _waitFor(() => fixture.speech.listenCalls >= 2);
+
+    expect(fixture.controller.state, AiSessionState.listening);
+
+    fixture.speech.emitError('error_permission');
+    expect(fixture.controller.state, AiSessionState.textOnly);
+    expect(fixture.controller.error, contains('error_permission'));
+  });
+
+  test('interrupting speech keeps the current conversation context', () async {
+    final fixture = await _Fixture.create(
+      blockedSpeakCount: 1,
+      gatewayResults: const [
+        AiChatResult(reply: '第一轮回答。'),
+        AiChatResult(reply: '结合刚才内容继续回答。'),
+      ],
+    );
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('第一轮问题', isFinal: true);
+    await _waitFor(() => fixture.controller.state == AiSessionState.speaking);
+
+    await fixture.controller.toggleListening();
+    expect(fixture.controller.state, AiSessionState.listening);
+    fixture.speech.emit('继续刚才的话题', isFinal: true);
+    await _waitFor(() => fixture.gateway.requests.length == 2);
+    await _waitFor(() => fixture.controller.state == AiSessionState.listening);
+
+    expect(fixture.tts.stopCalls, greaterThanOrEqualTo(1));
+    expect(fixture.gateway.requests, hasLength(2));
+    expect(fixture.gateway.requests.last.map((message) => message.text), [
+      '第一轮问题',
+      '第一轮回答。',
+      '继续刚才的话题',
+    ]);
+    expect(fixture.controller.messages, hasLength(4));
+    expect(fixture.controller.state, AiSessionState.listening);
+  });
+
   test('exit keyword ends the session and restores paused music', () async {
     final oldSong = _queueItem(id: 'old-song', name: '原来播放的歌');
     final fixture = await _Fixture.create(
@@ -91,6 +156,7 @@ void main() {
       final fixture = await _Fixture.create(
         player: _TestPlayer(song: oldSong, playing: true),
         resolver: resolver,
+        blockedSpeakCount: 1,
         gatewayResults: const [
           AiChatResult(
             reply: '好的，我来播放《夜曲》。',
@@ -110,8 +176,33 @@ void main() {
       expect(fixture.controller.state, AiSessionState.idle);
       expect(fixture.player.pauseCalls, 1);
       expect(fixture.player.playPauseCalls, 0);
+      expect(fixture.tts.spoken, isEmpty);
     },
   );
+
+  test('failed song playback keeps the current conversation open', () async {
+    final fixture = await _Fixture.create(
+      gatewayResults: const [
+        AiChatResult(
+          reply: '我来找找《夜曲》。',
+          playRequest: AiPlaySongRequest(title: '夜曲', artist: '周杰伦'),
+        ),
+      ],
+    );
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    await fixture.controller.sendText('播放周杰伦的夜曲');
+
+    expect(fixture.controller.isActive, isTrue);
+    expect(fixture.controller.state, AiSessionState.listening);
+    expect(fixture.controller.messages.map((message) => message.text), [
+      '播放周杰伦的夜曲',
+      '我来找找《夜曲》。',
+      '没有找到歌曲',
+    ]);
+    expect(fixture.tts.spoken, ['没有找到歌曲']);
+  });
 
   test(
     'closing a chat without playback restores only the same old song',
@@ -152,6 +243,8 @@ class _Fixture {
     _TestPlayer? player,
     _TestResolver? resolver,
     List<AiChatResult> gatewayResults = const [],
+    int blockedSpeakCount = 0,
+    Duration speechCommitDelay = const Duration(milliseconds: 10),
   }) async {
     final actualPlayer = player ?? _TestPlayer();
     final config = AiConfigController(secretStore: MemoryAiSecretStore());
@@ -159,7 +252,7 @@ class _Fixture {
     await config.save(_completeConfig());
     final gateway = _TestGateway(gatewayResults);
     final speech = _TestSpeech();
-    final tts = _TestTts();
+    final tts = _TestTts(blockedSpeakCount: blockedSpeakCount);
     final controller = AiAssistantController(
       player: actualPlayer,
       configController: config,
@@ -167,6 +260,7 @@ class _Fixture {
       songResolver: resolver ?? _TestResolver.notFound(),
       speech: speech,
       textToSpeech: tts,
+      speechCommitDelay: speechCommitDelay,
     );
     return _Fixture._(
       player: actualPlayer,
@@ -259,15 +353,32 @@ class _TestSpeech implements AiSpeechEngine {
 
 class _TestTts implements AiTextToSpeechEngine {
   final List<String> spoken = [];
+  int blockedSpeakCount;
+  int stopCalls = 0;
+  Completer<void>? _pendingSpeak;
+
+  _TestTts({this.blockedSpeakCount = 0});
 
   @override
   Future<void> initialize() async {}
 
   @override
-  Future<void> speak(String text) async => spoken.add(text);
+  Future<void> speak(String text) async {
+    spoken.add(text);
+    if (blockedSpeakCount <= 0) return;
+    blockedSpeakCount--;
+    final pending = Completer<void>();
+    _pendingSpeak = pending;
+    await pending.future;
+    if (identical(_pendingSpeak, pending)) _pendingSpeak = null;
+  }
 
   @override
-  Future<void> stop() async {}
+  Future<void> stop() async {
+    stopCalls++;
+    final pending = _pendingSpeak;
+    if (pending != null && !pending.isCompleted) pending.complete();
+  }
 }
 
 class _TestResolver implements AiSongPlaybackResolver {

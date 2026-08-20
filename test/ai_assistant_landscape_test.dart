@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -14,6 +15,7 @@ import 'package:music_player_app/providers/search_session.dart';
 import 'package:music_player_app/providers/theme_controller.dart';
 import 'package:music_player_app/screens/settings_screen.dart';
 import 'package:music_player_app/services/ai_service.dart';
+import 'package:music_player_app/services/ai_song_resolver.dart';
 import 'package:music_player_app/services/ai_voice_service.dart';
 import 'package:music_player_app/services/favorite_service.dart';
 import 'package:music_player_app/theme/app_layout.dart';
@@ -154,13 +156,10 @@ void main() {
             findsOneWidget,
           );
           expect(
-            find.byKey(const ValueKey('ai-assistant-text-field')).hitTestable(),
-            findsOneWidget,
+            find.byKey(const ValueKey('ai-assistant-text-field')),
+            findsNothing,
           );
-          expect(
-            find.byKey(const ValueKey('ai-assistant-send')).hitTestable(),
-            findsOneWidget,
-          );
+          expect(find.byKey(const ValueKey('ai-assistant-send')), findsNothing);
           expect(find.text('正在听，请说话'), findsOneWidget);
           expect(tester.takeException(), isNull);
 
@@ -196,6 +195,97 @@ void main() {
       }, _mockClient);
     },
   );
+
+  testWidgets(
+    'successful voice playback closes the dialog in both landscapes',
+    (tester) async {
+      await http.runWithClient(() async {
+        for (final size in const [Size(640, 360), Size(1280, 800)]) {
+          SharedPreferences.setMockInitialValues({});
+          final resolver = _FoundSongResolver();
+          final fixture = await _MainFixture.create(
+            gateway: _PlaySongGateway(),
+            songResolver: resolver,
+          );
+          _setViewSize(tester, size);
+          await tester.pumpWidget(fixture.app());
+          await _pumpFrames(tester);
+
+          await tester.tap(find.byKey(const ValueKey('ai-assistant-fab')));
+          await _pumpFrames(tester);
+          expect(
+            find.byKey(const ValueKey('ai-assistant-dialog')),
+            findsOneWidget,
+          );
+
+          await fixture.assistant.sendText('播放周杰伦的夜曲');
+          await _pumpFrames(tester);
+
+          expect(resolver.requests, hasLength(1));
+          expect(
+            find.byKey(const ValueKey('ai-assistant-dialog')),
+            findsNothing,
+          );
+          expect(tester.takeException(), isNull);
+
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump();
+          fixture.dispose();
+        }
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      }, _mockClient);
+    },
+  );
+
+  testWidgets('landscape microphone can interrupt an answer in both sizes', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      for (final size in const [Size(640, 360), Size(1280, 800)]) {
+        SharedPreferences.setMockInitialValues({});
+        final tts = _BlockingTts();
+        final fixture = await _MainFixture.create(
+          gateway: _AnswerGateway(),
+          textToSpeech: tts,
+        );
+        _setViewSize(tester, size);
+        await tester.pumpWidget(fixture.app());
+        await _pumpFrames(tester);
+
+        await tester.tap(find.byKey(const ValueKey('ai-assistant-fab')));
+        await _pumpFrames(tester);
+        final response = fixture.assistant.sendText('第一轮问题');
+        await _pumpFrames(tester);
+
+        expect(fixture.assistant.state, AiSessionState.speaking);
+        expect(
+          find.byKey(const ValueKey('ai-assistant-microphone')).hitTestable(),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('ai-assistant-text-field')),
+          findsNothing,
+        );
+
+        await tester.tap(
+          find.byKey(const ValueKey('ai-assistant-microphone')).hitTestable(),
+        );
+        await _pumpFrames(tester);
+        await response;
+
+        expect(tts.stopCalls, greaterThanOrEqualTo(1));
+        expect(fixture.assistant.state, AiSessionState.listening);
+        expect(fixture.assistant.messages, hasLength(2));
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        fixture.dispose();
+      }
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    }, _mockClient);
+  });
 
   testWidgets(
     'AI settings and QR close path are reachable in both landscapes',
@@ -294,7 +384,11 @@ class _MainFixture {
     required this.assistant,
   });
 
-  static Future<_MainFixture> create() async {
+  static Future<_MainFixture> create({
+    AiChatGateway? gateway,
+    AiSongPlaybackResolver? songResolver,
+    AiTextToSpeechEngine? textToSpeech,
+  }) async {
     final player = _LandscapePlayer();
     final theme = ThemeController();
     final config = AiConfigController(secretStore: MemoryAiSecretStore());
@@ -303,9 +397,10 @@ class _MainFixture {
     final assistant = AiAssistantController(
       player: player,
       configController: config,
-      gateway: _SilentGateway(),
+      gateway: gateway ?? _SilentGateway(),
+      songResolver: songResolver,
       speech: _ReadySpeech(),
-      textToSpeech: _SilentTts(),
+      textToSpeech: textToSpeech ?? _SilentTts(),
     );
     return _MainFixture._(
       player: player,
@@ -405,6 +500,75 @@ class _SilentGateway implements AiChatGateway {
   void close() {}
 }
 
+class _PlaySongGateway implements AiChatGateway {
+  @override
+  Future<AiChatResult> sendMessage(
+    AiAssistantConfig config,
+    List<AiConversationMessage> messages, {
+    bool connectionCheck = false,
+  }) async => const AiChatResult(
+    reply: '好的，我来播放《夜曲》。',
+    playRequest: AiPlaySongRequest(title: '夜曲', artist: '周杰伦'),
+  );
+
+  @override
+  Future<AiConnectionCheck> checkConnection(
+    AiAssistantConfig config, {
+    bool checkSearch = false,
+  }) async => const AiConnectionCheck(
+    success: true,
+    webSearchObserved: false,
+    message: '连接成功',
+  );
+
+  @override
+  void close() {}
+}
+
+class _AnswerGateway implements AiChatGateway {
+  @override
+  Future<AiChatResult> sendMessage(
+    AiAssistantConfig config,
+    List<AiConversationMessage> messages, {
+    bool connectionCheck = false,
+  }) async => const AiChatResult(reply: '第一轮回答。');
+
+  @override
+  Future<AiConnectionCheck> checkConnection(
+    AiAssistantConfig config, {
+    bool checkSearch = false,
+  }) async => const AiConnectionCheck(
+    success: true,
+    webSearchObserved: false,
+    message: '连接成功',
+  );
+
+  @override
+  void close() {}
+}
+
+class _FoundSongResolver implements AiSongPlaybackResolver {
+  final List<AiPlaySongRequest> requests = [];
+
+  @override
+  Future<AiSongResolution> resolveAndPlay(
+    PlayerProvider player,
+    AiPlaySongRequest request,
+  ) async {
+    requests.add(request);
+    return AiSongResolution(
+      song: SongSearchResult(
+        platform: MusicPlatform.qq,
+        id: 'night-song',
+        name: '夜曲',
+        artist: '周杰伦',
+        album: '十一月的萧邦',
+      ),
+      message: '正在播放《夜曲》',
+    );
+  }
+}
+
 class _ReadySpeech implements AiSpeechEngine {
   @override
   Future<bool> initialize({
@@ -431,6 +595,29 @@ class _SilentTts implements AiTextToSpeechEngine {
 
   @override
   Future<void> stop() async {}
+}
+
+class _BlockingTts implements AiTextToSpeechEngine {
+  Completer<void>? _pending;
+  int stopCalls = 0;
+
+  @override
+  Future<void> initialize() async {}
+
+  @override
+  Future<void> speak(String text) async {
+    final pending = Completer<void>();
+    _pending = pending;
+    await pending.future;
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+    final pending = _pending;
+    if (pending != null && !pending.isCompleted) pending.complete();
+    _pending = null;
+  }
 }
 
 AiAssistantConfig _completeConfig() => const AiAssistantConfig(

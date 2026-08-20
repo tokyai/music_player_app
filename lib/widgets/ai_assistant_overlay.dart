@@ -205,8 +205,8 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
                     style: TextStyle(color: AppColors.textPrimary),
                   ),
                 ),
-              _buildStatus(compact),
-              _buildComposer(compact),
+              _buildStatus(compact, voiceOnly: layout.isLandscape),
+              _buildComposer(compact, voiceOnly: layout.isLandscape),
             ],
           ),
         ),
@@ -308,7 +308,7 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     );
   }
 
-  Widget _buildStatus(bool compact) {
+  Widget _buildStatus(bool compact, {required bool voiceOnly}) {
     final state = controller.state;
     final color = state == AiSessionState.error
         ? Colors.redAccent
@@ -322,6 +322,9 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
       AiSessionState.error || AiSessionState.textOnly => Icons.info_outline,
       _ => Icons.graphic_eq_rounded,
     };
+    final statusLabel = voiceOnly && state == AiSessionState.textOnly
+        ? '语音不可用，请点击麦克风重试'
+        : controller.statusLabel;
     return Padding(
       padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 18, vertical: 4),
       child: Row(
@@ -330,7 +333,7 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
           const SizedBox(width: 7),
           Expanded(
             child: Text(
-              controller.statusLabel,
+              statusLabel,
               key: const ValueKey('ai-assistant-status'),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -342,11 +345,28 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     );
   }
 
-  Widget _buildComposer(bool compact) {
+  Widget _buildComposer(bool compact, {required bool voiceOnly}) {
     final busy =
         controller.state == AiSessionState.processing ||
-        controller.state == AiSessionState.speaking ||
         controller.state == AiSessionState.initializing;
+    final microphone = IconButton.filledTonal(
+      key: const ValueKey('ai-assistant-microphone'),
+      tooltip: controller.state == AiSessionState.speaking
+          ? '打断播报并说话'
+          : controller.isListening
+          ? '暂停聆听'
+          : '继续聆听',
+      onPressed: busy ? null : () => unawaited(controller.toggleListening()),
+      icon: Icon(
+        controller.isListening ? Icons.mic_rounded : Icons.mic_off_outlined,
+      ),
+    );
+    if (voiceOnly) {
+      return Padding(
+        padding: EdgeInsets.fromLTRB(8, 4, 8, compact ? 8 : 12),
+        child: Center(child: microphone),
+      );
+    }
     return Padding(
       padding: EdgeInsets.fromLTRB(
         compact ? 8 : 12,
@@ -356,18 +376,7 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
       ),
       child: Row(
         children: [
-          IconButton.filledTonal(
-            key: const ValueKey('ai-assistant-microphone'),
-            tooltip: controller.isListening ? '暂停聆听' : '继续聆听',
-            onPressed: busy
-                ? null
-                : () => unawaited(controller.toggleListening()),
-            icon: Icon(
-              controller.isListening
-                  ? Icons.mic_rounded
-                  : Icons.mic_off_outlined,
-            ),
-          ),
+          microphone,
           const SizedBox(width: 8),
           Expanded(
             child: TextField(

@@ -45,6 +45,8 @@ void main() {
       final body = _body(captured);
       expect(body['model'], 'test-model');
       expect(body, isNot(contains('reasoning')));
+      expect(body['instructions'], contains('你不是只能回答音乐问题'));
+      expect(body['instructions'], contains('天气等实时问题'));
       expect(
         (body['tools'] as List).where(
           (tool) => tool is Map && tool['name'] == 'play_song',
