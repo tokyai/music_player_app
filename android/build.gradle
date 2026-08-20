@@ -1,11 +1,11 @@
 buildscript {
-    ext.kotlin_version = '2.1.0'
+    ext.kotlin_version = '2.4.10'
     repositories {
         google()
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.9.0'
+        classpath 'com.android.tools.build:gradle:9.3.1'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
     }
 }
@@ -20,6 +20,14 @@ allprojects {
 rootProject.buildDir = "../build_c"
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
+    // These plugins skip the Kotlin plugin on every AGP 9 build, but this
+    // project intentionally opts out of AGP's built-in Kotlin so older
+    // Flutter plugins can continue using the legacy Kotlin Android plugin.
+    if (["package_info_plus", "wakelock_plus"].contains(project.name)) {
+        project.pluginManager.withPlugin("com.android.library") {
+            project.pluginManager.apply("org.jetbrains.kotlin.android")
+        }
+    }
 }
 subprojects {
     project.evaluationDependsOn(":app")

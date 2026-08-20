@@ -31,7 +31,7 @@ def hasReleaseSigning = releaseStoreFile != null &&
 
 android {
     namespace = "com.example.music_player_app"
-    compileSdk = 36
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -45,7 +45,7 @@ android {
 
     defaultConfig {
         applicationId = "com.example.music_player_app"
-        minSdkVersion = flutter.minSdkVersion
+        minSdkVersion = 24
         targetSdk = 34
         versionCode = flutterVersionCode.toInteger()
         versionName = flutterVersionName
@@ -64,9 +64,9 @@ android {
 
     buildTypes {
         release {
-            // R8-optimized builds crash during startup on both Xiaomi phones
-            // and Android head units. Keep the verified stable release path.
-            minifyEnabled false
+            // flutter_secure_storage 11 catches Android Keystore Errors that
+            // previously escaped its worker thread and terminated the app.
+            minifyEnabled true
             shrinkResources false
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.release
