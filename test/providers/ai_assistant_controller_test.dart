@@ -70,20 +70,35 @@ void main() {
     expect(fixture.gateway.requests.single.single.text, '我想听周杰伦的 夜曲');
   });
 
-  test('recovers from silence errors but keeps fatal errors visible', () async {
-    final fixture = await _Fixture.create();
-    addTearDown(fixture.dispose);
+  test(
+    'retries transient speech errors but keeps unavailable errors visible',
+    () async {
+      final fixture = await _Fixture.create();
+      addTearDown(fixture.dispose);
 
-    await fixture.controller.startSession();
-    fixture.speech.emitError('error_speech_timeout');
-    await _waitFor(() => fixture.speech.listenCalls >= 2);
+      await fixture.controller.startSession();
+      fixture.speech.emitError('error_speech_timeout');
+      await _waitFor(() => fixture.speech.listenCalls >= 2);
 
-    expect(fixture.controller.state, AiSessionState.listening);
+      expect(fixture.controller.state, AiSessionState.listening);
 
-    fixture.speech.emitError('error_permission');
-    expect(fixture.controller.state, AiSessionState.textOnly);
-    expect(fixture.controller.error, contains('error_permission'));
-  });
+      fixture.speech.emitError('error_network');
+      await _waitFor(() => fixture.speech.listenCalls >= 3);
+
+      expect(fixture.controller.state, AiSessionState.listening);
+      expect(fixture.controller.error, isNull);
+
+      fixture.speech.emitError('error_server_disconnected');
+      await _waitFor(() => fixture.speech.listenCalls >= 4);
+
+      expect(fixture.controller.state, AiSessionState.listening);
+      expect(fixture.controller.error, isNull);
+
+      fixture.speech.emitError('error_permission');
+      expect(fixture.controller.state, AiSessionState.textOnly);
+      expect(fixture.controller.error, contains('error_permission'));
+    },
+  );
 
   test('interrupting speech keeps the current conversation context', () async {
     final fixture = await _Fixture.create(

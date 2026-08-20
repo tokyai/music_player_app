@@ -24,6 +24,7 @@ enum AiSessionState {
 
 class AiAssistantController extends ChangeNotifier {
   static const _speechRestartDelay = Duration(milliseconds: 180);
+  static const _speechErrorRestartDelay = Duration(milliseconds: 600);
 
   final PlayerProvider player;
   final AiConfigController configController;
@@ -422,7 +423,8 @@ class AiAssistantController extends ChangeNotifier {
   void _handleSpeechError(String message) {
     if (!_active || _ignoreSpeechEvents) return;
     _recognitionActive = false;
-    if (_isRecoverableSpeechError(message)) {
+    if (!_isUnavailableSpeechError(message)) {
+      debugPrint('AI 语音识别短暂异常，正在重试: $message');
       _error = null;
       if (_currentSpeechText.isNotEmpty) {
         _finalSpeechText = _mergeSpeechText(
@@ -434,7 +436,11 @@ class AiAssistantController extends ChangeNotifier {
         _scheduleSpeechCommit(_generation);
       }
       _setState(AiSessionState.listening);
-      _scheduleRecognitionRestart(_generation);
+      _scheduleRecognitionRestart(
+        _generation,
+        delay: _speechErrorRestartDelay,
+        replacePending: true,
+      );
       return;
     }
     _cancelSpeechTimers();
@@ -450,14 +456,19 @@ class AiAssistantController extends ChangeNotifier {
     });
   }
 
-  void _scheduleRecognitionRestart(int generation) {
+  void _scheduleRecognitionRestart(
+    int generation, {
+    Duration delay = _speechRestartDelay,
+    bool replacePending = false,
+  }) {
     if (!_active ||
         generation != _generation ||
         _state != AiSessionState.listening) {
       return;
     }
+    if (_speechRestartTimer != null && !replacePending) return;
     _speechRestartTimer?.cancel();
-    _speechRestartTimer = Timer(_speechRestartDelay, () {
+    _speechRestartTimer = Timer(delay, () {
       _speechRestartTimer = null;
       if (!_active ||
           generation != _generation ||
@@ -503,12 +514,14 @@ class AiAssistantController extends ChangeNotifier {
     return '$first $second';
   }
 
-  bool _isRecoverableSpeechError(String message) {
+  bool _isUnavailableSpeechError(String message) {
     final normalized = message.toLowerCase();
-    return normalized.contains('error_speech_timeout') ||
-        normalized.contains('error_no_match') ||
-        normalized.contains('error_busy') ||
-        normalized.contains('error_client');
+    return normalized.contains('error_permission') ||
+        normalized.contains('permission denied') ||
+        normalized.contains('error_language_not_supported') ||
+        normalized.contains('error_speech_recognizer_disabled') ||
+        normalized.contains('speech_not_supported') ||
+        normalized.contains('not supported');
   }
 
   bool _isCurrentTurn(int generation, int turn) =>

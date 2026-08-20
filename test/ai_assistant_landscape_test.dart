@@ -287,6 +287,60 @@ void main() {
     }, _mockClient);
   });
 
+  testWidgets('close dismisses before speech cleanup in every orientation', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      for (final size in const [
+        Size(390, 844),
+        Size(640, 360),
+        Size(1280, 800),
+      ]) {
+        SharedPreferences.setMockInitialValues({});
+        final speech = _BlockingCancelSpeech();
+        final fixture = await _MainFixture.create(speech: speech);
+        _setViewSize(tester, size);
+        await tester.pumpWidget(fixture.app());
+        await _pumpFrames(tester);
+
+        await tester.tap(find.byKey(const ValueKey('ai-assistant-fab')));
+        await _pumpFrames(tester);
+        expect(
+          find.byKey(const ValueKey('ai-assistant-close')).hitTestable(),
+          findsOneWidget,
+        );
+        if (size.width > size.height) {
+          expect(
+            find.byKey(const ValueKey('ai-assistant-dialog')),
+            findsOneWidget,
+          );
+        }
+
+        await tester.tap(
+          find.byKey(const ValueKey('ai-assistant-close')).hitTestable(),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(speech.cancelCalls, 1);
+        expect(speech.cancelCompleted, isFalse);
+        expect(find.byKey(const ValueKey('ai-assistant-close')), findsNothing);
+        expect(find.byKey(const ValueKey('ai-assistant-dialog')), findsNothing);
+
+        speech.completeCancel();
+        await _pumpFrames(tester);
+        expect(fixture.assistant.state, AiSessionState.idle);
+        expect(tester.takeException(), isNull);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        fixture.dispose();
+      }
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    }, _mockClient);
+  });
+
   testWidgets(
     'AI settings and QR close path are reachable in both landscapes',
     (tester) async {
@@ -387,6 +441,7 @@ class _MainFixture {
   static Future<_MainFixture> create({
     AiChatGateway? gateway,
     AiSongPlaybackResolver? songResolver,
+    AiSpeechEngine? speech,
     AiTextToSpeechEngine? textToSpeech,
   }) async {
     final player = _LandscapePlayer();
@@ -399,7 +454,7 @@ class _MainFixture {
       configController: config,
       gateway: gateway ?? _SilentGateway(),
       songResolver: songResolver,
-      speech: _ReadySpeech(),
+      speech: speech ?? _ReadySpeech(),
       textToSpeech: textToSpeech ?? _SilentTts(),
     );
     return _MainFixture._(
@@ -584,6 +639,23 @@ class _ReadySpeech implements AiSpeechEngine {
 
   @override
   Future<void> cancel() async {}
+}
+
+class _BlockingCancelSpeech extends _ReadySpeech {
+  final Completer<void> _cancel = Completer<void>();
+  int cancelCalls = 0;
+
+  bool get cancelCompleted => _cancel.isCompleted;
+
+  @override
+  Future<void> cancel() {
+    cancelCalls++;
+    return _cancel.future;
+  }
+
+  void completeCancel() {
+    if (!_cancel.isCompleted) _cancel.complete();
+  }
 }
 
 class _SilentTts implements AiTextToSpeechEngine {

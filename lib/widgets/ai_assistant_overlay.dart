@@ -147,11 +147,12 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     });
   }
 
-  Future<void> _close() async {
+  void _close() {
     if (_closing) return;
     _closing = true;
-    await controller.stopSession();
-    if (mounted) Navigator.of(context).pop();
+    final assistant = controller;
+    Navigator.of(context).pop();
+    unawaited(assistant.stopSession());
   }
 
   Future<void> _send() async {
@@ -169,7 +170,7 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) unawaited(_close());
+        if (!didPop) _close();
       },
       child: Material(
         color: AppColors.background,
