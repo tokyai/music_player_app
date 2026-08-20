@@ -34,6 +34,59 @@ abstract class _MvPlaybackController extends ChangeNotifier {
   Future<void> close();
 }
 
+class _UnavailablePlaybackController extends _MvPlaybackController {
+  final String _message;
+  bool _closed = false;
+
+  _UnavailablePlaybackController(this._message);
+
+  @override
+  String get label => '播放器';
+
+  @override
+  bool get isInitialized => false;
+
+  @override
+  bool get isPlaying => false;
+
+  @override
+  bool get isBuffering => false;
+
+  @override
+  Duration get position => Duration.zero;
+
+  @override
+  Duration get duration => Duration.zero;
+
+  @override
+  double get aspectRatio => 16 / 9;
+
+  @override
+  String get error => _message;
+
+  @override
+  Future<void> initialize() async {}
+
+  @override
+  Future<void> play() async {}
+
+  @override
+  Future<void> pause() async {}
+
+  @override
+  Future<void> seekTo(Duration position) async {}
+
+  @override
+  Widget buildSurface(Key key) => const SizedBox.shrink();
+
+  @override
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    super.dispose();
+  }
+}
+
 class _ExoPlaybackController extends _MvPlaybackController {
   late final VideoPlayerController _controller;
   final String? _audioUrl;
@@ -442,7 +495,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _sourceUrls = <String>{
       widget.url,
       ...widget.alternateUrls,
-    }.where((url) => url.isNotEmpty).toList(growable: false);
+    }.where(_isPlayableSource).toList(growable: false);
     WidgetsBinding.instance.addObserver(this);
     applySystemUi(dark: true);
     _activeEngine = widget.mode == VideoPlayerMode.mpv
@@ -450,7 +503,19 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         : _MvEngine.exo;
     _controller = _createController(_activeEngine)
       ..addListener(_handleVideoChanged);
-    unawaited(_initialize());
+    if (_sourceUrls.isEmpty) {
+      _initializing = false;
+      _initializationError = 'MV 播放地址无效或为空';
+    } else {
+      unawaited(_initialize());
+    }
+  }
+
+  static bool _isPlayableSource(String value) {
+    final uri = Uri.tryParse(value.trim());
+    return uri != null &&
+        (uri.scheme == 'http' || uri.scheme == 'https') &&
+        uri.host.isNotEmpty;
   }
 
   static Map<String, String> _headersFor(
@@ -473,25 +538,37 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   _MvPlaybackController _createController(_MvEngine engine) {
+    if (_sourceUrls.isEmpty) {
+      return _UnavailablePlaybackController('MV 播放地址无效或为空');
+    }
     // MPV is a native backend. Keep its initialization off the ordinary audio
     // startup path and pay the cost only when an MV actually needs it.
-    if (engine == _MvEngine.mpv) {
-      media_kit.MediaKit.ensureInitialized();
+    try {
+      if (engine == _MvEngine.mpv) {
+        media_kit.MediaKit.ensureInitialized();
+      }
+      final headers = _headersFor(widget.platform, widget.headers);
+      final url = _sourceUrls[_sourceIndex];
+      final audioUrl = _isPlayableSource(widget.audioUrl ?? '')
+          ? widget.audioUrl
+          : null;
+      return switch (engine) {
+        _MvEngine.exo => _ExoPlaybackController(
+          url,
+          headers,
+          audioUrl: audioUrl,
+        ),
+        _MvEngine.mpv => _MpvPlaybackController(
+          url,
+          headers,
+          audioUrl: audioUrl,
+        ),
+      };
+    } catch (error) {
+      return _UnavailablePlaybackController(
+        '${engine == _MvEngine.exo ? 'ExoPlayer' : 'MPV'} 初始化失败: $error',
+      );
     }
-    final headers = _headersFor(widget.platform, widget.headers);
-    final url = _sourceUrls[_sourceIndex];
-    return switch (engine) {
-      _MvEngine.exo => _ExoPlaybackController(
-        url,
-        headers,
-        audioUrl: widget.audioUrl,
-      ),
-      _MvEngine.mpv => _MpvPlaybackController(
-        url,
-        headers,
-        audioUrl: widget.audioUrl,
-      ),
-    };
   }
 
   Future<void> _initialize() async {
@@ -595,6 +672,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (!mounted || _switchingEngine || _handlingPlaybackFailure) return;
     _handlingPlaybackFailure = true;
     try {
+      if (_sourceUrls.isEmpty) {
+        _showPlaybackError(cause);
+        return;
+      }
       if (_sourceIndex + 1 < _sourceUrls.length) {
         // _switchSource initializes the replacement controller. Release this
         // guard first so a real error from that new controller can be handled.

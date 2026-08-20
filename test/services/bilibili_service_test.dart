@@ -213,6 +213,50 @@ void main() {
     expect(source.audioUrl, endsWith('audio.m4s'));
   });
 
+  test('turns empty playback streams into business errors', () async {
+    final service = BilibiliService(
+      client: MockClient((request) async {
+        if (request.url.path == '/x/web-interface/nav') {
+          return _json({
+            'code': 0,
+            'data': {
+              'wbi_img': {
+                'img_url':
+                    'https://i0.hdslb.com/bfs/wbi/abcdefghijklmnopqrstuvwxyz012345.png',
+                'sub_url':
+                    'https://i0.hdslb.com/bfs/wbi/9876543210abcdefghijklmnopqrstuvwxyz.png',
+              },
+            },
+          });
+        }
+        return _json({'code': 0, 'data': {}});
+      }),
+    );
+    addTearDown(service.dispose);
+
+    expect(
+      () => service.playInfo('BVempty', 303),
+      throwsA(
+        isA<BilibiliApiException>().having(
+          (error) => error.code,
+          'code',
+          'PLAY_NO_AUDIO',
+        ),
+      ),
+    );
+    expect(
+      () => service.videoSource('BVempty', 303, 80),
+      throwsA(
+        isA<BilibiliApiException>().having(
+          (error) => error.code,
+          'code',
+          'PLAY_NO_VIDEO',
+        ),
+      ),
+    );
+    expect(const BilibiliVideoSource(urls: [], headers: {}).url, isEmpty);
+  });
+
   test('video headers include the stored B站 session cookie', () async {
     SharedPreferences.setMockInitialValues({
       'bilibili_cookie': 'SESSDATA=session-token; bili_jct=csrf-token',

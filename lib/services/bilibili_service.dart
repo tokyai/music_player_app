@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/song.dart';
+import 'bounded_http_response.dart';
 
 class BilibiliUser {
   final int mid;
@@ -41,7 +42,9 @@ class BilibiliVideoSource {
     required this.headers,
   });
 
-  String get url => urls.first;
+  /// Returns an empty value for a malformed/empty response instead of letting
+  /// a UI caller crash while opening the built-in player.
+  String get url => urls.isEmpty ? '' : urls.first;
   String? get audioUrl => audioUrls.isEmpty ? null : audioUrls.first;
 }
 
@@ -68,6 +71,7 @@ class BilibiliService extends ChangeNotifier {
   static const _apiBase = 'https://api.bilibili.com';
   static const _passportBase = 'https://passport.bilibili.com';
   static const _cookiePreferenceKey = 'bilibili_cookie';
+  static const _maxJsonResponseBytes = 5 * 1024 * 1024;
   static const _userAgent =
       'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
       'Chrome/120 Mobile Safari/537.36';
@@ -143,8 +147,13 @@ class BilibiliService extends ChangeNotifier {
   }
 
   Future<void> _loadSession() async {
-    final preferences = await SharedPreferences.getInstance();
-    _cookie = preferences.getString(_cookiePreferenceKey);
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      _cookie = preferences.getString(_cookiePreferenceKey);
+    } catch (error) {
+      _cookie = null;
+      debugPrint('读取 B 站会话失败: $error');
+    }
   }
 
   Future<void> refreshAccount() async {
@@ -275,8 +284,12 @@ class BilibiliService extends ChangeNotifier {
     _user = null;
     _mixinKey = null;
     _mixinKeyExpiresAt = null;
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.remove(_cookiePreferenceKey);
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      await preferences.remove(_cookiePreferenceKey);
+    } catch (error) {
+      debugPrint('清除 B 站会话失败: $error');
+    }
     notifyListeners();
   }
 
@@ -554,7 +567,13 @@ class BilibiliService extends ChangeNotifier {
   static List<String> _deduplicateUrls(Iterable<String> urls) {
     final seen = <String>{};
     return urls
-        .where((url) => url.isNotEmpty && seen.add(url))
+        .where((url) {
+          final uri = Uri.tryParse(url.trim());
+          return uri != null &&
+              (uri.scheme == 'http' || uri.scheme == 'https') &&
+              uri.host.isNotEmpty &&
+              seen.add(url);
+        })
         .toList(growable: false);
   }
 
@@ -697,18 +716,25 @@ class BilibiliService extends ChangeNotifier {
     Map<String, String> headers = const {},
   }) async {
     await ready;
-    final response = await _client
-        .get(
-          uri,
-          headers: {
-            'Accept': 'application/json',
-            'User-Agent': _userAgent,
-            'Referer': 'https://www.bilibili.com/',
-            if (hasCookie) 'Cookie': _cookie!,
-            ...headers,
-          },
-        )
-        .timeout(const Duration(seconds: 10));
+    final request = http.Request('GET', uri)
+      ..headers.addAll({
+        'Accept': 'application/json',
+        'User-Agent': _userAgent,
+        'Referer': 'https://www.bilibili.com/',
+        if (hasCookie) 'Cookie': _cookie!,
+        ...headers,
+      });
+    final http.Response response;
+    try {
+      response = await sendBoundedHttpRequest(
+        _client,
+        request,
+        maxBytes: _maxJsonResponseBytes,
+        timeout: const Duration(seconds: 10),
+      );
+    } on HttpResponseTooLargeException {
+      throw const BilibiliApiException('RESPONSE_TOO_LARGE', 'B站返回的数据过大');
+    }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw BilibiliApiException('HTTP_${response.statusCode}', 'B站服务暂时不可用');
     }

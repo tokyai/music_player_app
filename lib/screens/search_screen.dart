@@ -512,7 +512,9 @@ class _SearchScreenState extends State<SearchScreen>
         ],
         selected: {_session.playlistMode},
         showSelectedIcon: false,
-        onSelectionChanged: (s) => _switchMode(s.first),
+        onSelectionChanged: (s) {
+          if (s.isNotEmpty) _switchMode(s.first);
+        },
         style: SegmentedButton.styleFrom(
           visualDensity: VisualDensity.compact,
           textStyle: TextStyle(

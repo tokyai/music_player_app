@@ -533,21 +533,31 @@ class FavoriteService extends ChangeNotifier {
   }
 
   Future<void> _save() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      _prefsKey,
-      jsonEncode(_favorites.map((song) => song.toJson()).toList()),
-    );
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _prefsKey,
+        jsonEncode(_favorites.map((song) => song.toJson()).toList()),
+      );
+    } catch (error) {
+      // Keep the in-memory change usable when the platform store is
+      // temporarily unavailable; a persistence failure must not crash a tap.
+      debugPrint('保存收藏失败: $error');
+    }
   }
 
   Future<void> _savePlaylists() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      _playlistPrefsKey,
-      jsonEncode(
-        _favoritePlaylists.map((playlist) => playlist.toJson()).toList(),
-      ),
-    );
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _playlistPrefsKey,
+        jsonEncode(
+          _favoritePlaylists.map((playlist) => playlist.toJson()).toList(),
+        ),
+      );
+    } catch (error) {
+      debugPrint('保存收藏歌单失败: $error');
+    }
   }
 }
 

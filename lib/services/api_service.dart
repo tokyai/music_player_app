@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../models/song.dart';
 import 'bilibili_service.dart';
+import 'bounded_http_response.dart';
 
 /// 音乐 API 服务层
 /// - 网易云: interface.music.163.com 官方公开目录接口
@@ -19,6 +20,7 @@ class ApiService {
   static const _catalogTimeout = Duration(seconds: 5);
   static const _catalogFallbackTimeout = Duration(seconds: 8);
   static const _retryDelay = Duration(milliseconds: 350);
+  static const _maxJsonResponseBytes = 5 * 1024 * 1024;
   static const _catalogUserAgent =
       'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
       'Chrome/120 Mobile Safari/537.36';
@@ -71,21 +73,25 @@ class ApiService {
     final attempts = maxAttempts < 1 ? 1 : maxAttempts;
     for (var attempt = 0; attempt < attempts; attempt++) {
       try {
-        final response = await _client
-            .get(
-              uri,
-              headers: {
-                'Accept': 'application/json',
-                'User-Agent': _catalogUserAgent,
-                ...headers,
-              },
-            )
-            .timeout(timeout);
+        final request = http.Request('GET', uri)
+          ..headers.addAll({
+            'Accept': 'application/json',
+            'User-Agent': _catalogUserAgent,
+            ...headers,
+          });
+        final response = await sendBoundedHttpRequest(
+          _client,
+          request,
+          maxBytes: _maxJsonResponseBytes,
+          timeout: timeout,
+        );
         if (attempt < attempts - 1 && response.statusCode >= 500) {
           await Future<void>.delayed(_retryDelay);
           continue;
         }
         return response;
+      } on HttpResponseTooLargeException {
+        throw const ApiException('RESPONSE_TOO_LARGE', '服务返回的数据过大');
       } on Exception catch (error) {
         lastError = error;
         if (attempt < attempts - 1) {
@@ -108,23 +114,27 @@ class ApiService {
     final attempts = maxAttempts < 1 ? 1 : maxAttempts;
     for (var attempt = 0; attempt < attempts; attempt++) {
       try {
-        final response = await _client
-            .post(
-              uri,
-              headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json',
-                'User-Agent': _catalogUserAgent,
-                ...headers,
-              },
-              body: jsonEncode(body),
-            )
-            .timeout(timeout);
+        final request = http.Request('POST', uri)
+          ..headers.addAll({
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'User-Agent': _catalogUserAgent,
+            ...headers,
+          })
+          ..body = jsonEncode(body);
+        final response = await sendBoundedHttpRequest(
+          _client,
+          request,
+          maxBytes: _maxJsonResponseBytes,
+          timeout: timeout,
+        );
         if (attempt < attempts - 1 && response.statusCode >= 500) {
           await Future<void>.delayed(_retryDelay);
           continue;
         }
         return response;
+      } on HttpResponseTooLargeException {
+        throw const ApiException('RESPONSE_TOO_LARGE', '服务返回的数据过大');
       } on Exception catch (error) {
         lastError = error;
         if (attempt < attempts - 1) {

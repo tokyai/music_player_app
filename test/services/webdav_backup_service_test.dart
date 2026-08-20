@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -92,4 +93,31 @@ void main() {
       ),
     );
   });
+
+  test(
+    'rejects an oversized download while reading the response stream',
+    () async {
+      final client = MockClient(
+        (_) async => http.Response.bytes(Uint8List(5 * 1024 * 1024 + 1), 200),
+      );
+      const config = WebDavConfig(
+        url: 'https://example.com/dav/',
+        username: 'backup',
+        password: 'password',
+        certificateSha256: fingerprint,
+      );
+      final service = WebDavBackupService(config: config, client: client);
+
+      await expectLater(
+        service.download(),
+        throwsA(
+          isA<WebDavException>().having(
+            (error) => error.code,
+            'code',
+            'TOO_LARGE',
+          ),
+        ),
+      );
+    },
+  );
 }

@@ -13,6 +13,7 @@ import androidx.core.content.FileProvider
 import com.ryanheise.audioservice.AudioServiceActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
 import java.io.File
 
 class MainActivity : AudioServiceActivity() {
@@ -23,11 +24,13 @@ class MainActivity : AudioServiceActivity() {
         const val EXTERNAL_MEDIA_CHANNEL = "music_player/external_media"
         const val REQUEST_IMPORT_FAVORITES = 4101
         const val REQUEST_EXPORT_FAVORITES = 4102
+        const val MAX_BACKUP_BYTES = 5 * 1024 * 1024
     }
 
     private var pendingFileResult: MethodChannel.Result? = null
     private var pendingExportContent: String? = null
     private var foregroundMediaKeyChannel: MethodChannel? = null
+    private var floatingCapsuleChannel: MethodChannel? = null
     private var foregroundMediaKeysEnabled = false
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
@@ -82,8 +85,11 @@ class MainActivity : AudioServiceActivity() {
                 }
             }
 
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
-            .setMethodCallHandler { call, result ->
+        floatingCapsuleChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            CHANNEL
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "hasPermission" -> result.success(FloatCapsuleManager.hasPermission(appContext))
                     "openPermissionSettings" -> {
@@ -99,18 +105,10 @@ class MainActivity : AudioServiceActivity() {
                             FloatCapsuleManager.show(
                                 appContext, title, artist, coverUrl, isPlaying,
                                 onPlayPause = {
-                                    runOnUiThread {
-                                        MethodChannel(
-                                            flutterEngine.dartExecutor.binaryMessenger, CHANNEL
-                                        ).invokeMethod("onPlayPauseTap", null)
-                                    }
+                                    invokeCapsuleCallback("onPlayPauseTap")
                                 },
                                 onTap = {
-                                    runOnUiThread {
-                                        MethodChannel(
-                                            flutterEngine.dartExecutor.binaryMessenger, CHANNEL
-                                        ).invokeMethod("onCapsuleTap", null)
-                                    }
+                                    invokeCapsuleCallback("onCapsuleTap")
                                 }
                             )
                         }
@@ -138,6 +136,7 @@ class MainActivity : AudioServiceActivity() {
                     else -> result.notImplemented()
                 }
             }
+        }
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -149,7 +148,10 @@ class MainActivity : AudioServiceActivity() {
             }
             if (method != null) {
                 if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-                    foregroundMediaKeyChannel?.invokeMethod(method, null)
+                    try {
+                        foregroundMediaKeyChannel?.invokeMethod(method, null)
+                    } catch (_: Exception) {
+                    }
                 }
                 return true
             }
@@ -161,7 +163,19 @@ class MainActivity : AudioServiceActivity() {
         foregroundMediaKeysEnabled = false
         foregroundMediaKeyChannel?.setMethodCallHandler(null)
         foregroundMediaKeyChannel = null
+        floatingCapsuleChannel?.setMethodCallHandler(null)
+        floatingCapsuleChannel = null
+        FloatCapsuleManager.clearCallbacks()
         super.onDestroy()
+    }
+
+    private fun invokeCapsuleCallback(method: String) {
+        runOnUiThread {
+            try {
+                floatingCapsuleChannel?.invokeMethod(method, null)
+            } catch (_: Exception) {
+            }
+        }
     }
 
     private fun openFavoriteBackup(result: MethodChannel.Result) {
@@ -176,7 +190,7 @@ class MainActivity : AudioServiceActivity() {
         try {
             pendingFileResult = result
             startActivityForResult(intent, REQUEST_IMPORT_FAVORITES)
-        } catch (_: ActivityNotFoundException) {
+        } catch (_: Exception) {
             pendingFileResult = null
             result.error("UNSUPPORTED", "系统没有可用的文件选择器", null)
         }
@@ -201,11 +215,11 @@ class MainActivity : AudioServiceActivity() {
             try {
                 startActivity(videoIntent)
                 result.success(true)
-            } catch (_: ActivityNotFoundException) {
+            } catch (_: Exception) {
                 try {
                     startActivity(browserIntent)
                     result.success(true)
-                } catch (_: ActivityNotFoundException) {
+                } catch (_: Exception) {
                     result.success(false)
                 }
             }
@@ -234,7 +248,7 @@ class MainActivity : AudioServiceActivity() {
             pendingFileResult = result
             pendingExportContent = content
             startActivityForResult(intent, REQUEST_EXPORT_FAVORITES)
-        } catch (_: ActivityNotFoundException) {
+        } catch (_: Exception) {
             pendingFileResult = null
             pendingExportContent = null
             result.error("UNSUPPORTED", "系统没有可用的文件选择器", null)
@@ -261,13 +275,7 @@ class MainActivity : AudioServiceActivity() {
 
         try {
             if (requestCode == REQUEST_IMPORT_FAVORITES) {
-                val content = contentResolver.openInputStream(uri)
-                    ?.bufferedReader(Charsets.UTF_8)
-                    ?.use { it.readText() }
-                    ?: throw IllegalStateException("无法读取所选文件")
-                if (content.length > 5 * 1024 * 1024) {
-                    throw IllegalArgumentException("收藏备份不能超过 5 MB")
-                }
+                val content = readUtf8WithLimit(uri)
                 callback.success(content)
             } else {
                 val content = pendingExportContent
@@ -278,11 +286,32 @@ class MainActivity : AudioServiceActivity() {
                     ?: throw IllegalStateException("无法写入所选文件")
                 callback.success(true)
             }
+        } catch (_: OutOfMemoryError) {
+            callback.error("FILE_TOO_LARGE", "文件过大，无法安全读取", null)
         } catch (error: Exception) {
             callback.error("FILE_ERROR", error.message ?: "文件操作失败", null)
         } finally {
             pendingExportContent = null
         }
+    }
+
+    private fun readUtf8WithLimit(uri: Uri): String {
+        val bytes = contentResolver.openInputStream(uri)?.use { input ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(8 * 1024)
+            var total = 0
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                total += count
+                if (total > MAX_BACKUP_BYTES) {
+                    throw IllegalArgumentException("收藏备份不能超过 5 MB")
+                }
+                output.write(buffer, 0, count)
+            }
+            output.toByteArray()
+        } ?: throw IllegalStateException("无法读取所选文件")
+        return bytes.toString(Charsets.UTF_8)
     }
 
     private fun installApk(
@@ -338,7 +367,7 @@ class MainActivity : AudioServiceActivity() {
                 try {
                     startActivity(intent)
                     result.success(null)
-                } catch (_: ActivityNotFoundException) {
+                } catch (_: Exception) {
                     result.error("NO_INSTALLER", "未找到可用的安装程序", null)
                 }
             }

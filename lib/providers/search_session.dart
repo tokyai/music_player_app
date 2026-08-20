@@ -89,9 +89,10 @@ class SearchSession extends ChangeNotifier {
       _playlistMode = false;
     }
     if (preferredPlatform != null) {
-      _selectedPlatformIndex = musicPlatformDisplayOrder.indexOf(
+      final preferredIndex = musicPlatformDisplayOrder.indexOf(
         preferredPlatform,
       );
+      if (preferredIndex >= 0) _selectedPlatformIndex = preferredIndex;
     }
     _resetResults();
     _notify();

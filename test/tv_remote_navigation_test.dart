@@ -429,6 +429,37 @@ void main() {
     expect(player.previousCalls, 1);
   });
 
+  testWidgets('media remote key failures stay inside the remote action', (
+    tester,
+  ) async {
+    final player = _FailingRemoteTestPlayer()..showSong();
+    final navigatorKey = GlobalKey<NavigatorState>();
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      player.dispose();
+    });
+    await tester.pumpWidget(
+      ChangeNotifierProvider<PlayerProvider>.value(
+        value: player,
+        child: MaterialApp(
+          navigatorKey: navigatorKey,
+          home: TvRemoteScope(
+            navigatorKey: navigatorKey,
+            child: const Focus(
+              autofocus: true,
+              child: SizedBox(width: 100, height: 100),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.mediaPlayPause);
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+  });
+
   for (final size in const [Size(640, 360), Size(1280, 800)]) {
     testWidgets('playback history opens with the D-pad at $size', (
       tester,
@@ -594,6 +625,11 @@ class _RemoteTestPlayer extends PlayerProvider {
 
   @override
   Future<void> playPrevious() async => previousCalls++;
+}
+
+class _FailingRemoteTestPlayer extends _RemoteTestPlayer {
+  @override
+  Future<void> playPause() => Future<void>.error(StateError('test failure'));
 }
 
 class _RemoteHistoryPlayer extends PlayerProvider {

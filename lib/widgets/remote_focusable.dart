@@ -57,7 +57,9 @@ class _RemoteFocusableState extends State<RemoteFocusable> {
         actions: actions,
         onFocusChange: widget.onFocusChange,
         onShowFocusHighlight: (show) {
-          if (_showFocus != show) setState(() => _showFocus = show);
+          if (mounted && _showFocus != show) {
+            setState(() => _showFocus = show);
+          }
         },
         child: Semantics(
           button: widget.onPressed != null,
@@ -171,6 +173,17 @@ class TvRemoteScope extends StatelessWidget {
     await SystemNavigator.pop();
   }
 
+  void _runRemoteAction(String label, Future<void> Function() action) {
+    unawaited(() async {
+      try {
+        await action();
+      } catch (error, stack) {
+        debugPrint('$label失败: $error');
+        debugPrintStack(stackTrace: stack);
+      }
+    }());
+  }
+
   @override
   Widget build(BuildContext context) {
     final player = context.read<PlayerProvider>();
@@ -190,25 +203,25 @@ class TvRemoteScope extends StatelessWidget {
         actions: <Type, Action<Intent>>{
           _RemoteBackIntent: CallbackAction<_RemoteBackIntent>(
             onInvoke: (_) {
-              unawaited(_handleBack());
+              _runRemoteAction('遥控器返回操作', _handleBack);
               return null;
             },
           ),
           _RemotePlayPauseIntent: CallbackAction<_RemotePlayPauseIntent>(
             onInvoke: (_) {
-              unawaited(player.playPause());
+              _runRemoteAction('遥控器播放操作', player.playPause);
               return null;
             },
           ),
           _RemotePreviousIntent: CallbackAction<_RemotePreviousIntent>(
             onInvoke: (_) {
-              unawaited(player.playPrevious());
+              _runRemoteAction('遥控器上一曲操作', player.playPrevious);
               return null;
             },
           ),
           _RemoteNextIntent: CallbackAction<_RemoteNextIntent>(
             onInvoke: (_) {
-              unawaited(player.playNext());
+              _runRemoteAction('遥控器下一曲操作', player.playNext);
               return null;
             },
           ),

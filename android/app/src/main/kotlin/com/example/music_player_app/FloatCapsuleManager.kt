@@ -2,6 +2,7 @@ package com.example.music_player_app
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.PixelFormat
 import android.net.Uri
@@ -17,14 +18,21 @@ import android.view.WindowManager
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
+import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 系统悬浮窗胶囊（类灵动岛/华为流体云）
  * 用 ApplicationContext + TYPE_APPLICATION_OVERLAY 实现跨 App 悬浮显示。
  */
 object FloatCapsuleManager {
+    private const val MAX_COVER_BYTES = 4 * 1024 * 1024
+    private const val MAX_COVER_SIDE = 256
+
     private var windowManager: WindowManager? = null
     private var capsuleView: View? = null
     private var layoutParams: WindowManager.LayoutParams? = null
@@ -36,6 +44,12 @@ object FloatCapsuleManager {
     private var initialTouchX = 0f
     private var initialTouchY = 0f
     private var isDragging = false
+    private val imageExecutor = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "float-capsule-cover")
+    }
+    private val imageRequestId = AtomicInteger()
+    private var imageLoadFuture: Future<*>? = null
+    private var coverBitmap: Bitmap? = null
 
     fun isShowing(): Boolean = capsuleView != null
 
@@ -61,16 +75,23 @@ object FloatCapsuleManager {
         onPlayPause: () -> Unit,
         onTap: () -> Unit
     ) {
+        // Refresh callbacks even when the overlay survived an Activity/engine
+        // recreation; retaining an old binary messenger can crash on tap.
+        onPlayPauseTap = onPlayPause
+        onCapsuleTap = onTap
         if (capsuleView != null) {
             update(title, artist, coverUrl, isPlaying)
             return
         }
         if (!hasPermission(context)) return
         if (windowManager == null) {
-            windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            windowManager = try {
+                context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+            } catch (_: Exception) {
+                null
+            }
         }
-        onPlayPauseTap = onPlayPause
-        onCapsuleTap = onTap
+        if (windowManager == null) return
 
         val view = LayoutInflater.from(context).inflate(R.layout.float_capsule, null)
         val titleView = view.findViewById<TextView>(R.id.fc_title)
@@ -85,15 +106,28 @@ object FloatCapsuleManager {
             loadImage(coverUrl, coverView)
         }
 
-        playBtn.setOnClickListener { onPlayPauseTap?.invoke() }
+        playBtn.setOnClickListener {
+            try {
+                onPlayPauseTap?.invoke()
+            } catch (_: Exception) {
+            }
+        }
 
         view.setOnClickListener {
-            onCapsuleTap?.invoke()
+            try {
+                onCapsuleTap?.invoke()
+            } catch (_: Exception) {
+            }
             val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
                 ?.apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
                 }
-            if (launch != null) context.startActivity(launch)
+            if (launch != null) {
+                try {
+                    context.startActivity(launch)
+                } catch (_: Exception) {
+                }
+            }
         }
 
         view.setOnTouchListener { v, event ->
@@ -115,7 +149,11 @@ object FloatCapsuleManager {
                     if (isDragging) {
                         params.x = (initialX + dx).toInt()
                         params.y = (initialY + dy).toInt()
-                        windowManager?.updateViewLayout(v, params)
+                        try {
+                            windowManager?.updateViewLayout(v, params)
+                        } catch (_: Exception) {
+                            isDragging = false
+                        }
                     }
                     true
                 }
@@ -157,7 +195,10 @@ object FloatCapsuleManager {
         try {
             windowManager?.addView(view, params)
         } catch (_: Exception) {
+            cancelImageLoad()
             capsuleView = null
+            layoutParams = null
+            clearCallbacks()
         }
     }
 
@@ -171,6 +212,10 @@ object FloatCapsuleManager {
             )
             if (!coverUrl.isNullOrEmpty()) {
                 loadImage(coverUrl, view.findViewById(R.id.fc_cover))
+            } else {
+                cancelImageLoad()
+                view.findViewById<ImageView>(R.id.fc_cover)?.setImageDrawable(null)
+                recycleCoverBitmap()
             }
         }
     }
@@ -185,6 +230,7 @@ object FloatCapsuleManager {
     }
 
     fun hide() {
+        cancelImageLoad()
         val view = capsuleView ?: return
         try {
             windowManager?.removeView(view)
@@ -192,30 +238,106 @@ object FloatCapsuleManager {
         }
         capsuleView = null
         layoutParams = null
+        recycleCoverBitmap()
+        clearCallbacks()
     }
 
-    /** 简单网络图片加载（避免额外依赖，失败静默） */
+    fun clearCallbacks() {
+        onPlayPauseTap = null
+        onCapsuleTap = null
+    }
+
+    private fun cancelImageLoad(): Int {
+        val requestId = imageRequestId.incrementAndGet()
+        imageLoadFuture?.cancel(true)
+        imageLoadFuture = null
+        return requestId
+    }
+
+    /** 封面单线程、限流、缩略解码，避免大图或快速切歌压垮车机内存。 */
     private fun loadImage(url: String, imageView: ImageView) {
-        Thread {
-            var conn: HttpURLConnection? = null
+        val requestId = cancelImageLoad()
+        imageLoadFuture = imageExecutor.submit {
             try {
-                conn = URL(url).openConnection() as HttpURLConnection
-                conn.connectTimeout = 6000
-                conn.readTimeout = 8000
-                conn.connect()
-                val stream = conn.inputStream
-                val bitmap = BitmapFactory.decodeStream(stream)
-                stream.close()
-                if (bitmap != null) {
-                    Handler(Looper.getMainLooper()).post { imageView.setImageBitmap(bitmap) }
+                val bytes = downloadImage(url) ?: return@submit
+                if (requestId != imageRequestId.get() || Thread.currentThread().isInterrupted) {
+                    return@submit
                 }
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@submit
+                var sampleSize = 1
+                while (bounds.outWidth / sampleSize > MAX_COVER_SIDE ||
+                    bounds.outHeight / sampleSize > MAX_COVER_SIDE
+                ) {
+                    sampleSize *= 2
+                }
+                val options = BitmapFactory.Options().apply {
+                    inSampleSize = sampleSize
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                }
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+                    ?: return@submit
+                Handler(Looper.getMainLooper()).post {
+                    val currentCover = capsuleView?.findViewById<ImageView>(R.id.fc_cover)
+                    if (requestId == imageRequestId.get() &&
+                        currentCover === imageView &&
+                        imageView.isAttachedToWindow
+                    ) {
+                        imageView.setImageBitmap(bitmap)
+                        val previous = coverBitmap
+                        coverBitmap = bitmap
+                        if (previous !== bitmap && previous?.isRecycled == false) {
+                            previous.recycle()
+                        }
+                    } else {
+                        bitmap.recycle()
+                    }
+                }
+            } catch (_: OutOfMemoryError) {
             } catch (_: Exception) {
-            } finally {
-                try {
-                    conn?.disconnect()
-                } catch (_: Exception) {
-                }
             }
-        }.start()
+        }
+    }
+
+    private fun recycleCoverBitmap() {
+        val bitmap = coverBitmap
+        coverBitmap = null
+        if (bitmap?.isRecycled == false) {
+            try {
+                bitmap.recycle()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun downloadImage(url: String): ByteArray? {
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = URL(url).openConnection() as HttpURLConnection
+            connection.connectTimeout = 6000
+            connection.readTimeout = 8000
+            connection.connect()
+            if (connection.contentLengthLong > MAX_COVER_BYTES) return null
+            connection.inputStream.use { input ->
+                val output = ByteArrayOutputStream()
+                val buffer = ByteArray(8 * 1024)
+                var total = 0
+                while (true) {
+                    if (Thread.currentThread().isInterrupted) return null
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    if (total > MAX_COVER_BYTES) return null
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray()
+            }
+        } finally {
+            try {
+                connection?.disconnect()
+            } catch (_: Exception) {
+            }
+        }
     }
 }

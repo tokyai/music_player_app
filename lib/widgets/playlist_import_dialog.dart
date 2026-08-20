@@ -70,7 +70,9 @@ class _PlaylistImportDialogState extends State<PlaylistImportDialog> {
                 ],
                 selected: {_platform},
                 showSelectedIcon: false,
-                onSelectionChanged: (s) => setState(() => _platform = s.first),
+                onSelectionChanged: (s) {
+                  if (s.isNotEmpty) setState(() => _platform = s.first);
+                },
                 style: SegmentedButton.styleFrom(
                   visualDensity: compactLandscape
                       ? VisualDensity.compact

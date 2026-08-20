@@ -424,7 +424,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       segments: segments,
                       selected: {themeCtrl.mode},
                       showSelectedIcon: false,
-                      onSelectionChanged: (s) => themeCtrl.setMode(s.first),
+                      onSelectionChanged: (s) {
+                        if (s.isNotEmpty) themeCtrl.setMode(s.first);
+                      },
                       style: SegmentedButton.styleFrom(
                         visualDensity: VisualDensity.compact,
                         textStyle: TextStyle(
@@ -1111,9 +1113,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(
               context,
-              MaterialPageRoute(
-                builder: (_) => const PlaybackHistoryScreen(),
-              ),
+              MaterialPageRoute(builder: (_) => const PlaybackHistoryScreen()),
             ),
           ),
         ),

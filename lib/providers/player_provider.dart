@@ -394,13 +394,30 @@ class PlayerProvider extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
+  Future<void> _savePreference(
+    String label,
+    Future<bool> Function(SharedPreferences prefs) write,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await write(prefs);
+    } catch (error, stack) {
+      // Settings remain active in memory even when the platform store is
+      // unavailable (for example during a transient plugin/IO failure).
+      debugPrint('保存$label失败: $error');
+      debugPrintStack(stackTrace: stack);
+    }
+  }
+
   Future<void> setApiKey(String key) async {
     await settingsReady;
     if (_disposed) return;
     _apiKey = key;
     _api.setApiKey(key);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('api_key', key);
+    await _savePreference(
+      'API Key',
+      (prefs) => prefs.setString('api_key', key),
+    );
     notifyListeners();
   }
 
@@ -409,8 +426,10 @@ class PlayerProvider extends ChangeNotifier {
     if (_disposed) return;
     _neteaseLevel = level;
     _playUrlResolvedAt.clear();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('netease_level', level.value);
+    await _savePreference(
+      '网易云音质',
+      (prefs) => prefs.setString('netease_level', level.value),
+    );
     notifyListeners();
   }
 
@@ -419,8 +438,10 @@ class PlayerProvider extends ChangeNotifier {
     if (_disposed) return;
     _commonLevel = level;
     _playUrlResolvedAt.clear();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('common_level', level.value);
+    await _savePreference(
+      '通用音质',
+      (prefs) => prefs.setString('common_level', level.value),
+    );
     notifyListeners();
   }
 
@@ -447,8 +468,11 @@ class PlayerProvider extends ChangeNotifier {
     _playUrlResolvedAt.removeWhere(
       (key, _) => key.startsWith('${platform.code}:'),
     );
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_playbackSourcePreferenceKey(platform), source.value);
+    await _savePreference(
+      '${platform.label}音源',
+      (prefs) =>
+          prefs.setString(_playbackSourcePreferenceKey(platform), source.value),
+    );
     notifyListeners();
   }
 
@@ -457,10 +481,12 @@ class PlayerProvider extends ChangeNotifier {
     if (_disposed) return;
     final normalized = _normalizeBilibiliLyricPlatformOrder(order);
     _bilibiliLyricPlatformOrder = normalized;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(
-      _bilibiliLyricPlatformOrderKey,
-      normalized.map((platform) => platform.code).toList(growable: false),
+    await _savePreference(
+      'B 站歌词平台顺序',
+      (prefs) => prefs.setStringList(
+        _bilibiliLyricPlatformOrderKey,
+        normalized.map((platform) => platform.code).toList(growable: false),
+      ),
     );
     notifyListeners();
   }
@@ -472,8 +498,10 @@ class PlayerProvider extends ChangeNotifier {
     if (_lyricOffsetStep == normalized) return;
     _lyricOffsetStep = normalized;
     notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_lyricOffsetStepKey, normalized.inMilliseconds);
+    await _savePreference(
+      '歌词偏移步长',
+      (prefs) => prefs.setInt(_lyricOffsetStepKey, normalized.inMilliseconds),
+    );
   }
 
   static Duration _normalizeLyricOffsetStep(Duration step) {
@@ -488,8 +516,10 @@ class PlayerProvider extends ChangeNotifier {
     await settingsReady;
     if (_disposed || _videoPlayerMode == mode) return;
     _videoPlayerMode = mode;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('video_player_mode', mode.value);
+    await _savePreference(
+      '视频播放器模式',
+      (prefs) => prefs.setString('video_player_mode', mode.value),
+    );
     notifyListeners();
   }
 
@@ -506,8 +536,10 @@ class PlayerProvider extends ChangeNotifier {
     await settingsReady;
     if (_disposed || _bilibiliAudioQuality == quality) return;
     _bilibiliAudioQuality = quality;
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setInt('bilibili_audio_quality', quality);
+    await _savePreference(
+      'B 站音频音质',
+      (prefs) => prefs.setInt('bilibili_audio_quality', quality),
+    );
     final song = currentSong;
     if (song?.platform == MusicPlatform.bilibili) {
       _playUrlResolvedAt.removeWhere(
@@ -525,8 +557,10 @@ class PlayerProvider extends ChangeNotifier {
     await settingsReady;
     if (_disposed || _bilibiliVideoQuality == quality) return;
     _bilibiliVideoQuality = quality;
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setInt('bilibili_video_quality', quality);
+    await _savePreference(
+      'B 站视频清晰度',
+      (prefs) => prefs.setInt('bilibili_video_quality', quality),
+    );
     notifyListeners();
   }
 
@@ -1152,6 +1186,9 @@ class PlayerProvider extends ChangeNotifier {
       videoTitle = info.title;
       coverUrl = _preferExisting(coverUrl, info.coverUrl);
     }
+    if (pages.isEmpty) {
+      throw const BilibiliApiException('VIDEO_NO_PAGE', '视频没有可播放的分P');
+    }
     final selected = pages.firstWhere(
       (page) => page.cid == item.bilibiliCid,
       orElse: () => pages.first,
@@ -1198,6 +1235,9 @@ class PlayerProvider extends ChangeNotifier {
       final playInfo = await _api.bilibili.playInfo(item.id, cid);
       _bilibiliAudioQualities = playInfo.audioStreams;
       _bilibiliVideoQualities = playInfo.videoStreams;
+      if (playInfo.audioStreams.isEmpty) {
+        throw const BilibiliApiException('PLAY_NO_AUDIO', '当前分P没有可播放的音频');
+      }
       final selected = playInfo.audioStreams.firstWhere(
         (stream) => stream.quality == _bilibiliAudioQuality,
         orElse: () => playInfo.audioStreams.first,
@@ -1460,20 +1500,48 @@ class PlayerProvider extends ChangeNotifier {
   void _onSongComplete() {
     switch (_playMode) {
       case PlayMode.sequence:
-        playNext();
+        _runAudioCommandInBackground('自动播放下一首', playNext);
         break;
       case PlayMode.repeat:
-        _audioPlayer.seek(Duration.zero);
-        _audioPlayer.play();
+        _runAudioCommandInBackground('单曲循环', () async {
+          await _audioPlayer.seek(Duration.zero);
+          await _audioPlayer.play();
+        });
         break;
       case PlayMode.shuffle:
         if (_queue.length > 1) {
           final random = DateTime.now().millisecondsSinceEpoch % _queue.length;
           _currentIndex = random;
-          _playCurrent();
+          _runAudioCommandInBackground('随机播放下一首', _playCurrent);
         }
         break;
     }
+  }
+
+  Future<bool> _tryAudioCommand(
+    String label,
+    Future<void> Function() command,
+  ) async {
+    try {
+      await command();
+      return true;
+    } catch (error, stack) {
+      debugPrint('$label失败: $error');
+      debugPrintStack(stackTrace: stack);
+      if (!_disposed) {
+        _errorMessage = '$label失败: $error';
+        _lastError = '$label失败，请重试';
+        notifyListeners();
+      }
+      return false;
+    }
+  }
+
+  void _runAudioCommandInBackground(
+    String label,
+    Future<void> Function() command,
+  ) {
+    unawaited(_tryAudioCommand(label, command));
   }
 
   Future<void> selectBilibiliPage(int pageIndex) async {
@@ -1511,12 +1579,16 @@ class PlayerProvider extends ChangeNotifier {
     if (cid == null || cid <= 0) {
       throw const BilibiliApiException('VIDEO_CID', '当前分P仍在加载');
     }
-    return _api.bilibili.videoSource(
+    final source = await _api.bilibili.videoSource(
       song.id,
       cid,
       _bilibiliVideoQuality,
       audioQuality: _bilibiliAudioQuality,
     );
+    if (source.urls.isEmpty) {
+      throw const BilibiliApiException('PLAY_NO_VIDEO', 'B站未返回视频地址');
+    }
+    return source;
   }
 
   Future<String> currentBilibiliVideoUrl() async {
@@ -1526,21 +1598,21 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> playPause() async {
     if (currentSong == null || _isLoading) return;
     if (_isPlaying) {
-      await _audioPlayer.pause();
-      _recordCurrentHistory(immediate: true);
+      final paused = await _tryAudioCommand('暂停播放', _audioPlayer.pause);
+      if (paused) _recordCurrentHistory(immediate: true);
     } else {
-      await _audioPlayer.play();
+      await _tryAudioCommand('继续播放', _audioPlayer.play);
     }
   }
 
   Future<void> pause() async {
-    await _audioPlayer.pause();
-    _recordCurrentHistory(immediate: true);
+    final paused = await _tryAudioCommand('暂停播放', _audioPlayer.pause);
+    if (paused) _recordCurrentHistory(immediate: true);
   }
 
   Future<void> stop() async {
     _recordCurrentHistory(immediate: true);
-    await _audioPlayer.stop();
+    await _tryAudioCommand('停止播放', _audioPlayer.stop);
   }
 
   Future<void> playNext() async {
@@ -1564,7 +1636,11 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   Future<void> seekTo(Duration position) async {
-    await _audioPlayer.seek(position);
+    final succeeded = await _tryAudioCommand(
+      '调整播放进度',
+      () => _audioPlayer.seek(position),
+    );
+    if (!succeeded) return;
     _position = position;
     _updateLyricIndex();
     notifyListeners();
@@ -1635,7 +1711,7 @@ class PlayerProvider extends ChangeNotifier {
         unawaited(_playCurrent());
       } else {
         _playRequestId++;
-        unawaited(_audioPlayer.stop());
+        _runAudioCommandInBackground('停止播放', _audioPlayer.stop);
       }
     }
     notifyListeners();
@@ -1655,7 +1731,7 @@ class PlayerProvider extends ChangeNotifier {
     _isLoading = false;
     _isPlaying = false;
     _errorMessage = null;
-    unawaited(_audioPlayer.stop());
+    _runAudioCommandInBackground('停止播放', _audioPlayer.stop);
     unawaited(FloatingCapsuleService.hide());
     notifyListeners();
   }
@@ -1683,15 +1759,34 @@ class PlayerProvider extends ChangeNotifier {
     unawaited(_persistPlaybackHistory());
     _playRequestId++;
     _queueSessionId++;
-    _playerSub?.cancel();
-    _durationSub?.cancel();
-    _positionSub?.cancel();
-    _bufferSub?.cancel();
-    _errorSub?.cancel();
+    final subscriptions = <StreamSubscription?>[
+      _playerSub,
+      _durationSub,
+      _positionSub,
+      _bufferSub,
+      _errorSub,
+    ];
     _api.bilibili.removeListener(_handleBilibiliChanged);
     _api.close();
-    _audioPlayer.dispose();
+    unawaited(_disposeAudioResources(subscriptions));
     super.dispose();
+  }
+
+  Future<void> _disposeAudioResources(
+    List<StreamSubscription?> subscriptions,
+  ) async {
+    for (final subscription in subscriptions) {
+      try {
+        await subscription?.cancel();
+      } catch (error) {
+        debugPrint('取消播放器订阅失败: $error');
+      }
+    }
+    try {
+      await _audioPlayer.dispose();
+    } catch (error) {
+      debugPrint('释放播放器失败: $error');
+    }
   }
 }
 

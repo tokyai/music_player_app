@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
@@ -32,23 +33,38 @@ const _foregroundMediaKeyChannel = MethodChannel(
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  PlatformDispatcher.instance.onError = (error, stack) {
+    debugPrint('未捕获的后台异常: $error');
+    debugPrintStack(stackTrace: stack);
+    return true;
+  };
   // 全面屏适配：内容延伸到状态栏/导航栏区域（各页面已用 SafeArea 保护内容）
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   final player = PlayerProvider();
-  final audioSession = await AudioSession.instance;
-  await audioSession.configure(const AudioSessionConfiguration.music());
+  try {
+    final audioSession = await AudioSession.instance;
+    await audioSession.configure(const AudioSessionConfiguration.music());
+  } catch (error, stack) {
+    debugPrint('音频会话初始化失败，使用系统默认配置: $error');
+    debugPrintStack(stackTrace: stack);
+  }
   // 系统媒体会话：通知栏、锁屏和车机方向盘共用应用内播放队列。
-  await AudioService.init(
-    builder: () => PlayerMediaHandler(player),
-    config: const AudioServiceConfig(
-      androidNotificationChannelId: 'com.example.music_player_app.audio',
-      androidNotificationChannelName: '库仔音乐播放',
-      androidNotificationOngoing: true,
-      // 车机通知只需要小尺寸缩略图，避免音频服务完整解码高分辨率封面。
-      artDownscaleWidth: 256,
-      artDownscaleHeight: 256,
-    ),
-  );
+  try {
+    await AudioService.init(
+      builder: () => PlayerMediaHandler(player),
+      config: const AudioServiceConfig(
+        androidNotificationChannelId: 'com.example.music_player_app.audio',
+        androidNotificationChannelName: '库仔音乐播放',
+        androidNotificationOngoing: true,
+        // 车机通知只需要小尺寸缩略图，避免音频服务完整解码高分辨率封面。
+        artDownscaleWidth: 256,
+        artDownscaleHeight: 256,
+      ),
+    );
+  } catch (error, stack) {
+    debugPrint('系统媒体会话初始化失败，继续使用应用内播放器: $error');
+    debugPrintStack(stackTrace: stack);
+  }
   // Some car launchers deliver next/previous to the foreground Activity
   // instead of the active MediaSession. Keep a narrow fallback for that path.
   _foregroundMediaKeyChannel.setMethodCallHandler((call) async {

@@ -7,6 +7,8 @@ import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'bounded_http_response.dart';
+
 const _maxBackupBytes = 5 * 1024 * 1024;
 
 class WebDavConfig {
@@ -138,9 +140,27 @@ class WebDavBackupService {
 
   Future<String> download() async {
     _validateConfig();
-    final response = await _send(
-      () => _client.get(config.fileUri(), headers: _headers()),
-    );
+    final request = http.Request('GET', config.fileUri())
+      ..headers.addAll(_headers());
+    final http.Response response;
+    try {
+      response = await sendBoundedHttpRequest(
+        _client,
+        request,
+        maxBytes: _maxBackupBytes,
+        timeout: const Duration(seconds: 15),
+      );
+    } on HttpResponseTooLargeException {
+      throw const WebDavException('TOO_LARGE', '备份文件不能超过 5 MB');
+    } on TimeoutException {
+      throw const WebDavException('TIMEOUT', 'WebDAV 请求超时');
+    } on HandshakeException catch (error) {
+      throw WebDavException('TLS_ERROR', 'TLS 证书校验失败：${error.message}');
+    } on SocketException catch (error) {
+      throw WebDavException('NETWORK_ERROR', '无法连接 WebDAV：${error.message}');
+    } on http.ClientException catch (error) {
+      throw WebDavException('NETWORK_ERROR', '无法连接 WebDAV：${error.message}');
+    }
     _throwIfAuthFailed(response.statusCode);
     if (response.statusCode == 404) {
       throw const WebDavException('NOT_FOUND', '服务器上还没有备份文件');
@@ -150,9 +170,6 @@ class WebDavBackupService {
         'HTTP_${response.statusCode}',
         'WebDAV 下载失败（HTTP ${response.statusCode}）',
       );
-    }
-    if (response.bodyBytes.length > _maxBackupBytes) {
-      throw const WebDavException('TOO_LARGE', '备份文件不能超过 5 MB');
     }
     late final String content;
     try {
