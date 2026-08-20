@@ -17,7 +17,9 @@ dependencies:
   crypto: ^3.0.6
 
   # 音频播放
-  just_audio: ^0.9.39
+  # Local fork adds the authorized SuperSound DSP to Media3's PCM pipeline.
+  just_audio:
+    path: packages/just_audio
   # MV 内置播放：Media3 ExoPlayer + libmpv 双内核
   video_player: ^2.11.1
   media_kit: ^1.2.6

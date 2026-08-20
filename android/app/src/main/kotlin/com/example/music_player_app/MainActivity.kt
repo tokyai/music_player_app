@@ -10,6 +10,7 @@ import android.os.Build
 import androidx.annotation.NonNull
 import androidx.core.content.FileProvider
 import com.ryanheise.audioservice.AudioServiceActivity
+import com.ryanheise.just_audio.supersound.SuperSoundController
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
@@ -20,6 +21,7 @@ class MainActivity : AudioServiceActivity() {
         const val INSTALL_CHANNEL = "music_player/install"
         const val FAVORITES_FILE_CHANNEL = "music_player/favorites_file"
         const val EXTERNAL_MEDIA_CHANNEL = "music_player/external_media"
+        const val SOUND_EFFECT_CHANNEL = "music_player/sound_effect"
         const val REQUEST_IMPORT_FAVORITES = 4101
         const val REQUEST_EXPORT_FAVORITES = 4102
     }
@@ -61,6 +63,23 @@ class MainActivity : AudioServiceActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "playVideo" -> openExternalVideo(call.argument<String>("url"), result)
+                    else -> result.notImplemented()
+                }
+            }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SOUND_EFFECT_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "initialize" -> SuperSoundController.initialize(appContext) { status ->
+                        runOnUiThread { result.success(status) }
+                    }
+                    "setEffect" -> {
+                        val type = call.argument<Number>("type")?.toInt() ?: 1
+                        val id = call.argument<Number>("id")?.toInt() ?: 0
+                        SuperSoundController.setDesiredEffect(type, id)
+                        SuperSoundController.initialize(appContext, null)
+                        result.success(true)
+                    }
                     else -> result.notImplemented()
                 }
             }

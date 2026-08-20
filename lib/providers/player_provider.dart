@@ -4,11 +4,13 @@ import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
+import '../models/sound_effect.dart';
 import '../services/api_service.dart';
 import '../services/audio_cache_service.dart';
 import '../services/bilibili_service.dart';
 import '../services/floating_capsule_service.dart';
 import '../services/playback_history_service.dart';
+import '../services/sound_effect_service.dart';
 import '../utils/lyric_parser.dart';
 
 /// 播放模式
@@ -24,6 +26,10 @@ class PlayerProvider extends ChangeNotifier {
   static const _lyricOffsetStepKey = 'lyric_offset_step_ms';
   static const _historyPersistDelay = Duration(seconds: 2);
   static const _bilibiliLyricPlatformOrderKey = 'bilibili_lyric_platform_order';
+  static const _soundEffectEnabledKey = 'sound_effect_enabled';
+  static const _soundEffectIdKey = 'sound_effect_id';
+  static const _soundEffectTypeKey = 'sound_effect_type';
+  static const _soundEffectNameKey = 'sound_effect_name';
   static const _defaultBilibiliLyricPlatformOrder = <MusicPlatform>[
     MusicPlatform.qq,
     MusicPlatform.kugou,
@@ -75,6 +81,11 @@ class PlayerProvider extends ChangeNotifier {
     _defaultBilibiliLyricPlatformOrder,
   );
   VideoPlayerMode _videoPlayerMode = VideoPlayerMode.automatic;
+  bool _soundEffectAvailable = false;
+  bool _soundEffectEnabled = false;
+  String _soundEffectStatusMessage = 'DSP 正在初始化';
+  List<SoundEffectPreset> _soundEffectPresets = const [];
+  SoundEffectPreset? _soundEffectPreset;
   List<BilibiliStream> _bilibiliAudioQualities = const [];
   List<BilibiliStream> _bilibiliVideoQualities = const [];
   int _bilibiliAudioQuality = 30280;
@@ -163,6 +174,12 @@ class PlayerProvider extends ChangeNotifier {
       List.unmodifiable(_bilibiliLyricPlatformOrder);
 
   VideoPlayerMode get videoPlayerMode => _videoPlayerMode;
+  bool get soundEffectAvailable => _soundEffectAvailable;
+  bool get soundEffectEnabled => _soundEffectEnabled;
+  String get soundEffectStatusMessage => _soundEffectStatusMessage;
+  List<SoundEffectPreset> get soundEffectPresets =>
+      List.unmodifiable(_soundEffectPresets);
+  SoundEffectPreset? get soundEffectPreset => _soundEffectPreset;
 
   List<PlaybackHistoryEntry> get playbackHistory =>
       List.unmodifiable(_playbackHistory);
@@ -385,6 +402,36 @@ class PlayerProvider extends ChangeNotifier {
         // 旧版的 built_in/system 都迁移到不依赖系统播放器的自动兼容模式。
         orElse: () => VideoPlayerMode.automatic,
       );
+      final soundEffectAvailability = await SoundEffectService.initialize();
+      _soundEffectAvailable = soundEffectAvailability.available;
+      _soundEffectStatusMessage = soundEffectAvailability.message;
+      _soundEffectPresets = soundEffectAvailability.presets;
+      final savedSoundEffectId = prefs.getInt(_soundEffectIdKey) ?? 0;
+      final savedSoundEffectType = prefs.getInt(_soundEffectTypeKey) ?? 1;
+      final savedSoundEffectName = prefs.getString(_soundEffectNameKey) ?? '';
+      for (final preset in _soundEffectPresets) {
+        if (preset.id == savedSoundEffectId &&
+            preset.type == savedSoundEffectType) {
+          _soundEffectPreset = preset;
+          break;
+        }
+      }
+      if (_soundEffectPreset == null && savedSoundEffectId > 0) {
+        _soundEffectPreset = SoundEffectPreset(
+          id: savedSoundEffectId,
+          type: savedSoundEffectType,
+          name: savedSoundEffectName.isEmpty ? '已选音效' : savedSoundEffectName,
+          description: '',
+        );
+      }
+      _soundEffectEnabled =
+          _soundEffectAvailable &&
+          _soundEffectPreset != null &&
+          (prefs.getBool(_soundEffectEnabledKey) ?? false);
+      await SoundEffectService.setEffect(
+        type: _soundEffectPreset?.type ?? 1,
+        id: _soundEffectEnabled ? _soundEffectPreset!.id : 0,
+      );
       await _api.bilibili.ready;
       if (_api.bilibili.hasCookie) {
         unawaited(_api.bilibili.refreshAccount());
@@ -423,6 +470,57 @@ class PlayerProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('common_level', level.value);
     notifyListeners();
+  }
+
+  Future<bool> setSoundEffectEnabled(bool enabled) async {
+    await settingsReady;
+    if (_disposed || !_soundEffectAvailable) return false;
+    var selected = _soundEffectPreset;
+    if (enabled && selected == null && _soundEffectPresets.isNotEmpty) {
+      selected = _soundEffectPresets.first;
+    }
+    if (enabled && selected == null) return false;
+    final applied = await SoundEffectService.setEffect(
+      type: selected?.type ?? 1,
+      id: enabled ? selected!.id : 0,
+    );
+    if (!applied || _disposed) return false;
+    _soundEffectPreset = selected;
+    _soundEffectEnabled = enabled;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await _persistSoundEffect(prefs);
+    return true;
+  }
+
+  Future<bool> selectSoundEffect(SoundEffectPreset preset) async {
+    await settingsReady;
+    if (_disposed || !_soundEffectAvailable) return false;
+    final applied = await SoundEffectService.setEffect(
+      type: preset.type,
+      id: preset.id,
+    );
+    if (!applied || _disposed) return false;
+    _soundEffectPreset = preset;
+    _soundEffectEnabled = true;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await _persistSoundEffect(prefs);
+    return true;
+  }
+
+  Future<void> _persistSoundEffect(SharedPreferences prefs) async {
+    await prefs.setBool(_soundEffectEnabledKey, _soundEffectEnabled);
+    final preset = _soundEffectPreset;
+    if (preset == null) {
+      await prefs.remove(_soundEffectIdKey);
+      await prefs.remove(_soundEffectTypeKey);
+      await prefs.remove(_soundEffectNameKey);
+      return;
+    }
+    await prefs.setInt(_soundEffectIdKey, preset.id);
+    await prefs.setInt(_soundEffectTypeKey, preset.type);
+    await prefs.setString(_soundEffectNameKey, preset.name);
   }
 
   Future<void> setPlaybackSource(
