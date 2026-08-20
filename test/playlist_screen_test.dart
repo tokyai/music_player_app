@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/providers/player_provider.dart';
 import 'package:music_player_app/screens/playlist_screen.dart';
 import 'package:music_player_app/services/favorite_service.dart';
@@ -65,6 +66,85 @@ void main() {
         }, _playlistClient);
       },
     );
+  }
+
+  for (final size in const [Size(640, 360), Size(1280, 800)]) {
+    testWidgets('keeps the playlist library and playback actions visible at '
+        '${size.width.toInt()}x${size.height.toInt()}', (tester) async {
+      await http.runWithClient(() async {
+        final player = _PlaylistTestPlayer();
+        final favorites = FavoriteService();
+        await favorites.load();
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          player.dispose();
+          favorites.dispose();
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        await _pumpPlaylistScreen(tester, player, favorites, size);
+        await _importPlaylist(tester, '10001');
+
+        expect(
+          find.byKey(const ValueKey('playlist-landscape-library')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('playlist-landscape-content')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('playlist-current-header')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('playlist-track-panel')),
+          findsOneWidget,
+        );
+        expect(find.text('歌单库'), findsOneWidget);
+        expect(find.text('测试歌曲 10001'), findsOneWidget);
+
+        final libraryRect = tester.getRect(
+          find.byKey(const ValueKey('playlist-landscape-library')),
+        );
+        final contentRect = tester.getRect(
+          find.byKey(const ValueKey('playlist-landscape-content')),
+        );
+        final headerRect = tester.getRect(
+          find.byKey(const ValueKey('playlist-current-header')),
+        );
+        final trackPanelRect = tester.getRect(
+          find.byKey(const ValueKey('playlist-track-panel')),
+        );
+        expect(libraryRect.right, lessThan(contentRect.left));
+        expect(headerRect.bottom, lessThan(trackPanelRect.top));
+        expect(trackPanelRect.bottom, lessThanOrEqualTo(size.height));
+
+        final playAll = find.byKey(const ValueKey('playlist-play-all-button'));
+        final favorite = find.byTooltip('收藏');
+        final queueMenu = find.byType(PopupMenuButton<String>);
+        expect(playAll, findsOneWidget);
+        expect(favorite, findsOneWidget);
+        expect(queueMenu, findsOneWidget);
+
+        await tester.tap(playAll);
+        await tester.pump();
+        expect(player.playAllCalls, 1);
+
+        await tester.tap(favorite);
+        await tester.pumpAndSettle();
+        expect(favorites.favorites, hasLength(1));
+
+        await tester.tap(queueMenu);
+        await tester.pumpAndSettle();
+        expect(find.text('添加到队列'), findsOneWidget);
+        await tester.tap(find.text('添加到队列'));
+        await tester.pumpAndSettle();
+        expect(player.queuedCalls, 1);
+        expect(tester.takeException(), isNull);
+      }, _playlistClient);
+    });
   }
 
   testWidgets('rejects an obviously invalid playlist id before requesting it', (
@@ -231,4 +311,22 @@ http.Client _playlistClient() {
       headers: const {'content-type': 'application/json; charset=utf-8'},
     );
   });
+}
+
+class _PlaylistTestPlayer extends PlayerProvider {
+  int playAllCalls = 0;
+  int queuedCalls = 0;
+
+  @override
+  Future<void> playFromPlaylist(
+    List<SongSearchResult> tracks,
+    int index,
+  ) async {
+    playAllCalls++;
+  }
+
+  @override
+  void addToQueue(SongSearchResult result) {
+    queuedCalls++;
+  }
 }

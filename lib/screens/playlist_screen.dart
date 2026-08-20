@@ -261,48 +261,91 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final layout = AppLayout.fromConstraints(context, constraints);
-        final infoWidth = layout.isCompactLandscape
-            ? 210.0
+        final libraryWidth = layout.isCompactLandscape
+            ? (constraints.maxWidth * 0.31).clamp(168.0, 196.0)
             : layout.usesLargeTypography
-            ? 340.0
-            : (constraints.maxWidth * 0.35).clamp(280.0, 320.0);
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+            ? 310.0
+            : (constraints.maxWidth * 0.27).clamp(240.0, 290.0);
+        final pageGap = layout.isCompactLandscape ? 10.0 : 18.0;
+        return Column(
           children: [
-            SizedBox(
-              width: infoWidth,
-              child: ListView(
-                key: const PageStorageKey('playlist-landscape-info'),
-                padding: EdgeInsets.only(
-                  bottom: layout.isCompactLandscape ? 12 : 28,
+            _buildTitleBar(layout: layout),
+            Expanded(
+              child: Padding(
+                key: const ValueKey('playlist-landscape-workspace'),
+                padding: EdgeInsets.fromLTRB(
+                  layout.isCompactLandscape ? 10 : layout.pagePadding,
+                  0,
+                  layout.isCompactLandscape ? 10 : layout.pagePadding,
+                  layout.isCompactLandscape ? 10 : 20,
                 ),
-                children: [
-                  _buildTitleBar(layout: layout),
-                  _buildPlaylistSelector(layout: layout),
-                  if (_playlist != null)
-                    _buildPlaylistHeader(layout: layout)
-                  else
-                    _buildEmpty(layout: layout),
-                  if (_error != null)
-                    Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Text(
-                        _error!,
-                        style: TextStyle(
-                          color: Colors.redAccent,
-                          fontSize: layout.bodySize,
-                        ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SizedBox(
+                      width: libraryWidth,
+                      child: _buildPlaylistLibrary(layout),
+                    ),
+                    VerticalDivider(
+                      width: pageGap,
+                      thickness: 1,
+                      indent: layout.isCompactLandscape ? 5 : 9,
+                      endIndent: layout.isCompactLandscape ? 5 : 9,
+                      color: AppColors.outline.withValues(alpha: 0.72),
+                    ),
+                    Expanded(
+                      key: const ValueKey('playlist-landscape-content'),
+                      child: Column(
+                        children: [
+                          if (_error != null)
+                            Padding(
+                              padding: EdgeInsets.only(
+                                bottom: layout.isCompactLandscape ? 6 : 12,
+                              ),
+                              child: Material(
+                                color: Colors.redAccent.withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(
+                                  AppRadius.small,
+                                ),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 8,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.error_outline_rounded,
+                                        color: Colors.redAccent,
+                                        size: 20,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          _error!,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: Colors.redAccent,
+                                            fontSize: layout.secondarySize,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          Expanded(
+                            child: _buildAnimatedTrackArea(layout: layout),
+                          ),
+                        ],
                       ),
                     ),
-                ],
+                  ],
+                ),
               ),
             ),
-            VerticalDivider(
-              width: 1,
-              thickness: 1,
-              color: AppColors.surfaceSoft,
-            ),
-            Expanded(child: _buildAnimatedTrackArea(layout: layout)),
           ],
         );
       },
@@ -314,21 +357,32 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     final isLandscape = layout != null;
     final isCompact = layout?.isCompactLandscape ?? false;
     final favoriteButton = Consumer<FavoriteService>(
-      builder: (context, favorites, _) => IconButton(
-        tooltip: '我的收藏',
-        visualDensity: isCompact ? VisualDensity.compact : null,
-        onPressed: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const FavoritesScreen()),
-        ),
-        icon: Icon(
+      builder: (context, favorites, _) {
+        final icon = Icon(
           favorites.favorites.isEmpty ? Icons.favorite_border : Icons.favorite,
-          size: isLandscape ? (isCompact ? 22 : 26) : 24,
+          size: isLandscape ? (isCompact ? 21 : 24) : 24,
           color: favorites.favorites.isEmpty
               ? AppColors.textSecondary
               : Colors.redAccent,
-        ),
-      ),
+        );
+        void openFavorites() => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const FavoritesScreen()),
+        );
+        if (isLandscape && !isCompact) {
+          return OutlinedButton.icon(
+            onPressed: openFavorites,
+            icon: icon,
+            label: const Text('我的收藏'),
+          );
+        }
+        return IconButton.filledTonal(
+          tooltip: '我的收藏',
+          visualDensity: isCompact ? VisualDensity.compact : null,
+          onPressed: openFavorites,
+          icon: icon,
+        );
+      },
     );
     final importButton = isCompact
         ? IconButton.filledTonal(
@@ -358,13 +412,39 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
       child: Row(
         children: [
           Expanded(
-            child: Text(
-              '我的歌单',
-              style: TextStyle(
-                fontSize: metrics.pageTitleSize,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textPrimary,
-              ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '我的歌单',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: metrics.pageTitleSize,
+                    height: 1.12,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                if (isLandscape) ...[
+                  const SizedBox(height: 2),
+                  Consumer<FavoriteService>(
+                    builder: (context, favorites, _) {
+                      final playlistCount = favorites.favoritePlaylists.length;
+                      return Text(
+                        playlistCount == 0
+                            ? '整理你的私人音乐库'
+                            : '$playlistCount 个已导入歌单',
+                        style: TextStyle(
+                          fontSize: metrics.secondarySize,
+                          color: AppColors.textSecondary,
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ],
             ),
           ),
           favoriteButton,
@@ -385,78 +465,251 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     );
   }
 
-  Widget _buildPlaylistSelector({AppLayout? layout}) {
-    final isLandscape = layout != null;
+  Widget _buildPlaylistSelector() {
     return Consumer<FavoriteService>(
       builder: (context, favorites, _) {
         final playlists = favorites.favoritePlaylists;
         if (playlists.isEmpty) return const SizedBox.shrink();
-        if (isLandscape) {
-          return Padding(
-            padding: EdgeInsets.fromLTRB(
-              layout.isCompactLandscape ? 10 : 18,
-              2,
-              layout.isCompactLandscape ? 10 : 18,
-              6,
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                for (final favorite in playlists)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: _buildPlaylistChip(favorite),
-                  ),
-              ],
-            ),
-          );
-        }
         return SizedBox(
-          height: 48,
+          height: 68,
           child: ListView.separated(
             key: const ValueKey('imported-playlist-selector'),
             scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
             itemCount: playlists.length,
             separatorBuilder: (_, _) => const SizedBox(width: 8),
-            itemBuilder: (_, index) => _buildPlaylistChip(playlists[index]),
+            itemBuilder: (_, index) => SizedBox(
+              width: 220,
+              child: _buildPlaylistLibraryItem(playlists[index], compact: true),
+            ),
           ),
         );
       },
     );
   }
 
-  Widget _buildPlaylistChip(FavoritePlaylist favorite) {
+  Widget _buildPlaylistLibrary(AppLayout layout) {
+    final compact = layout.isCompactLandscape;
+    return Container(
+      key: const ValueKey('playlist-landscape-library'),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        border: Border.all(color: AppColors.outline),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Consumer<FavoriteService>(
+        builder: (context, favorites, _) {
+          final playlists = favorites.favoritePlaylists;
+          return Column(
+            children: [
+              Padding(
+                padding: EdgeInsets.fromLTRB(
+                  compact ? 10 : 16,
+                  compact ? 8 : 14,
+                  compact ? 8 : 12,
+                  compact ? 7 : 12,
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.library_music_rounded,
+                      size: compact ? 20 : 24,
+                      color: AppColors.primary,
+                    ),
+                    SizedBox(width: compact ? 6 : 9),
+                    Expanded(
+                      child: Text(
+                        '歌单库',
+                        style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: compact ? 16 : layout.bodySize,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: compact ? 7 : 9,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceSoft,
+                        borderRadius: BorderRadius.circular(AppRadius.pill),
+                      ),
+                      child: Text(
+                        '${playlists.length}',
+                        style: TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: compact ? 12 : layout.secondarySize,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Divider(color: AppColors.surfaceSoft),
+              Expanded(
+                child: playlists.isEmpty
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(14),
+                          child: Text(
+                            '还没有歌单\n点击右上角导入',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: AppColors.textHint,
+                              fontSize: compact ? 14 : layout.secondarySize,
+                              height: 1.45,
+                            ),
+                          ),
+                        ),
+                      )
+                    : ListView.separated(
+                        key: const PageStorageKey(
+                          'playlist-landscape-library-list',
+                        ),
+                        padding: EdgeInsets.all(compact ? 6 : 9),
+                        itemCount: playlists.length,
+                        separatorBuilder: (_, _) =>
+                            SizedBox(height: compact ? 4 : 7),
+                        itemBuilder: (_, index) => _buildPlaylistLibraryItem(
+                          playlists[index],
+                          compact: compact,
+                        ),
+                      ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildPlaylistLibraryItem(
+    FavoritePlaylist favorite, {
+    required bool compact,
+  }) {
     final selected =
         _platform == favorite.platform && _playlist?.id == favorite.id;
     final platformColor = PlatformColors.of(favorite.platform);
-    final chip = InputChip(
+    final coverSize = compact ? 42.0 : 56.0;
+    return Material(
       key: ValueKey(
         'imported-playlist-${favorite.platform.code}-${favorite.id}',
       ),
-      selected: selected,
-      avatar: Icon(Icons.queue_music_rounded, size: 18, color: platformColor),
-      label: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 150),
-        child: Text(
-          favorite.playlist.name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+      color: selected
+          ? AppColors.primarySoft.withValues(alpha: 0.86)
+          : Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.small),
+        side: BorderSide(
+          color: selected
+              ? AppColors.primary.withValues(alpha: 0.42)
+              : Colors.transparent,
         ),
       ),
-      deleteIcon: const Icon(Icons.close_rounded, size: 18),
-      deleteButtonTooltipMessage: '删除歌单 ${favorite.playlist.name}',
-      onPressed: () => _loadPlaylist(
-        favorite.platform,
-        favorite.id,
-        savedMetadata: favorite.playlist,
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => _loadPlaylist(
+          favorite.platform,
+          favorite.id,
+          savedMetadata: favorite.playlist,
+        ),
+        onLongPress: () => _confirmDeletePlaylist(favorite),
+        child: Padding(
+          padding: EdgeInsets.all(compact ? 6 : 8),
+          child: Row(
+            children: [
+              _buildSavedPlaylistCover(
+                favorite,
+                size: coverSize,
+                platformColor: platformColor,
+              ),
+              SizedBox(width: compact ? 8 : 11),
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      favorite.playlist.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: selected
+                            ? AppColors.primary
+                            : AppColors.textPrimary,
+                        fontSize: compact ? 15 : 18,
+                        fontWeight: selected
+                            ? FontWeight.w700
+                            : FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '${favorite.platform.label} · ${favorite.playlist.trackCount} 首',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: compact ? 12.5 : 15,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (selected) ...[
+                const SizedBox(width: 2),
+                IconButton(
+                  tooltip: '删除歌单 ${favorite.playlist.name}',
+                  visualDensity: VisualDensity.compact,
+                  style: IconButton.styleFrom(
+                    minimumSize: Size.square(compact ? 32 : 38),
+                    maximumSize: Size.square(compact ? 32 : 38),
+                    padding: EdgeInsets.zero,
+                  ),
+                  onPressed: () => _confirmDeletePlaylist(favorite),
+                  icon: Icon(
+                    Icons.close_rounded,
+                    size: compact ? 18 : 20,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
-      onDeleted: () => _confirmDeletePlaylist(favorite),
     );
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onLongPress: () => _confirmDeletePlaylist(favorite),
-      child: chip,
+  }
+
+  Widget _buildSavedPlaylistCover(
+    FavoritePlaylist favorite, {
+    required double size,
+    required Color platformColor,
+  }) {
+    final coverUrl = favorite.playlist.coverUrl;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(AppRadius.small),
+      child: SizedBox.square(
+        dimension: size,
+        child: coverUrl != null && coverUrl.isNotEmpty
+            ? SmartCover(
+                url: coverUrl,
+                fit: BoxFit.cover,
+                placeholder: () => _savedPlaylistPlaceholder(platformColor),
+              )
+            : _savedPlaylistPlaceholder(platformColor),
+      ),
+    );
+  }
+
+  Widget _savedPlaylistPlaceholder(Color platformColor) {
+    return ColoredBox(
+      color: platformColor.withValues(alpha: 0.14),
+      child: Icon(Icons.queue_music_rounded, color: platformColor, size: 26),
     );
   }
 
@@ -518,19 +771,11 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
         ),
       );
     } else if (_playlist == null) {
-      content = layout == null
-          ? _buildEmpty()
-          : Center(
-              child: Text(
-                '导入歌单后在这里查看歌曲',
-                style: TextStyle(
-                  color: AppColors.textHint,
-                  fontSize: layout.bodySize,
-                ),
-              ),
-            );
+      content = layout == null ? _buildEmpty() : _buildLandscapeEmpty(layout);
     } else {
-      content = _buildTrackList();
+      content = layout == null
+          ? _buildTrackList()
+          : _buildLandscapePlaylistContent(layout);
     }
     return AppMotionSwitcher(
       child: KeyedSubtree(
@@ -540,52 +785,332 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     );
   }
 
+  Widget _buildLandscapePlaylistContent(AppLayout layout) {
+    return Column(
+      children: [
+        _buildPlaylistHeader(layout: layout),
+        SizedBox(height: layout.isCompactLandscape ? 7 : 14),
+        Expanded(child: _buildLandscapeTrackPanel(layout)),
+      ],
+    );
+  }
+
   Widget _buildPlaylistHeader({AppLayout? layout}) {
     final p = _playlist!;
-    final isLandscape = layout != null;
-    final isCompact = layout?.isCompactLandscape ?? false;
-    final coverSize = isCompact
-        ? 112.0
-        : layout?.usesLargeTypography == true
-        ? 210.0
-        : 176.0;
+    if (layout != null) return _buildLandscapePlaylistHeader(p, layout);
     return Container(
-      margin: EdgeInsets.fromLTRB(
-        isLandscape ? (isCompact ? 10 : 18) : 16,
-        isLandscape ? (isCompact ? 6 : 10) : 8,
-        isLandscape ? (isCompact ? 10 : 18) : 16,
-        8,
-      ),
-      padding: EdgeInsets.all(isLandscape ? (isCompact ? 10 : 18) : 16),
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      padding: const EdgeInsets.all(16),
       decoration: CardStyle.softCard(),
-      child: isLandscape
-          ? Column(
+      child: Row(
+        children: [
+          _buildPlaylistCover(p),
+          const SizedBox(width: 16),
+          Expanded(child: _buildPlaylistMetadata(p)),
+          const SizedBox(width: 8),
+          _buildDeletePlaylistButton(p),
+          const SizedBox(width: 4),
+          _buildPlayAllButton(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLandscapePlaylistHeader(
+    PlaylistInfo playlist,
+    AppLayout layout,
+  ) {
+    final compact = layout.isCompactLandscape;
+    final platform = _platform;
+    final accent = platform == null
+        ? AppColors.primary
+        : PlatformColors.of(platform);
+    final coverSize = compact
+        ? 76.0
+        : layout.usesLargeTypography
+        ? 164.0
+        : 138.0;
+    final platformBadge = Container(
+      padding: EdgeInsets.symmetric(
+        horizontal: compact ? 7 : 10,
+        vertical: compact ? 2 : 4,
+      ),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.13),
+        borderRadius: BorderRadius.circular(AppRadius.pill),
+      ),
+      child: Text(
+        platform?.label ?? '歌单',
+        style: TextStyle(
+          color: accent,
+          fontSize: compact ? 11.5 : layout.secondarySize,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+
+    return Container(
+      key: const ValueKey('playlist-current-header'),
+      padding: EdgeInsets.all(compact ? 8 : 20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            accent.withValues(alpha: AppColors.isDark ? 0.18 : 0.12),
+            AppColors.surface,
+          ],
+        ),
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        border: Border.all(color: accent.withValues(alpha: 0.24)),
+      ),
+      child: Row(
+        children: [
+          _buildPlaylistCover(playlist, size: coverSize),
+          SizedBox(width: compact ? 10 : 20),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Center(child: _buildPlaylistCover(p, size: coverSize)),
-                SizedBox(height: isCompact ? 10 : 16),
-                _buildPlaylistMetadata(p, layout: layout),
-                SizedBox(height: isCompact ? 10 : 16),
                 Row(
                   children: [
-                    Expanded(child: _buildPlayAllButton(showLabel: true)),
-                    const SizedBox(width: 6),
-                    _buildDeletePlaylistButton(p),
+                    platformBadge,
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${playlist.trackCount} 首歌曲',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: compact ? 12.5 : layout.secondarySize,
+                        ),
+                      ),
+                    ),
                   ],
                 ),
-              ],
-            )
-          : Row(
-              children: [
-                _buildPlaylistCover(p),
-                const SizedBox(width: 16),
-                Expanded(child: _buildPlaylistMetadata(p)),
-                const SizedBox(width: 8),
-                _buildDeletePlaylistButton(p),
-                const SizedBox(width: 4),
-                _buildPlayAllButton(),
+                SizedBox(height: compact ? 3 : 8),
+                Text(
+                  playlist.name,
+                  maxLines: compact ? 1 : 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: layout.sectionTitleSize,
+                    height: 1.16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                if (playlist.creator != null &&
+                    playlist.creator!.isNotEmpty) ...[
+                  SizedBox(height: compact ? 2 : 5),
+                  Text(
+                    '创建者 · ${playlist.creator}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: layout.secondarySize,
+                    ),
+                  ),
+                ],
+                if (!compact &&
+                    playlist.description != null &&
+                    playlist.description!.isNotEmpty) ...[
+                  const SizedBox(height: 7),
+                  Text(
+                    playlist.description!,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: AppColors.textHint,
+                      fontSize: layout.secondarySize,
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+                if (!compact) ...[
+                  const SizedBox(height: 14),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _buildPlayAllButton(showLabel: true),
+                      const SizedBox(width: 8),
+                      _buildDeletePlaylistButton(playlist),
+                    ],
+                  ),
+                ],
               ],
             ),
+          ),
+          if (compact) ...[
+            const SizedBox(width: 6),
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _buildPlayAllButton(compact: true),
+                const SizedBox(height: 4),
+                _buildDeletePlaylistButton(playlist, compact: true),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLandscapeTrackPanel(AppLayout layout) {
+    final tracks = _playlist!.tracks;
+    final loadedLabel = _hasMore
+        ? '${tracks.length} / ${_playlist!.trackCount}'
+        : '${tracks.length}';
+    return Container(
+      key: const ValueKey('playlist-track-panel'),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        border: Border.all(color: AppColors.outline),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: layout.isCompactLandscape ? 11 : 18,
+              vertical: layout.isCompactLandscape ? 5 : 11,
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.graphic_eq_rounded,
+                  color: AppColors.primary,
+                  size: layout.isCompactLandscape ? 20 : 24,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '歌曲',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: layout.isCompactLandscape ? 17 : layout.bodySize,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '$loadedLabel 首',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: layout.secondarySize,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Divider(color: AppColors.surfaceSoft),
+          Expanded(
+            child: tracks.isEmpty
+                ? Center(
+                    child: Text(
+                      '这个歌单暂时没有可播放歌曲',
+                      style: TextStyle(
+                        color: AppColors.textHint,
+                        fontSize: layout.bodySize,
+                      ),
+                    ),
+                  )
+                : _buildTrackList(
+                    padding: EdgeInsets.fromLTRB(
+                      layout.isCompactLandscape ? 3 : 7,
+                      layout.isCompactLandscape ? 2 : 5,
+                      layout.isCompactLandscape ? 3 : 7,
+                      10,
+                    ),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLandscapeEmpty(AppLayout layout) {
+    final compact = layout.isCompactLandscape;
+    return Consumer<FavoriteService>(
+      builder: (context, favorites, _) {
+        final hasSavedPlaylists = favorites.favoritePlaylists.isNotEmpty;
+        return Container(
+          key: const ValueKey('playlist-landscape-empty'),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [AppColors.primarySoft, AppColors.surface],
+            ),
+            borderRadius: BorderRadius.circular(AppRadius.card),
+            border: Border.all(color: AppColors.outline),
+          ),
+          child: Center(
+            child: SingleChildScrollView(
+              padding: EdgeInsets.all(compact ? 12 : 28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: compact ? 52 : 78,
+                    height: compact ? 52 : 78,
+                    decoration: BoxDecoration(
+                      color: AppColors.surface.withValues(alpha: 0.86),
+                      borderRadius: BorderRadius.circular(AppRadius.card),
+                    ),
+                    child: Icon(
+                      hasSavedPlaylists
+                          ? Icons.touch_app_rounded
+                          : Icons.library_add_rounded,
+                      color: AppColors.primary,
+                      size: compact ? 28 : 40,
+                    ),
+                  ),
+                  SizedBox(height: compact ? 9 : 16),
+                  Text(
+                    hasSavedPlaylists ? '选择一个歌单开始播放' : '建立你的歌单库',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: layout.sectionTitleSize,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  if (!compact) ...[
+                    const SizedBox(height: 7),
+                    Text(
+                      hasSavedPlaylists
+                          ? '从左侧歌单库选择内容，歌曲与播放操作会显示在这里'
+                          : '支持 QQ音乐和网易云，粘贴链接或输入歌单 ID 即可导入',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: layout.secondarySize,
+                      ),
+                    ),
+                  ],
+                  SizedBox(height: compact ? 10 : 18),
+                  FilledButton.icon(
+                    onPressed: _showImportDialog,
+                    icon: const Icon(Icons.add_rounded),
+                    label: const Text('立即导入'),
+                    style: compact
+                        ? FilledButton.styleFrom(
+                            minimumSize: const Size(44, 42),
+                            padding: const EdgeInsets.symmetric(horizontal: 14),
+                          )
+                        : null,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -645,55 +1170,79 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     );
   }
 
-  Widget _buildPlayAllButton({bool showLabel = false}) {
-    final onPressed = () {
-      if (_playlist!.tracks.isNotEmpty) {
-        context.read<PlayerProvider>().playFromPlaylist(_playlist!.tracks, 0);
-      }
-    };
+  Widget _buildPlayAllButton({bool showLabel = false, bool compact = false}) {
+    final VoidCallback? onPressed = _playlist!.tracks.isEmpty
+        ? null
+        : () {
+            context.read<PlayerProvider>().playFromPlaylist(
+              _playlist!.tracks,
+              0,
+            );
+          };
     if (showLabel) {
       return FilledButton.icon(
+        key: const ValueKey('playlist-play-all-button'),
         onPressed: onPressed,
         icon: const Icon(Icons.play_arrow_rounded, size: 24),
         label: const Text('播放全部'),
       );
     }
     return IconButton.filled(
+      key: const ValueKey('playlist-play-all-button'),
       onPressed: onPressed,
       style: IconButton.styleFrom(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
+        minimumSize: compact ? const Size.square(38) : null,
+        maximumSize: compact ? const Size.square(38) : null,
+        padding: compact ? EdgeInsets.zero : null,
       ),
-      icon: const Icon(Icons.play_arrow_rounded, size: 26),
+      icon: Icon(Icons.play_arrow_rounded, size: compact ? 23 : 26),
       tooltip: '播放全部',
     );
   }
 
-  Widget _buildDeletePlaylistButton(PlaylistInfo playlist) {
+  Widget _buildDeletePlaylistButton(
+    PlaylistInfo playlist, {
+    bool compact = false,
+  }) {
     final platform = _platform;
     if (platform == null) return const SizedBox.shrink();
     return IconButton(
       key: const ValueKey('delete-current-playlist'),
       tooltip: '删除当前歌单',
+      visualDensity: compact ? VisualDensity.compact : null,
+      style: compact
+          ? IconButton.styleFrom(
+              minimumSize: const Size.square(38),
+              maximumSize: const Size.square(38),
+              padding: EdgeInsets.zero,
+            )
+          : null,
       onPressed: () => _confirmDeletePlaylist(
         FavoritePlaylist(platform: platform, playlist: playlist),
       ),
-      icon: const Icon(Icons.delete_outline_rounded),
+      icon: Icon(Icons.delete_outline_rounded, size: compact ? 21 : null),
     );
   }
 
   Widget _coverPlaceholder() {
     return Container(
       color: AppColors.primarySoft,
-      child: Icon(Icons.playlist_play, size: 40, color: AppColors.primary),
+      child: const Icon(
+        Icons.playlist_play,
+        size: 40,
+        color: AppColors.primary,
+      ),
     );
   }
 
-  Widget _buildTrackList() {
+  Widget _buildTrackList({EdgeInsetsGeometry? padding}) {
     final tracks = _playlist!.tracks;
     return ListView.builder(
+      key: const ValueKey('playlist-track-list'),
       controller: _trackScrollController,
-      padding: const EdgeInsets.only(bottom: 16),
+      padding: padding ?? const EdgeInsets.only(bottom: 16),
       itemCount: tracks.length + (_hasMore || _loadingMore ? 1 : 0),
       itemBuilder: (ctx, i) {
         if (i >= tracks.length) {
