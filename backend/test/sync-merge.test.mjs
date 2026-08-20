@@ -36,6 +36,24 @@ test('same base revision accepts an authoritative clear', () => {
   assert.deepEqual(JSON.parse(merged.values.favorites), []);
 });
 
+test('unchanged values do not create a new snapshot revision', () => {
+  const current = snapshot({ favorites: JSON.stringify([song('a')]) });
+  const incoming = { ...current, updatedAt: 999 };
+
+  const merged = mergeSnapshotPayload(current, incoming, current, 7, 7);
+
+  assert.strictEqual(merged, current);
+});
+
+test('object key order does not create a new snapshot revision', () => {
+  const current = snapshot({ settings: { theme: 'dark', fontScale: 1 } });
+  const incoming = snapshot({ settings: { fontScale: 1, theme: 'dark' } });
+
+  const merged = mergeSnapshotPayload(current, incoming, current, 7, 7);
+
+  assert.strictEqual(merged, current);
+});
+
 test('history merge keeps the newest local position and concurrent cloud item', () => {
   const history = (id, playedAtMs, positionMs) => ({
     song: song(id),

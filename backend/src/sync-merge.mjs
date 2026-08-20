@@ -1,5 +1,17 @@
-function jsonEqual(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right);
+export function stableJsonStringify(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJsonStringify(item) ?? 'null').join(',')}]`;
+  }
+  const entries = Object.keys(value)
+    .filter((key) => value[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJsonStringify(value[key])}`);
+  return `{${entries.join(',')}}`;
+}
+
+export function jsonEqual(left, right) {
+  return stableJsonStringify(left) === stableJsonStringify(right);
 }
 
 function listIdentity(item, nestedSong = false) {
@@ -98,6 +110,13 @@ export function mergeSnapshotPayload(
   baseRevision,
   currentRevision,
 ) {
+  if (
+    current &&
+    typeof current === 'object' &&
+    jsonEqual(current.values, incoming?.values)
+  ) {
+    return current;
+  }
   if (baseRevision === currentRevision) {
     return { ...incoming, updatedAt: Date.now() };
   }

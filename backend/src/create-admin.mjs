@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { Pool } from 'pg';
+import { hasPostgresConfig, postgresConfig } from './db-config.mjs';
 
 const username = process.argv[2] || 'admin';
 const password = process.argv[3];
@@ -11,7 +12,7 @@ if (!/^[\w.-]{3,64}$/u.test(username)) {
   console.error('用户名需为 3-64 位字母、数字、下划线、点或短横线');
   process.exit(1);
 }
-if (!process.env.DATABASE_URL && !process.env.PGHOST) {
+if (!hasPostgresConfig()) {
   console.error('请先设置 DATABASE_URL 或 PostgreSQL 的 PGHOST/PGUSER/PGPASSWORD/PGDATABASE');
   process.exit(1);
 }
@@ -24,10 +25,7 @@ const hash = await new Promise((resolve, reject) => {
   });
 });
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
-});
+const pool = new Pool(postgresConfig());
 try {
   await pool.query(
     `INSERT INTO app_users(username, username_normalized, password_salt, password_hash, role, status)

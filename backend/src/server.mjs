@@ -4,7 +4,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
-import { mergeSnapshotPayload } from './sync-merge.mjs';
+import { postgresConfig } from './db-config.mjs';
+import { jsonEqual, mergeSnapshotPayload } from './sync-merge.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const port = Number(process.env.PORT || 8787);
@@ -15,10 +16,7 @@ const loginAttempts = new Map();
 const loginWindowMs = 15 * 60 * 1000;
 const maxLoginAttempts = 5;
 const fakePasswordSalt = Buffer.from('3dc351230a89056b12221ba8ee30e365', 'hex');
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
-});
+const pool = new Pool(postgresConfig());
 
 class ApiError extends Error {
   constructor(status, code, message) {
@@ -172,10 +170,6 @@ async function audit(actorId, action, targetId = null, metadata = {}) {
   );
 }
 
-function sameJson(a, b) {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
 async function login(body, identity) {
   const username = String(body.username || '').trim();
   const normalized = normalizeUsername(username);
@@ -279,7 +273,7 @@ async function pushSync(user, body) {
       baseRevision,
       oldRevision,
     );
-    if (sameJson(oldPayload, merged)) {
+    if (jsonEqual(oldPayload, merged)) {
       const latestChange = await client.query(
         `SELECT COALESCE(max(cursor), 0) AS cursor
            FROM sync_changes WHERE user_id = $1 AND domain = $2`,

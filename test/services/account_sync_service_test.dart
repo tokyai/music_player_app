@@ -17,6 +17,7 @@ void main() {
         {'platform': 'qq', 'id': 'song-a', 'name': 'A'},
       ]),
       'theme_mode': 'dark',
+      'font_scale': 1.0,
       'api_key': 'must-stay-on-device',
     });
     FlutterSecureStorage.setMockInitialValues({});
@@ -27,6 +28,7 @@ void main() {
     () async {
       final pushes = <Map<String, dynamic>>[];
       final revisions = <String, int>{};
+      var reorderSettingsResponse = false;
       final client = MockClient((request) async {
         if (request.url.path.endsWith('/auth/login')) {
           return _jsonResponse({
@@ -47,11 +49,22 @@ void main() {
         final domain = body['domain'].toString();
         final revision = (revisions[domain] ?? 0) + 1;
         revisions[domain] = revision;
+        var payload = body['payload'] as Map<String, dynamic>;
+        if (reorderSettingsResponse && domain == 'settings') {
+          final values = Map<String, dynamic>.from(payload['values'] as Map);
+          payload = {
+            ...payload,
+            'values': {
+              for (final entry in values.entries.toList().reversed)
+                entry.key: entry.value,
+            },
+          };
+        }
         return _jsonResponse({
           'domain': domain,
           'revision': revision,
           'cursor': revision,
-          'payload': body['payload'],
+          'payload': payload,
         });
       });
       final account = AccountService(client: client);
@@ -77,6 +90,9 @@ void main() {
       final settingsValues = (settings['payload'] as Map)['values'] as Map;
       expect(settingsValues['theme_mode'], 'dark');
       expect(settingsValues.containsKey('api_key'), isFalse);
+
+      reorderSettingsResponse = true;
+      expect(await sync.syncDomains(const {'settings'}), isEmpty);
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(

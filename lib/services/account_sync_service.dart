@@ -172,7 +172,25 @@ class AccountSyncService {
   }
 
   bool _jsonEqual(dynamic left, dynamic right) =>
-      jsonEncode(left) == jsonEncode(right);
+      jsonEncode(_canonicalJson(left)) == jsonEncode(_canonicalJson(right));
+
+  dynamic _canonicalJson(dynamic value) {
+    if (value is Map) {
+      final entries =
+          value.entries
+              .map(
+                (entry) =>
+                    MapEntry(entry.key.toString(), _canonicalJson(entry.value)),
+              )
+              .toList()
+            ..sort((a, b) => a.key.compareTo(b.key));
+      return <String, dynamic>{
+        for (final entry in entries) entry.key: entry.value,
+      };
+    }
+    if (value is List) return value.map(_canonicalJson).toList();
+    return value;
+  }
 
   Map<String, dynamic> _domainSnapshot(SharedPreferences prefs, String domain) {
     final values = <String, dynamic>{};
