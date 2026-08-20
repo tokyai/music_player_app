@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
+import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
 import '../providers/search_session.dart';
 import '../services/api_service.dart';
@@ -18,6 +19,7 @@ import '../theme/lyric_style.dart';
 import '../utils/color_extractor.dart';
 import '../utils/system_ui.dart';
 import '../widgets/cover_hero_tags.dart';
+import '../widgets/ai_assistant_overlay.dart';
 import '../widgets/remote_focusable.dart';
 import '../widgets/smart_cover.dart';
 import 'video_player_screen.dart';
@@ -1256,6 +1258,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
             : const Color(0xFF414750);
         final isLandscape =
             MediaQuery.orientationOf(ctx) == Orientation.landscape;
+        final showAiPet =
+            Provider.of<AiConfigController?>(ctx)?.showPetOnPlayerPage ?? true;
 
         return Scaffold(
           body: Stack(
@@ -1309,6 +1313,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         ],
                       ),
               ),
+              if (showAiPet) _buildAiAssistantOverlay(ctx),
             ],
           ),
         );
@@ -1403,6 +1408,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Widget _buildEmptyPlayer(BuildContext ctx) {
     final isLandscape = MediaQuery.orientationOf(ctx) == Orientation.landscape;
+    final showAiPet =
+        Provider.of<AiConfigController?>(ctx)?.showPetOnPlayerPage ?? true;
     final illustration = Container(
       width: 96,
       height: 96,
@@ -1427,16 +1434,47 @@ class _PlayerScreenState extends State<PlayerScreen> {
       ],
     );
     return Scaffold(
-      body: Center(
-        child: isLandscape
-            ? Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [illustration, const SizedBox(width: 24), message],
-              )
-            : Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [illustration, const SizedBox(height: 16), message],
-              ),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          Center(
+            child: isLandscape
+                ? Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      illustration,
+                      const SizedBox(width: 24),
+                      message,
+                    ],
+                  )
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      illustration,
+                      const SizedBox(height: 16),
+                      message,
+                    ],
+                  ),
+          ),
+          if (showAiPet) _buildAiAssistantOverlay(ctx),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAiAssistantOverlay(BuildContext context) {
+    final layout = AppLayout.fromContext(context);
+    final compactLandscape = layout.isCompactLandscape;
+    return SafeArea(
+      child: Align(
+        alignment: Alignment.topRight,
+        child: Padding(
+          padding: EdgeInsets.only(
+            top: compactLandscape ? 52 : 72,
+            right: compactLandscape ? 8 : 16,
+          ),
+          child: const AiAssistantFloatingButton(),
+        ),
       ),
     );
   }

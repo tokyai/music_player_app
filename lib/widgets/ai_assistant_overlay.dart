@@ -8,24 +8,70 @@ import '../providers/ai_assistant_controller.dart';
 import '../providers/ai_config_controller.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
+import 'kuzai_pet.dart';
 
-class AiAssistantFloatingButton extends StatelessWidget {
+class AiAssistantFloatingButton extends StatefulWidget {
   const AiAssistantFloatingButton({super.key});
 
   @override
+  State<AiAssistantFloatingButton> createState() =>
+      _AiAssistantFloatingButtonState();
+}
+
+class _AiAssistantFloatingButtonState extends State<AiAssistantFloatingButton> {
+  AiAssistantController? _controller;
+  bool _opening = false;
+
+  @override
+  void dispose() {
+    _controller?.removeListener(_handleControllerChange);
+    super.dispose();
+  }
+
+  void _handleControllerChange() {
+    if (mounted) setState(() {});
+  }
+
+  void _attachController(AiAssistantController? controller) {
+    if (identical(_controller, controller)) return;
+    _controller?.removeListener(_handleControllerChange);
+    _controller = controller;
+    _controller?.addListener(_handleControllerChange);
+  }
+
+  Future<void> _openAssistant() async {
+    if (_opening) return;
+    _opening = true;
+    _attachController(
+      Provider.of<AiAssistantController?>(context, listen: false),
+    );
+    try {
+      await showAiAssistantPanel(context);
+    } finally {
+      _opening = false;
+    }
+  }
+
+  KuzaiPetMode get _petMode => switch (_controller?.state) {
+    AiSessionState.initializing => KuzaiPetMode.waking,
+    AiSessionState.listening => KuzaiPetMode.listening,
+    AiSessionState.processing => KuzaiPetMode.thinking,
+    AiSessionState.speaking => KuzaiPetMode.speaking,
+    AiSessionState.textOnly => KuzaiPetMode.textOnly,
+    AiSessionState.paused => KuzaiPetMode.paused,
+    AiSessionState.stopping => KuzaiPetMode.stopping,
+    AiSessionState.error => KuzaiPetMode.error,
+    _ => KuzaiPetMode.idle,
+  };
+
+  @override
   Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-      label: '打开 AI 小助理',
-      child: FloatingActionButton(
-        key: const ValueKey('ai-assistant-fab'),
-        heroTag: 'ai-assistant-fab',
-        tooltip: 'AI 小助理',
-        onPressed: () => showAiAssistantPanel(context),
-        backgroundColor: AppColors.surface,
-        foregroundColor: AppColors.primary,
-        child: const Icon(Icons.auto_awesome_rounded),
-      ),
+    final layout = AppLayout.fromContext(context);
+    return KuzaiPet(
+      key: const ValueKey('ai-assistant-fab'),
+      size: layout.isCompactLandscape ? 68 : 88,
+      mode: _petMode,
+      onTap: () => unawaited(_openAssistant()),
     );
   }
 }

@@ -1548,6 +1548,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   fontSize: layout.secondarySize,
                 ),
               ),
+              AnimatedBuilder(
+                animation: _aiConfigController,
+                builder: (context, _) => SwitchListTile.adaptive(
+                  key: const ValueKey('ai-player-page-pet-toggle'),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('播放页显示 AI 宠物'),
+                  subtitle: const Text('在正在播放页面右上方显示悬浮入口'),
+                  value: _aiConfigController.showPetOnPlayerPage,
+                  onChanged: _aiConfigController.setShowPetOnPlayerPage,
+                ),
+              ),
               const SizedBox(height: 12),
               DropdownButtonFormField<AiProviderKind>(
                 key: ValueKey('ai-provider-${_aiProvider.value}'),

@@ -38,9 +38,12 @@ class MemoryAiSecretStore implements AiSecretStore {
 
 class AiConfigController extends ChangeNotifier {
   static const _preferencesKey = 'ai_assistant_config_v1';
+  static const showPetOnPlayerPagePreferenceKey =
+      'ai_assistant_show_pet_on_player_page';
 
   final AiSecretStore _secretStore;
   AiAssistantConfig _config = AiAssistantConfig.defaults();
+  bool _showPetOnPlayerPage = true;
   bool _disposed = false;
 
   AiConfigController({AiSecretStore? secretStore})
@@ -51,6 +54,7 @@ class AiConfigController extends ChangeNotifier {
   late final Future<void> ready;
 
   AiAssistantConfig get config => _config;
+  bool get showPetOnPlayerPage => _showPetOnPlayerPage;
 
   Future<void> _load() async {
     try {
@@ -60,6 +64,8 @@ class AiConfigController extends ChangeNotifier {
       ]);
       final prefs = results[0] as SharedPreferences;
       final apiKey = results[1] as String? ?? '';
+      _showPetOnPlayerPage =
+          prefs.getBool(showPetOnPlayerPagePreferenceKey) ?? true;
       final raw = prefs.getString(_preferencesKey);
       if (raw != null) {
         final decoded = jsonDecode(raw);
@@ -100,6 +106,19 @@ class AiConfigController extends ChangeNotifier {
     if (_disposed) return;
     _config = normalized;
     notifyListeners();
+  }
+
+  Future<void> setShowPetOnPlayerPage(bool value) async {
+    await ready;
+    if (_disposed || _showPetOnPlayerPage == value) return;
+    _showPetOnPlayerPage = value;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(showPetOnPlayerPagePreferenceKey, value);
+    } catch (error) {
+      debugPrint('保存播放页 AI 宠物显示设置失败: $error');
+    }
   }
 
   @override

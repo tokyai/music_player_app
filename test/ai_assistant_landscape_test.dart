@@ -13,6 +13,7 @@ import 'package:music_player_app/providers/ai_config_controller.dart';
 import 'package:music_player_app/providers/player_provider.dart';
 import 'package:music_player_app/providers/search_session.dart';
 import 'package:music_player_app/providers/theme_controller.dart';
+import 'package:music_player_app/screens/player_screen.dart';
 import 'package:music_player_app/screens/settings_screen.dart';
 import 'package:music_player_app/services/ai_service.dart';
 import 'package:music_player_app/services/ai_song_resolver.dart';
@@ -21,6 +22,7 @@ import 'package:music_player_app/services/favorite_service.dart';
 import 'package:music_player_app/theme/app_layout.dart';
 import 'package:music_player_app/theme/app_theme.dart';
 import 'package:music_player_app/widgets/ai_assistant_overlay.dart';
+import 'package:music_player_app/widgets/kuzai_pet.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -92,6 +94,46 @@ void main() {
     tester.view.resetDevicePixelRatio();
   });
 
+  testWidgets('Kuzai pet waves on tap and reacts to long press', (
+    tester,
+  ) async {
+    var tapCount = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: KuzaiPet(
+              key: const ValueKey('test-kuzai-pet'),
+              size: 88,
+              mode: KuzaiPetMode.idle,
+              onTap: () => tapCount++,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byKey(const ValueKey('test-kuzai-pet')));
+    await tester.pump();
+    expect(tapCount, 1);
+    expect(find.byKey(const ValueKey('kuzai-pet-wave-active')), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.byKey(const ValueKey('kuzai-pet-wave-active')), findsNothing);
+
+    await tester.longPress(find.byKey(const ValueKey('test-kuzai-pet')));
+    await tester.pump();
+    expect(tapCount, 1);
+    expect(
+      find.byKey(const ValueKey('kuzai-pet-petting-active')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
+
   testWidgets(
     'AI assistant remains usable without hiding playback paths in both landscapes',
     (tester) async {
@@ -105,6 +147,10 @@ void main() {
 
           final fab = find.byKey(const ValueKey('ai-assistant-fab'));
           expect(fab.hitTestable(), findsOneWidget);
+          expect(
+            tester.getSize(fab).height,
+            size == const Size(640, 360) ? 68 : 88,
+          );
           if (size == const Size(640, 360)) {
             final miniControls = find.byKey(
               const ValueKey('mini-player-controls'),
@@ -161,6 +207,10 @@ void main() {
           );
           expect(find.byKey(const ValueKey('ai-assistant-send')), findsNothing);
           expect(find.text('正在听，请说话'), findsOneWidget);
+          expect(
+            find.byKey(const ValueKey('kuzai-pet-mode-listening')),
+            findsOneWidget,
+          );
           expect(tester.takeException(), isNull);
 
           await tester.tap(
@@ -342,6 +392,79 @@ void main() {
   });
 
   testWidgets(
+    'player page AI pet follows its setting across portrait and landscapes',
+    (tester) async {
+      await http.runWithClient(() async {
+        for (final size in const [
+          Size(390, 844),
+          Size(640, 360),
+          Size(1280, 800),
+        ]) {
+          SharedPreferences.setMockInitialValues({});
+          final fixture = await _MainFixture.create();
+          _setViewSize(tester, size);
+          await tester.pumpWidget(fixture.app(home: const PlayerScreen()));
+          await _pumpFrames(tester);
+
+          final pet = find.byKey(const ValueKey('ai-assistant-fab'));
+          expect(pet.hitTestable(), findsOneWidget);
+          expect(
+            tester
+                .getRect(pet)
+                .overlaps(
+                  tester.getRect(
+                    find.byKey(const ValueKey('player-next-track')),
+                  ),
+                ),
+            isFalse,
+          );
+          if (size.width > size.height) {
+            expect(
+              tester
+                  .getRect(pet)
+                  .overlaps(
+                    tester.getRect(
+                      find.byKey(const ValueKey('player-lyric-bottom-toolbar')),
+                    ),
+                  ),
+              isFalse,
+            );
+          } else {
+            expect(
+              tester
+                  .getRect(pet)
+                  .overlaps(
+                    tester.getRect(
+                      find.byKey(const ValueKey('player-mv-action')),
+                    ),
+                  ),
+              isFalse,
+            );
+          }
+
+          await tester.tap(pet);
+          await _pumpFrames(tester);
+          final close = find.byKey(const ValueKey('ai-assistant-close'));
+          expect(close.hitTestable(), findsOneWidget);
+          await tester.tap(close);
+          await _pumpFrames(tester);
+
+          await fixture.config.setShowPetOnPlayerPage(false);
+          await tester.pump();
+          expect(pet, findsNothing);
+          expect(tester.takeException(), isNull);
+
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump();
+          fixture.dispose();
+        }
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      }, _mockClient);
+    },
+  );
+
+  testWidgets(
     'AI settings and QR close path are reachable in both landscapes',
     (tester) async {
       for (final size in const [Size(640, 360), Size(1280, 800)]) {
@@ -366,6 +489,26 @@ void main() {
             )
             .first;
         final urlField = find.byKey(const ValueKey('ai-base-url-field'));
+        final playerPetToggle = find.byKey(
+          const ValueKey('ai-player-page-pet-toggle'),
+        );
+        await tester.scrollUntilVisible(
+          playerPetToggle,
+          160,
+          scrollable: systemScroll,
+        );
+        expect(playerPetToggle.hitTestable(), findsOneWidget);
+        expect(tester.widget<SwitchListTile>(playerPetToggle).value, isTrue);
+        await tester.tap(playerPetToggle);
+        await tester.pumpAndSettle();
+        expect(config.showPetOnPlayerPage, isFalse);
+        expect(
+          (await SharedPreferences.getInstance()).getBool(
+            AiConfigController.showPetOnPlayerPagePreferenceKey,
+          ),
+          isFalse,
+        );
+
         await tester.scrollUntilVisible(
           urlField,
           220,
@@ -465,7 +608,7 @@ class _MainFixture {
     );
   }
 
-  Widget app() => MultiProvider(
+  Widget app({Widget home = const MainScreen()}) => MultiProvider(
     providers: [
       ChangeNotifierProvider<PlayerProvider>.value(value: player),
       ChangeNotifierProvider<AiConfigController>.value(value: config),
@@ -484,7 +627,7 @@ class _MainFixture {
           ),
           child: child!,
         ),
-        home: const MainScreen(),
+        home: home,
       ),
     ),
   );
