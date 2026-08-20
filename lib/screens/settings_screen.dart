@@ -3,12 +3,16 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../models/ai_assistant.dart';
 import '../models/song.dart';
+import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
 import '../providers/theme_controller.dart';
 import '../services/audio_cache_service.dart';
+import '../services/ai_service.dart';
 import '../services/favorite_service.dart';
 import '../services/floating_capsule_service.dart';
+import '../services/lan_ai_config_service.dart';
 import '../services/lan_api_key_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
@@ -32,6 +36,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _apiKeyController = TextEditingController();
   bool _obscureKey = true;
   bool _apiKeyEdited = false;
+  final _aiUrlController = TextEditingController();
+  final _aiApiKeyController = TextEditingController();
+  final _aiModelController = TextEditingController();
+  late final AiConfigController _aiConfigController;
+  late final bool _ownsAiConfigController;
+  AiProviderKind _aiProvider = AiProviderKind.openAi;
+  AiRequestProtocol _aiProtocol = AiRequestProtocol.openAiResponses;
+  AiReasoningEffort _aiReasoning = AiReasoningEffort.platformDefault;
+  AiWebSearchMode _aiWebSearch = AiWebSearchMode.automatic;
+  bool _obscureAiKey = true;
+  bool _aiConfigEdited = false;
+  bool _testingAiConnection = false;
+  bool _savingAiConfig = false;
 
   String _versionName = '';
   String _versionCode = '';
@@ -43,6 +60,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    final sharedAiConfig = Provider.of<AiConfigController?>(
+      context,
+      listen: false,
+    );
+    _ownsAiConfigController = sharedAiConfig == null;
+    _aiConfigController =
+        sharedAiConfig ??
+        AiConfigController(secretStore: MemoryAiSecretStore());
+    _applyAiConfig(_aiConfigController.config);
+    _aiConfigController.ready.then((_) {
+      if (mounted && !_aiConfigEdited) {
+        setState(() => _applyAiConfig(_aiConfigController.config));
+      }
+    });
     final player = context.read<PlayerProvider>();
     _apiKeyController.text = player.apiKey;
     player.settingsReady.then((_) {
@@ -196,9 +227,153 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return true;
   }
 
+  void _applyAiConfig(AiAssistantConfig config) {
+    _aiProvider = config.provider;
+    _aiProtocol = config.protocol;
+    _aiReasoning = config.reasoningEffort;
+    _aiWebSearch = config.webSearchMode;
+    _aiUrlController.text = config.baseUrl;
+    _aiApiKeyController.text = config.apiKey;
+    _aiModelController.text = config.model;
+  }
+
+  AiAssistantConfig _aiConfigFromForm() => AiAssistantConfig(
+    provider: _aiProvider,
+    protocol: _aiProtocol,
+    baseUrl: _aiUrlController.text.trim(),
+    apiKey: _aiApiKeyController.text.trim(),
+    model: _aiModelController.text.trim(),
+    reasoningEffort: _aiReasoning,
+    webSearchMode: _aiWebSearch,
+  );
+
+  void _selectAiProvider(AiProviderKind provider) {
+    final previousDefault = _aiProvider.defaultBaseUrl;
+    final currentUrl = _aiUrlController.text.trim();
+    setState(() {
+      _aiProvider = provider;
+      _aiProtocol = provider.defaultProtocol;
+      if (currentUrl.isEmpty || currentUrl == previousDefault) {
+        _aiUrlController.text = provider.defaultBaseUrl;
+      }
+      _aiConfigEdited = true;
+    });
+  }
+
+  Future<void> _saveAiConfig() async {
+    if (_savingAiConfig) return;
+    final config = _aiConfigFromForm();
+    if (!config.isComplete) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请完整填写中转站 URL、API Key 和模型')));
+      return;
+    }
+    setState(() => _savingAiConfig = true);
+    try {
+      await _aiConfigController.save(config);
+      if (!mounted) return;
+      setState(() {
+        _savingAiConfig = false;
+        _aiConfigEdited = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('AI 助理配置已安全保存'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _savingAiConfig = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('保存失败：$error')));
+    }
+  }
+
+  Future<void> _testAiConnection() async {
+    if (_testingAiConnection) return;
+    final config = _aiConfigFromForm();
+    if (!config.isComplete) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请先完整填写 AI 配置')));
+      return;
+    }
+    setState(() => _testingAiConnection = true);
+    final service = AiAssistantService();
+    try {
+      final result = await service.checkConnection(
+        config,
+        checkSearch: config.webSearchMode != AiWebSearchMode.disabled,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.message),
+          backgroundColor: result.success ? null : Colors.redAccent,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } finally {
+      service.close();
+      if (mounted) setState(() => _testingAiConnection = false);
+    }
+  }
+
+  Future<void> _showAiConfigQrInput() async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    late final LanAiConfigSession session;
+    try {
+      session = await LanAiConfigService.start();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('启动扫码配置失败：$error')));
+      return;
+    }
+    if (!mounted) {
+      await session.stop();
+      return;
+    }
+    final saveFuture = _receiveAndSaveAiConfig(session);
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) =>
+          _AiConfigQrDialog(session: session, saveFuture: saveFuture),
+    );
+    await session.stop();
+    if (mounted) FocusManager.instance.primaryFocus?.unfocus();
+  }
+
+  Future<bool> _receiveAndSaveAiConfig(LanAiConfigSession session) async {
+    final config = await session.receivedConfig;
+    if (config == null) return false;
+    await _aiConfigController.save(config);
+    if (!mounted) return true;
+    setState(() {
+      _applyAiConfig(config);
+      _aiConfigEdited = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('手机提交的 AI 配置已安全保存'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+    return true;
+  }
+
   @override
   void dispose() {
     _apiKeyController.dispose();
+    _aiUrlController.dispose();
+    _aiApiKeyController.dispose();
+    _aiModelController.dispose();
+    if (_ownsAiConfigController) _aiConfigController.dispose();
     super.dispose();
   }
 
@@ -265,6 +440,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _buildPlaybackCard(),
         _buildBilibiliAccountCard(),
         _buildApiCard(),
+        _buildAiAssistantCard(),
         _buildAboutCard(),
       ],
     );
@@ -319,6 +495,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         children: [
                           _buildBilibiliAccountCard(compact: compact),
                           _buildApiCard(compact: compact),
+                          _buildAiAssistantCard(compact: compact),
                           _buildAboutCard(compact: compact),
                         ],
                       ),
@@ -1373,6 +1550,232 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _buildAiAssistantCard({bool compact = false}) {
+    final layout = AppLayout.fromContext(context);
+    final searchDependsOnRelay =
+        _aiWebSearch != AiWebSearchMode.disabled &&
+        (_aiProvider == AiProviderKind.deepSeek ||
+            _aiProvider == AiProviderKind.custom);
+    return _buildCard(
+      compact: compact,
+      children: [
+        _buildSectionHeader(icon: Icons.auto_awesome_rounded, title: 'AI 音乐助理'),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '配置用于聊天、联网查询和语音点歌。每次打开助理都会开始一段全新对话。',
+                style: TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: layout.secondarySize,
+                ),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<AiProviderKind>(
+                key: ValueKey('ai-provider-${_aiProvider.value}'),
+                initialValue: _aiProvider,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: '厂商预设'),
+                items: AiProviderKind.values
+                    .map(
+                      (provider) => DropdownMenuItem(
+                        value: provider,
+                        child: Text(provider.label),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (provider) {
+                  if (provider != null) _selectAiProvider(provider);
+                },
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<AiRequestProtocol>(
+                key: ValueKey('ai-protocol-${_aiProtocol.value}'),
+                initialValue: _aiProtocol,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: '请求协议'),
+                items: AiRequestProtocol.values
+                    .map(
+                      (protocol) => DropdownMenuItem(
+                        value: protocol,
+                        child: Text(protocol.label),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (protocol) {
+                  if (protocol == null) return;
+                  setState(() {
+                    _aiProtocol = protocol;
+                    _aiConfigEdited = true;
+                  });
+                },
+              ),
+              const SizedBox(height: 10),
+              RemoteTextFieldTraversal(
+                controller: _aiUrlController,
+                child: TextField(
+                  key: const ValueKey('ai-base-url-field'),
+                  controller: _aiUrlController,
+                  keyboardType: TextInputType.url,
+                  autocorrect: false,
+                  onChanged: (_) => _aiConfigEdited = true,
+                  decoration: const InputDecoration(
+                    labelText: '中转站 Base URL',
+                    hintText: 'https://example.com/v1',
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              RemoteTextFieldTraversal(
+                controller: _aiApiKeyController,
+                child: TextField(
+                  key: const ValueKey('ai-api-key-field'),
+                  controller: _aiApiKeyController,
+                  obscureText: _obscureAiKey,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  onChanged: (_) => _aiConfigEdited = true,
+                  decoration: InputDecoration(
+                    labelText: 'API Key',
+                    suffixIcon: IconButton(
+                      tooltip: _obscureAiKey ? '显示 Key' : '隐藏 Key',
+                      onPressed: () =>
+                          setState(() => _obscureAiKey = !_obscureAiKey),
+                      icon: Icon(
+                        _obscureAiKey ? Icons.visibility : Icons.visibility_off,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              RemoteTextFieldTraversal(
+                controller: _aiModelController,
+                child: TextField(
+                  key: const ValueKey('ai-model-field'),
+                  controller: _aiModelController,
+                  autocorrect: false,
+                  onChanged: (_) => _aiConfigEdited = true,
+                  decoration: const InputDecoration(
+                    labelText: '模型',
+                    hintText: '填写中转站实际支持的模型名称',
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<AiReasoningEffort>(
+                key: ValueKey('ai-reasoning-${_aiReasoning.value}'),
+                initialValue: _aiReasoning,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: '推理等级'),
+                items: AiReasoningEffort.values
+                    .map(
+                      (effort) => DropdownMenuItem(
+                        value: effort,
+                        child: Text(effort.label),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (effort) {
+                  if (effort == null) return;
+                  setState(() {
+                    _aiReasoning = effort;
+                    _aiConfigEdited = true;
+                  });
+                },
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '选择“平台默认”时不会发送任何推理等级参数。其他等级会按当前协议转换。',
+                style: TextStyle(
+                  color: AppColors.textHint,
+                  fontSize: layout.secondarySize,
+                ),
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<AiWebSearchMode>(
+                key: ValueKey('ai-web-search-${_aiWebSearch.value}'),
+                initialValue: _aiWebSearch,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: '联网搜索'),
+                items: AiWebSearchMode.values
+                    .map(
+                      (mode) => DropdownMenuItem(
+                        value: mode,
+                        child: Text(mode.label),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (mode) {
+                  if (mode == null) return;
+                  setState(() {
+                    _aiWebSearch = mode;
+                    _aiConfigEdited = true;
+                  });
+                },
+              ),
+              if (searchDependsOnRelay) ...[
+                const SizedBox(height: 6),
+                Text(
+                  '当前厂商的 OpenAI 兼容接口没有统一搜索字段，是否联网取决于中转站能力；请用“测试连接”核验。',
+                  style: TextStyle(
+                    color: Colors.orange.shade700,
+                    fontSize: layout.secondarySize,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilledButton.icon(
+                    key: const ValueKey('ai-config-save'),
+                    onPressed: _savingAiConfig ? null : _saveAiConfig,
+                    icon: _savingAiConfig
+                        ? const SizedBox.square(
+                            dimension: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.save_outlined),
+                    label: Text(_savingAiConfig ? '保存中' : '保存'),
+                  ),
+                  OutlinedButton.icon(
+                    key: const ValueKey('ai-config-test'),
+                    onPressed: _testingAiConnection ? null : _testAiConnection,
+                    icon: _testingAiConnection
+                        ? const SizedBox.square(
+                            dimension: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.network_check_rounded),
+                    label: Text(_testingAiConnection ? '测试中' : '测试连接'),
+                  ),
+                  OutlinedButton.icon(
+                    key: const ValueKey('ai-config-qr-input'),
+                    onPressed: _showAiConfigQrInput,
+                    icon: const Icon(Icons.qr_code_scanner_rounded),
+                    label: const Text('手机扫码配置'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'API Key 使用系统安全存储，不写入二维码或普通应用配置。',
+                style: TextStyle(
+                  color: AppColors.textHint,
+                  fontSize: layout.secondarySize,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildAboutCard({bool compact = false}) {
     return _buildCard(
       compact: compact,
@@ -1616,6 +2019,143 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _AiConfigQrDialog extends StatelessWidget {
+  final LanAiConfigSession session;
+  final Future<bool> saveFuture;
+
+  const _AiConfigQrDialog({required this.session, required this.saveFuture});
+
+  @override
+  Widget build(BuildContext context) {
+    final layout = AppLayout.fromContext(context);
+    final compact = layout.isCompactLandscape;
+    final qrSize = compact ? 146.0 : 205.0;
+    final status = FutureBuilder<bool>(
+      future: saveFuture,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return const _AiConfigQrStatus(
+            icon: Icons.error_outline_rounded,
+            message: '保存失败，请关闭后重试',
+            color: Colors.redAccent,
+          );
+        }
+        if (snapshot.connectionState == ConnectionState.done) {
+          return _AiConfigQrStatus(
+            icon: snapshot.data == true
+                ? Icons.check_circle_outline_rounded
+                : Icons.timer_off_outlined,
+            message: snapshot.data == true ? 'AI 配置已安全保存' : '本次扫码配置已结束',
+            color: snapshot.data == true
+                ? AppColors.primary
+                : AppColors.textHint,
+          );
+        }
+        return const _AiConfigQrStatus(
+          icon: Icons.phone_android_rounded,
+          message: '手机扫码后填写整套 AI 配置',
+          color: AppColors.primary,
+        );
+      },
+    );
+    final qrCode = Container(
+      padding: const EdgeInsets.all(10),
+      color: Colors.white,
+      child: QrImageView(
+        key: const ValueKey('ai-config-qr-code'),
+        data: session.url,
+        version: QrVersions.auto,
+        size: qrSize,
+        backgroundColor: Colors.white,
+      ),
+    );
+    final details = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          '扫码配置 AI 助理',
+          style: TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: layout.sectionTitleSize,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 10),
+        status,
+        const SizedBox(height: 10),
+        Text(
+          '一次填写厂商、协议、URL、Key、模型、推理等级和联网搜索。手机与车机需在同一 Wi-Fi。',
+          style: TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: layout.secondarySize,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            key: const ValueKey('ai-config-qr-close'),
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.close_rounded),
+            label: const Text('关闭'),
+          ),
+        ),
+      ],
+    );
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 600),
+        child: Padding(
+          padding: EdgeInsets.all(compact ? 12 : 20),
+          child: MediaQuery.orientationOf(context) == Orientation.landscape
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    qrCode,
+                    SizedBox(width: compact ? 12 : 20),
+                    Flexible(child: details),
+                  ],
+                )
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [qrCode, const SizedBox(height: 16), details],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AiConfigQrStatus extends StatelessWidget {
+  final IconData icon;
+  final String message;
+  final Color color;
+
+  const _AiConfigQrStatus({
+    required this.icon,
+    required this.message,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, color: color, size: 22),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            message,
+            key: const ValueKey('ai-config-qr-status'),
+            style: TextStyle(color: AppColors.textPrimary),
+          ),
+        ),
+      ],
     );
   }
 }

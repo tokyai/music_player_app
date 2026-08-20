@@ -1,7 +1,7 @@
 name: music_player_app
 description: 库仔音乐，一款支持 QQ音乐/网易云/酷狗搜索与播放的多平台音乐应用。
 publish_to: 'none'
-version: 2.9.8+2908
+version: 2.9.10+2910
 
 environment:
   sdk: ^3.11.0
@@ -31,6 +31,8 @@ dependencies:
   # 系统媒体通知、锁屏和车机方向盘媒体键控制
   # Android 13+ 通知权限请求
   permission_handler: ^11.3.1
+  speech_to_text: ^7.4.0
+  flutter_secure_storage: ^10.3.1
 
   # 图片缓存
   cached_network_image: ^3.4.1

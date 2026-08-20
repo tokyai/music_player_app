@@ -64,6 +64,10 @@ android {
 
     buildTypes {
         release {
+            // R8-optimized builds crash during startup on both Xiaomi phones
+            // and Android head units. Keep the verified stable release path.
+            minifyEnabled false
+            shrinkResources false
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.release
             }

@@ -7,6 +7,8 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.view.KeyEvent
 import androidx.annotation.NonNull
 import androidx.core.content.FileProvider
@@ -16,6 +18,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.UUID
 
 class MainActivity : AudioServiceActivity() {
     companion object {
@@ -24,6 +27,7 @@ class MainActivity : AudioServiceActivity() {
         const val FAVORITES_FILE_CHANNEL = "music_player/favorites_file"
         const val EXTERNAL_MEDIA_CHANNEL = "music_player/external_media"
         const val SOUND_EFFECT_CHANNEL = "music_player/sound_effect"
+        const val AI_TTS_CHANNEL = "music_player/ai_tts"
         const val REQUEST_IMPORT_FAVORITES = 4101
         const val REQUEST_EXPORT_FAVORITES = 4102
         const val MAX_BACKUP_BYTES = 5 * 1024 * 1024
@@ -33,7 +37,37 @@ class MainActivity : AudioServiceActivity() {
     private var pendingExportContent: String? = null
     private var foregroundMediaKeyChannel: MethodChannel? = null
     private var floatingCapsuleChannel: MethodChannel? = null
+    private var aiTtsChannel: MethodChannel? = null
+    private var aiTts: TextToSpeech? = null
+    private var aiTtsReady = false
+    private var aiTtsInitializing = false
+    private val pendingAiTtsInitResults = mutableListOf<MethodChannel.Result>()
+    private var pendingAiTtsSpeakResult: MethodChannel.Result? = null
+    private var pendingAiTtsUtteranceId: String? = null
     private var foregroundMediaKeysEnabled = false
+
+    private val aiTtsProgressListener = object : UtteranceProgressListener() {
+        override fun onStart(utteranceId: String?) = Unit
+
+        override fun onDone(utteranceId: String?) {
+            runOnUiThread { finishAiTtsSpeak(utteranceId, true) }
+        }
+
+        @Deprecated("Deprecated by Android")
+        override fun onError(utteranceId: String?) {
+            runOnUiThread { failAiTtsSpeak(utteranceId, "系统语音播报失败") }
+        }
+
+        override fun onError(utteranceId: String?, errorCode: Int) {
+            runOnUiThread {
+                failAiTtsSpeak(utteranceId, "系统语音播报失败（$errorCode）")
+            }
+        }
+
+        override fun onStop(utteranceId: String?, interrupted: Boolean) {
+            runOnUiThread { finishAiTtsSpeak(utteranceId, false) }
+        }
+    }
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -103,6 +137,20 @@ class MainActivity : AudioServiceActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        aiTtsChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            AI_TTS_CHANNEL
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "initialize" -> initializeAiTts(result)
+                    "speak" -> speakAiText(call.argument<String>("text"), result)
+                    "stop" -> stopAiTts(result)
+                    else -> result.notImplemented()
+                }
+            }
+        }
 
         floatingCapsuleChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -184,8 +232,136 @@ class MainActivity : AudioServiceActivity() {
         foregroundMediaKeyChannel = null
         floatingCapsuleChannel?.setMethodCallHandler(null)
         floatingCapsuleChannel = null
+        aiTtsChannel?.setMethodCallHandler(null)
+        aiTtsChannel = null
+        releaseAiTts()
         FloatCapsuleManager.clearCallbacks()
         super.onDestroy()
+    }
+
+    private fun initializeAiTts(result: MethodChannel.Result) {
+        if (aiTtsReady && aiTts != null) {
+            result.success(true)
+            return
+        }
+        pendingAiTtsInitResults.add(result)
+        if (aiTtsInitializing) return
+        aiTtsInitializing = true
+        try {
+            aiTts = TextToSpeech(applicationContext) { status ->
+                runOnUiThread {
+                    aiTtsInitializing = false
+                    aiTtsReady = status == TextToSpeech.SUCCESS && aiTts != null
+                    if (aiTtsReady) {
+                        // Do not query or replace the default voice here. Some Android 15
+                        // TTS engines allocate every installed voice during setLanguage().
+                        aiTts?.setOnUtteranceProgressListener(aiTtsProgressListener)
+                        try {
+                            aiTts?.setSpeechRate(0.96f)
+                        } catch (_: Exception) {
+                        }
+                    }
+                    val callbacks = pendingAiTtsInitResults.toList()
+                    pendingAiTtsInitResults.clear()
+                    callbacks.forEach { callback ->
+                        if (aiTtsReady) {
+                            callback.success(true)
+                        } else {
+                            callback.error(
+                                "TTS_INIT_FAILED",
+                                "系统文字转语音服务初始化失败（$status）",
+                                null
+                            )
+                        }
+                    }
+                }
+            }
+        } catch (error: Exception) {
+            aiTtsInitializing = false
+            aiTtsReady = false
+            val callbacks = pendingAiTtsInitResults.toList()
+            pendingAiTtsInitResults.clear()
+            callbacks.forEach { callback ->
+                callback.error(
+                    "TTS_INIT_FAILED",
+                    error.message ?: "系统文字转语音服务初始化失败",
+                    null
+                )
+            }
+        }
+    }
+
+    private fun speakAiText(text: String?, result: MethodChannel.Result) {
+        val normalized = text?.trim().orEmpty()
+        val engine = aiTts
+        if (!aiTtsReady || engine == null) {
+            result.error("TTS_NOT_READY", "系统文字转语音服务尚未就绪", null)
+            return
+        }
+        if (normalized.isEmpty()) {
+            result.success(false)
+            return
+        }
+        try {
+            engine.stop()
+            finishAiTtsSpeak(pendingAiTtsUtteranceId, false)
+            val utteranceId = UUID.randomUUID().toString()
+            pendingAiTtsUtteranceId = utteranceId
+            pendingAiTtsSpeakResult = result
+            val status = engine.speak(
+                normalized,
+                TextToSpeech.QUEUE_FLUSH,
+                null,
+                utteranceId
+            )
+            if (status != TextToSpeech.SUCCESS) {
+                failAiTtsSpeak(utteranceId, "系统语音播报启动失败（$status）")
+            }
+        } catch (error: Exception) {
+            failAiTtsSpeak(
+                pendingAiTtsUtteranceId,
+                error.message ?: "系统语音播报失败"
+            )
+        }
+    }
+
+    private fun stopAiTts(result: MethodChannel.Result) {
+        try {
+            aiTts?.stop()
+        } catch (_: Exception) {
+        }
+        finishAiTtsSpeak(pendingAiTtsUtteranceId, false)
+        result.success(null)
+    }
+
+    private fun finishAiTtsSpeak(utteranceId: String?, completed: Boolean) {
+        if (utteranceId == null || utteranceId != pendingAiTtsUtteranceId) return
+        val callback = pendingAiTtsSpeakResult
+        pendingAiTtsSpeakResult = null
+        pendingAiTtsUtteranceId = null
+        callback?.success(completed)
+    }
+
+    private fun failAiTtsSpeak(utteranceId: String?, message: String) {
+        if (utteranceId == null || utteranceId != pendingAiTtsUtteranceId) return
+        val callback = pendingAiTtsSpeakResult
+        pendingAiTtsSpeakResult = null
+        pendingAiTtsUtteranceId = null
+        callback?.error("TTS_SPEAK_FAILED", message, null)
+    }
+
+    private fun releaseAiTts() {
+        pendingAiTtsInitResults.clear()
+        pendingAiTtsSpeakResult = null
+        pendingAiTtsUtteranceId = null
+        aiTtsReady = false
+        aiTtsInitializing = false
+        try {
+            aiTts?.stop()
+            aiTts?.shutdown()
+        } catch (_: Exception) {
+        }
+        aiTts = null
     }
 
     private fun invokeCapsuleCallback(method: String) {

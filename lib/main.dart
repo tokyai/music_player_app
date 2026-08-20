@@ -8,6 +8,8 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'providers/ai_assistant_controller.dart';
+import 'providers/ai_config_controller.dart';
 import 'providers/player_provider.dart';
 import 'providers/search_session.dart';
 import 'providers/theme_controller.dart';
@@ -24,6 +26,7 @@ import 'theme/app_motion.dart';
 import 'theme/app_theme.dart';
 import 'utils/system_ui.dart';
 import 'widgets/mini_player.dart';
+import 'widgets/ai_assistant_overlay.dart';
 import 'widgets/remote_focusable.dart';
 
 final _navigatorKey = GlobalKey<NavigatorState>();
@@ -121,6 +124,13 @@ class MusicPlayerApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider<PlayerProvider>.value(value: player),
+        ChangeNotifierProvider(create: (_) => AiConfigController()),
+        ChangeNotifierProvider(
+          create: (context) => AiAssistantController(
+            player: player,
+            configController: context.read<AiConfigController>(),
+          ),
+        ),
         ChangeNotifierProvider(create: (_) => SearchSession()),
         ChangeNotifierProvider(create: (_) => ThemeController()),
         ChangeNotifierProvider(create: (_) => FavoriteService()..load()),
@@ -316,6 +326,13 @@ class _MainScreenState extends State<MainScreen>
                   constraints.maxWidth >= AppLayout.wideWindowMinWidth &&
                   constraints.maxHeight >= AppLayout.wideWindowMinHeight;
               return Scaffold(
+                floatingActionButton: Padding(
+                  padding: EdgeInsets.only(
+                    right: showPlayerPane ? 297 : 0,
+                    bottom: hasCurrentSong && !showPlayerPane ? 76 : 0,
+                  ),
+                  child: const AiAssistantFloatingButton(),
+                ),
                 body: Row(
                   children: [
                     SafeArea(
@@ -435,6 +452,7 @@ class _MainScreenState extends State<MainScreen>
         }
 
         return Scaffold(
+          floatingActionButton: const AiAssistantFloatingButton(),
           body: content,
           bottomNavigationBar: SafeArea(
             top: false,
@@ -443,7 +461,7 @@ class _MainScreenState extends State<MainScreen>
               children: [
                 const MiniPlayer(),
                 ClipRRect(
-                  borderRadius: BorderRadius.vertical(
+                  borderRadius: const BorderRadius.vertical(
                     top: Radius.circular(AppRadius.panel),
                   ),
                   child: NavigationBar(

@@ -7,6 +7,11 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <!-- Android 13+ 系统媒体通知需要 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- AI 助理连续语音识别；蓝牙权限用于车机/耳机麦克风。 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
     <!-- 系统悬浮窗胶囊（跨 App 悬浮显示） -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
     <!-- 手机与电视共用安装包：电视端不依赖触屏，Leanback 能力为可选。 -->
@@ -18,6 +23,7 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:banner="@drawable/tv_banner"
+        android:allowBackup="false"
         android:usesCleartextTraffic="true">
         <!-- MainActivity 继承 AudioServiceActivity：系统媒体通知/锁屏控制 + 悬浮窗胶囊通道 -->
         <activity
@@ -71,6 +77,12 @@
         </provider>
     </application>
     <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE"/>
+        </intent>
+        <intent>
+            <action android:name="android.speech.RecognitionService"/>
+        </intent>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
