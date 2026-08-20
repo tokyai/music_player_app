@@ -19,6 +19,7 @@ import 'backup_restore_screen.dart';
 import 'cache_list_screen.dart';
 import 'favorites_screen.dart';
 import 'playback_history_screen.dart';
+import 'sound_effect_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -950,6 +951,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
           builder: (ctx, player, _) {
             return Column(
               children: [
+                ListTile(
+                  key: const ValueKey('sound-effect-setting'),
+                  dense: compact,
+                  leading: const Icon(Icons.equalizer_rounded),
+                  title: const Text('DSP 音效'),
+                  subtitle: Text(
+                    player.soundEffectAvailable
+                        ? (player.soundEffectEnabled
+                              ? player.soundEffectPreset?.name ?? '已开启'
+                              : '原声 · 点击选择音效')
+                        : (player.soundEffectStatusMessage.isEmpty
+                              ? '当前设备不支持'
+                              : player.soundEffectStatusMessage),
+                    maxLines: compact ? 1 : 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () => Navigator.push(
+                    ctx,
+                    MaterialPageRoute(
+                      builder: (_) => const SoundEffectScreen(),
+                    ),
+                  ),
+                ),
+                const Divider(height: 1),
                 ListTile(
                   dense: compact,
                   leading: const Icon(Icons.audiotrack),
