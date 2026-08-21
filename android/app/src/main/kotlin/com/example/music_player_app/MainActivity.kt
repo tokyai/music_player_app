@@ -16,6 +16,7 @@ import android.view.KeyEvent
 import androidx.annotation.NonNull
 import androidx.core.content.FileProvider
 import com.ryanheise.audioservice.AudioServiceActivity
+import io.flutter.FlutterInjector
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
@@ -30,6 +31,9 @@ class MainActivity : AudioServiceActivity() {
         const val EXTERNAL_MEDIA_CHANNEL = "music_player/external_media"
         const val AI_TTS_CHANNEL = "music_player/ai_tts"
         const val AI_AUDIO_CHANNEL = "music_player/ai_audio"
+        const val AI_MODEL_CHANNEL = "music_player/ai_model"
+        const val PARAFORMER_MODEL = "streaming-paraformer-bilingual-zh-en"
+        const val ZIPFORMER_MODEL = "streaming-zipformer-zh-14M-2023-02-23"
         const val REQUEST_IMPORT_FAVORITES = 4101
         const val REQUEST_EXPORT_FAVORITES = 4102
         const val MAX_BACKUP_BYTES = 5 * 1024 * 1024
@@ -41,6 +45,7 @@ class MainActivity : AudioServiceActivity() {
     private var floatingCapsuleChannel: MethodChannel? = null
     private var aiTtsChannel: MethodChannel? = null
     private var aiAudioChannel: MethodChannel? = null
+    private var aiModelChannel: MethodChannel? = null
     private var aiAudioFocusRequest: AudioFocusRequest? = null
     private var aiAudioFocusHeld = false
     private var aiTts: TextToSpeech? = null
@@ -153,6 +158,21 @@ class MainActivity : AudioServiceActivity() {
             }
         }
 
+        aiModelChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            AI_MODEL_CHANNEL
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "prepare" -> prepareAiModel(
+                        call.argument<String>("model") ?: PARAFORMER_MODEL,
+                        result
+                    )
+                    else -> result.notImplemented()
+                }
+            }
+        }
+
         aiTtsChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             AI_TTS_CHANNEL
@@ -250,6 +270,8 @@ class MainActivity : AudioServiceActivity() {
         abandonAiAudioFocus()
         aiAudioChannel?.setMethodCallHandler(null)
         aiAudioChannel = null
+        aiModelChannel?.setMethodCallHandler(null)
+        aiModelChannel = null
         aiTtsChannel?.setMethodCallHandler(null)
         aiTtsChannel = null
         releaseAiTts()
@@ -258,9 +280,9 @@ class MainActivity : AudioServiceActivity() {
     }
 
     /**
-     * Requests a short-lived assistant focus while SpeechRecognizer owns the
-     * microphone. This is public Android audio policy and does not select an
-     * OEM-only AudioRecord source or alter Bluetooth routing.
+     * Requests a short-lived assistant focus while the voice recognizer owns
+     * the microphone. This is public Android audio policy and does not select
+     * an OEM-only AudioRecord source or alter Bluetooth routing.
      */
     private fun requestAiAudioFocus(): Boolean {
         if (aiAudioFocusHeld) return true
@@ -321,6 +343,72 @@ class MainActivity : AudioServiceActivity() {
             aiAudioFocusHeld = false
             false
         }
+    }
+
+    private fun prepareAiModel(modelId: String, result: MethodChannel.Result) {
+        Thread {
+            try {
+                val modelFiles = when (modelId) {
+                    PARAFORMER_MODEL -> linkedMapOf(
+                        "encoder" to "encoder.int8.onnx",
+                        "decoder" to "decoder.int8.onnx",
+                        "tokens" to "tokens.txt"
+                    )
+                    ZIPFORMER_MODEL -> linkedMapOf(
+                        "encoder" to "encoder-epoch-99-avg-1.int8.onnx",
+                        "decoder" to "decoder-epoch-99-avg-1.onnx",
+                        "joiner" to "joiner-epoch-99-avg-1.int8.onnx",
+                        "tokens" to "tokens.txt"
+                    )
+                    else -> throw IllegalArgumentException("不支持的离线语音模型：$modelId")
+                }
+                val modelVersion = if (modelId == ZIPFORMER_MODEL) {
+                    "$modelId-mixed-precision-v2"
+                } else {
+                    "$modelId-int8-v1"
+                }
+                val assetDir = "assets/models/sherpa-onnx-$modelId"
+                val modelDir = File(filesDir, "ai_models/$modelVersion")
+                val marker = File(modelDir, ".ready")
+                if (!marker.isFile ||
+                    marker.readText() != modelVersion ||
+                    modelFiles.values.any { !File(modelDir, it).isFile }
+                ) {
+                    modelDir.mkdirs()
+                    modelFiles.values.forEach { fileName ->
+                        val assetName = "$assetDir/$fileName"
+                        val assetKey = FlutterInjector.instance().flutterLoader()
+                            .getLookupKeyForAsset(assetName)
+                        val output = File(modelDir, fileName)
+                        val temporary = File(modelDir, "$fileName.part")
+                        assets.open(assetKey).use { input ->
+                            temporary.outputStream().buffered().use { target ->
+                                input.copyTo(target, DEFAULT_BUFFER_SIZE)
+                            }
+                        }
+                        if (output.exists() && !output.delete()) {
+                            throw IllegalStateException("无法替换旧语音模型：$fileName")
+                        }
+                        if (!temporary.renameTo(output)) {
+                            throw IllegalStateException("无法保存语音模型：$fileName")
+                        }
+                    }
+                    marker.writeText(modelVersion)
+                }
+                val paths = modelFiles.mapValues { (_, fileName) ->
+                    File(modelDir, fileName).absolutePath
+                }
+                runOnUiThread { result.success(paths) }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    result.error(
+                        "ai_model_prepare_failed",
+                        error.message ?: "离线语音模型准备失败",
+                        null
+                    )
+                }
+            }
+        }.start()
     }
 
     private fun initializeAiTts(result: MethodChannel.Result) {

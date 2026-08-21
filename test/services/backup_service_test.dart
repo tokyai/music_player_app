@@ -95,6 +95,7 @@ void main() {
           model: 'mimo-test',
           reasoningEffort: AiReasoningEffort.high,
           webSearchMode: AiWebSearchMode.always,
+          voiceModel: AiVoiceModelKind.zipformerChinese,
         ),
       );
       await source.setShowAssistantOnAllPages(false);
@@ -108,6 +109,10 @@ void main() {
       final exported = jsonDecode(raw) as Map<String, dynamic>;
       final exportedAi = exported['aiAssistant'] as Map<String, dynamic>;
       expect(exportedAi['config'], containsPair('apiKey', 'ai-secret'));
+      expect(
+        exportedAi['config'],
+        containsPair('voiceModel', AiVoiceModelKind.zipformerChinese.value),
+      );
 
       final restored = AiConfigController(secretStore: MemoryAiSecretStore());
       addTearDown(restored.dispose);
@@ -126,6 +131,7 @@ void main() {
       expect(restored.config.model, 'mimo-test');
       expect(restored.config.reasoningEffort, AiReasoningEffort.high);
       expect(restored.config.webSearchMode, AiWebSearchMode.always);
+      expect(restored.config.voiceModel, AiVoiceModelKind.zipformerChinese);
       expect(restored.showAssistantOnAllPages, isFalse);
       expect(restored.showPetOnPlayerPage, isFalse);
     },

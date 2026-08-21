@@ -64,9 +64,10 @@ android {
 
     buildTypes {
         release {
-            // flutter_secure_storage 11 catches Android Keystore Errors that
-            // previously escaped its worker thread and terminated the app.
-            minifyEnabled true
+            // Sherpa uses Dart FFI/native libraries and record registers an
+            // Android plugin at runtime. Keep release builds deterministic on
+            // ARM devices by disabling R8 code shrinking and obfuscation.
+            minifyEnabled false
             shrinkResources false
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.release
