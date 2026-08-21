@@ -539,17 +539,7 @@ void main() {
           'https://example.test/v1',
         );
 
-        final voiceModel = find.byKey(
-          ValueKey(
-            'ai-voice-model-${AiVoiceModelKind.paraformerBilingual.value}',
-          ),
-        );
-        await tester.scrollUntilVisible(
-          voiceModel,
-          160,
-          scrollable: systemScroll,
-        );
-        expect(voiceModel.hitTestable(), findsOneWidget);
+        expect(find.text('车机离线语音模型'), findsNothing);
 
         for (final key in const [
           ValueKey('ai-model-fetch'),

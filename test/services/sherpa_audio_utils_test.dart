@@ -37,4 +37,56 @@ void main() {
 
     expect(samples, [0.25]);
   });
+
+  test('mixes four-channel car-array PCM using the Baidu divisor', () {
+    final decoder = Pcm16StreamDecoder();
+    final bytes = _pcm16([1000, 2000, 3000, 4000, -1000, -2000, -3000, -4000]);
+
+    final samples = decoder.decode(bytes, channelCount: 4, mixDivisor: 2);
+
+    expect(samples, hasLength(2));
+    expect(samples[0], closeTo(5000 / 32768, 0.000001));
+    expect(samples[1], closeTo(-5000 / 32768, 0.000001));
+  });
+
+  test('downmixes Flyme stereo PCM for Zipformer', () {
+    final decoder = Pcm16StreamDecoder();
+    final bytes = _pcm16([1000, 3000, -2000, -4000]);
+
+    final samples = decoder.decode(bytes, channelCount: 2, mixDivisor: 2);
+
+    expect(samples, hasLength(2));
+    expect(samples[0], closeTo(2000 / 32768, 0.000001));
+    expect(samples[1], closeTo(-3000 / 32768, 0.000001));
+  });
+
+  test('preserves an incomplete multi-channel frame between chunks', () {
+    final decoder = Pcm16StreamDecoder();
+    final bytes = _pcm16([1000, 2000, 3000, 4000]);
+
+    expect(
+      decoder.decode(
+        Uint8List.sublistView(bytes, 0, 5),
+        channelCount: 4,
+        mixDivisor: 2,
+      ),
+      isEmpty,
+    );
+    final samples = decoder.decode(
+      Uint8List.sublistView(bytes, 5),
+      channelCount: 4,
+      mixDivisor: 2,
+    );
+
+    expect(samples.single, closeTo(5000 / 32768, 0.000001));
+  });
+}
+
+Uint8List _pcm16(List<int> samples) {
+  final bytes = Uint8List(samples.length * 2);
+  final data = ByteData.sublistView(bytes);
+  for (var index = 0; index < samples.length; index++) {
+    data.setInt16(index * 2, samples[index], Endian.little);
+  }
+  return bytes;
 }

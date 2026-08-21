@@ -111,12 +111,6 @@ class AiAssistantController extends ChangeNotifier {
 
     var speechReady = false;
     try {
-      final modelSelector = speech;
-      if (modelSelector is AiVoiceModelSelector) {
-        (modelSelector as AiVoiceModelSelector).setVoiceModel(
-          configController.config.voiceModel,
-        );
-      }
       speechReady = await speech.initialize(
         onError: _handleSpeechError,
         onStatus: _handleSpeechStatus,

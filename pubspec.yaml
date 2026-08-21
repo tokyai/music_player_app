@@ -1,7 +1,7 @@
 name: music_player_app
 description: 库仔音乐，一款支持 QQ音乐/网易云/酷狗搜索与播放的多平台音乐应用。
 publish_to: 'none'
-version: 2.9.14+2914
+version: 2.9.15+2915
 
 environment:
   sdk: ^3.11.0
@@ -30,7 +30,7 @@ dependencies:
   # Android 13+ 通知权限请求
   permission_handler: ^11.3.1
   speech_to_text: ^7.4.0
-  # Android 车机离线流式识别：双语 Paraformer + 原始 PCM 麦克风输入。
+  # Android 车机离线流式识别：轻量 Zipformer + 原始 PCM 麦克风输入。
   sherpa_onnx: 1.13.6
   record: 6.1.2
   flutter_secure_storage: ^11.0.0
@@ -61,5 +61,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/images/
-    - assets/models/sherpa-onnx-streaming-paraformer-bilingual-zh-en/
     - assets/models/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23/
