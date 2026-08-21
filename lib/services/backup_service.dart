@@ -20,6 +20,7 @@ class BackupService {
     if (decoded is! Map) {
       throw const FormatException('收藏备份生成失败');
     }
+    decoded['playerSettings'] = player.toBackupJson();
     if (aiConfig != null) {
       decoded['aiAssistant'] = aiConfig.toBackupJson();
     }
@@ -34,6 +35,7 @@ class BackupService {
     FavoriteImportMode mode = FavoriteImportMode.merge,
   }) async {
     final aiBackup = _readAiBackup(raw);
+    final playerBackup = _readPlayerBackup(raw);
     final result = await favorites.importJson(raw, mode: mode);
     var apiKeyRestored = false;
     if (result.apiKeyPresent) {
@@ -44,6 +46,11 @@ class BackupService {
     if (aiBackup != null && aiConfig != null) {
       await aiConfig.restoreBackupJson(aiBackup);
       aiConfigRestored = true;
+    }
+    var playerSettingsRestored = false;
+    if (playerBackup != null) {
+      await player.restoreBackupJson(playerBackup);
+      playerSettingsRestored = true;
     }
     return BackupRestoreResult(
       songsAdded: result.added,
@@ -56,6 +63,7 @@ class BackupService {
       playlistsSkipped: result.playlistsSkipped,
       apiKeyRestored: apiKeyRestored,
       aiConfigRestored: aiConfigRestored,
+      playerSettingsRestored: playerSettingsRestored,
     );
   }
 
@@ -74,6 +82,21 @@ class BackupService {
     }
     return Map<String, dynamic>.from(value);
   }
+
+  static Map<String, dynamic>? _readPlayerBackup(String raw) {
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(raw);
+    } on FormatException {
+      return null;
+    }
+    if (decoded is! Map || !decoded.containsKey('playerSettings')) return null;
+    final value = decoded['playerSettings'];
+    if (value is! Map) {
+      throw const FormatException('备份文件中的播放器设置格式错误');
+    }
+    return Map<String, dynamic>.from(value);
+  }
 }
 
 class BackupRestoreResult {
@@ -87,6 +110,7 @@ class BackupRestoreResult {
   final int playlistsSkipped;
   final bool apiKeyRestored;
   final bool aiConfigRestored;
+  final bool playerSettingsRestored;
 
   const BackupRestoreResult({
     required this.songsAdded,
@@ -99,5 +123,6 @@ class BackupRestoreResult {
     required this.playlistsSkipped,
     required this.apiKeyRestored,
     this.aiConfigRestored = false,
+    this.playerSettingsRestored = false,
   });
 }

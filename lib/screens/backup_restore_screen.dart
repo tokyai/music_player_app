@@ -96,7 +96,9 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('导入方式'),
-        content: const Text('合并会保留现有收藏；覆盖会替换歌曲、B站收藏、歌单及备份中的 API Key。'),
+        content: const Text(
+          '合并会保留现有收藏；覆盖会替换歌曲、B站收藏、歌单，并应用备份中的 API Key、AI 模型和播放器设置。',
+        ),
         actions: [
           TextButton(
             onPressed: () =>
@@ -138,6 +140,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
             '歌单 ${result.playlistsAdded} 个'
             '${result.apiKeyRestored ? '，播放 API Key 已恢复' : ''}'
             '${result.aiConfigRestored ? '，AI 模型配置、中转站和 Key 已恢复' : ''}'
+            '${result.playerSettingsRestored ? '，音质、音源和播放器设置已恢复' : ''}'
             '${result.songsSkipped + result.bilibiliSkipped + result.playlistsSkipped > 0 ? '（重复或无效项目已跳过）' : ''}';
         _statusError = false;
       });

@@ -174,4 +174,75 @@ void main() {
       expect(restored.petPosition.y, closeTo(0.75, 0.001));
     },
   );
+
+  test('backup round-trips playback sources and player preferences', () async {
+    final source = PlayerProvider();
+    addTearDown(source.dispose);
+    await source.settingsReady;
+    await source.setNeteaseLevel(NeteaseLevel.lossless);
+    await source.setCommonLevel(CommonLevel.master);
+    await source.setPlaybackSource(MusicPlatform.qq, PlaybackSource.qingMusic);
+    await source.setPlaybackSource(
+      MusicPlatform.kugou,
+      PlaybackSource.qingMusic,
+    );
+    await source.setBilibiliAudioQuality(30232);
+    await source.setBilibiliVideoQuality(64);
+    await source.setBilibiliLyricPlatformOrder([
+      MusicPlatform.kugou,
+      MusicPlatform.qq,
+      MusicPlatform.netease,
+    ]);
+    await source.setLyricOffsetStep(const Duration(milliseconds: 800));
+    await source.setVideoPlayerMode(VideoPlayerMode.mpv);
+
+    final raw = BackupService.exportJson(
+      favorites: FavoriteService(),
+      player: source,
+    );
+    final exported = jsonDecode(raw) as Map<String, dynamic>;
+    final playerSettings = exported['playerSettings'] as Map<String, dynamic>;
+    expect(playerSettings['neteaseLevel'], NeteaseLevel.lossless.value);
+    expect(playerSettings['commonLevel'], CommonLevel.master.value);
+    expect(
+      (playerSettings['playbackSources']
+          as Map<String, dynamic>)[MusicPlatform.qq.code],
+      PlaybackSource.qingMusic.value,
+    );
+    expect(playerSettings['videoPlayerMode'], VideoPlayerMode.mpv.value);
+
+    // Start the destination from clean defaults so the import, rather than
+    // SharedPreferences left by the source player, applies every value.
+    SharedPreferences.setMockInitialValues({});
+    final restored = PlayerProvider();
+    addTearDown(restored.dispose);
+    await restored.settingsReady;
+    final result = await BackupService.importJson(
+      raw: raw,
+      favorites: FavoriteService(),
+      player: restored,
+      mode: FavoriteImportMode.replace,
+    );
+
+    expect(result.playerSettingsRestored, isTrue);
+    expect(restored.neteaseLevel, NeteaseLevel.lossless);
+    expect(restored.commonLevel, CommonLevel.master);
+    expect(
+      restored.playbackSourceFor(MusicPlatform.qq),
+      PlaybackSource.qingMusic,
+    );
+    expect(
+      restored.playbackSourceFor(MusicPlatform.kugou),
+      PlaybackSource.qingMusic,
+    );
+    expect(restored.bilibiliAudioQuality, 30232);
+    expect(restored.bilibiliVideoQuality, 64);
+    expect(restored.bilibiliLyricPlatformOrder, [
+      MusicPlatform.kugou,
+      MusicPlatform.qq,
+      MusicPlatform.netease,
+    ]);
+    expect(restored.lyricOffsetStep, const Duration(milliseconds: 800));
+    expect(restored.videoPlayerMode, VideoPlayerMode.mpv);
+  });
 }

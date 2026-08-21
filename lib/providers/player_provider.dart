@@ -163,6 +163,181 @@ class PlayerProvider extends ChangeNotifier {
 
   VideoPlayerMode get videoPlayerMode => _videoPlayerMode;
 
+  /// Serializes the playback preferences that are otherwise kept in
+  /// SharedPreferences. API Key is intentionally handled by BackupService.
+  Map<String, dynamic> toBackupJson() => {
+    'version': 1,
+    'neteaseLevel': _neteaseLevel.value,
+    'commonLevel': _commonLevel.value,
+    'playbackSources': {
+      MusicPlatform.netease.code: _neteasePlaybackSource.value,
+      MusicPlatform.qq.code: _qqPlaybackSource.value,
+      MusicPlatform.kugou.code: _kugouPlaybackSource.value,
+    },
+    'bilibiliAudioQuality': _bilibiliAudioQuality,
+    'bilibiliVideoQuality': _bilibiliVideoQuality,
+    'bilibiliLyricPlatformOrder': _bilibiliLyricPlatformOrder
+        .map((platform) => platform.code)
+        .toList(growable: false),
+    'lyricOffsetStepMs': _lyricOffsetStep.inMilliseconds,
+    'videoPlayerMode': _videoPlayerMode.value,
+  };
+
+  /// Restores playback preferences in one batch so an import does not cause
+  /// several intermediate player rebuilds or repeated URL resolution.
+  Future<void> restoreBackupJson(Map<String, dynamic> json) async {
+    await settingsReady;
+    if (_disposed) return;
+
+    var changed = false;
+    final neteaseValue = json['neteaseLevel'];
+    if (neteaseValue is String) {
+      final level = NeteaseLevel.values.where(
+        (item) => item.value == neteaseValue,
+      );
+      if (level.isNotEmpty && _neteaseLevel != level.first) {
+        _neteaseLevel = level.first;
+        changed = true;
+      }
+    }
+    final commonValue = json['commonLevel'];
+    if (commonValue is String) {
+      final level = CommonLevel.values.where(
+        (item) => item.value == commonValue,
+      );
+      if (level.isNotEmpty && _commonLevel != level.first) {
+        _commonLevel = level.first;
+        changed = true;
+      }
+    }
+
+    final rawSources = json['playbackSources'];
+    final sources = rawSources is Map
+        ? rawSources.map((key, value) => MapEntry(key.toString(), value))
+        : <String, dynamic>{};
+    PlaybackSource? sourceFor(MusicPlatform platform) {
+      final value =
+          sources[platform.code] ?? json['${platform.code}PlaybackSource'];
+      if (value is! String) return null;
+      for (final source in PlaybackSource.values) {
+        if (source.value == value) return source;
+      }
+      return null;
+    }
+
+    final neteaseSource = sourceFor(MusicPlatform.netease);
+    if (neteaseSource != null && _neteasePlaybackSource != neteaseSource) {
+      _neteasePlaybackSource = neteaseSource;
+      changed = true;
+    }
+    final qqSource = sourceFor(MusicPlatform.qq);
+    if (qqSource != null && _qqPlaybackSource != qqSource) {
+      _qqPlaybackSource = qqSource;
+      changed = true;
+    }
+    final kugouSource = sourceFor(MusicPlatform.kugou);
+    if (kugouSource != null && _kugouPlaybackSource != kugouSource) {
+      _kugouPlaybackSource = kugouSource;
+      changed = true;
+    }
+
+    final audioQuality = _positiveInt(json['bilibiliAudioQuality']);
+    if (audioQuality != null && audioQuality != _bilibiliAudioQuality) {
+      _bilibiliAudioQuality = audioQuality;
+      changed = true;
+    }
+    final videoQuality = _positiveInt(json['bilibiliVideoQuality']);
+    if (videoQuality != null && videoQuality != _bilibiliVideoQuality) {
+      _bilibiliVideoQuality = videoQuality;
+      changed = true;
+    }
+
+    final rawOrder = json['bilibiliLyricPlatformOrder'];
+    if (rawOrder is List) {
+      final order = rawOrder.whereType<String>().map((value) {
+        for (final platform in MusicPlatform.values) {
+          if (platform.code == value) return platform;
+        }
+        return null;
+      }).whereType<MusicPlatform>();
+      final normalized = _normalizeBilibiliLyricPlatformOrder(order);
+      if (!_samePlatformOrder(_bilibiliLyricPlatformOrder, normalized)) {
+        _bilibiliLyricPlatformOrder = normalized;
+        changed = true;
+      }
+    }
+
+    final rawStep = _positiveInt(json['lyricOffsetStepMs']);
+    if (rawStep != null) {
+      final step = _normalizeLyricOffsetStep(Duration(milliseconds: rawStep));
+      if (_lyricOffsetStep != step) {
+        _lyricOffsetStep = step;
+        changed = true;
+      }
+    }
+
+    final modeValue = json['videoPlayerMode'];
+    if (modeValue is String) {
+      final mode = VideoPlayerMode.values.where(
+        (item) => item.value == modeValue,
+      );
+      if (mode.isNotEmpty && _videoPlayerMode != mode.first) {
+        _videoPlayerMode = mode.first;
+        changed = true;
+      }
+    }
+
+    if (!changed) return;
+    _playUrlResolvedAt.clear();
+    await _savePreference('播放器设置', (prefs) async {
+      await Future.wait([
+        prefs.setString('netease_level', _neteaseLevel.value),
+        prefs.setString('common_level', _commonLevel.value),
+        prefs.setString(
+          _playbackSourcePreferenceKey(MusicPlatform.netease),
+          _neteasePlaybackSource.value,
+        ),
+        prefs.setString(
+          _playbackSourcePreferenceKey(MusicPlatform.qq),
+          _qqPlaybackSource.value,
+        ),
+        prefs.setString(
+          _playbackSourcePreferenceKey(MusicPlatform.kugou),
+          _kugouPlaybackSource.value,
+        ),
+        prefs.setInt('bilibili_audio_quality', _bilibiliAudioQuality),
+        prefs.setInt('bilibili_video_quality', _bilibiliVideoQuality),
+        prefs.setStringList(
+          _bilibiliLyricPlatformOrderKey,
+          _bilibiliLyricPlatformOrder
+              .map((platform) => platform.code)
+              .toList(growable: false),
+        ),
+        prefs.setInt(_lyricOffsetStepKey, _lyricOffsetStep.inMilliseconds),
+        prefs.setString('video_player_mode', _videoPlayerMode.value),
+      ]);
+      return true;
+    });
+    if (!_disposed) notifyListeners();
+  }
+
+  static int? _positiveInt(dynamic value) {
+    if (value is int && value > 0) return value;
+    if (value is num && value > 0) return value.round();
+    return null;
+  }
+
+  static bool _samePlatformOrder(
+    List<MusicPlatform> first,
+    List<MusicPlatform> second,
+  ) {
+    if (first.length != second.length) return false;
+    for (var index = 0; index < first.length; index++) {
+      if (first[index] != second[index]) return false;
+    }
+    return true;
+  }
+
   List<PlaybackHistoryEntry> get playbackHistory =>
       List.unmodifiable(_playbackHistory);
   int get playbackHistoryRevision => _playbackHistoryRevision;
