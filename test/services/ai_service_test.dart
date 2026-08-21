@@ -297,6 +297,106 @@ void main() {
       expect(body, isNot(contains('reasoning_effort')));
     });
   });
+
+  group('model discovery', () {
+    test('OpenAI-compatible endpoint normalizes a pasted chat URL', () async {
+      late http.Request captured;
+      final service = AiAssistantService(
+        client: MockClient((request) async {
+          captured = request;
+          return _jsonResponse({
+            'data': [
+              {'id': 'gpt-4o'},
+              {'id': 'gpt-4o-mini', 'owned_by': 'openai'},
+            ],
+          });
+        }),
+      );
+      addTearDown(service.close);
+
+      final models = await service.fetchModels(
+        _config(
+          provider: AiProviderKind.custom,
+          protocol: AiRequestProtocol.openAiChatCompletions,
+        ).copyWith(baseUrl: 'https://example.test/proxy/v1/chat/completions/'),
+      );
+
+      expect(captured.method, 'GET');
+      expect(captured.url.toString(), 'https://example.test/proxy/v1/models');
+      expect(captured.headers['Authorization'], 'Bearer test-key');
+      expect(models.map((item) => item.id), ['gpt-4o', 'gpt-4o-mini']);
+    });
+
+    test(
+      'Anthropic sends native authentication and parses model names',
+      () async {
+        late http.Request captured;
+        final service = AiAssistantService(
+          client: MockClient((request) async {
+            captured = request;
+            return _jsonResponse({
+              'data': [
+                {
+                  'id': 'claude-3-7-sonnet',
+                  'display_name': 'Claude 3.7 Sonnet',
+                },
+              ],
+            });
+          }),
+        );
+        addTearDown(service.close);
+
+        final models = await service.fetchModels(
+          _config(
+            provider: AiProviderKind.anthropic,
+            protocol: AiRequestProtocol.anthropicMessages,
+          ),
+        );
+
+        expect(captured.url.toString(), 'https://example.test/v1/models');
+        expect(captured.headers['x-api-key'], 'test-key');
+        expect(captured.headers['anthropic-version'], '2023-06-01');
+        expect(
+          models.single.displayName,
+          'Claude 3.7 Sonnet (claude-3-7-sonnet)',
+        );
+      },
+    );
+
+    test(
+      'Gemini strips models prefix and preserves non-secret query values',
+      () async {
+        late http.Request captured;
+        final service = AiAssistantService(
+          client: MockClient((request) async {
+            captured = request;
+            return _jsonResponse({
+              'models': [
+                {'name': 'models/gemini-2.5-flash'},
+                {'name': 'gemini-2.5-pro'},
+              ],
+            });
+          }),
+        );
+        addTearDown(service.close);
+
+        final models = await service.fetchModels(
+          _config(
+            provider: AiProviderKind.gemini,
+            protocol: AiRequestProtocol.geminiGenerateContent,
+          ).copyWith(baseUrl: 'https://example.test/v1beta?alt=json'),
+        );
+
+        expect(captured.url.path, '/v1beta/models');
+        expect(captured.url.queryParameters['alt'], 'json');
+        expect(captured.headers['x-goog-api-key'], 'test-key');
+        expect(models.map((item) => item.id), [
+          'gemini-2.5-flash',
+          'gemini-2.5-pro',
+        ]);
+      },
+    );
+  });
 }
 
 AiAssistantConfig _config({

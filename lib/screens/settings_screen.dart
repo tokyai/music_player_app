@@ -48,6 +48,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _aiConfigEdited = false;
   bool _testingAiConnection = false;
   bool _savingAiConfig = false;
+  bool _fetchingAiModels = false;
+  List<AiModelOption> _aiModels = const [];
+  String? _aiModelsError;
 
   String _versionName = '';
   String _versionCode = '';
@@ -236,6 +239,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _aiModelController.text = config.model;
   }
 
+  void _markAiConfigEdited({bool clearModels = false}) {
+    if (!mounted) return;
+    setState(() {
+      _aiConfigEdited = true;
+      if (clearModels) {
+        _aiModels = const [];
+        _aiModelsError = null;
+      }
+    });
+  }
+
   AiAssistantConfig _aiConfigFromForm() => AiAssistantConfig(
     provider: _aiProvider,
     protocol: _aiProtocol,
@@ -255,6 +269,56 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (currentUrl.isEmpty || currentUrl == previousDefault) {
         _aiUrlController.text = provider.defaultBaseUrl;
       }
+      _aiConfigEdited = true;
+      _aiModels = const [];
+      _aiModelsError = null;
+    });
+  }
+
+  Future<void> _fetchAiModels() async {
+    if (_fetchingAiModels) return;
+    final config = _aiConfigFromForm();
+    if (config.baseUrl.trim().isEmpty || config.apiKey.trim().isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请先填写 AI URL 和 API Key')));
+      return;
+    }
+    setState(() {
+      _fetchingAiModels = true;
+      _aiModelsError = null;
+    });
+    final service = AiAssistantService();
+    try {
+      final models = await service.fetchModels(config);
+      if (!mounted) return;
+      setState(() {
+        _aiModels = models;
+        _fetchingAiModels = false;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已获取 ${models.length} 个可用模型')));
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _fetchingAiModels = false;
+        _aiModelsError = error.toString();
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('获取模型失败：$error')));
+    } finally {
+      service.close();
+      if (mounted && _fetchingAiModels) {
+        setState(() => _fetchingAiModels = false);
+      }
+    }
+  }
+
+  void _selectAiModel(AiModelOption option) {
+    setState(() {
+      _aiModelController.text = option.id;
       _aiConfigEdited = true;
     });
   }
@@ -1605,6 +1669,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   setState(() {
                     _aiProtocol = protocol;
                     _aiConfigEdited = true;
+                    _aiModels = const [];
+                    _aiModelsError = null;
                   });
                 },
               ),
@@ -1616,7 +1682,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   controller: _aiUrlController,
                   keyboardType: TextInputType.url,
                   autocorrect: false,
-                  onChanged: (_) => _aiConfigEdited = true,
+                  onChanged: (_) => _markAiConfigEdited(clearModels: true),
                   decoration: const InputDecoration(
                     labelText: '中转站 Base URL',
                     hintText: 'https://example.com/v1',
@@ -1632,7 +1698,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   obscureText: _obscureAiKey,
                   autocorrect: false,
                   enableSuggestions: false,
-                  onChanged: (_) => _aiConfigEdited = true,
+                  onChanged: (_) => _markAiConfigEdited(clearModels: true),
                   decoration: InputDecoration(
                     labelText: 'API Key',
                     suffixIcon: IconButton(
@@ -1653,13 +1719,67 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   key: const ValueKey('ai-model-field'),
                   controller: _aiModelController,
                   autocorrect: false,
-                  onChanged: (_) => _aiConfigEdited = true,
-                  decoration: const InputDecoration(
+                  onChanged: (_) => _markAiConfigEdited(),
+                  decoration: InputDecoration(
                     labelText: '模型',
-                    hintText: '填写中转站实际支持的模型名称',
+                    hintText: '填写模型，或点击“获取模型”后选择',
+                    suffixIcon: _aiModels.isEmpty
+                        ? null
+                        : PopupMenuButton<AiModelOption>(
+                            key: const ValueKey('ai-model-menu'),
+                            tooltip: '选择已发现模型',
+                            icon: const Icon(Icons.arrow_drop_down),
+                            onSelected: _selectAiModel,
+                            itemBuilder: (context) => _aiModels
+                                .map(
+                                  (model) => PopupMenuItem<AiModelOption>(
+                                    value: model,
+                                    child: Text(
+                                      model.displayName,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                )
+                                .toList(),
+                          ),
                   ),
                 ),
               ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  key: const ValueKey('ai-model-fetch'),
+                  onPressed: _fetchingAiModels ? null : _fetchAiModels,
+                  icon: _fetchingAiModels
+                      ? const SizedBox.square(
+                          dimension: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.sync_rounded),
+                  label: Text(_fetchingAiModels ? '获取中' : '从 URL 获取模型'),
+                ),
+              ),
+              if (_aiModels.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  '已发现 ${_aiModels.length} 个模型，点击模型输入框右侧箭头选择；也可继续手动输入。',
+                  style: TextStyle(
+                    color: AppColors.textHint,
+                    fontSize: layout.secondarySize,
+                  ),
+                ),
+              ],
+              if (_aiModelsError != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  _aiModelsError!,
+                  style: TextStyle(
+                    color: Colors.orange.shade700,
+                    fontSize: layout.secondarySize,
+                  ),
+                ),
+              ],
               const SizedBox(height: 10),
               DropdownButtonFormField<AiReasoningEffort>(
                 key: ValueKey('ai-reasoning-${_aiReasoning.value}'),

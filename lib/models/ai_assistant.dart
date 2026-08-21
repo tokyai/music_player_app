@@ -182,6 +182,28 @@ class AiAssistantConfig {
   };
 }
 
+/// A model advertised by an AI provider's model-list endpoint.
+///
+/// `id` is the value sent in chat requests. `label` may contain a more
+/// descriptive provider display name, while keeping the raw id available for
+/// gateways that use non-standard names.
+class AiModelOption {
+  final String id;
+  final String? label;
+
+  const AiModelOption({required this.id, this.label});
+
+  String get displayName =>
+      label == null || label!.trim().isEmpty ? id : '${label!.trim()} ($id)';
+
+  @override
+  bool operator ==(Object other) =>
+      other is AiModelOption && other.id == id && other.label == label;
+
+  @override
+  int get hashCode => Object.hash(id, label);
+}
+
 enum AiMessageRole { user, assistant }
 
 class AiConversationMessage {

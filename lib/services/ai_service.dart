@@ -49,6 +49,34 @@ class AiAssistantService implements AiChatGateway {
 
   AiAssistantService({http.Client? client}) : _client = client ?? http.Client();
 
+  /// Fetches the models exposed by the configured URL in real time.
+  ///
+  /// Model discovery deliberately does not require a current model value, so
+  /// users can recover from an empty or stale model field. The API key is only
+  /// sent as an authentication header and is never included in error text.
+  Future<List<AiModelOption>> fetchModels(AiAssistantConfig config) async {
+    _validateEndpointConfig(config);
+    final endpoint = _modelsEndpoint(config);
+    final headers = switch (config.protocol) {
+      AiRequestProtocol.anthropicMessages => {
+        'x-api-key': config.apiKey.trim(),
+        'anthropic-version': '2023-06-01',
+        'Accept': 'application/json',
+      },
+      AiRequestProtocol.geminiGenerateContent => {
+        'x-goog-api-key': config.apiKey.trim(),
+        'Accept': 'application/json',
+      },
+      _ => _bearerHeaders(config.apiKey),
+    };
+    final response = await _getJson(endpoint, headers: headers);
+    final models = _parseModels(response, config);
+    if (models.isEmpty) {
+      throw const AiServiceException('模型接口返回为空，请检查 URL、Key 或中转站协议');
+    }
+    return models;
+  }
+
   @override
   Future<AiChatResult> sendMessage(
     AiAssistantConfig config,
@@ -381,6 +409,57 @@ class AiAssistantService implements AiChatGateway {
     }
   }
 
+  Future<Map<String, dynamic>> _getJson(
+    String endpoint, {
+    required Map<String, String> headers,
+  }) async {
+    final request = http.Request('GET', Uri.parse(endpoint))
+      ..headers.addAll(headers);
+    try {
+      final response = await sendBoundedHttpRequest(
+        _client,
+        request,
+        maxBytes: _maxResponseBytes,
+        timeout: _timeout,
+      );
+      final text = utf8.decode(response.bodyBytes, allowMalformed: true);
+      dynamic decoded;
+      try {
+        decoded = jsonDecode(text);
+      } catch (_) {
+        throw AiServiceException(
+          '模型接口返回了无效数据${response.statusCode == 200 ? '' : '（HTTP ${response.statusCode}）'}',
+          statusCode: response.statusCode,
+        );
+      }
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        final message = decoded is Map
+            ? _firstString(Map<String, dynamic>.from(decoded), const [
+                'error',
+                'message',
+                'msg',
+              ])
+            : null;
+        throw AiServiceException(
+          message == null || message.isEmpty
+              ? '获取模型失败（HTTP ${response.statusCode}）'
+              : '获取模型失败：$message',
+          statusCode: response.statusCode,
+        );
+      }
+      if (decoded is! Map) {
+        throw const AiServiceException('模型接口返回格式不是对象');
+      }
+      return Map<String, dynamic>.from(decoded);
+    } on AiServiceException {
+      rethrow;
+    } on TimeoutException {
+      throw const AiServiceException('获取模型超时，请检查网络或中转站设置');
+    } catch (error) {
+      throw AiServiceException('获取模型失败：$error');
+    }
+  }
+
   AiChatResult _parseResult(Map<String, dynamic> response) {
     final texts = <String>[];
     AiPlaySongRequest? action;
@@ -585,13 +664,98 @@ class AiAssistantService implements AiChatGateway {
   }
 
   void _validateConfig(AiAssistantConfig config) {
-    if (!config.isComplete) {
-      throw const AiServiceException('请先在设置中填写完整的 AI URL、Key 和模型');
+    _validateEndpointConfig(config);
+    if (config.model.trim().isEmpty) {
+      throw const AiServiceException('请先在设置中填写模型');
+    }
+  }
+
+  void _validateEndpointConfig(AiAssistantConfig config) {
+    if (config.baseUrl.trim().isEmpty || config.apiKey.trim().isEmpty) {
+      throw const AiServiceException('请先在设置中填写 AI URL 和 API Key');
     }
     final uri = Uri.tryParse(config.baseUrl.trim());
-    if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
+    if (uri == null ||
+        (uri.scheme != 'http' && uri.scheme != 'https') ||
+        uri.host.isEmpty) {
       throw const AiServiceException('AI 中转站 URL 必须是 http 或 https 地址');
     }
+  }
+
+  String _modelsEndpoint(AiAssistantConfig config) {
+    final uri = Uri.parse(config.baseUrl.trim());
+    final segments = List<String>.from(uri.pathSegments);
+    while (segments.isNotEmpty && segments.last.isEmpty) {
+      segments.removeLast();
+    }
+
+    // A user may paste the complete request URL instead of the provider's
+    // base URL. Strip the operation suffix before appending /models.
+    if (config.protocol == AiRequestProtocol.geminiGenerateContent) {
+      final modelsIndex = segments.indexOf('models');
+      if (modelsIndex >= 0) {
+        segments.removeRange(modelsIndex, segments.length);
+      } else if (segments.isNotEmpty &&
+          segments.last.contains(':generateContent')) {
+        segments.removeLast();
+      }
+    } else {
+      if (segments.length >= 2 &&
+          segments[segments.length - 2] == 'chat' &&
+          segments.last == 'completions') {
+        segments.removeRange(segments.length - 2, segments.length);
+      } else if (segments.isNotEmpty &&
+          const {
+            'responses',
+            'messages',
+            'completions',
+            'models',
+          }.contains(segments.last)) {
+        segments.removeLast();
+      }
+    }
+    if (segments.isEmpty || segments.last != 'models') segments.add('models');
+
+    final query = Map<String, String>.from(uri.queryParameters);
+    return uri
+        .replace(
+          pathSegments: segments,
+          queryParameters: query.isEmpty ? null : query,
+        )
+        .toString();
+  }
+
+  List<AiModelOption> _parseModels(
+    Map<String, dynamic> response,
+    AiAssistantConfig config,
+  ) {
+    final raw = response['data'] ?? response['models'] ?? response['items'];
+    final values = raw is List ? raw : <dynamic>[];
+    final result = <AiModelOption>[];
+    final seen = <String>{};
+    for (final value in values) {
+      String? id;
+      String? label;
+      if (value is String) {
+        id = value.trim();
+      } else if (value is Map) {
+        final map = Map<String, dynamic>.from(value);
+        id = (map['id'] ?? map['name'] ?? map['model'] ?? map['model_name'])
+            ?.toString()
+            .trim();
+        label = (map['display_name'] ?? map['displayName'] ?? map['title'])
+            ?.toString()
+            .trim();
+      }
+      if (id == null || id.isEmpty) continue;
+      if (config.protocol == AiRequestProtocol.geminiGenerateContent &&
+          id.startsWith('models/')) {
+        id = id.substring('models/'.length);
+      }
+      if (seen.add(id)) result.add(AiModelOption(id: id, label: label));
+    }
+    result.sort((a, b) => a.id.toLowerCase().compareTo(b.id.toLowerCase()));
+    return result;
   }
 
   static String _joinEndpoint(String base, String path) {

@@ -540,6 +540,7 @@ void main() {
         );
 
         for (final key in const [
+          ValueKey('ai-model-fetch'),
           ValueKey('ai-config-save'),
           ValueKey('ai-config-test'),
           ValueKey('ai-config-qr-input'),
