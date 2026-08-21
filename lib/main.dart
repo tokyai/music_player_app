@@ -326,12 +326,17 @@ class _MainScreenState extends State<MainScreen>
                   constraints.maxWidth >= AppLayout.wideWindowMinWidth &&
                   constraints.maxHeight >= AppLayout.wideWindowMinHeight;
               return Scaffold(
-                floatingActionButton: Padding(
-                  padding: EdgeInsets.only(
-                    right: showPlayerPane ? 297 : 0,
-                    bottom: hasCurrentSong && !showPlayerPane ? 76 : 0,
-                  ),
-                  child: const AiAssistantFloatingButton(),
+                floatingActionButton: Selector<AiConfigController, bool>(
+                  selector: (_, config) => config.showAssistantOnAllPages,
+                  builder: (context, visible, _) => visible
+                      ? Padding(
+                          padding: EdgeInsets.only(
+                            right: showPlayerPane ? 297 : 0,
+                            bottom: hasCurrentSong && !showPlayerPane ? 76 : 0,
+                          ),
+                          child: const AiAssistantFloatingButton(),
+                        )
+                      : const SizedBox.shrink(),
                 ),
                 body: Row(
                   children: [
@@ -452,7 +457,12 @@ class _MainScreenState extends State<MainScreen>
         }
 
         return Scaffold(
-          floatingActionButton: const AiAssistantFloatingButton(),
+          floatingActionButton: Selector<AiConfigController, bool>(
+            selector: (_, config) => config.showAssistantOnAllPages,
+            builder: (context, visible, _) => visible
+                ? const AiAssistantFloatingButton()
+                : const SizedBox.shrink(),
+          ),
           body: content,
           bottomNavigationBar: SafeArea(
             top: false,

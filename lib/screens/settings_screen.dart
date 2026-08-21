@@ -1290,9 +1290,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(
               context,
-              MaterialPageRoute(
-                builder: (_) => const PlaybackHistoryScreen(),
-              ),
+              MaterialPageRoute(builder: (_) => const PlaybackHistoryScreen()),
             ),
           ),
         ),
@@ -1546,6 +1544,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: TextStyle(
                   color: AppColors.textSecondary,
                   fontSize: layout.secondarySize,
+                ),
+              ),
+              AnimatedBuilder(
+                animation: _aiConfigController,
+                builder: (context, _) => SwitchListTile.adaptive(
+                  key: const ValueKey('ai-all-pages-toggle'),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('所有页面显示 AI 助理'),
+                  subtitle: const Text('控制发现、搜索、歌单、设置和播放页的悬浮入口'),
+                  value: _aiConfigController.showAssistantOnAllPages,
+                  onChanged: _aiConfigController.setShowAssistantOnAllPages,
                 ),
               ),
               AnimatedBuilder(

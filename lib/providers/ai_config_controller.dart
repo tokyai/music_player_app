@@ -38,11 +38,16 @@ class MemoryAiSecretStore implements AiSecretStore {
 
 class AiConfigController extends ChangeNotifier {
   static const _preferencesKey = 'ai_assistant_config_v1';
+
+  /// Controls the assistant entry point on the app's main pages.
+  static const showAssistantOnAllPagesPreferenceKey =
+      'ai_assistant_show_on_all_pages';
   static const showPetOnPlayerPagePreferenceKey =
       'ai_assistant_show_pet_on_player_page';
 
   final AiSecretStore _secretStore;
   AiAssistantConfig _config = AiAssistantConfig.defaults();
+  bool _showAssistantOnAllPages = true;
   bool _showPetOnPlayerPage = true;
   bool _disposed = false;
 
@@ -54,6 +59,7 @@ class AiConfigController extends ChangeNotifier {
   late final Future<void> ready;
 
   AiAssistantConfig get config => _config;
+  bool get showAssistantOnAllPages => _showAssistantOnAllPages;
   bool get showPetOnPlayerPage => _showPetOnPlayerPage;
 
   Future<void> _load() async {
@@ -64,6 +70,8 @@ class AiConfigController extends ChangeNotifier {
       ]);
       final prefs = results[0] as SharedPreferences;
       final apiKey = results[1] as String? ?? '';
+      _showAssistantOnAllPages =
+          prefs.getBool(showAssistantOnAllPagesPreferenceKey) ?? true;
       _showPetOnPlayerPage =
           prefs.getBool(showPetOnPlayerPagePreferenceKey) ?? true;
       final raw = prefs.getString(_preferencesKey);
@@ -118,6 +126,19 @@ class AiConfigController extends ChangeNotifier {
       await prefs.setBool(showPetOnPlayerPagePreferenceKey, value);
     } catch (error) {
       debugPrint('保存播放页 AI 宠物显示设置失败: $error');
+    }
+  }
+
+  Future<void> setShowAssistantOnAllPages(bool value) async {
+    await ready;
+    if (_disposed || _showAssistantOnAllPages == value) return;
+    _showAssistantOnAllPages = value;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(showAssistantOnAllPagesPreferenceKey, value);
+    } catch (error) {
+      debugPrint('保存全局 AI 助理显示设置失败: $error');
     }
   }
 

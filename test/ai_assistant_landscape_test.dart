@@ -492,6 +492,25 @@ void main() {
         final playerPetToggle = find.byKey(
           const ValueKey('ai-player-page-pet-toggle'),
         );
+        final allPagesToggle = find.byKey(
+          const ValueKey('ai-all-pages-toggle'),
+        );
+        await tester.scrollUntilVisible(
+          allPagesToggle,
+          160,
+          scrollable: systemScroll,
+        );
+        expect(allPagesToggle.hitTestable(), findsOneWidget);
+        expect(tester.widget<SwitchListTile>(allPagesToggle).value, isTrue);
+        await tester.tap(allPagesToggle);
+        await tester.pumpAndSettle();
+        expect(config.showAssistantOnAllPages, isFalse);
+        expect(
+          (await SharedPreferences.getInstance()).getBool(
+            AiConfigController.showAssistantOnAllPagesPreferenceKey,
+          ),
+          isFalse,
+        );
         await tester.scrollUntilVisible(
           playerPetToggle,
           160,
