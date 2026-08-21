@@ -90,7 +90,11 @@ void main() {
       final bottom = state.position.pixels;
       expect(bottom, closeTo(state.position.maxScrollExtent, 1));
 
-      await tester.drag(scrollable, const Offset(0, 500));
+      final viewport = tester.getRect(scrollable);
+      await tester.dragFrom(
+        Offset(viewport.center.dx, viewport.bottom - 18),
+        const Offset(0, 500),
+      );
       await tester.pumpAndSettle();
       expect(state.position.pixels, lessThan(bottom - 1));
 
@@ -110,7 +114,11 @@ void main() {
       returnedState.position.jumpTo(returnedState.position.maxScrollExtent);
       await tester.pump();
       final returnedBottom = returnedState.position.pixels;
-      await tester.drag(returned, const Offset(0, 500));
+      final returnedViewport = tester.getRect(returned);
+      await tester.dragFrom(
+        Offset(returnedViewport.center.dx, returnedViewport.bottom - 18),
+        const Offset(0, 500),
+      );
       await tester.pumpAndSettle();
       expect(returnedState.position.pixels, lessThan(returnedBottom - 1));
     }, () => MockClient((request) async => http.Response('{}', 200)));
@@ -168,7 +176,11 @@ void main() {
           await tester.pump(const Duration(milliseconds: 1200));
           await tester.pumpAndSettle();
           final bottom = state.position.pixels;
-          await tester.drag(scrollable, const Offset(0, 500));
+          final viewport = tester.getRect(scrollable);
+          await tester.dragFrom(
+            Offset(viewport.center.dx, viewport.bottom - 18),
+            const Offset(0, 500),
+          );
           await tester.pumpAndSettle();
           expect(state.position.pixels, lessThan(bottom - 1));
         },

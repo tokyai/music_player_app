@@ -1482,7 +1482,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(
               context,
-              MaterialPageRoute(builder: (_) => const FavoritesScreen()),
+              MaterialPageRoute(builder: (_) => const FavoriteSongsScreen()),
             ),
           ),
         ),
