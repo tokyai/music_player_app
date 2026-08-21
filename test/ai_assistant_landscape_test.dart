@@ -569,7 +569,6 @@ void main() {
               matching: find.byType(Scrollable),
             )
             .first;
-        final urlField = find.byKey(const ValueKey('ai-base-url-field'));
         final playerPetToggle = find.byKey(
           const ValueKey('ai-player-page-pet-toggle'),
         );
@@ -664,19 +663,32 @@ void main() {
         await tester.pumpAndSettle();
         expect(config.petScale, greaterThan(1));
 
+        await tester.scrollUntilVisible(
+          renameProfile,
+          -180,
+          scrollable: systemScroll,
+        );
+        await tester.tap(renameProfile);
+        await tester.pumpAndSettle();
+        final editor = find.byKey(const ValueKey('ai-profile-editor-dialog'));
+        expect(editor, findsOneWidget);
+        final editorScroll = find
+            .descendant(of: editor, matching: find.byType(Scrollable))
+            .first;
         final modelField = find.byKey(const ValueKey('ai-model-field'));
         await tester.scrollUntilVisible(
           modelField,
           220,
-          scrollable: systemScroll,
+          scrollable: editorScroll,
         );
         await tester.enterText(modelField, 'car-test-model');
         await tester.pump();
 
+        final urlField = find.byKey(const ValueKey('ai-base-url-field'));
         await tester.scrollUntilVisible(
           urlField,
           220,
-          scrollable: systemScroll,
+          scrollable: editorScroll,
         );
         expect(urlField.hitTestable(), findsOneWidget);
         expect(
@@ -690,7 +702,7 @@ void main() {
         await tester.scrollUntilVisible(
           voiceModel,
           160,
-          scrollable: systemScroll,
+          scrollable: editorScroll,
         );
         expect(voiceModel.hitTestable(), findsOneWidget);
         await tester.tap(voiceModel);
@@ -718,17 +730,21 @@ void main() {
           await tester.scrollUntilVisible(
             action,
             160,
-            scrollable: systemScroll,
+            scrollable: editorScroll,
           );
           expect(action.hitTestable(), findsOneWidget);
         }
         final save = find.byKey(const ValueKey('ai-config-save'));
-        await tester.scrollUntilVisible(save, 160, scrollable: systemScroll);
+        await tester.scrollUntilVisible(save, 160, scrollable: editorScroll);
         await tester.tap(save);
         await tester.pumpAndSettle();
         expect(config.config.voiceModel, AiVoiceModelKind.paraformerBilingual);
         expect(config.config.model, 'car-test-model');
         expect(config.activeProfile?.name, '车机备用模型');
+
+        await tester.tap(find.byKey(const ValueKey('ai-profile-editor-close')));
+        await tester.pumpAndSettle();
+        expect(editor, findsNothing);
 
         final originalTile = find.byKey(
           ValueKey('ai-profile-$originalProfileId'),
@@ -753,8 +769,17 @@ void main() {
         expect(config.config.model, 'car-test-model');
         expect(tester.takeException(), isNull);
 
+        await tester.tap(renameProfile);
+        await tester.pumpAndSettle();
         final qrInput = find.byKey(const ValueKey('ai-config-qr-input'));
-        await tester.scrollUntilVisible(qrInput, 220, scrollable: systemScroll);
+        final qrEditorScroll = find
+            .descendant(of: editor, matching: find.byType(Scrollable))
+            .first;
+        await tester.scrollUntilVisible(
+          qrInput,
+          220,
+          scrollable: qrEditorScroll,
+        );
         await tester.tap(qrInput);
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 100)),
@@ -774,6 +799,8 @@ void main() {
         await tester.tap(close);
         await tester.pumpAndSettle();
         expect(qrCode, findsNothing);
+        await tester.tap(find.byKey(const ValueKey('ai-profile-editor-close')));
+        await tester.pumpAndSettle();
 
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
