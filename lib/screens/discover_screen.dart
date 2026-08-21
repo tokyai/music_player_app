@@ -77,8 +77,12 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       onRefresh: _loadAll,
       color: AppColors.primary,
       child: ListView(
+        // The shell keeps several pages alive in an IndexedStack. Do not let
+        // their vertical lists compete for the route's primary controller.
+        key: const PageStorageKey('discover-portrait-scroll'),
+        primary: false,
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.only(bottom: 24),
+        padding: const EdgeInsets.only(bottom: 32),
         children: [
           _buildHeader(),
           _buildFavoritesBlock(),
@@ -170,6 +174,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       color: AppColors.primary,
       child: ListView(
         key: PageStorageKey('${key.toString()}-scroll'),
+        primary: false,
         physics: const AlwaysScrollableScrollPhysics(),
         padding: EdgeInsets.only(
           bottom: compact
