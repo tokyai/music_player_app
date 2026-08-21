@@ -1258,8 +1258,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
             : const Color(0xFF414750);
         final isLandscape =
             MediaQuery.orientationOf(ctx) == Orientation.landscape;
+        final aiConfig = Provider.of<AiConfigController?>(ctx);
         final showAiPet =
-            Provider.of<AiConfigController?>(ctx)?.showPetOnPlayerPage ?? true;
+            (aiConfig?.showAssistantOnAllPages ?? true) &&
+            (aiConfig?.showPetOnPlayerPage ?? true);
 
         return Scaffold(
           body: Stack(
@@ -1408,8 +1410,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Widget _buildEmptyPlayer(BuildContext ctx) {
     final isLandscape = MediaQuery.orientationOf(ctx) == Orientation.landscape;
+    final aiConfig = Provider.of<AiConfigController?>(ctx);
     final showAiPet =
-        Provider.of<AiConfigController?>(ctx)?.showPetOnPlayerPage ?? true;
+        (aiConfig?.showAssistantOnAllPages ?? true) &&
+        (aiConfig?.showPetOnPlayerPage ?? true);
     final illustration = Container(
       width: 96,
       height: 96,
@@ -1463,20 +1467,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Widget _buildAiAssistantOverlay(BuildContext context) {
-    final layout = AppLayout.fromContext(context);
-    final compactLandscape = layout.isCompactLandscape;
-    return SafeArea(
-      child: Align(
-        alignment: Alignment.topRight,
-        child: Padding(
-          padding: EdgeInsets.only(
-            top: compactLandscape ? 52 : 72,
-            right: compactLandscape ? 8 : 16,
-          ),
-          child: const AiAssistantFloatingButton(),
-        ),
-      ),
-    );
+    return const AiAssistantPetOverlay();
   }
 
   Widget _buildLandscapePlayer(

@@ -93,6 +93,28 @@ enum AiWebSearchMode {
   );
 }
 
+/// Offline Android speech-recognition models bundled with the app.
+enum AiVoiceModelKind {
+  zipformerChinese(
+    label: 'Zipformer 中文（轻量）',
+    value: 'streaming-zipformer-zh-14M-2023-02-23',
+  ),
+  paraformerBilingual(
+    label: 'Paraformer 中英双语（高精度）',
+    value: 'streaming-paraformer-bilingual-zh-en',
+  );
+
+  const AiVoiceModelKind({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  static AiVoiceModelKind fromValue(String? value) => values.firstWhere(
+    (item) => item.value == value,
+    orElse: () => AiVoiceModelKind.zipformerChinese,
+  );
+}
+
 class AiAssistantConfig {
   final AiProviderKind provider;
   final AiRequestProtocol protocol;
@@ -101,6 +123,7 @@ class AiAssistantConfig {
   final String model;
   final AiReasoningEffort reasoningEffort;
   final AiWebSearchMode webSearchMode;
+  final AiVoiceModelKind voiceModel;
 
   const AiAssistantConfig({
     required this.provider,
@@ -110,6 +133,7 @@ class AiAssistantConfig {
     required this.model,
     required this.reasoningEffort,
     required this.webSearchMode,
+    this.voiceModel = AiVoiceModelKind.zipformerChinese,
   });
 
   factory AiAssistantConfig.defaults() => AiAssistantConfig(
@@ -120,6 +144,7 @@ class AiAssistantConfig {
     model: '',
     reasoningEffort: AiReasoningEffort.platformDefault,
     webSearchMode: AiWebSearchMode.automatic,
+    voiceModel: AiVoiceModelKind.zipformerChinese,
   );
 
   bool get isComplete =>
@@ -135,6 +160,7 @@ class AiAssistantConfig {
     String? model,
     AiReasoningEffort? reasoningEffort,
     AiWebSearchMode? webSearchMode,
+    AiVoiceModelKind? voiceModel,
   }) => AiAssistantConfig(
     provider: provider ?? this.provider,
     protocol: protocol ?? this.protocol,
@@ -143,6 +169,7 @@ class AiAssistantConfig {
     model: model ?? this.model,
     reasoningEffort: reasoningEffort ?? this.reasoningEffort,
     webSearchMode: webSearchMode ?? this.webSearchMode,
+    voiceModel: voiceModel ?? this.voiceModel,
   );
 
   Map<String, dynamic> toPreferencesJson() => {
@@ -152,6 +179,7 @@ class AiAssistantConfig {
     'model': model.trim(),
     'reasoningEffort': reasoningEffort.value,
     'webSearchMode': webSearchMode.value,
+    'voiceModel': voiceModel.value,
   };
 
   factory AiAssistantConfig.fromJson(
@@ -173,6 +201,7 @@ class AiAssistantConfig {
       webSearchMode: AiWebSearchMode.fromValue(
         json['webSearchMode']?.toString(),
       ),
+      voiceModel: AiVoiceModelKind.fromValue(json['voiceModel']?.toString()),
     );
   }
 
@@ -180,6 +209,123 @@ class AiAssistantConfig {
     ...toPreferencesJson(),
     'apiKey': apiKey.trim(),
   };
+}
+
+/// A saved AI endpoint/model combination. The API key is kept in [config]
+/// while normal preferences serialization deliberately omits it; explicit
+/// backups can use [toBackupJson] to include the user's chosen portable copy.
+class AiAssistantProfile {
+  final String id;
+  final String name;
+  final AiAssistantConfig config;
+
+  const AiAssistantProfile({
+    required this.id,
+    required this.name,
+    required this.config,
+  });
+
+  AiAssistantProfile copyWith({
+    String? id,
+    String? name,
+    AiAssistantConfig? config,
+  }) => AiAssistantProfile(
+    id: id ?? this.id,
+    name: name ?? this.name,
+    config: config ?? this.config,
+  );
+
+  Map<String, dynamic> toPreferencesJson() => {
+    'id': id,
+    'name': name.trim().isEmpty ? '未命名配置' : name.trim(),
+    'config': config.toPreferencesJson(),
+  };
+
+  Map<String, dynamic> toBackupJson() => {
+    'id': id,
+    'name': name.trim().isEmpty ? '未命名配置' : name.trim(),
+    'config': config.toLanJson(),
+  };
+
+  factory AiAssistantProfile.fromJson(
+    Map<String, dynamic> json, {
+    String apiKey = '',
+  }) {
+    final rawConfig = json['config'];
+    final configMap = rawConfig is Map
+        ? Map<String, dynamic>.from(rawConfig)
+        : json;
+    final embeddedKey = configMap['apiKey'];
+    return AiAssistantProfile(
+      id: json['id']?.toString().trim() ?? '',
+      name: json['name']?.toString().trim().isNotEmpty == true
+          ? json['name'].toString().trim()
+          : '未命名配置',
+      config: AiAssistantConfig.fromJson(
+        configMap,
+        apiKey: apiKey.isNotEmpty
+            ? apiKey
+            : embeddedKey is String
+            ? embeddedKey
+            : '',
+      ),
+    );
+  }
+}
+
+/// Normalized position of the desktop pet inside its available page area.
+/// Values are fractions of the maximum legal left/top offset, not pixels.
+class AiPetPosition {
+  final double x;
+  final double y;
+
+  const AiPetPosition({required this.x, required this.y});
+
+  static const centered = AiPetPosition(x: 1, y: 0);
+
+  AiPetPosition normalized() => AiPetPosition(
+    x: x.clamp(0.0, 1.0).toDouble(),
+    y: y.clamp(0.0, 1.0).toDouble(),
+  );
+
+  AiPetPosition copyWith({double? x, double? y}) =>
+      AiPetPosition(x: x ?? this.x, y: y ?? this.y);
+
+  Map<String, dynamic> toJson() => {'x': x, 'y': y};
+
+  factory AiPetPosition.fromJson(dynamic value) {
+    if (value is Map) {
+      final map = Map<String, dynamic>.from(value);
+      final x = map['x'];
+      final y = map['y'];
+      if (x is num && y is num) {
+        return AiPetPosition(x: x.toDouble(), y: y.toDouble()).normalized();
+      }
+    }
+    return centered;
+  }
+}
+
+/// A model advertised by an AI provider's model-list endpoint.
+///
+/// `id` is the value sent in chat requests. `label` may contain a more
+/// descriptive provider display name, while keeping the raw id available for
+/// gateways that use non-standard names.
+class AiModelOption {
+  final String id;
+  final String? label;
+
+  const AiModelOption({required this.id, this.label});
+
+  String get displayName =>
+      label == null || label!.trim().isEmpty ? id : '${label!.trim()} ($id)';
+
+  @override
+  bool operator ==(Object other) =>
+      other is AiModelOption && other.id == id && other.label == label;
+
+  @override
+  int get hashCode => Object.hash(id, label);
 }
 
 enum AiMessageRole { user, assistant }

@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
 import '../services/favorite_service.dart';
 
@@ -11,21 +14,43 @@ class BackupService {
   static String exportJson({
     required FavoriteService favorites,
     required PlayerProvider player,
+    AiConfigController? aiConfig,
   }) {
-    return favorites.exportJson(apiKey: player.apiKey);
+    final decoded = jsonDecode(favorites.exportJson(apiKey: player.apiKey));
+    if (decoded is! Map) {
+      throw const FormatException('收藏备份生成失败');
+    }
+    decoded['playerSettings'] = player.toBackupJson();
+    if (aiConfig != null) {
+      decoded['aiAssistant'] = aiConfig.toBackupJson();
+    }
+    return const JsonEncoder.withIndent('  ').convert(decoded);
   }
 
   static Future<BackupRestoreResult> importJson({
     required String raw,
     required FavoriteService favorites,
     required PlayerProvider player,
+    AiConfigController? aiConfig,
     FavoriteImportMode mode = FavoriteImportMode.merge,
   }) async {
+    final aiBackup = _readAiBackup(raw);
+    final playerBackup = _readPlayerBackup(raw);
     final result = await favorites.importJson(raw, mode: mode);
     var apiKeyRestored = false;
     if (result.apiKeyPresent) {
       await player.setApiKey(result.apiKey ?? '');
       apiKeyRestored = true;
+    }
+    var aiConfigRestored = false;
+    if (aiBackup != null && aiConfig != null) {
+      await aiConfig.restoreBackupJson(aiBackup);
+      aiConfigRestored = true;
+    }
+    var playerSettingsRestored = false;
+    if (playerBackup != null) {
+      await player.restoreBackupJson(playerBackup);
+      playerSettingsRestored = true;
     }
     return BackupRestoreResult(
       songsAdded: result.added,
@@ -37,7 +62,40 @@ class BackupService {
       playlistsAdded: result.playlistsAdded,
       playlistsSkipped: result.playlistsSkipped,
       apiKeyRestored: apiKeyRestored,
+      aiConfigRestored: aiConfigRestored,
+      playerSettingsRestored: playerSettingsRestored,
     );
+  }
+
+  static Map<String, dynamic>? _readAiBackup(String raw) {
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(raw);
+    } on FormatException {
+      // FavoriteService owns the user-facing JSON error for malformed files.
+      return null;
+    }
+    if (decoded is! Map || !decoded.containsKey('aiAssistant')) return null;
+    final value = decoded['aiAssistant'];
+    if (value is! Map) {
+      throw const FormatException('备份文件中的 AI 助理数据格式错误');
+    }
+    return Map<String, dynamic>.from(value);
+  }
+
+  static Map<String, dynamic>? _readPlayerBackup(String raw) {
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(raw);
+    } on FormatException {
+      return null;
+    }
+    if (decoded is! Map || !decoded.containsKey('playerSettings')) return null;
+    final value = decoded['playerSettings'];
+    if (value is! Map) {
+      throw const FormatException('备份文件中的播放器设置格式错误');
+    }
+    return Map<String, dynamic>.from(value);
   }
 }
 
@@ -51,6 +109,8 @@ class BackupRestoreResult {
   final int playlistsAdded;
   final int playlistsSkipped;
   final bool apiKeyRestored;
+  final bool aiConfigRestored;
+  final bool playerSettingsRestored;
 
   const BackupRestoreResult({
     required this.songsAdded,
@@ -62,5 +122,7 @@ class BackupRestoreResult {
     required this.playlistsAdded,
     required this.playlistsSkipped,
     required this.apiKeyRestored,
+    this.aiConfigRestored = false,
+    this.playerSettingsRestored = false,
   });
 }

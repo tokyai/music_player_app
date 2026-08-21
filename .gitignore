@@ -48,3 +48,5 @@ reference/
 update*.json
 *.key
 /output
+/tmp
+/sherpa

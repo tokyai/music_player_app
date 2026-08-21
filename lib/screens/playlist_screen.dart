@@ -367,7 +367,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
         );
         void openFavorites() => Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => const FavoritesScreen()),
+          MaterialPageRoute(builder: (_) => const FavoriteSongsScreen()),
         );
         if (isLandscape && !isCompact) {
           return OutlinedButton.icon(

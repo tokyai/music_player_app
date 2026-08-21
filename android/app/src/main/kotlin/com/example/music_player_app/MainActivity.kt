@@ -1,19 +1,30 @@
 package com.example.music_player_app
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
+import android.os.Process
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.view.KeyEvent
 import androidx.annotation.NonNull
 import androidx.core.content.FileProvider
 import com.ryanheise.audioservice.AudioServiceActivity
+import io.flutter.FlutterInjector
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -26,6 +37,17 @@ class MainActivity : AudioServiceActivity() {
         const val FAVORITES_FILE_CHANNEL = "music_player/favorites_file"
         const val EXTERNAL_MEDIA_CHANNEL = "music_player/external_media"
         const val AI_TTS_CHANNEL = "music_player/ai_tts"
+        const val AI_AUDIO_CHANNEL = "music_player/ai_audio"
+        const val AI_MODEL_CHANNEL = "music_player/ai_model"
+        const val AI_CAR_AUDIO_CONTROL_CHANNEL = "music_player/ai_car_audio_control"
+        const val AI_CAR_AUDIO_STREAM_CHANNEL = "music_player/ai_car_audio_stream"
+        const val ZIPFORMER_MODEL = "streaming-zipformer-zh-14M-2023-02-23"
+        const val PARAFORMER_MODEL = "streaming-paraformer-bilingual-zh-en"
+        const val CAR_AUDIO_SAMPLE_RATE = 16000
+        const val CAR_AUDIO_CHANNEL_MASK = 60
+        const val CAR_AUDIO_CHANNEL_COUNT = 4
+        const val CAR_AUDIO_MIX_DIVISOR = 2
+        const val CAR_AUDIO_READ_BYTES = 4096
         const val REQUEST_IMPORT_FAVORITES = 4101
         const val REQUEST_EXPORT_FAVORITES = 4102
         const val MAX_BACKUP_BYTES = 5 * 1024 * 1024
@@ -36,6 +58,16 @@ class MainActivity : AudioServiceActivity() {
     private var foregroundMediaKeyChannel: MethodChannel? = null
     private var floatingCapsuleChannel: MethodChannel? = null
     private var aiTtsChannel: MethodChannel? = null
+    private var aiAudioChannel: MethodChannel? = null
+    private var aiModelChannel: MethodChannel? = null
+    private var aiCarAudioControlChannel: MethodChannel? = null
+    private var aiCarAudioEventChannel: EventChannel? = null
+    @Volatile private var aiCarAudioRunning = false
+    @Volatile private var aiCarAudioSink: EventChannel.EventSink? = null
+    private var aiCarAudioRecord: AudioRecord? = null
+    private var aiCarAudioThread: Thread? = null
+    private var aiAudioFocusRequest: AudioFocusRequest? = null
+    private var aiAudioFocusHeld = false
     private var aiTts: TextToSpeech? = null
     private var aiTtsReady = false
     private var aiTtsInitializing = false
@@ -43,6 +75,20 @@ class MainActivity : AudioServiceActivity() {
     private var pendingAiTtsSpeakResult: MethodChannel.Result? = null
     private var pendingAiTtsUtteranceId: String? = null
     private var foregroundMediaKeysEnabled = false
+
+    private val aiAudioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        if (change == AudioManager.AUDIOFOCUS_LOSS ||
+            change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
+        ) {
+            // A lost transient request must be abandoned explicitly; otherwise
+            // some head units keep the old request in their focus stack.
+            abandonAiAudioFocus()
+        }
+        try {
+            aiAudioChannel?.invokeMethod("focusChanged", change)
+        } catch (_: Exception) {
+        }
+    }
 
     private val aiTtsProgressListener = object : UtteranceProgressListener() {
         override fun onStart(utteranceId: String?) = Unit
@@ -70,7 +116,6 @@ class MainActivity : AudioServiceActivity() {
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val appContext = applicationContext
-
         foregroundMediaKeyChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "music_player/foreground_media_keys"
@@ -118,6 +163,61 @@ class MainActivity : AudioServiceActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        aiAudioChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            AI_AUDIO_CHANNEL
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "requestFocus" -> result.success(requestAiAudioFocus())
+                    "abandonFocus" -> result.success(abandonAiAudioFocus())
+                    else -> result.notImplemented()
+                }
+            }
+        }
+
+        aiModelChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            AI_MODEL_CHANNEL
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "prepare" -> prepareAiModel(
+                        call.argument<String>("model") ?: ZIPFORMER_MODEL,
+                        result
+                    )
+                    else -> result.notImplemented()
+                }
+            }
+        }
+
+        aiCarAudioControlChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            AI_CAR_AUDIO_CONTROL_CHANNEL
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "getCaptureProfile" -> result.success(getCarAudioCaptureProfile())
+                    else -> result.notImplemented()
+                }
+            }
+        }
+
+        aiCarAudioEventChannel = EventChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            AI_CAR_AUDIO_STREAM_CHANNEL
+        ).also { channel ->
+            channel.setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+                    startCarArrayCapture(events)
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    stopCarArrayCapture()
+                }
+            })
+        }
 
         aiTtsChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -213,11 +313,306 @@ class MainActivity : AudioServiceActivity() {
         foregroundMediaKeyChannel = null
         floatingCapsuleChannel?.setMethodCallHandler(null)
         floatingCapsuleChannel = null
+        stopCarArrayCapture()
+        aiCarAudioEventChannel?.setStreamHandler(null)
+        aiCarAudioEventChannel = null
+        aiCarAudioControlChannel?.setMethodCallHandler(null)
+        aiCarAudioControlChannel = null
+        abandonAiAudioFocus()
+        aiAudioChannel?.setMethodCallHandler(null)
+        aiAudioChannel = null
+        aiModelChannel?.setMethodCallHandler(null)
+        aiModelChannel = null
         aiTtsChannel?.setMethodCallHandler(null)
         aiTtsChannel = null
         releaseAiTts()
         FloatCapsuleManager.clearCallbacks()
         super.onDestroy()
+    }
+
+    /**
+     * Requests a short-lived assistant focus while the voice recognizer owns
+     * the microphone. This is public Android audio policy and does not select
+     * an OEM-only AudioRecord source or alter Bluetooth routing.
+     */
+    private fun requestAiAudioFocus(): Boolean {
+        if (aiAudioFocusHeld) return true
+        val manager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return false
+        return try {
+            val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val attributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+                val request = AudioFocusRequest.Builder(
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                )
+                    .setAudioAttributes(attributes)
+                    .setWillPauseWhenDucked(true)
+                    .setOnAudioFocusChangeListener(aiAudioFocusListener)
+                    .build()
+                aiAudioFocusRequest = request
+                manager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            } else {
+                // Android 7 and older car head units only expose the stream API.
+                manager.requestAudioFocus(
+                    aiAudioFocusListener,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            }
+            aiAudioFocusHeld = granted
+            if (!granted) aiAudioFocusRequest = null
+            granted
+        } catch (_: SecurityException) {
+            aiAudioFocusRequest = null
+            aiAudioFocusHeld = false
+            false
+        } catch (_: Exception) {
+            aiAudioFocusRequest = null
+            aiAudioFocusHeld = false
+            false
+        }
+    }
+
+    private fun abandonAiAudioFocus(): Boolean {
+        val manager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return false
+        if (!aiAudioFocusHeld && aiAudioFocusRequest == null) return true
+        return try {
+            val abandoned = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                aiAudioFocusRequest?.let {
+                    manager.abandonAudioFocusRequest(it)
+                } ?: AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            } else {
+                manager.abandonAudioFocus(aiAudioFocusListener)
+            }
+            aiAudioFocusRequest = null
+            aiAudioFocusHeld = false
+            abandoned == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        } catch (_: Exception) {
+            aiAudioFocusRequest = null
+            aiAudioFocusHeld = false
+            false
+        }
+    }
+
+    private fun getCarAudioCaptureProfile(): Map<String, Any> {
+        val deviceType = getSystemProperty("ro.build.ohos.devicetype")
+        val minBufferSize = if (deviceType == "car") {
+            AudioRecord.getMinBufferSize(
+                CAR_AUDIO_SAMPLE_RATE,
+                CAR_AUDIO_CHANNEL_MASK,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+        } else {
+            AudioRecord.ERROR_BAD_VALUE
+        }
+        return mapOf(
+            "supported" to (deviceType == "car" && minBufferSize > 0),
+            "deviceType" to deviceType,
+            "sampleRate" to CAR_AUDIO_SAMPLE_RATE,
+            "audioSource" to MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            "channelMask" to CAR_AUDIO_CHANNEL_MASK,
+            "channelCount" to CAR_AUDIO_CHANNEL_COUNT,
+            "mixDivisor" to CAR_AUDIO_MIX_DIVISOR,
+            "minBufferSize" to minBufferSize
+        )
+    }
+
+    private fun getSystemProperty(key: String): String {
+        return try {
+            val properties = Class.forName("android.os.SystemProperties")
+            val getter = properties.getMethod(
+                "get",
+                String::class.java,
+                String::class.java
+            )
+            getter.invoke(null, key, "") as? String ?: ""
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startCarArrayCapture(events: EventChannel.EventSink) {
+        stopCarArrayCapture()
+        val profile = getCarAudioCaptureProfile()
+        if (profile["supported"] != true) {
+            events.error(
+                "CAR_ARRAY_UNAVAILABLE",
+                "当前设备没有可用的四通道车载麦克风阵列",
+                profile
+            )
+            return
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            events.error("MIC_PERMISSION_DENIED", "麦克风权限未授予", null)
+            return
+        }
+
+        val minBufferSize = profile["minBufferSize"] as Int
+        val internalBufferSize = maxOf(minBufferSize * 2, CAR_AUDIO_READ_BYTES * 2)
+        val recorder = try {
+            AudioRecord(
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                CAR_AUDIO_SAMPLE_RATE,
+                CAR_AUDIO_CHANNEL_MASK,
+                AudioFormat.ENCODING_PCM_16BIT,
+                internalBufferSize
+            )
+        } catch (error: Exception) {
+            events.error("CAR_ARRAY_CREATE_FAILED", error.message, profile)
+            return
+        }
+        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+            recorder.release()
+            events.error("CAR_ARRAY_INIT_FAILED", "四通道车载麦克风初始化失败", profile)
+            return
+        }
+        try {
+            recorder.startRecording()
+        } catch (error: Exception) {
+            recorder.release()
+            events.error("CAR_ARRAY_START_FAILED", error.message, profile)
+            return
+        }
+        if (recorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            recorder.release()
+            events.error("CAR_ARRAY_START_FAILED", "四通道车载麦克风未进入录音状态", profile)
+            return
+        }
+
+        aiCarAudioRecord = recorder
+        aiCarAudioSink = events
+        aiCarAudioRunning = true
+        events.success(mapOf("event" to "started"))
+        aiCarAudioThread = Thread {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+            val buffer = ByteArray(CAR_AUDIO_READ_BYTES)
+            try {
+                while (aiCarAudioRunning && aiCarAudioRecord === recorder) {
+                    val count = recorder.read(buffer, 0, buffer.size)
+                    if (count > 0) {
+                        val chunk = buffer.copyOf(count)
+                        runOnUiThread {
+                            if (aiCarAudioRunning &&
+                                aiCarAudioRecord === recorder &&
+                                aiCarAudioSink === events
+                            ) {
+                                events.success(chunk)
+                            }
+                        }
+                    } else if (count != 0) {
+                        throw IllegalStateException("AudioRecord.read failed: $count")
+                    }
+                }
+            } catch (error: Exception) {
+                if (aiCarAudioRunning && aiCarAudioRecord === recorder) {
+                    runOnUiThread {
+                        if (aiCarAudioSink === events) {
+                            events.error("CAR_ARRAY_READ_FAILED", error.message, null)
+                        }
+                    }
+                }
+            } finally {
+                try {
+                    if (recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                        recorder.stop()
+                    }
+                } catch (_: Exception) {
+                }
+                recorder.release()
+                if (aiCarAudioRecord === recorder) {
+                    aiCarAudioRecord = null
+                    aiCarAudioRunning = false
+                }
+            }
+        }.also {
+            it.name = "ai-car-mic"
+            it.start()
+        }
+    }
+
+    private fun stopCarArrayCapture() {
+        aiCarAudioRunning = false
+        aiCarAudioSink = null
+        val recorder = aiCarAudioRecord
+        aiCarAudioRecord = null
+        try {
+            if (recorder?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                recorder.stop()
+            }
+        } catch (_: Exception) {
+        }
+        aiCarAudioThread?.interrupt()
+        aiCarAudioThread = null
+    }
+
+    private fun prepareAiModel(modelId: String, result: MethodChannel.Result) {
+        Thread {
+            try {
+                val modelFiles = when (modelId) {
+                    ZIPFORMER_MODEL -> linkedMapOf(
+                        "encoder" to "encoder-epoch-99-avg-1.int8.onnx",
+                        "decoder" to "decoder-epoch-99-avg-1.onnx",
+                        "joiner" to "joiner-epoch-99-avg-1.int8.onnx",
+                        "tokens" to "tokens.txt"
+                    )
+                    PARAFORMER_MODEL -> linkedMapOf(
+                        "encoder" to "encoder.int8.onnx",
+                        "decoder" to "decoder.int8.onnx",
+                        "tokens" to "tokens.txt"
+                    )
+                    else -> throw IllegalArgumentException("不支持的离线语音模型：$modelId")
+                }
+                val modelVersion = when (modelId) {
+                    ZIPFORMER_MODEL -> "$modelId-mixed-precision-v2"
+                    else -> "$modelId-int8-v1"
+                }
+                val assetDir = "assets/models/sherpa-onnx-$modelId"
+                val modelDir = File(filesDir, "ai_models/$modelVersion")
+                val marker = File(modelDir, ".ready")
+                if (!marker.isFile ||
+                    marker.readText() != modelVersion ||
+                    modelFiles.values.any { !File(modelDir, it).isFile }
+                ) {
+                    modelDir.mkdirs()
+                    modelFiles.values.forEach { fileName ->
+                        val assetName = "$assetDir/$fileName"
+                        val assetKey = FlutterInjector.instance().flutterLoader()
+                            .getLookupKeyForAsset(assetName)
+                        val output = File(modelDir, fileName)
+                        val temporary = File(modelDir, "$fileName.part")
+                        assets.open(assetKey).use { input ->
+                            temporary.outputStream().buffered().use { target ->
+                                input.copyTo(target, DEFAULT_BUFFER_SIZE)
+                            }
+                        }
+                        if (output.exists() && !output.delete()) {
+                            throw IllegalStateException("无法替换旧语音模型：$fileName")
+                        }
+                        if (!temporary.renameTo(output)) {
+                            throw IllegalStateException("无法保存语音模型：$fileName")
+                        }
+                    }
+                    marker.writeText(modelVersion)
+                }
+                val paths = modelFiles.mapValues { (_, fileName) ->
+                    File(modelDir, fileName).absolutePath
+                }
+                runOnUiThread { result.success(paths) }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    result.error(
+                        "ai_model_prepare_failed",
+                        error.message ?: "离线语音模型准备失败",
+                        null
+                    )
+                }
+            }
+        }.start()
     }
 
     private fun initializeAiTts(result: MethodChannel.Result) {

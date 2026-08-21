@@ -288,6 +288,87 @@ void main() {
     },
   );
 
+  testWidgets('AI pet scales, drags and remains bounded in both landscapes', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      for (final size in const [Size(640, 360), Size(1280, 800)]) {
+        SharedPreferences.setMockInitialValues({});
+        final fixture = await _MainFixture.create();
+        await fixture.config.setPetScale(1.5);
+        _setViewSize(tester, size);
+        await tester.pumpWidget(fixture.app());
+        await _pumpFrames(tester);
+
+        final pet = find.byKey(const ValueKey('ai-assistant-fab'));
+        final dragTarget = find.byKey(const ValueKey('ai-assistant-pet-drag'));
+        final before = tester.getRect(pet);
+        expect(
+          before.height,
+          closeTo(size == const Size(640, 360) ? 102 : 132, 0.01),
+        );
+
+        await tester.drag(dragTarget, const Offset(-160, 80));
+        await _pumpFrames(tester);
+
+        final after = tester.getRect(pet);
+        expect(after.left, lessThan(before.left - 1));
+        expect(after.top, greaterThan(before.top + 1));
+        expect(fixture.config.petPosition.x, lessThan(1));
+        expect(fixture.config.petPosition.y, greaterThan(0));
+        expect(
+          Rect.fromLTWH(0, 0, size.width, size.height).contains(after.topLeft),
+          isTrue,
+        );
+        expect(
+          Rect.fromLTWH(
+            0,
+            0,
+            size.width,
+            size.height,
+          ).contains(after.bottomRight),
+          isTrue,
+        );
+        if (size == const Size(640, 360)) {
+          expect(
+            after.overlaps(
+              tester.getRect(
+                find.byKey(const ValueKey('mini-player-controls')),
+              ),
+            ),
+            isFalse,
+          );
+        } else {
+          expect(
+            after.overlaps(
+              tester.getRect(
+                find.byKey(
+                  const ValueKey('landscape-mini-player-qq:landscape-song'),
+                ),
+              ),
+            ),
+            isFalse,
+          );
+        }
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await tester.pumpWidget(fixture.app());
+        await _pumpFrames(tester);
+        final remounted = tester.getRect(pet);
+        expect(remounted.left, closeTo(after.left, 1));
+        expect(remounted.top, closeTo(after.top, 1));
+        expect(tester.takeException(), isNull);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        fixture.dispose();
+      }
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    }, _mockClient);
+  });
+
   testWidgets('landscape microphone can interrupt an answer in both sizes', (
     tester,
   ) async {
@@ -488,9 +569,27 @@ void main() {
               matching: find.byType(Scrollable),
             )
             .first;
-        final urlField = find.byKey(const ValueKey('ai-base-url-field'));
         final playerPetToggle = find.byKey(
           const ValueKey('ai-player-page-pet-toggle'),
+        );
+        final allPagesToggle = find.byKey(
+          const ValueKey('ai-all-pages-toggle'),
+        );
+        await tester.scrollUntilVisible(
+          allPagesToggle,
+          160,
+          scrollable: systemScroll,
+        );
+        expect(allPagesToggle.hitTestable(), findsOneWidget);
+        expect(tester.widget<SwitchListTile>(allPagesToggle).value, isTrue);
+        await tester.tap(allPagesToggle);
+        await tester.pumpAndSettle();
+        expect(config.showAssistantOnAllPages, isFalse);
+        expect(
+          (await SharedPreferences.getInstance()).getBool(
+            AiConfigController.showAssistantOnAllPagesPreferenceKey,
+          ),
+          isFalse,
         );
         await tester.scrollUntilVisible(
           playerPetToggle,
@@ -509,10 +608,87 @@ void main() {
           isFalse,
         );
 
+        final originalProfileId = config.activeProfileId;
+        final profileAdd = find.byKey(const ValueKey('ai-profile-add'));
+        await tester.scrollUntilVisible(
+          profileAdd,
+          160,
+          scrollable: systemScroll,
+        );
+        expect(profileAdd.hitTestable(), findsOneWidget);
+        await tester.tap(profileAdd);
+        await tester.pumpAndSettle();
+        final profileNameDialog = find.byKey(
+          const ValueKey('ai-profile-name-dialog-field'),
+        );
+        expect(profileNameDialog, findsOneWidget);
+        await tester.enterText(profileNameDialog, '车机备用模型');
+        await tester.tap(find.text('确定').last);
+        await tester.pumpAndSettle();
+        expect(config.profiles, hasLength(2));
+        final addedProfileId = config.activeProfileId;
+        expect(addedProfileId, isNot(originalProfileId));
+
+        final profileTile = find.byKey(ValueKey('ai-profile-$addedProfileId'));
+        final renameProfile = find.byKey(
+          ValueKey('ai-profile-rename-$addedProfileId'),
+        );
+        final deleteProfile = find.byKey(
+          ValueKey('ai-profile-delete-$addedProfileId'),
+        );
+        await tester.scrollUntilVisible(
+          profileTile,
+          120,
+          scrollable: systemScroll,
+        );
+        expect(profileTile, findsOneWidget);
+        expect(renameProfile.hitTestable(), findsOneWidget);
+        expect(deleteProfile.hitTestable(), findsOneWidget);
+
+        final petScaleSlider = find.byKey(
+          const ValueKey('ai-pet-scale-slider'),
+        );
+        await tester.scrollUntilVisible(
+          petScaleSlider,
+          160,
+          scrollable: systemScroll,
+        );
+        final sliderRect = tester.getRect(petScaleSlider);
+        await tester.tapAt(
+          Offset(
+            sliderRect.left + sliderRect.width * 0.72,
+            sliderRect.center.dy,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(config.petScale, greaterThan(1));
+
+        await tester.scrollUntilVisible(
+          renameProfile,
+          -180,
+          scrollable: systemScroll,
+        );
+        await tester.tap(renameProfile);
+        await tester.pumpAndSettle();
+        final editor = find.byKey(const ValueKey('ai-profile-editor-dialog'));
+        expect(editor, findsOneWidget);
+        final editorScroll = find
+            .descendant(of: editor, matching: find.byType(Scrollable))
+            .first;
+        final modelField = find.byKey(const ValueKey('ai-model-field'));
+        await tester.scrollUntilVisible(
+          modelField,
+          220,
+          scrollable: editorScroll,
+        );
+        await tester.enterText(modelField, 'car-test-model');
+        await tester.pump();
+
+        final urlField = find.byKey(const ValueKey('ai-base-url-field'));
         await tester.scrollUntilVisible(
           urlField,
           220,
-          scrollable: systemScroll,
+          scrollable: editorScroll,
         );
         expect(urlField.hitTestable(), findsOneWidget);
         expect(
@@ -520,7 +696,32 @@ void main() {
           'https://example.test/v1',
         );
 
+        final voiceModel = find.byKey(
+          ValueKey('ai-voice-model-${AiVoiceModelKind.zipformerChinese.value}'),
+        );
+        await tester.scrollUntilVisible(
+          voiceModel,
+          160,
+          scrollable: editorScroll,
+        );
+        expect(voiceModel.hitTestable(), findsOneWidget);
+        await tester.tap(voiceModel);
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.text(AiVoiceModelKind.paraformerBilingual.label).last,
+        );
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(
+            ValueKey(
+              'ai-voice-model-${AiVoiceModelKind.paraformerBilingual.value}',
+            ),
+          ),
+          findsOneWidget,
+        );
+
         for (final key in const [
+          ValueKey('ai-model-fetch'),
           ValueKey('ai-config-save'),
           ValueKey('ai-config-test'),
           ValueKey('ai-config-qr-input'),
@@ -529,13 +730,56 @@ void main() {
           await tester.scrollUntilVisible(
             action,
             160,
-            scrollable: systemScroll,
+            scrollable: editorScroll,
           );
           expect(action.hitTestable(), findsOneWidget);
         }
+        final save = find.byKey(const ValueKey('ai-config-save'));
+        await tester.scrollUntilVisible(save, 160, scrollable: editorScroll);
+        await tester.tap(save);
+        await tester.pumpAndSettle();
+        expect(config.config.voiceModel, AiVoiceModelKind.paraformerBilingual);
+        expect(config.config.model, 'car-test-model');
+        expect(config.activeProfile?.name, '车机备用模型');
+
+        await tester.tap(find.byKey(const ValueKey('ai-profile-editor-close')));
+        await tester.pumpAndSettle();
+        expect(editor, findsNothing);
+
+        final originalTile = find.byKey(
+          ValueKey('ai-profile-$originalProfileId'),
+        );
+        await tester.scrollUntilVisible(
+          originalTile,
+          -220,
+          scrollable: systemScroll,
+        );
+        await tester.tap(originalTile);
+        await tester.pumpAndSettle();
+        expect(config.activeProfileId, originalProfileId);
+        expect(config.config.model, 'test-model');
+        await tester.scrollUntilVisible(
+          profileTile,
+          220,
+          scrollable: systemScroll,
+        );
+        await tester.tap(profileTile);
+        await tester.pumpAndSettle();
+        expect(config.activeProfileId, addedProfileId);
+        expect(config.config.model, 'car-test-model');
         expect(tester.takeException(), isNull);
 
+        await tester.tap(renameProfile);
+        await tester.pumpAndSettle();
         final qrInput = find.byKey(const ValueKey('ai-config-qr-input'));
+        final qrEditorScroll = find
+            .descendant(of: editor, matching: find.byType(Scrollable))
+            .first;
+        await tester.scrollUntilVisible(
+          qrInput,
+          220,
+          scrollable: qrEditorScroll,
+        );
         await tester.tap(qrInput);
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 100)),
@@ -555,6 +799,8 @@ void main() {
         await tester.tap(close);
         await tester.pumpAndSettle();
         expect(qrCode, findsNothing);
+        await tester.tap(find.byKey(const ValueKey('ai-profile-editor-close')));
+        await tester.pumpAndSettle();
 
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();

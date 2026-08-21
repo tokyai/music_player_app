@@ -21,6 +21,10 @@ class SongTile extends StatelessWidget {
   final ValueChanged<bool>? onSelectionChanged;
   final VoidCallback? onLongPress;
 
+  /// Uses the bordered, padded collection card treatment used by favorite
+  /// playlist rows. The default keeps the existing compact song-row style.
+  final bool collectionCard;
+
   const SongTile({
     super.key,
     required this.song,
@@ -33,6 +37,7 @@ class SongTile extends StatelessWidget {
     this.selected = false,
     this.onSelectionChanged,
     this.onLongPress,
+    this.collectionCard = false,
   }) : assert(!selectionMode || onSelectionChanged != null);
 
   @override
@@ -52,30 +57,47 @@ class SongTile extends StatelessWidget {
       builder: (context, constraints) {
         final veryCompact = constraints.maxWidth < 180;
         final narrowPane = constraints.maxWidth < 380;
-        final coverSize = layout.songCoverSize;
+        final coverSize = collectionCard
+            ? (layout.usesLargeTypography
+                  ? 88.0
+                  : (layout.isCompactLandscape ? 58.0 : 72.0))
+            : layout.songCoverSize;
         final actionIconSize = layout.usesLargeTypography ? 26.0 : 22.0;
+        final cardPadding = collectionCard
+            ? EdgeInsets.all(layout.isCompactLandscape ? 8 : 10)
+            : EdgeInsets.zero;
         return Container(
           decoration: BoxDecoration(
             color: selectionMode && selected
                 ? AppColors.primarySoft
                 : isCurrent
                 ? AppColors.primarySoft.withValues(alpha: 0.72)
+                : collectionCard
+                ? AppColors.surface
                 : Colors.transparent,
             borderRadius: BorderRadius.circular(AppRadius.card),
+            border: collectionCard
+                ? Border.all(color: AppColors.outline)
+                : null,
           ),
+          padding: cardPadding,
           child: ListTile(
-            minTileHeight: layout.songRowHeight,
+            minTileHeight: collectionCard ? coverSize : layout.songRowHeight,
+            minVerticalPadding: collectionCard ? 0 : null,
             tileColor: Colors.transparent,
             selectedTileColor: Colors.transparent,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(AppRadius.card),
             ),
-            contentPadding: EdgeInsets.symmetric(
-              horizontal: veryCompact
-                  ? 8
-                  : (layout.usesLargeTypography ? 20 : 14),
-              vertical: layout.usesLargeTypography ? 8 : 4,
-            ),
+            horizontalTitleGap: collectionCard ? 12 : null,
+            contentPadding: collectionCard
+                ? EdgeInsets.zero
+                : EdgeInsets.symmetric(
+                    horizontal: veryCompact
+                        ? 8
+                        : (layout.usesLargeTypography ? 20 : 14),
+                    vertical: layout.usesLargeTypography ? 8 : 4,
+                  ),
             leading: veryCompact
                 ? null
                 : ClipRRect(
@@ -97,15 +119,19 @@ class SongTile extends StatelessWidget {
                 Expanded(
                   child: Text(
                     song.name,
-                    maxLines: 1,
+                    maxLines: collectionCard ? 2 : 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: isCurrent
                           ? AppColors.primary
                           : AppColors.textPrimary,
-                      fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+                      fontWeight: isCurrent
+                          ? FontWeight.w700
+                          : (collectionCard
+                                ? FontWeight.w600
+                                : FontWeight.w500),
                       fontSize: layout.songTitleSize,
-                      height: 1.25,
+                      height: collectionCard ? null : 1.25,
                     ),
                   ),
                 ),
@@ -119,11 +145,11 @@ class SongTile extends StatelessWidget {
               padding: const EdgeInsets.only(top: 2),
               child: Text(
                 '${song.artist} · ${song.album}',
-                maxLines: 1,
+                maxLines: collectionCard ? 2 : 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontSize: layout.songSubtitleSize,
-                  height: 1.25,
+                  height: collectionCard ? null : 1.25,
                   color: isCurrent
                       ? AppColors.primary.withOpacity(0.7)
                       : AppColors.textSecondary,
@@ -143,10 +169,8 @@ class SongTile extends StatelessWidget {
                     children: [
                       if (showFavorite)
                         Selector<FavoriteService, bool>(
-                          selector: (_, favorites) => favorites.isFavorite(
-                            song.platform,
-                            song.id,
-                          ),
+                          selector: (_, favorites) =>
+                              favorites.isFavorite(song.platform, song.id),
                           builder: (ctx, isFav, _) {
                             final favorites = ctx.read<FavoriteService>();
                             return IconButton(

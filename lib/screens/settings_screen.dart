@@ -9,7 +9,6 @@ import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
 import '../providers/theme_controller.dart';
 import '../services/audio_cache_service.dart';
-import '../services/ai_service.dart';
 import '../services/favorite_service.dart';
 import '../services/floating_capsule_service.dart';
 import '../services/lan_ai_config_service.dart';
@@ -18,6 +17,7 @@ import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../theme/lyric_style.dart';
 import '../widgets/bilibili_login_dialog.dart';
+import '../widgets/ai_profile_editor_dialog.dart';
 import '../widgets/remote_focusable.dart';
 import 'backup_restore_screen.dart';
 import 'cache_list_screen.dart';
@@ -35,19 +35,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _apiKeyController = TextEditingController();
   bool _obscureKey = true;
   bool _apiKeyEdited = false;
-  final _aiUrlController = TextEditingController();
-  final _aiApiKeyController = TextEditingController();
-  final _aiModelController = TextEditingController();
   late final AiConfigController _aiConfigController;
   late final bool _ownsAiConfigController;
-  AiProviderKind _aiProvider = AiProviderKind.openAi;
-  AiRequestProtocol _aiProtocol = AiRequestProtocol.openAiResponses;
-  AiReasoningEffort _aiReasoning = AiReasoningEffort.platformDefault;
-  AiWebSearchMode _aiWebSearch = AiWebSearchMode.automatic;
-  bool _obscureAiKey = true;
-  bool _aiConfigEdited = false;
-  bool _testingAiConnection = false;
-  bool _savingAiConfig = false;
+  double _petScaleDraft = AiConfigController.minPetScale + 0.35;
 
   String _versionName = '';
   String _versionCode = '';
@@ -67,10 +57,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _aiConfigController =
         sharedAiConfig ??
         AiConfigController(secretStore: MemoryAiSecretStore());
-    _applyAiConfig(_aiConfigController.config);
+    _petScaleDraft = _aiConfigController.petScale;
+    _aiConfigController.addListener(_syncPetScaleDraft);
     _aiConfigController.ready.then((_) {
-      if (mounted && !_aiConfigEdited) {
-        setState(() => _applyAiConfig(_aiConfigController.config));
+      if (mounted) {
+        setState(() {
+          _petScaleDraft = _aiConfigController.petScale;
+        });
       }
     });
     final player = context.read<PlayerProvider>();
@@ -83,6 +76,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadVersion();
     _loadCacheInfo();
     _loadLyricStyleSettings();
+  }
+
+  void _syncPetScaleDraft() {
+    if (!mounted) return;
+    final scale = _aiConfigController.petScale;
+    if ((_petScaleDraft - scale).abs() < 0.001) return;
+    setState(() => _petScaleDraft = scale);
   }
 
   Future<void> _loadVersion() async {
@@ -226,152 +226,160 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return true;
   }
 
-  void _applyAiConfig(AiAssistantConfig config) {
-    _aiProvider = config.provider;
-    _aiProtocol = config.protocol;
-    _aiReasoning = config.reasoningEffort;
-    _aiWebSearch = config.webSearchMode;
-    _aiUrlController.text = config.baseUrl;
-    _aiApiKeyController.text = config.apiKey;
-    _aiModelController.text = config.model;
+  Future<void> _selectAiProfile(AiAssistantProfile profile) async {
+    await _aiConfigController.selectProfile(profile.id);
   }
 
-  AiAssistantConfig _aiConfigFromForm() => AiAssistantConfig(
-    provider: _aiProvider,
-    protocol: _aiProtocol,
-    baseUrl: _aiUrlController.text.trim(),
-    apiKey: _aiApiKeyController.text.trim(),
-    model: _aiModelController.text.trim(),
-    reasoningEffort: _aiReasoning,
-    webSearchMode: _aiWebSearch,
-  );
-
-  void _selectAiProvider(AiProviderKind provider) {
-    final previousDefault = _aiProvider.defaultBaseUrl;
-    final currentUrl = _aiUrlController.text.trim();
-    setState(() {
-      _aiProvider = provider;
-      _aiProtocol = provider.defaultProtocol;
-      if (currentUrl.isEmpty || currentUrl == previousDefault) {
-        _aiUrlController.text = provider.defaultBaseUrl;
-      }
-      _aiConfigEdited = true;
-    });
+  Future<String?> _askProfileName({String initial = ''}) async {
+    var value = initial;
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(initial.isEmpty ? '新增模型配置' : '重命名模型配置'),
+        content: TextFormField(
+          key: const ValueKey('ai-profile-name-dialog-field'),
+          autofocus: true,
+          initialValue: initial,
+          maxLength: 40,
+          decoration: const InputDecoration(labelText: '配置名称'),
+          onChanged: (next) => value = next,
+          onFieldSubmitted: (value) =>
+              Navigator.pop(dialogContext, value.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, value.trim()),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    return result?.trim().isEmpty == true ? null : result?.trim();
   }
 
-  Future<void> _saveAiConfig() async {
-    if (_savingAiConfig) return;
-    final config = _aiConfigFromForm();
-    if (!config.isComplete) {
+  Future<void> _createAiProfile() async {
+    final name = await _askProfileName();
+    if (name == null) return;
+    final current = _aiConfigController.config;
+    final profile = await _aiConfigController.createProfile(
+      name: name,
+      config: current.copyWith(model: ''),
+    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已新增模型配置“${profile.name}”，请点击编辑填写完整参数')),
+      );
+    }
+  }
+
+  Future<void> _renameAiProfile(AiAssistantProfile profile) async {
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AiProfileEditorDialog(
+        controller: _aiConfigController,
+        profile: profile,
+        onScanConfig: _showAiConfigQrInput,
+      ),
+    );
+  }
+
+  Future<void> _deleteAiProfile(AiAssistantProfile profile) async {
+    if (_aiConfigController.profiles.length <= 1) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('请完整填写中转站 URL、API Key 和模型')));
+      ).showSnackBar(const SnackBar(content: Text('至少保留一个模型配置')));
       return;
     }
-    setState(() => _savingAiConfig = true);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('删除模型配置？'),
+        content: Text('将删除“${profile.name}”及其对应的中转站 Key。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
     try {
-      await _aiConfigController.save(config);
-      if (!mounted) return;
-      setState(() {
-        _savingAiConfig = false;
-        _aiConfigEdited = false;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('AI 助理配置已安全保存'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      await _aiConfigController.deleteProfile(profile.id);
     } catch (error) {
-      if (!mounted) return;
-      setState(() => _savingAiConfig = false);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('保存失败：$error')));
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('删除失败：$error')));
+      }
     }
   }
 
-  Future<void> _testAiConnection() async {
-    if (_testingAiConnection) return;
-    final config = _aiConfigFromForm();
-    if (!config.isComplete) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('请先完整填写 AI 配置')));
-      return;
-    }
-    setState(() => _testingAiConnection = true);
-    final service = AiAssistantService();
-    try {
-      final result = await service.checkConnection(
-        config,
-        checkSearch: config.webSearchMode != AiWebSearchMode.disabled,
-      );
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result.message),
-          backgroundColor: result.success ? null : Colors.redAccent,
-          duration: const Duration(seconds: 4),
-        ),
-      );
-    } finally {
-      service.close();
-      if (mounted) setState(() => _testingAiConnection = false);
-    }
-  }
-
-  Future<void> _showAiConfigQrInput() async {
+  Future<AiAssistantConfig?> _showAiConfigQrInput(String profileId) async {
     FocusManager.instance.primaryFocus?.unfocus();
     late final LanAiConfigSession session;
     try {
       session = await LanAiConfigService.start();
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted) return null;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('启动扫码配置失败：$error')));
-      return;
+      return null;
     }
     if (!mounted) {
       await session.stop();
-      return;
+      return null;
     }
-    final saveFuture = _receiveAndSaveAiConfig(session);
+    final saveFuture = _receiveAndSaveAiConfig(session, profileId);
+    final statusFuture = saveFuture.then((config) => config != null);
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
       builder: (_) =>
-          _AiConfigQrDialog(session: session, saveFuture: saveFuture),
+          _AiConfigQrDialog(session: session, saveFuture: statusFuture),
     );
     await session.stop();
     if (mounted) FocusManager.instance.primaryFocus?.unfocus();
+    return saveFuture;
   }
 
-  Future<bool> _receiveAndSaveAiConfig(LanAiConfigSession session) async {
-    final config = await session.receivedConfig;
-    if (config == null) return false;
-    await _aiConfigController.save(config);
-    if (!mounted) return true;
-    setState(() {
-      _applyAiConfig(config);
-      _aiConfigEdited = false;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('手机提交的 AI 配置已安全保存'),
-        duration: Duration(seconds: 2),
-      ),
-    );
-    return true;
+  Future<AiAssistantConfig?> _receiveAndSaveAiConfig(
+    LanAiConfigSession session,
+    String profileId,
+  ) async {
+    final received = await session.receivedConfig;
+    if (received == null) return null;
+    final existing = _aiConfigController.profiles
+        .where((profile) => profile.id == profileId)
+        .firstOrNull;
+    final config = existing == null
+        ? received
+        : received.copyWith(voiceModel: existing.config.voiceModel);
+    await _aiConfigController.updateProfile(profileId, config: config);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('手机提交的 AI 配置已安全保存'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+    return config;
   }
 
   @override
   void dispose() {
     _apiKeyController.dispose();
-    _aiUrlController.dispose();
-    _aiApiKeyController.dispose();
-    _aiModelController.dispose();
+    _aiConfigController.removeListener(_syncPetScaleDraft);
     if (_ownsAiConfigController) _aiConfigController.dispose();
     super.dispose();
   }
@@ -1276,7 +1284,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(
               context,
-              MaterialPageRoute(builder: (_) => const FavoritesScreen()),
+              MaterialPageRoute(builder: (_) => const FavoriteSongsScreen()),
             ),
           ),
         ),
@@ -1290,9 +1298,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(
               context,
-              MaterialPageRoute(
-                builder: (_) => const PlaybackHistoryScreen(),
-              ),
+              MaterialPageRoute(builder: (_) => const PlaybackHistoryScreen()),
             ),
           ),
         ),
@@ -1470,6 +1476,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               RemoteTextFieldTraversal(
                 controller: _apiKeyController,
                 child: TextField(
+                  key: const ValueKey('api-key-field'),
                   controller: _apiKeyController,
                   obscureText: _obscureKey,
                   onChanged: (_) => _apiKeyEdited = true,
@@ -1526,12 +1533,105 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _buildAiProfileList(AppLayout layout) {
+    final profiles = _aiConfigController.profiles;
+    return Container(
+      key: const ValueKey('ai-profile-list'),
+      padding: const EdgeInsets.fromLTRB(10, 8, 6, 4),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceSoft,
+        borderRadius: BorderRadius.circular(AppRadius.control),
+        border: Border.all(color: AppColors.outline),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.layers_outlined, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '模型配置',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: layout.bodySize,
+                  ),
+                ),
+              ),
+              IconButton(
+                key: const ValueKey('ai-profile-add'),
+                tooltip: '新增模型配置',
+                onPressed: _createAiProfile,
+                icon: const Icon(Icons.add_circle_outline),
+              ),
+            ],
+          ),
+          if (profiles.isEmpty)
+            const Padding(padding: EdgeInsets.all(12), child: Text('还没有模型配置'))
+          else
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: profiles.length,
+              separatorBuilder: (_, _) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final profile = profiles[index];
+                final selected =
+                    profile.id == _aiConfigController.activeProfileId;
+                final model = profile.config.model.trim();
+                return ListTile(
+                  key: ValueKey('ai-profile-${profile.id}'),
+                  dense: layout.isCompactLandscape,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                  leading: Icon(
+                    selected
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked,
+                    color: selected ? AppColors.primary : AppColors.textHint,
+                  ),
+                  title: Text(
+                    profile.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    '${profile.config.provider.label} · ${model.isEmpty ? '未填写模型' : model}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  onTap: selected ? null : () => _selectAiProfile(profile),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      KeyedSubtree(
+                        key: ValueKey('ai-profile-edit-${profile.id}'),
+                        child: IconButton(
+                          key: ValueKey('ai-profile-rename-${profile.id}'),
+                          tooltip: '编辑模型配置',
+                          onPressed: () => _renameAiProfile(profile),
+                          icon: const Icon(Icons.edit_outlined, size: 20),
+                        ),
+                      ),
+                      IconButton(
+                        key: ValueKey('ai-profile-delete-${profile.id}'),
+                        tooltip: '删除',
+                        onPressed: profiles.length <= 1
+                            ? null
+                            : () => _deleteAiProfile(profile),
+                        icon: const Icon(Icons.delete_outline, size: 20),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildAiAssistantCard({bool compact = false}) {
     final layout = AppLayout.fromContext(context);
-    final searchDependsOnRelay =
-        _aiWebSearch != AiWebSearchMode.disabled &&
-        (_aiProvider == AiProviderKind.deepSeek ||
-            _aiProvider == AiProviderKind.custom);
     return _buildCard(
       compact: compact,
       children: [
@@ -1551,6 +1651,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
               AnimatedBuilder(
                 animation: _aiConfigController,
                 builder: (context, _) => SwitchListTile.adaptive(
+                  key: const ValueKey('ai-all-pages-toggle'),
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('所有页面显示 AI 助理'),
+                  subtitle: const Text('控制发现、搜索、歌单、设置和播放页的悬浮入口'),
+                  value: _aiConfigController.showAssistantOnAllPages,
+                  onChanged: _aiConfigController.setShowAssistantOnAllPages,
+                ),
+              ),
+              AnimatedBuilder(
+                animation: _aiConfigController,
+                builder: (context, _) => SwitchListTile.adaptive(
                   key: const ValueKey('ai-player-page-pet-toggle'),
                   contentPadding: EdgeInsets.zero,
                   title: const Text('播放页显示 AI 宠物'),
@@ -1559,202 +1670,71 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onChanged: _aiConfigController.setShowPetOnPlayerPage,
                 ),
               ),
+              AnimatedBuilder(
+                animation: _aiConfigController,
+                builder: (context, _) => _buildAiProfileList(layout),
+              ),
               const SizedBox(height: 12),
-              DropdownButtonFormField<AiProviderKind>(
-                key: ValueKey('ai-provider-${_aiProvider.value}'),
-                initialValue: _aiProvider,
-                isExpanded: true,
-                decoration: const InputDecoration(labelText: '厂商预设'),
-                items: AiProviderKind.values
-                    .map(
-                      (provider) => DropdownMenuItem(
-                        value: provider,
-                        child: Text(provider.label),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (provider) {
-                  if (provider != null) _selectAiProvider(provider);
-                },
-              ),
-              const SizedBox(height: 10),
-              DropdownButtonFormField<AiRequestProtocol>(
-                key: ValueKey('ai-protocol-${_aiProtocol.value}'),
-                initialValue: _aiProtocol,
-                isExpanded: true,
-                decoration: const InputDecoration(labelText: '请求协议'),
-                items: AiRequestProtocol.values
-                    .map(
-                      (protocol) => DropdownMenuItem(
-                        value: protocol,
-                        child: Text(protocol.label),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (protocol) {
-                  if (protocol == null) return;
-                  setState(() {
-                    _aiProtocol = protocol;
-                    _aiConfigEdited = true;
-                  });
-                },
-              ),
-              const SizedBox(height: 10),
-              RemoteTextFieldTraversal(
-                controller: _aiUrlController,
-                child: TextField(
-                  key: const ValueKey('ai-base-url-field'),
-                  controller: _aiUrlController,
-                  keyboardType: TextInputType.url,
-                  autocorrect: false,
-                  onChanged: (_) => _aiConfigEdited = true,
-                  decoration: const InputDecoration(
-                    labelText: '中转站 Base URL',
-                    hintText: 'https://example.com/v1',
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              RemoteTextFieldTraversal(
-                controller: _aiApiKeyController,
-                child: TextField(
-                  key: const ValueKey('ai-api-key-field'),
-                  controller: _aiApiKeyController,
-                  obscureText: _obscureAiKey,
-                  autocorrect: false,
-                  enableSuggestions: false,
-                  onChanged: (_) => _aiConfigEdited = true,
-                  decoration: InputDecoration(
-                    labelText: 'API Key',
-                    suffixIcon: IconButton(
-                      tooltip: _obscureAiKey ? '显示 Key' : '隐藏 Key',
-                      onPressed: () =>
-                          setState(() => _obscureAiKey = !_obscureAiKey),
-                      icon: Icon(
-                        _obscureAiKey ? Icons.visibility : Icons.visibility_off,
-                      ),
+              Row(
+                children: [
+                  const Icon(Icons.open_in_full_rounded, size: 20),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      '桌面宠物大小',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              RemoteTextFieldTraversal(
-                controller: _aiModelController,
-                child: TextField(
-                  key: const ValueKey('ai-model-field'),
-                  controller: _aiModelController,
-                  autocorrect: false,
-                  onChanged: (_) => _aiConfigEdited = true,
-                  decoration: const InputDecoration(
-                    labelText: '模型',
-                    hintText: '填写中转站实际支持的模型名称',
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              DropdownButtonFormField<AiReasoningEffort>(
-                key: ValueKey('ai-reasoning-${_aiReasoning.value}'),
-                initialValue: _aiReasoning,
-                isExpanded: true,
-                decoration: const InputDecoration(labelText: '推理等级'),
-                items: AiReasoningEffort.values
-                    .map(
-                      (effort) => DropdownMenuItem(
-                        value: effort,
-                        child: Text(effort.label),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (effort) {
-                  if (effort == null) return;
-                  setState(() {
-                    _aiReasoning = effort;
-                    _aiConfigEdited = true;
-                  });
-                },
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '选择“平台默认”时不会发送任何推理等级参数。其他等级会按当前协议转换。',
-                style: TextStyle(
-                  color: AppColors.textHint,
-                  fontSize: layout.secondarySize,
-                ),
-              ),
-              const SizedBox(height: 10),
-              DropdownButtonFormField<AiWebSearchMode>(
-                key: ValueKey('ai-web-search-${_aiWebSearch.value}'),
-                initialValue: _aiWebSearch,
-                isExpanded: true,
-                decoration: const InputDecoration(labelText: '联网搜索'),
-                items: AiWebSearchMode.values
-                    .map(
-                      (mode) => DropdownMenuItem(
-                        value: mode,
-                        child: Text(mode.label),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (mode) {
-                  if (mode == null) return;
-                  setState(() {
-                    _aiWebSearch = mode;
-                    _aiConfigEdited = true;
-                  });
-                },
-              ),
-              if (searchDependsOnRelay) ...[
-                const SizedBox(height: 6),
-                Text(
-                  '当前厂商的 OpenAI 兼容接口没有统一搜索字段，是否联网取决于中转站能力；请用“测试连接”核验。',
-                  style: TextStyle(
-                    color: Colors.orange.shade700,
-                    fontSize: layout.secondarySize,
-                  ),
-                ),
-              ],
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  FilledButton.icon(
-                    key: const ValueKey('ai-config-save'),
-                    onPressed: _savingAiConfig ? null : _saveAiConfig,
-                    icon: _savingAiConfig
-                        ? const SizedBox.square(
-                            dimension: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.save_outlined),
-                    label: Text(_savingAiConfig ? '保存中' : '保存'),
-                  ),
-                  OutlinedButton.icon(
-                    key: const ValueKey('ai-config-test'),
-                    onPressed: _testingAiConnection ? null : _testAiConnection,
-                    icon: _testingAiConnection
-                        ? const SizedBox.square(
-                            dimension: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.network_check_rounded),
-                    label: Text(_testingAiConnection ? '测试中' : '测试连接'),
-                  ),
-                  OutlinedButton.icon(
-                    key: const ValueKey('ai-config-qr-input'),
-                    onPressed: _showAiConfigQrInput,
-                    icon: const Icon(Icons.qr_code_scanner_rounded),
-                    label: const Text('手机扫码配置'),
-                  ),
+                  const SizedBox(width: 8),
+                  Text('${_petScaleDraft.toStringAsFixed(2)}x'),
                 ],
               ),
-              const SizedBox(height: 8),
-              Text(
-                'API Key 使用系统安全存储，不写入二维码或普通应用配置。',
-                style: TextStyle(
-                  color: AppColors.textHint,
-                  fontSize: layout.secondarySize,
+              Slider(
+                key: const ValueKey('ai-pet-scale-slider'),
+                min: AiConfigController.minPetScale,
+                max: AiConfigController.maxPetScale,
+                divisions: 27,
+                value: _petScaleDraft.clamp(
+                  AiConfigController.minPetScale,
+                  AiConfigController.maxPetScale,
                 ),
+                label: '${_petScaleDraft.toStringAsFixed(2)}x',
+                onChanged: (value) => setState(() => _petScaleDraft = value),
+                onChangeEnd: _aiConfigController.setPetScale,
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  key: const ValueKey('ai-pet-position-reset'),
+                  onPressed: _aiConfigController.resetPetPosition,
+                  icon: const Icon(Icons.refresh_rounded, size: 18),
+                  label: const Text('恢复宠物位置'),
+                ),
+              ),
+              const SizedBox(height: 8),
+              AnimatedBuilder(
+                animation: _aiConfigController,
+                builder: (context, _) {
+                  final profile = _aiConfigController.activeProfile;
+                  if (profile == null) return const SizedBox.shrink();
+                  return ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.check_circle_outline_rounded),
+                    title: const Text('当前使用的模型'),
+                    subtitle: Text(
+                      '${profile.name} · ${profile.config.model.isEmpty ? '尚未填写模型' : profile.config.model}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: IconButton(
+                      key: const ValueKey('ai-active-profile-edit'),
+                      tooltip: '编辑当前模型',
+                      onPressed: () => _renameAiProfile(profile),
+                      icon: const Icon(Icons.edit_outlined),
+                    ),
+                  );
+                },
               ),
             ],
           ),

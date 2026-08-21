@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
 import '../services/backup_service.dart';
 import '../services/favorite_file_service.dart';
@@ -72,13 +73,22 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
   String _backupJson() {
     final favorites = context.read<FavoriteService>();
     final player = context.read<PlayerProvider>();
-    return BackupService.exportJson(favorites: favorites, player: player);
+    return BackupService.exportJson(
+      favorites: favorites,
+      player: player,
+      aiConfig: context.read<AiConfigController?>(),
+    );
   }
 
   Future<void> _prepareExport() async {
     final favorites = context.read<FavoriteService>();
     final player = context.read<PlayerProvider>();
-    await Future.wait([favorites.load(), player.settingsReady]);
+    final aiConfig = context.read<AiConfigController?>();
+    await Future.wait([
+      favorites.load(),
+      player.settingsReady,
+      if (aiConfig != null) aiConfig.ready,
+    ]);
   }
 
   Future<FavoriteImportMode?> _chooseImportMode() {
@@ -86,7 +96,9 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('导入方式'),
-        content: const Text('合并会保留现有收藏；覆盖会替换歌曲、B站收藏、歌单及备份中的 API Key。'),
+        content: const Text(
+          '合并会保留现有收藏；覆盖会替换歌曲、B站收藏、歌单，并应用备份中的 API Key、AI 模型和播放器设置。',
+        ),
         actions: [
           TextButton(
             onPressed: () =>
@@ -117,6 +129,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         raw: raw,
         favorites: context.read<FavoriteService>(),
         player: context.read<PlayerProvider>(),
+        aiConfig: context.read<AiConfigController?>(),
         mode: mode,
       );
       if (!mounted) return;
@@ -125,7 +138,9 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         _status =
             '恢复完成：歌曲 ${result.songsAdded} 首，B站 ${result.bilibiliAdded} 个，'
             '歌单 ${result.playlistsAdded} 个'
-            '${result.apiKeyRestored ? '，API Key 已恢复' : ''}'
+            '${result.apiKeyRestored ? '，播放 API Key 已恢复' : ''}'
+            '${result.aiConfigRestored ? '，AI 模型配置、中转站和 Key 已恢复' : ''}'
+            '${result.playerSettingsRestored ? '，音质、音源和播放器设置已恢复' : ''}'
             '${result.songsSkipped + result.bilibiliSkipped + result.playlistsSkipped > 0 ? '（重复或无效项目已跳过）' : ''}';
         _statusError = false;
       });

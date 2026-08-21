@@ -26,6 +26,7 @@ class DiscoverScreen extends StatefulWidget {
 }
 
 class _DiscoverScreenState extends State<DiscoverScreen> {
+  late final ScrollController _portraitScrollController;
   List<SongSearchResult> _kugouDaily = [];
 
   bool _loadingKugouDaily = false;
@@ -35,8 +36,15 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   @override
   void initState() {
     super.initState();
+    _portraitScrollController = ScrollController();
     unawaited(context.read<FavoriteService>().load());
     unawaited(_loadAll());
+  }
+
+  @override
+  void dispose() {
+    _portraitScrollController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadAll() async {
@@ -77,8 +85,13 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       onRefresh: _loadAll,
       color: AppColors.primary,
       child: ListView(
+        // The shell keeps several pages alive in an IndexedStack. Do not let
+        // their vertical lists compete for the route's primary controller.
+        key: const PageStorageKey('discover-portrait-scroll'),
+        controller: _portraitScrollController,
+        primary: false,
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.only(bottom: 24),
+        padding: const EdgeInsets.only(bottom: 32),
         children: [
           _buildHeader(),
           _buildFavoritesBlock(),
@@ -170,6 +183,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       color: AppColors.primary,
       child: ListView(
         key: PageStorageKey('${key.toString()}-scroll'),
+        primary: false,
         physics: const AlwaysScrollableScrollPhysics(),
         padding: EdgeInsets.only(
           bottom: compact
@@ -250,6 +264,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     bool compact = false,
     VoidCallback? onTap,
     Key? key,
+    bool arrowOnly = false,
   }) {
     final layout = AppLayout.fromContext(context);
     final content = Container(
@@ -297,16 +312,39 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
             ),
           if (onTap != null) ...[
             const SizedBox(width: 4),
-            Icon(
-              Icons.chevron_right_rounded,
-              size: 20,
-              color: AppColors.textHint,
-            ),
+            if (arrowOnly)
+              IconButton(
+                key: key,
+                tooltip: '打开$title',
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints(
+                  minWidth: 24,
+                  minHeight: 24,
+                  maxWidth: 24,
+                  maxHeight: 24,
+                ),
+                padding: EdgeInsets.zero,
+                iconSize: 20,
+                onPressed: onTap,
+                icon: Icon(
+                  Icons.chevron_right_rounded,
+                  color: AppColors.textHint,
+                ),
+              )
+            else
+              Icon(
+                Icons.chevron_right_rounded,
+                size: 20,
+                color: AppColors.textHint,
+              ),
           ],
         ],
       ),
     );
     if (onTap == null) return content;
+    if (arrowOnly) {
+      return Material(color: Colors.transparent, child: content);
+    }
     return Material(
       key: key,
       color: Colors.transparent,
@@ -327,7 +365,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               '${songs.length} 首',
               compact: compact,
               key: const ValueKey('home-favorites-header'),
-              onTap: _openFavorites,
+              onTap: _openFavoriteSongs,
+              arrowOnly: true,
             ),
             AppMotionSwitcher(
               child: KeyedSubtree(
@@ -374,7 +413,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         height: layout.usesLargeTypography ? 88 : (compact ? 76 : 96),
         child: Center(
           child: TextButton.icon(
-            onPressed: _openFavorites,
+            onPressed: _openFavoriteSongs,
             icon: const Icon(Icons.favorite_border_rounded, size: 20),
             label: const Text('还没有收藏歌曲'),
           ),
@@ -402,10 +441,24 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     );
   }
 
-  void _openFavorites() {
+  void _openFavoriteSongs() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const FavoritesScreen()),
+      MaterialPageRoute(builder: (_) => const FavoriteSongsScreen()),
+    );
+  }
+
+  void _openFavoritePlaylists() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const FavoritePlaylistsScreen()),
+    );
+  }
+
+  void _openBilibiliFavorites() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const BilibiliFavoritesScreen()),
     );
   }
 
@@ -422,7 +475,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               '${playlists.length} 个',
               compact: compact,
               key: const ValueKey('home-favorite-playlists-header'),
-              onTap: _openFavorites,
+              onTap: _openFavoritePlaylists,
+              arrowOnly: true,
             ),
             AppMotionSwitcher(
               child: KeyedSubtree(
@@ -470,7 +524,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         height: layout.usesLargeTypography ? 88 : (compact ? 76 : 96),
         child: Center(
           child: TextButton.icon(
-            onPressed: _openFavorites,
+            onPressed: _openFavoritePlaylists,
             icon: const Icon(Icons.playlist_add_rounded, size: 22),
             label: const Text('还没有收藏歌单'),
           ),
@@ -522,7 +576,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               '${videos.length} 个',
               compact: compact,
               key: const ValueKey('home-bilibili-favorites-header'),
-              onTap: _openFavorites,
+              onTap: _openBilibiliFavorites,
+              arrowOnly: true,
             ),
             AppMotionSwitcher(
               child: KeyedSubtree(
@@ -570,7 +625,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         height: layout.usesLargeTypography ? 88 : (compact ? 76 : 96),
         child: Center(
           child: TextButton.icon(
-            onPressed: _openFavorites,
+            onPressed: _openBilibiliFavorites,
             icon: const Icon(Icons.video_library_outlined, size: 21),
             label: const Text('还没有B站收藏'),
           ),
