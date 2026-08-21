@@ -15,6 +15,7 @@ import '../services/webdav_backup_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
+import '../widgets/backup_restore_options_dialog.dart';
 import '../widgets/remote_focusable.dart';
 
 class BackupRestoreScreen extends StatefulWidget {
@@ -91,34 +92,20 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     ]);
   }
 
-  Future<FavoriteImportMode?> _chooseImportMode() {
-    return showDialog<FavoriteImportMode>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('导入方式'),
-        content: const Text(
-          '合并会保留现有收藏；覆盖会替换歌曲、B站收藏、歌单，并应用备份中的 API Key、AI 模型和播放器设置。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () =>
-                Navigator.pop(dialogContext, FavoriteImportMode.replace),
-            child: const Text('覆盖'),
-          ),
-          FilledButton(
-            onPressed: () =>
-                Navigator.pop(dialogContext, FavoriteImportMode.merge),
-            child: const Text('合并'),
-          ),
-        ],
-      ),
-    );
+  Future<BackupRestoreSelection?> _chooseRestoreOptions(String raw) async {
+    try {
+      final contents = BackupService.inspect(raw);
+      return await showBackupRestoreSelectionDialog(context, contents);
+    } on FormatException catch (error) {
+      _showStatus(error.message, error: true);
+      return null;
+    }
   }
 
   Future<void> _restoreRaw(String raw, {String source = '备份'}) async {
     if (!mounted || raw.trim().isEmpty) return;
-    final mode = await _chooseImportMode();
-    if (mode == null || !mounted) return;
+    final selection = await _chooseRestoreOptions(raw);
+    if (selection == null || !mounted) return;
     setState(() {
       _busy = true;
       _status = '正在从$source恢复...';
@@ -130,18 +117,13 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         favorites: context.read<FavoriteService>(),
         player: context.read<PlayerProvider>(),
         aiConfig: context.read<AiConfigController?>(),
-        mode: mode,
+        mode: selection.mode,
+        sections: selection.sections,
       );
       if (!mounted) return;
       setState(() {
         _busy = false;
-        _status =
-            '恢复完成：歌曲 ${result.songsAdded} 首，B站 ${result.bilibiliAdded} 个，'
-            '歌单 ${result.playlistsAdded} 个'
-            '${result.apiKeyRestored ? '，播放 API Key 已恢复' : ''}'
-            '${result.aiConfigRestored ? '，AI 模型配置、中转站和 Key 已恢复' : ''}'
-            '${result.playerSettingsRestored ? '，音质、音源和播放器设置已恢复' : ''}'
-            '${result.songsSkipped + result.bilibiliSkipped + result.playlistsSkipped > 0 ? '（重复或无效项目已跳过）' : ''}';
+        _status = _restoreStatus(result, selection);
         _statusError = false;
       });
     } on FormatException catch (error) {
@@ -159,6 +141,28 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         _statusError = true;
       });
     }
+  }
+
+  String _restoreStatus(
+    BackupRestoreResult result,
+    BackupRestoreSelection selection,
+  ) {
+    final parts = <String>[];
+    if (selection.sections.contains(BackupRestoreSection.songs)) {
+      parts.add('歌曲 ${result.songsAdded} 首');
+    }
+    if (selection.sections.contains(BackupRestoreSection.bilibili)) {
+      parts.add('B站 ${result.bilibiliAdded} 个');
+    }
+    if (selection.sections.contains(BackupRestoreSection.playlists)) {
+      parts.add('歌单 ${result.playlistsAdded} 个');
+    }
+    if (result.apiKeyRestored) parts.add('音乐 API Key');
+    if (result.aiConfigRestored) parts.add('AI 助手配置');
+    if (result.playerSettingsRestored) parts.add('播放器设置');
+    final skipped =
+        result.songsSkipped + result.bilibiliSkipped + result.playlistsSkipped;
+    return '恢复完成：${parts.join('，')}${skipped > 0 ? '（重复或无效项目已跳过）' : ''}';
   }
 
   Future<String?> _showPasteDialog() async {

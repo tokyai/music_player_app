@@ -278,19 +278,27 @@ class FavoriteService extends ChangeNotifier {
   Future<FavoriteImportResult> importJson(
     String raw, {
     FavoriteImportMode mode = FavoriteImportMode.merge,
+    bool importSongs = true,
+    bool importBilibili = true,
+    bool importPlaylists = true,
+    bool importApiKey = true,
   }) async {
     await load();
     final decoded = _decodeBackup(raw);
-    var skipped = decoded.skipped;
+    var skipped = importSongs ? decoded.skipped : 0;
     var added = 0;
-    var bilibiliSkipped = decoded.bilibiliSkipped;
+    var bilibiliSkipped = importBilibili ? decoded.bilibiliSkipped : 0;
     var bilibiliAdded = 0;
 
     if (mode == FavoriteImportMode.replace) {
-      _favorites.removeWhere((song) => song.platform != MusicPlatform.bilibili);
-      _favorites.insertAll(0, decoded.songs);
-      added = decoded.songs.length;
-      if (decoded.hasBilibili) {
+      if (importSongs) {
+        _favorites.removeWhere(
+          (song) => song.platform != MusicPlatform.bilibili,
+        );
+        _favorites.insertAll(0, decoded.songs);
+        added = decoded.songs.length;
+      }
+      if (importBilibili && decoded.hasBilibili) {
         _favorites.removeWhere(
           (song) => song.platform == MusicPlatform.bilibili,
         );
@@ -299,26 +307,30 @@ class FavoriteService extends ChangeNotifier {
       }
     } else {
       final existing = _favorites.map(keyOf).toSet();
-      for (final song in decoded.songs) {
-        if (existing.add(keyOf(song))) {
-          _favorites.add(song);
-          added++;
-        } else {
-          skipped++;
+      if (importSongs) {
+        for (final song in decoded.songs) {
+          if (existing.add(keyOf(song))) {
+            _favorites.add(song);
+            added++;
+          } else {
+            skipped++;
+          }
         }
       }
-      for (final song in decoded.bilibili) {
-        if (existing.add(keyOf(song))) {
-          _favorites.add(song);
-          bilibiliAdded++;
-        } else {
-          bilibiliSkipped++;
+      if (importBilibili) {
+        for (final song in decoded.bilibili) {
+          if (existing.add(keyOf(song))) {
+            _favorites.add(song);
+            bilibiliAdded++;
+          } else {
+            bilibiliSkipped++;
+          }
         }
       }
     }
 
     var playlistsAdded = 0;
-    if (decoded.hasPlaylists) {
+    if (importPlaylists && decoded.hasPlaylists) {
       if (mode == FavoriteImportMode.replace) {
         _favoritePlaylists
           ..clear()
@@ -338,20 +350,26 @@ class FavoriteService extends ChangeNotifier {
       }
     }
 
-    notifyListeners();
-    await _save();
-    if (decoded.hasPlaylists) await _savePlaylists();
+    final favoritesSelected = importSongs || importBilibili;
+    final playlistsSelected = importPlaylists && decoded.hasPlaylists;
+    if (favoritesSelected || playlistsSelected) {
+      notifyListeners();
+      if (favoritesSelected) await _save();
+      if (playlistsSelected) await _savePlaylists();
+    }
     return FavoriteImportResult(
       added: added,
       skipped: skipped,
-      total: decoded.songs.length + decoded.skipped,
+      total: importSongs ? decoded.songs.length + decoded.skipped : 0,
       bilibiliAdded: bilibiliAdded,
       bilibiliSkipped: bilibiliSkipped,
-      bilibiliTotal: decoded.bilibili.length + decoded.bilibiliSkipped,
+      bilibiliTotal: importBilibili
+          ? decoded.bilibili.length + decoded.bilibiliSkipped
+          : 0,
       playlistsAdded: playlistsAdded,
-      playlistsSkipped: decoded.playlistsSkipped,
-      apiKeyPresent: decoded.apiKeyPresent,
-      apiKey: decoded.apiKey,
+      playlistsSkipped: importPlaylists ? decoded.playlistsSkipped : 0,
+      apiKeyPresent: importApiKey && decoded.apiKeyPresent,
+      apiKey: importApiKey ? decoded.apiKey : null,
     );
   }
 

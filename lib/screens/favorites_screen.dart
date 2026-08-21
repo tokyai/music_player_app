@@ -14,6 +14,7 @@ import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 import '../utils/song_source_matcher.dart';
+import '../widgets/backup_restore_options_dialog.dart';
 import '../widgets/favorite_playlist_card.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/remote_focusable.dart';
@@ -1647,25 +1648,45 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     }
     if (raw == null || raw.trim().isEmpty || !mounted) return;
 
-    final mode = await _chooseImportMode();
-    if (mode == null || !mounted) return;
+    BackupRestoreSelection? selection;
+    try {
+      final contents = BackupService.inspect(raw);
+      selection = await showBackupRestoreSelectionDialog(context, contents);
+    } on FormatException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+      return;
+    }
+    if (selection == null || !mounted) return;
     try {
       final result = await BackupService.importJson(
         raw: raw,
         favorites: context.read<FavoriteService>(),
         player: context.read<PlayerProvider>(),
         aiConfig: context.read<AiConfigController?>(),
-        mode: mode,
+        mode: selection.mode,
+        sections: selection.sections,
       );
       if (!mounted) return;
       _exitSelection();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '已导入 ${result.songsAdded} 首歌曲、${result.playlistsAdded} 个歌单',
-          ),
-        ),
-      );
+      final imported = <String>[];
+      if (selection.sections.contains(BackupRestoreSection.songs)) {
+        imported.add('${result.songsAdded} 首歌曲');
+      }
+      if (selection.sections.contains(BackupRestoreSection.bilibili)) {
+        imported.add('${result.bilibiliAdded} 个B站收藏');
+      }
+      if (selection.sections.contains(BackupRestoreSection.playlists)) {
+        imported.add('${result.playlistsAdded} 个歌单');
+      }
+      if (result.apiKeyRestored) imported.add('音乐 API Key');
+      if (result.aiConfigRestored) imported.add('AI 助手配置');
+      if (result.playerSettingsRestored) imported.add('播放器设置');
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已导入 ${imported.join('、')}')));
     } on FormatException catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -1710,28 +1731,6 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const BackupRestoreScreen()),
-    );
-  }
-
-  Future<FavoriteImportMode?> _chooseImportMode() {
-    return showDialog<FavoriteImportMode>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('导入方式'),
-        content: const Text('合并会保留现有收藏；覆盖会先清空当前收藏。'),
-        actions: [
-          TextButton(
-            onPressed: () =>
-                Navigator.pop(dialogContext, FavoriteImportMode.replace),
-            child: const Text('覆盖'),
-          ),
-          FilledButton(
-            onPressed: () =>
-                Navigator.pop(dialogContext, FavoriteImportMode.merge),
-            child: const Text('合并'),
-          ),
-        ],
-      ),
     );
   }
 }

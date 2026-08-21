@@ -245,4 +245,88 @@ void main() {
     expect(restored.lyricOffsetStep, const Duration(milliseconds: 800));
     expect(restored.videoPlayerMode, VideoPlayerMode.mpv);
   });
+
+  test('partial restore changes only the selected sections', () async {
+    final oldSong = _song(MusicPlatform.qq, 'old-song', '旧歌曲');
+    final oldVideo = _song(MusicPlatform.bilibili, 'old-video', '旧视频');
+    final oldPlaylist = FavoritePlaylist(
+      platform: MusicPlatform.qq,
+      playlist: PlaylistInfo(
+        id: 'old-playlist',
+        name: '旧歌单',
+        trackCount: 1,
+        tracks: const [],
+      ),
+    );
+    final newSong = _song(MusicPlatform.netease, 'new-song', '新歌曲');
+    final newVideo = _song(MusicPlatform.bilibili, 'new-video', '新视频');
+    final newPlaylist = FavoritePlaylist(
+      platform: MusicPlatform.netease,
+      playlist: PlaylistInfo(
+        id: 'new-playlist',
+        name: '新歌单',
+        trackCount: 2,
+        tracks: const [],
+      ),
+    );
+
+    final raw = jsonEncode({
+      'format': FavoriteService.exportFormat,
+      'version': FavoriteService.exportVersion,
+      'songs': [newSong.toJson()],
+      'bilibili': [newVideo.toJson()],
+      'playlists': [newPlaylist.toJson()],
+      'apiKey': 'new-key',
+      'aiAssistant': <String, dynamic>{'config': <String, dynamic>{}},
+      'playerSettings': <String, dynamic>{
+        'neteaseLevel': NeteaseLevel.lossless.value,
+      },
+    });
+    final contents = BackupService.inspect(raw);
+    expect(
+      contents.availableSections,
+      containsAll(BackupRestoreSection.values),
+    );
+
+    SharedPreferences.setMockInitialValues({});
+    final favorites = FavoriteService();
+    await favorites.toggle(oldSong);
+    await favorites.toggle(oldVideo);
+    await favorites.togglePlaylist(oldPlaylist.platform, oldPlaylist.playlist);
+    final player = PlayerProvider();
+    addTearDown(player.dispose);
+    await player.settingsReady;
+    await player.setApiKey('old-key');
+
+    final result = await BackupService.importJson(
+      raw: raw,
+      favorites: favorites,
+      player: player,
+      mode: FavoriteImportMode.replace,
+      sections: const {BackupRestoreSection.songs},
+    );
+
+    expect(favorites.favorites.map((song) => song.id), ['new-song']);
+    expect(favorites.bilibiliFavorites.map((song) => song.id), ['old-video']);
+    expect(favorites.favoritePlaylists.map((item) => item.id), [
+      'old-playlist',
+    ]);
+    expect(player.apiKey, 'old-key');
+    expect(player.neteaseLevel, isNot(NeteaseLevel.lossless));
+    expect(result.apiKeyRestored, isFalse);
+    expect(result.playerSettingsRestored, isFalse);
+    expect(result.aiConfigRestored, isFalse);
+    expect(result.bilibiliAdded, 0);
+    expect(result.playlistsAdded, 0);
+  });
+}
+
+SongSearchResult _song(MusicPlatform platform, String id, String name) {
+  return SongSearchResult(
+    platform: platform,
+    id: id,
+    name: name,
+    artist: '测试歌手',
+    album: '测试专辑',
+  );
 }
