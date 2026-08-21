@@ -1,7 +1,9 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:music_player_app/models/ai_assistant.dart';
 import 'package:music_player_app/models/song.dart';
+import 'package:music_player_app/providers/ai_config_controller.dart';
 import 'package:music_player_app/providers/player_provider.dart';
 import 'package:music_player_app/services/backup_service.dart';
 import 'package:music_player_app/services/favorite_service.dart';
@@ -71,6 +73,61 @@ void main() {
       expect(favorites.favoritePlaylists.single.id, 'playlist-1');
       expect(result.apiKeyRestored, isTrue);
       expect(result.bilibiliAdded, 1);
+    },
+  );
+
+  test(
+    'backup round-trips the complete AI configuration and visibility',
+    () async {
+      final player = PlayerProvider();
+      addTearDown(player.dispose);
+      await player.settingsReady;
+      final favorites = FavoriteService();
+      final source = AiConfigController(secretStore: MemoryAiSecretStore());
+      addTearDown(source.dispose);
+      await source.ready;
+      await source.save(
+        const AiAssistantConfig(
+          provider: AiProviderKind.mimo,
+          protocol: AiRequestProtocol.openAiChatCompletions,
+          baseUrl: 'https://example.test/v1',
+          apiKey: 'ai-secret',
+          model: 'mimo-test',
+          reasoningEffort: AiReasoningEffort.high,
+          webSearchMode: AiWebSearchMode.always,
+        ),
+      );
+      await source.setShowAssistantOnAllPages(false);
+      await source.setShowPetOnPlayerPage(false);
+
+      final raw = BackupService.exportJson(
+        favorites: favorites,
+        player: player,
+        aiConfig: source,
+      );
+      final exported = jsonDecode(raw) as Map<String, dynamic>;
+      final exportedAi = exported['aiAssistant'] as Map<String, dynamic>;
+      expect(exportedAi['config'], containsPair('apiKey', 'ai-secret'));
+
+      final restored = AiConfigController(secretStore: MemoryAiSecretStore());
+      addTearDown(restored.dispose);
+      await restored.ready;
+      final result = await BackupService.importJson(
+        raw: raw,
+        favorites: FavoriteService(),
+        player: player,
+        aiConfig: restored,
+        mode: FavoriteImportMode.replace,
+      );
+
+      expect(result.aiConfigRestored, isTrue);
+      expect(restored.config.provider, AiProviderKind.mimo);
+      expect(restored.config.apiKey, 'ai-secret');
+      expect(restored.config.model, 'mimo-test');
+      expect(restored.config.reasoningEffort, AiReasoningEffort.high);
+      expect(restored.config.webSearchMode, AiWebSearchMode.always);
+      expect(restored.showAssistantOnAllPages, isFalse);
+      expect(restored.showPetOnPlayerPage, isFalse);
     },
   );
 }

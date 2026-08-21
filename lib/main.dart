@@ -326,8 +326,9 @@ class _MainScreenState extends State<MainScreen>
                   constraints.maxWidth >= AppLayout.wideWindowMinWidth &&
                   constraints.maxHeight >= AppLayout.wideWindowMinHeight;
               return Scaffold(
-                floatingActionButton: Selector<AiConfigController, bool>(
-                  selector: (_, config) => config.showAssistantOnAllPages,
+                floatingActionButton: Selector<AiConfigController?, bool>(
+                  selector: (_, config) =>
+                      config?.showAssistantOnAllPages ?? true,
                   builder: (context, visible, _) => visible
                       ? Padding(
                           padding: EdgeInsets.only(
@@ -457,8 +458,8 @@ class _MainScreenState extends State<MainScreen>
         }
 
         return Scaffold(
-          floatingActionButton: Selector<AiConfigController, bool>(
-            selector: (_, config) => config.showAssistantOnAllPages,
+          floatingActionButton: Selector<AiConfigController?, bool>(
+            selector: (_, config) => config?.showAssistantOnAllPages ?? true,
             builder: (context, visible, _) => visible
                 ? const AiAssistantFloatingButton()
                 : const SizedBox.shrink(),

@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../models/song.dart';
+import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
 import '../services/backup_service.dart';
 import '../services/favorite_file_service.dart';
@@ -1083,10 +1084,19 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     final player = context.read<PlayerProvider>();
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await Future.wait([favorites.load(), player.settingsReady]);
+      final aiConfig = context.read<AiConfigController?>();
+      await Future.wait([
+        favorites.load(),
+        player.settingsReady,
+        if (aiConfig != null) aiConfig.ready,
+      ]);
       if (!mounted) return;
       final result = await FavoriteFileService.exportBackup(
-        BackupService.exportJson(favorites: favorites, player: player),
+        BackupService.exportJson(
+          favorites: favorites,
+          player: player,
+          aiConfig: aiConfig,
+        ),
       );
       if (!mounted || result == FavoriteExportResult.cancelled) return;
       messenger.showSnackBar(
@@ -1125,6 +1135,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
         raw: raw,
         favorites: context.read<FavoriteService>(),
         player: context.read<PlayerProvider>(),
+        aiConfig: context.read<AiConfigController?>(),
         mode: mode,
       );
       if (!mounted) return;

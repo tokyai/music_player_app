@@ -179,7 +179,7 @@ class LanBackupSession {
 body{font-family:system-ui,-apple-system,"Microsoft Yahei",sans-serif;max-width:680px;margin:0 auto;padding:24px;line-height:1.6;color:#20242b;background:#f7f8fa}
 main{background:#fff;border:1px solid #e3e7ec;border-radius:16px;padding:24px;box-shadow:0 4px 16px #00000012}h1{font-size:24px;margin-top:0}
 label{display:block;font-weight:600;margin:14px 0 6px}input,button,textarea{font:inherit;box-sizing:border-box;width:100%;padding:11px;border:1px solid #d8dde5;border-radius:10px}button{background:#2196f3;color:white;border:0;font-weight:700;cursor:pointer;margin-top:10px}button.secondary{background:#eef1f4;color:#20242b}small{color:#646a73}.status{margin-top:14px;white-space:pre-wrap}
-</style></head><body><main><h1>库仔音乐备份</h1><p>请输入车机上显示的 6 位 PIN。备份包含收藏歌曲、收藏歌单、B站收藏和 API Key。</p>
+</style></head><body><main><h1>库仔音乐备份</h1><p>请输入车机上显示的 6 位 PIN。备份包含收藏、播放 API Key，以及 AI 助理的 URL、模型、选项和 Key。</p>
 <label for="pin">PIN</label><input id="pin" inputmode="numeric" maxlength="6" placeholder="6 位数字">
 <button class="secondary" onclick="downloadBackup()">从车机下载备份</button>
 <label for="file">向车机恢复 JSON 文件</label><input id="file" type="file" accept="application/json,.json">

@@ -62,6 +62,50 @@ class AiConfigController extends ChangeNotifier {
   bool get showAssistantOnAllPages => _showAssistantOnAllPages;
   bool get showPetOnPlayerPage => _showPetOnPlayerPage;
 
+  /// Serializes all AI settings for an explicit user-created backup.
+  ///
+  /// Unlike the normal preferences payload this intentionally includes the
+  /// API key, because a backup is the user's chosen portable copy of settings.
+  Map<String, dynamic> toBackupJson() => {
+    'config': config.toLanJson(),
+    'showAssistantOnAllPages': _showAssistantOnAllPages,
+    'showPetOnPlayerPage': _showPetOnPlayerPage,
+  };
+
+  Future<void> restoreBackupJson(Map<String, dynamic> json) async {
+    await ready;
+    final rawConfig = json['config'];
+    if (rawConfig is! Map) {
+      throw const FormatException('备份文件中的 AI 配置格式错误');
+    }
+    final configMap = Map<String, dynamic>.from(rawConfig);
+    final rawApiKey = configMap['apiKey'];
+    if (rawApiKey != null && rawApiKey is! String) {
+      throw const FormatException('备份文件中的 AI API Key 格式错误');
+    }
+    final restored = AiAssistantConfig.fromJson(
+      configMap,
+      // A hand-authored/older AI block without a key must not erase the
+      // existing secure value. Explicit empty strings still restore empty.
+      apiKey: rawApiKey is String ? rawApiKey : _config.apiKey,
+    );
+    await save(restored);
+
+    final showAll = _readOptionalBool(json, 'showAssistantOnAllPages');
+    if (showAll != null) await setShowAssistantOnAllPages(showAll);
+    final showPet = _readOptionalBool(json, 'showPetOnPlayerPage');
+    if (showPet != null) await setShowPetOnPlayerPage(showPet);
+  }
+
+  static bool? _readOptionalBool(Map<String, dynamic> json, String key) {
+    final value = json[key];
+    if (value == null) return null;
+    if (value is! bool) {
+      throw FormatException('备份文件中的 $key 格式错误');
+    }
+    return value;
+  }
+
   Future<void> _load() async {
     try {
       final results = await Future.wait<dynamic>([
