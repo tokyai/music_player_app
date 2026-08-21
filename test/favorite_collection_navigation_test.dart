@@ -172,6 +172,41 @@ void main() {
     for (final size in const [Size(640, 360), Size(1280, 800)]) {
       tester.view.devicePixelRatio = 1;
       tester.view.physicalSize = size;
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+            ChangeNotifierProvider<FavoriteService>.value(value: favorites),
+          ],
+          child: MaterialApp(
+            theme: AppTheme.light(),
+            home: const FavoriteSongsScreen(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final songsList = tester.widget<ListView>(
+        find.byKey(const ValueKey('favorite-songs-page-list')),
+      );
+      expect(songsList.scrollDirection, Axis.vertical);
+      final songCard = find.byKey(
+        const ValueKey('favorite-song-qq-landscape-song'),
+      );
+      expect(songCard, findsOneWidget);
+      expect(_findCardDecoration(tester, songCard).border, isNotNull);
+      expect(find.byTooltip('取消收藏').hitTestable(), findsOneWidget);
+      expect(
+        find
+            .descendant(
+              of: songCard,
+              matching: find.byType(PopupMenuButton<String>),
+            )
+            .hitTestable(),
+        findsOneWidget,
+      );
+      final songCardSize = tester.getSize(songCard);
+
       await tester.pumpWidget(
         MultiProvider(
           providers: [
@@ -190,9 +225,60 @@ void main() {
       );
       expect(list.scrollDirection, Axis.vertical);
       expect(find.text('横屏收藏歌单'), findsOneWidget);
+      final playlistCard = find.byKey(
+        const ValueKey('favorite-playlist-list-qq-landscape-playlist'),
+      );
+      expect(playlistCard, findsOneWidget);
+      expect(_findCardDecoration(tester, playlistCard).border, isNotNull);
+      final playlistCardSize = tester.getSize(playlistCard);
+      expect(songCardSize.height, playlistCardSize.height);
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider<PlayerProvider>.value(value: player),
+            ChangeNotifierProvider<FavoriteService>.value(value: favorites),
+          ],
+          child: MaterialApp(
+            theme: AppTheme.light(),
+            home: const BilibiliFavoritesScreen(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final bilibiliList = tester.widget<ListView>(
+        find.byKey(const ValueKey('bilibili-favorites-page-list')),
+      );
+      expect(bilibiliList.scrollDirection, Axis.vertical);
+      final bilibiliCard = find.byKey(
+        const ValueKey('favorite-bilibili-landscape-video'),
+      );
+      expect(bilibiliCard, findsOneWidget);
+      expect(_findCardDecoration(tester, bilibiliCard).border, isNotNull);
+      expect(tester.getSize(bilibiliCard).height, playlistCardSize.height);
+      expect(find.byTooltip('取消收藏').hitTestable(), findsOneWidget);
+      expect(
+        find
+            .descendant(
+              of: bilibiliCard,
+              matching: find.byType(PopupMenuButton<String>),
+            )
+            .hitTestable(),
+        findsOneWidget,
+      );
       expect(tester.takeException(), isNull);
     }
   });
+}
+
+BoxDecoration _findCardDecoration(WidgetTester tester, Finder root) {
+  return tester
+      .widgetList<Container>(
+        find.descendant(of: root, matching: find.byType(Container)),
+      )
+      .map((container) => container.decoration)
+      .whereType<BoxDecoration>()
+      .firstWhere((decoration) => decoration.border != null);
 }
 
 SongSearchResult _song(MusicPlatform platform, String id, String name) {

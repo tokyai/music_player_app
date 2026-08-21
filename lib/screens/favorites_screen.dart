@@ -274,21 +274,20 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
         ),
       );
     }
-    return ListView.builder(
+    return ListView.separated(
       key: const ValueKey('favorite-songs-page-list'),
       controller: _collectionScrollController,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.fromLTRB(
         layout.isLandscape ? layout.pagePadding : 12,
-        8,
+        10,
         layout.isLandscape ? layout.pagePadding : 12,
         20,
       ),
       itemCount: songs.length,
-      itemBuilder: (context, index) => Padding(
-        padding: const EdgeInsets.only(bottom: 3),
-        child: _buildSongTile(songs, index),
-      ),
+      separatorBuilder: (_, _) => const SizedBox(height: 8),
+      itemBuilder: (context, index) =>
+          _buildSongTile(songs, index, collectionCard: true),
     );
   }
 
@@ -367,35 +366,34 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
         ),
       );
     }
-    return ListView.builder(
+    return ListView.separated(
       key: const ValueKey('bilibili-favorites-page-list'),
       controller: _collectionScrollController,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.fromLTRB(
         layout.isLandscape ? layout.pagePadding : 12,
-        8,
+        10,
         layout.isLandscape ? layout.pagePadding : 12,
         20,
       ),
       itemCount: videos.length,
+      separatorBuilder: (_, _) => const SizedBox(height: 8),
       itemBuilder: (context, index) {
         final video = videos[index];
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 3),
-          child: SongTile(
-            key: ValueKey('favorite-bilibili-${video.id}'),
-            song: video,
-            showPlatformTag: true,
-            showFavorite: true,
-            onTap: () =>
-                context.read<PlayerProvider>().playFromPlaylist(videos, index),
-            onAddToQueue: () {
-              context.read<PlayerProvider>().addToQueue(video);
-              ScaffoldMessenger.of(
-                context,
-              ).showSnackBar(SnackBar(content: Text('已添加: ${video.name}')));
-            },
-          ),
+        return SongTile(
+          key: ValueKey('favorite-bilibili-${video.id}'),
+          song: video,
+          showPlatformTag: true,
+          showFavorite: true,
+          collectionCard: true,
+          onTap: () =>
+              context.read<PlayerProvider>().playFromPlaylist(videos, index),
+          onAddToQueue: () {
+            context.read<PlayerProvider>().addToQueue(video);
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('已添加: ${video.name}')));
+          },
         );
       },
     );
@@ -1033,17 +1031,25 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     );
   }
 
-  Widget _buildSongTile(List<SongSearchResult> songs, int index) {
+  Widget _buildSongTile(
+    List<SongSearchResult> songs,
+    int index, {
+    bool collectionCard = false,
+  }) {
     final song = songs[index];
-    final key = FavoriteService.keyOf(song);
+    final favoriteKey = FavoriteService.keyOf(song);
     return SongTile(
+      key: collectionCard
+          ? ValueKey('favorite-song-${song.platform.code}-${song.id}')
+          : null,
       song: song,
       showPlatformTag: true,
       showFavorite: !_selecting,
       selectionMode: _selecting,
-      selected: _selectedKeys.contains(key),
-      onSelectionChanged: (selected) => _setSelected(key, selected),
-      onLongPress: () => _startSelection(key),
+      selected: _selectedKeys.contains(favoriteKey),
+      collectionCard: collectionCard,
+      onSelectionChanged: (selected) => _setSelected(favoriteKey, selected),
+      onLongPress: () => _startSelection(favoriteKey),
       onTap: () =>
           context.read<PlayerProvider>().playFromPlaylist(songs, index),
       onAddToQueue: () {
