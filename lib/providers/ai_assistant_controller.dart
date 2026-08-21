@@ -517,6 +517,8 @@ class AiAssistantController extends ChangeNotifier {
   bool _isUnavailableSpeechError(String message) {
     final normalized = message.toLowerCase();
     return normalized.contains('error_permission') ||
+        normalized.contains('error_audio_focus') ||
+        normalized.contains('audio focus') ||
         normalized.contains('permission denied') ||
         normalized.contains('error_language_not_supported') ||
         normalized.contains('error_speech_recognizer_disabled') ||

@@ -5,6 +5,9 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.speech.tts.TextToSpeech
@@ -26,6 +29,7 @@ class MainActivity : AudioServiceActivity() {
         const val FAVORITES_FILE_CHANNEL = "music_player/favorites_file"
         const val EXTERNAL_MEDIA_CHANNEL = "music_player/external_media"
         const val AI_TTS_CHANNEL = "music_player/ai_tts"
+        const val AI_AUDIO_CHANNEL = "music_player/ai_audio"
         const val REQUEST_IMPORT_FAVORITES = 4101
         const val REQUEST_EXPORT_FAVORITES = 4102
         const val MAX_BACKUP_BYTES = 5 * 1024 * 1024
@@ -36,6 +40,9 @@ class MainActivity : AudioServiceActivity() {
     private var foregroundMediaKeyChannel: MethodChannel? = null
     private var floatingCapsuleChannel: MethodChannel? = null
     private var aiTtsChannel: MethodChannel? = null
+    private var aiAudioChannel: MethodChannel? = null
+    private var aiAudioFocusRequest: AudioFocusRequest? = null
+    private var aiAudioFocusHeld = false
     private var aiTts: TextToSpeech? = null
     private var aiTtsReady = false
     private var aiTtsInitializing = false
@@ -43,6 +50,20 @@ class MainActivity : AudioServiceActivity() {
     private var pendingAiTtsSpeakResult: MethodChannel.Result? = null
     private var pendingAiTtsUtteranceId: String? = null
     private var foregroundMediaKeysEnabled = false
+
+    private val aiAudioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        if (change == AudioManager.AUDIOFOCUS_LOSS ||
+            change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
+        ) {
+            // A lost transient request must be abandoned explicitly; otherwise
+            // some head units keep the old request in their focus stack.
+            abandonAiAudioFocus()
+        }
+        try {
+            aiAudioChannel?.invokeMethod("focusChanged", change)
+        } catch (_: Exception) {
+        }
+    }
 
     private val aiTtsProgressListener = object : UtteranceProgressListener() {
         override fun onStart(utteranceId: String?) = Unit
@@ -118,6 +139,19 @@ class MainActivity : AudioServiceActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        aiAudioChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            AI_AUDIO_CHANNEL
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "requestFocus" -> result.success(requestAiAudioFocus())
+                    "abandonFocus" -> result.success(abandonAiAudioFocus())
+                    else -> result.notImplemented()
+                }
+            }
+        }
 
         aiTtsChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -213,11 +247,80 @@ class MainActivity : AudioServiceActivity() {
         foregroundMediaKeyChannel = null
         floatingCapsuleChannel?.setMethodCallHandler(null)
         floatingCapsuleChannel = null
+        abandonAiAudioFocus()
+        aiAudioChannel?.setMethodCallHandler(null)
+        aiAudioChannel = null
         aiTtsChannel?.setMethodCallHandler(null)
         aiTtsChannel = null
         releaseAiTts()
         FloatCapsuleManager.clearCallbacks()
         super.onDestroy()
+    }
+
+    /**
+     * Requests a short-lived assistant focus while SpeechRecognizer owns the
+     * microphone. This is public Android audio policy and does not select an
+     * OEM-only AudioRecord source or alter Bluetooth routing.
+     */
+    private fun requestAiAudioFocus(): Boolean {
+        if (aiAudioFocusHeld) return true
+        val manager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return false
+        return try {
+            val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val attributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+                val request = AudioFocusRequest.Builder(
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                )
+                    .setAudioAttributes(attributes)
+                    .setWillPauseWhenDucked(true)
+                    .setOnAudioFocusChangeListener(aiAudioFocusListener)
+                    .build()
+                aiAudioFocusRequest = request
+                manager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            } else {
+                // Android 7 and older car head units only expose the stream API.
+                manager.requestAudioFocus(
+                    aiAudioFocusListener,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            }
+            aiAudioFocusHeld = granted
+            if (!granted) aiAudioFocusRequest = null
+            granted
+        } catch (_: SecurityException) {
+            aiAudioFocusRequest = null
+            aiAudioFocusHeld = false
+            false
+        } catch (_: Exception) {
+            aiAudioFocusRequest = null
+            aiAudioFocusHeld = false
+            false
+        }
+    }
+
+    private fun abandonAiAudioFocus(): Boolean {
+        val manager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return false
+        if (!aiAudioFocusHeld && aiAudioFocusRequest == null) return true
+        return try {
+            val abandoned = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                aiAudioFocusRequest?.let {
+                    manager.abandonAudioFocusRequest(it)
+                } ?: AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            } else {
+                manager.abandonAudioFocus(aiAudioFocusListener)
+            }
+            aiAudioFocusRequest = null
+            aiAudioFocusHeld = false
+            abandoned == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        } catch (_: Exception) {
+            aiAudioFocusRequest = null
+            aiAudioFocusHeld = false
+            false
+        }
     }
 
     private fun initializeAiTts(result: MethodChannel.Result) {

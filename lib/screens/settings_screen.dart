@@ -1532,6 +1532,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               RemoteTextFieldTraversal(
                 controller: _apiKeyController,
                 child: TextField(
+                  key: const ValueKey('api-key-field'),
                   controller: _apiKeyController,
                   obscureText: _obscureKey,
                   onChanged: (_) => _apiKeyEdited = true,

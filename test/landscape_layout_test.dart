@@ -2002,7 +2002,7 @@ void main() {
         await player.settingsReady;
 
         await _pumpScreen(tester, const SettingsScreen(), player, theme, size);
-        final apiKeyField = find.byType(TextField);
+        final apiKeyField = find.byKey(const ValueKey('api-key-field'));
         await tester.ensureVisible(apiKeyField);
         await tester.tap(apiKeyField);
         await tester.pump();
