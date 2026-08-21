@@ -1467,20 +1467,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Widget _buildAiAssistantOverlay(BuildContext context) {
-    final layout = AppLayout.fromContext(context);
-    final compactLandscape = layout.isCompactLandscape;
-    return SafeArea(
-      child: Align(
-        alignment: Alignment.topRight,
-        child: Padding(
-          padding: EdgeInsets.only(
-            top: compactLandscape ? 52 : 72,
-            right: compactLandscape ? 8 : 16,
-          ),
-          child: const AiAssistantFloatingButton(),
-        ),
-      ),
-    );
+    return const AiAssistantPetOverlay();
   }
 
   Widget _buildLandscapePlayer(

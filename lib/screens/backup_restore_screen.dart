@@ -137,7 +137,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
             '恢复完成：歌曲 ${result.songsAdded} 首，B站 ${result.bilibiliAdded} 个，'
             '歌单 ${result.playlistsAdded} 个'
             '${result.apiKeyRestored ? '，播放 API Key 已恢复' : ''}'
-            '${result.aiConfigRestored ? '，AI 助理配置和 Key 已恢复' : ''}'
+            '${result.aiConfigRestored ? '，AI 模型配置、中转站和 Key 已恢复' : ''}'
             '${result.songsSkipped + result.bilibiliSkipped + result.playlistsSkipped > 0 ? '（重复或无效项目已跳过）' : ''}';
         _statusError = false;
       });

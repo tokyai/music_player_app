@@ -211,6 +211,101 @@ class AiAssistantConfig {
   };
 }
 
+/// A saved AI endpoint/model combination. The API key is kept in [config]
+/// while normal preferences serialization deliberately omits it; explicit
+/// backups can use [toBackupJson] to include the user's chosen portable copy.
+class AiAssistantProfile {
+  final String id;
+  final String name;
+  final AiAssistantConfig config;
+
+  const AiAssistantProfile({
+    required this.id,
+    required this.name,
+    required this.config,
+  });
+
+  AiAssistantProfile copyWith({
+    String? id,
+    String? name,
+    AiAssistantConfig? config,
+  }) => AiAssistantProfile(
+    id: id ?? this.id,
+    name: name ?? this.name,
+    config: config ?? this.config,
+  );
+
+  Map<String, dynamic> toPreferencesJson() => {
+    'id': id,
+    'name': name.trim().isEmpty ? '未命名配置' : name.trim(),
+    'config': config.toPreferencesJson(),
+  };
+
+  Map<String, dynamic> toBackupJson() => {
+    'id': id,
+    'name': name.trim().isEmpty ? '未命名配置' : name.trim(),
+    'config': config.toLanJson(),
+  };
+
+  factory AiAssistantProfile.fromJson(
+    Map<String, dynamic> json, {
+    String apiKey = '',
+  }) {
+    final rawConfig = json['config'];
+    final configMap = rawConfig is Map
+        ? Map<String, dynamic>.from(rawConfig)
+        : json;
+    final embeddedKey = configMap['apiKey'];
+    return AiAssistantProfile(
+      id: json['id']?.toString().trim() ?? '',
+      name: json['name']?.toString().trim().isNotEmpty == true
+          ? json['name'].toString().trim()
+          : '未命名配置',
+      config: AiAssistantConfig.fromJson(
+        configMap,
+        apiKey: apiKey.isNotEmpty
+            ? apiKey
+            : embeddedKey is String
+            ? embeddedKey
+            : '',
+      ),
+    );
+  }
+}
+
+/// Normalized position of the desktop pet inside its available page area.
+/// Values are fractions of the maximum legal left/top offset, not pixels.
+class AiPetPosition {
+  final double x;
+  final double y;
+
+  const AiPetPosition({required this.x, required this.y});
+
+  static const centered = AiPetPosition(x: 1, y: 0);
+
+  AiPetPosition normalized() => AiPetPosition(
+    x: x.clamp(0.0, 1.0).toDouble(),
+    y: y.clamp(0.0, 1.0).toDouble(),
+  );
+
+  AiPetPosition copyWith({double? x, double? y}) =>
+      AiPetPosition(x: x ?? this.x, y: y ?? this.y);
+
+  Map<String, dynamic> toJson() => {'x': x, 'y': y};
+
+  factory AiPetPosition.fromJson(dynamic value) {
+    if (value is Map) {
+      final map = Map<String, dynamic>.from(value);
+      final x = map['x'];
+      final y = map['y'];
+      if (x is num && y is num) {
+        return AiPetPosition(x: x.toDouble(), y: y.toDouble()).normalized();
+      }
+    }
+    return centered;
+  }
+}
+
 /// A model advertised by an AI provider's model-list endpoint.
 ///
 /// `id` is the value sent in chat requests. `label` may contain a more

@@ -38,6 +38,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _aiUrlController = TextEditingController();
   final _aiApiKeyController = TextEditingController();
   final _aiModelController = TextEditingController();
+  final _aiProfileNameController = TextEditingController();
   late final AiConfigController _aiConfigController;
   late final bool _ownsAiConfigController;
   AiProviderKind _aiProvider = AiProviderKind.openAi;
@@ -45,6 +46,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   AiReasoningEffort _aiReasoning = AiReasoningEffort.platformDefault;
   AiWebSearchMode _aiWebSearch = AiWebSearchMode.automatic;
   AiVoiceModelKind _aiVoiceModel = AiVoiceModelKind.zipformerChinese;
+  double _petScaleDraft = AiConfigController.minPetScale + 0.35;
   bool _obscureAiKey = true;
   bool _aiConfigEdited = false;
   bool _testingAiConnection = false;
@@ -71,10 +73,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _aiConfigController =
         sharedAiConfig ??
         AiConfigController(secretStore: MemoryAiSecretStore());
-    _applyAiConfig(_aiConfigController.config);
+    _applyAiProfile(_aiConfigController.activeProfile);
     _aiConfigController.ready.then((_) {
       if (mounted && !_aiConfigEdited) {
-        setState(() => _applyAiConfig(_aiConfigController.config));
+        setState(() {
+          _applyAiProfile(_aiConfigController.activeProfile);
+          _petScaleDraft = _aiConfigController.petScale;
+        });
       }
     });
     final player = context.read<PlayerProvider>();
@@ -230,7 +235,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return true;
   }
 
-  void _applyAiConfig(AiAssistantConfig config) {
+  void _applyAiProfile(AiAssistantProfile? profile) {
+    final config = profile?.config ?? _aiConfigController.config;
+    _aiProfileNameController.text = profile?.name ?? '默认配置';
     _aiProvider = config.provider;
     _aiProtocol = config.protocol;
     _aiReasoning = config.reasoningEffort;
@@ -239,6 +246,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _aiUrlController.text = config.baseUrl;
     _aiApiKeyController.text = config.apiKey;
     _aiModelController.text = config.model;
+    _petScaleDraft = _aiConfigController.petScale;
+  }
+
+  void _applyAiConfig(AiAssistantConfig config) {
+    _applyAiProfile(
+      _aiConfigController.activeProfile?.copyWith(config: config),
+    );
   }
 
   void _markAiConfigEdited({bool clearModels = false}) {
@@ -326,6 +340,121 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  Future<void> _selectAiProfile(AiAssistantProfile profile) async {
+    await _aiConfigController.selectProfile(profile.id);
+    if (!mounted) return;
+    setState(() {
+      _applyAiProfile(_aiConfigController.activeProfile);
+      _aiModels = const [];
+      _aiModelsError = null;
+      _aiConfigEdited = false;
+    });
+  }
+
+  Future<String?> _askProfileName({String initial = ''}) async {
+    var value = initial;
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(initial.isEmpty ? '新增模型配置' : '重命名模型配置'),
+        content: TextFormField(
+          key: const ValueKey('ai-profile-name-dialog-field'),
+          autofocus: true,
+          initialValue: initial,
+          maxLength: 40,
+          decoration: const InputDecoration(labelText: '配置名称'),
+          onChanged: (next) => value = next,
+          onFieldSubmitted: (value) =>
+              Navigator.pop(dialogContext, value.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, value.trim()),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    return result?.trim().isEmpty == true ? null : result?.trim();
+  }
+
+  Future<void> _createAiProfile() async {
+    final name = await _askProfileName();
+    if (name == null) return;
+    final current = _aiConfigController.config;
+    final profile = await _aiConfigController.createProfile(
+      name: name,
+      config: current.copyWith(model: ''),
+    );
+    if (!mounted) return;
+    setState(() {
+      _applyAiProfile(profile);
+      _aiModels = const [];
+      _aiModelsError = null;
+      _aiConfigEdited = false;
+    });
+  }
+
+  Future<void> _renameAiProfile(AiAssistantProfile profile) async {
+    final name = await _askProfileName(initial: profile.name);
+    if (name == null) return;
+    await _aiConfigController.renameProfile(profile.id, name);
+    if (!mounted) return;
+    if (profile.id == _aiConfigController.activeProfileId) {
+      _aiProfileNameController.text = name;
+    }
+  }
+
+  Future<void> _deleteAiProfile(AiAssistantProfile profile) async {
+    if (_aiConfigController.profiles.length <= 1) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('至少保留一个模型配置')));
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('删除模型配置？'),
+        content: Text('将删除“${profile.name}”及其对应的中转站 Key。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final deletingActive = profile.id == _aiConfigController.activeProfileId;
+      await _aiConfigController.deleteProfile(profile.id);
+      if (!mounted) return;
+      if (deletingActive) {
+        setState(() {
+          _applyAiProfile(_aiConfigController.activeProfile);
+          _aiModels = const [];
+          _aiModelsError = null;
+          _aiConfigEdited = false;
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('删除失败：$error')));
+      }
+    }
+  }
+
   Future<void> _saveAiConfig() async {
     if (_savingAiConfig) return;
     final config = _aiConfigFromForm();
@@ -337,7 +466,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     setState(() => _savingAiConfig = true);
     try {
-      await _aiConfigController.save(config);
+      await _aiConfigController.updateProfile(
+        _aiConfigController.activeProfileId,
+        name: _aiProfileNameController.text,
+        config: config,
+      );
       if (!mounted) return;
       setState(() {
         _savingAiConfig = false;
@@ -419,7 +552,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final received = await session.receivedConfig;
     if (received == null) return false;
     final config = received.copyWith(voiceModel: _aiVoiceModel);
-    await _aiConfigController.save(config);
+    await _aiConfigController.updateProfile(
+      _aiConfigController.activeProfileId,
+      name: _aiProfileNameController.text,
+      config: config,
+    );
     if (!mounted) return true;
     setState(() {
       _applyAiConfig(config);
@@ -440,6 +577,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _aiUrlController.dispose();
     _aiApiKeyController.dispose();
     _aiModelController.dispose();
+    _aiProfileNameController.dispose();
     if (_ownsAiConfigController) _aiConfigController.dispose();
     super.dispose();
   }
@@ -1593,6 +1731,100 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _buildAiProfileList(AppLayout layout) {
+    final profiles = _aiConfigController.profiles;
+    return Container(
+      key: const ValueKey('ai-profile-list'),
+      padding: const EdgeInsets.fromLTRB(10, 8, 6, 4),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceSoft,
+        borderRadius: BorderRadius.circular(AppRadius.control),
+        border: Border.all(color: AppColors.outline),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.layers_outlined, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '模型配置',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: layout.bodySize,
+                  ),
+                ),
+              ),
+              IconButton(
+                key: const ValueKey('ai-profile-add'),
+                tooltip: '新增模型配置',
+                onPressed: _createAiProfile,
+                icon: const Icon(Icons.add_circle_outline),
+              ),
+            ],
+          ),
+          if (profiles.isEmpty)
+            const Padding(padding: EdgeInsets.all(12), child: Text('还没有模型配置'))
+          else
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: profiles.length,
+              separatorBuilder: (_, _) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final profile = profiles[index];
+                final selected =
+                    profile.id == _aiConfigController.activeProfileId;
+                final model = profile.config.model.trim();
+                return ListTile(
+                  key: ValueKey('ai-profile-${profile.id}'),
+                  dense: layout.isCompactLandscape,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                  leading: Icon(
+                    selected
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked,
+                    color: selected ? AppColors.primary : AppColors.textHint,
+                  ),
+                  title: Text(
+                    profile.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    '${profile.config.provider.label} · ${model.isEmpty ? '未填写模型' : model}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  onTap: selected ? null : () => _selectAiProfile(profile),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        key: ValueKey('ai-profile-rename-${profile.id}'),
+                        tooltip: '重命名',
+                        onPressed: () => _renameAiProfile(profile),
+                        icon: const Icon(Icons.edit_outlined, size: 20),
+                      ),
+                      IconButton(
+                        key: ValueKey('ai-profile-delete-${profile.id}'),
+                        tooltip: '删除',
+                        onPressed: profiles.length <= 1
+                            ? null
+                            : () => _deleteAiProfile(profile),
+                        icon: const Icon(Icons.delete_outline, size: 20),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildAiAssistantCard({bool compact = false}) {
     final layout = AppLayout.fromContext(context);
     final searchDependsOnRelay =
@@ -1635,6 +1867,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   subtitle: const Text('在正在播放页面右上方显示悬浮入口'),
                   value: _aiConfigController.showPetOnPlayerPage,
                   onChanged: _aiConfigController.setShowPetOnPlayerPage,
+                ),
+              ),
+              AnimatedBuilder(
+                animation: _aiConfigController,
+                builder: (context, _) => _buildAiProfileList(layout),
+              ),
+              const SizedBox(height: 12),
+              RemoteTextFieldTraversal(
+                controller: _aiProfileNameController,
+                child: TextField(
+                  key: const ValueKey('ai-profile-name-field'),
+                  controller: _aiProfileNameController,
+                  maxLength: 40,
+                  onChanged: (_) => _markAiConfigEdited(),
+                  decoration: const InputDecoration(
+                    labelText: '当前配置名称',
+                    hintText: '例如：主力模型、车机轻量模型',
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  const Icon(Icons.open_in_full_rounded, size: 20),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      '桌面宠物大小',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text('${_petScaleDraft.toStringAsFixed(2)}x'),
+                ],
+              ),
+              Slider(
+                key: const ValueKey('ai-pet-scale-slider'),
+                min: AiConfigController.minPetScale,
+                max: AiConfigController.maxPetScale,
+                divisions: 27,
+                value: _petScaleDraft.clamp(
+                  AiConfigController.minPetScale,
+                  AiConfigController.maxPetScale,
+                ),
+                label: '${_petScaleDraft.toStringAsFixed(2)}x',
+                onChanged: (value) => setState(() => _petScaleDraft = value),
+                onChangeEnd: _aiConfigController.setPetScale,
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  key: const ValueKey('ai-pet-position-reset'),
+                  onPressed: _aiConfigController.resetPetPosition,
+                  icon: const Icon(Icons.refresh_rounded, size: 18),
+                  label: const Text('恢复宠物位置'),
                 ),
               ),
               const SizedBox(height: 12),

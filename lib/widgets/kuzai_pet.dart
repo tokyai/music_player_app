@@ -258,7 +258,7 @@ class _KuzaiPetState extends State<KuzaiPet> with TickerProviderStateMixin {
     return Semantics(
       button: true,
       label: '打开库仔 AI 助手',
-      hint: '点击对话，长按摸摸库仔',
+      hint: '点击对话，拖动可移动位置，长按摸摸库仔',
       value: _semanticValue,
       onTap: _handleTap,
       onLongPress: () => _handleLongPress(

@@ -11,7 +11,9 @@ import '../theme/app_theme.dart';
 import 'kuzai_pet.dart';
 
 class AiAssistantFloatingButton extends StatefulWidget {
-  const AiAssistantFloatingButton({super.key});
+  final double? size;
+
+  const AiAssistantFloatingButton({super.key, this.size});
 
   @override
   State<AiAssistantFloatingButton> createState() =>
@@ -67,13 +69,107 @@ class _AiAssistantFloatingButtonState extends State<AiAssistantFloatingButton> {
   @override
   Widget build(BuildContext context) {
     final layout = AppLayout.fromContext(context);
+    final baseSize = layout.isCompactLandscape ? 68.0 : 88.0;
     return KuzaiPet(
       key: const ValueKey('ai-assistant-fab'),
-      size: layout.isCompactLandscape ? 68 : 88,
+      size: widget.size ?? baseSize,
       mode: _petMode,
       onTap: () => unawaited(_openAssistant()),
     );
   }
+}
+
+/// Full-page host for the movable assistant pet. Its persisted coordinates are
+/// normalized so the pet stays inside the visible area after rotation or when
+/// moving between phone and car-display sizes.
+class AiAssistantPetOverlay extends StatefulWidget {
+  final EdgeInsets reservedInsets;
+
+  const AiAssistantPetOverlay({
+    super.key,
+    this.reservedInsets = EdgeInsets.zero,
+  });
+
+  @override
+  State<AiAssistantPetOverlay> createState() => _AiAssistantPetOverlayState();
+}
+
+class _AiAssistantPetOverlayState extends State<AiAssistantPetOverlay> {
+  Offset? _dragOffset;
+
+  @override
+  Widget build(BuildContext context) {
+    final config = Provider.of<AiConfigController?>(context);
+    final layout = AppLayout.fromContext(context);
+    final petScale = config?.petScale ?? 1;
+    final petSize = (layout.isCompactLandscape ? 68.0 : 88.0) * petScale;
+    final petWidth = petSize * 1.12;
+    final position = config?.petPosition ?? AiPetPosition.centered;
+
+    return Padding(
+      padding: widget.reservedInsets,
+      child: SafeArea(
+        minimum: const EdgeInsets.all(8),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final maxX = (constraints.maxWidth - petWidth)
+                .clamp(0.0, double.infinity)
+                .toDouble();
+            final maxY = (constraints.maxHeight - petSize)
+                .clamp(0.0, double.infinity)
+                .toDouble();
+            final persisted = Offset(position.x * maxX, position.y * maxY);
+            final current = _clampOffset(_dragOffset ?? persisted, maxX, maxY);
+            return Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Positioned(
+                  key: const ValueKey('ai-assistant-pet-position'),
+                  left: current.dx,
+                  top: current.dy,
+                  width: petWidth,
+                  height: petSize,
+                  child: GestureDetector(
+                    key: const ValueKey('ai-assistant-pet-drag'),
+                    behavior: HitTestBehavior.translucent,
+                    onPanStart: (_) => setState(() => _dragOffset = current),
+                    onPanUpdate: (details) {
+                      setState(() {
+                        _dragOffset = _clampOffset(
+                          (_dragOffset ?? current) + details.delta,
+                          maxX,
+                          maxY,
+                        );
+                      });
+                    },
+                    onPanEnd: (_) {
+                      final offset = _dragOffset ?? current;
+                      setState(() => _dragOffset = null);
+                      if (config == null) return;
+                      unawaited(
+                        config.setPetPosition(
+                          AiPetPosition(
+                            x: maxX <= 0 ? 0 : offset.dx / maxX,
+                            y: maxY <= 0 ? 0 : offset.dy / maxY,
+                          ),
+                        ),
+                      );
+                    },
+                    child: AiAssistantFloatingButton(size: petSize),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Offset _clampOffset(Offset value, double maxX, double maxY) => Offset(
+    value.dx.clamp(0.0, maxX).toDouble(),
+    value.dy.clamp(0.0, maxY).toDouble(),
+  );
 }
 
 Future<void> showAiAssistantPanel(BuildContext context) async {

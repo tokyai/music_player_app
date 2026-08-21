@@ -326,130 +326,140 @@ class _MainScreenState extends State<MainScreen>
                   constraints.maxWidth >= AppLayout.wideWindowMinWidth &&
                   constraints.maxHeight >= AppLayout.wideWindowMinHeight;
               return Scaffold(
-                floatingActionButton: Selector<AiConfigController?, bool>(
-                  selector: (_, config) =>
-                      config?.showAssistantOnAllPages ?? true,
-                  builder: (context, visible, _) => visible
-                      ? Padding(
-                          padding: EdgeInsets.only(
-                            right: showPlayerPane ? 297 : 0,
-                            bottom: hasCurrentSong && !showPlayerPane ? 76 : 0,
-                          ),
-                          child: const AiAssistantFloatingButton(),
-                        )
-                      : const SizedBox.shrink(),
-                ),
-                body: Row(
+                body: Stack(
+                  fit: StackFit.expand,
                   children: [
-                    SafeArea(
-                      right: false,
-                      child: NavigationRail(
-                        key: const ValueKey('landscape-navigation'),
-                        minWidth: compactRail
-                            ? 96
-                            : (largeUi
-                                  ? (layout.isHighDensityCarDisplay ? 136 : 132)
-                                  : 118),
-                        selectedIndex: _currentIndex,
-                        onDestinationSelected: _selectScreen,
-                        labelType: NavigationRailLabelType.all,
-                        groupAlignment: compactRail ? 0 : -0.28,
-                        useIndicator: true,
-                        indicatorColor: AppColors.primarySoft,
-                        indicatorShape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(
-                            AppRadius.control,
-                          ),
-                        ),
-                        selectedIconTheme: IconThemeData(
-                          color: AppColors.primary,
-                          size: compactRail ? 31 : (largeUi ? 38 : 34),
-                        ),
-                        unselectedIconTheme: IconThemeData(
-                          color: AppColors.textSecondary,
-                          size: compactRail ? 29 : (largeUi ? 35 : 32),
-                        ),
-                        selectedLabelTextStyle: TextStyle(
-                          color: AppColors.primary,
-                          fontSize: compactRail ? 15 : (largeUi ? 21 : 18),
-                          fontWeight: FontWeight.w700,
-                        ),
-                        unselectedLabelTextStyle: TextStyle(
-                          color: AppColors.textSecondary,
-                          fontSize: compactRail ? 15 : (largeUi ? 20 : 18),
-                          fontWeight: FontWeight.w600,
-                        ),
-                        leading: _buildLandscapeBrand(
-                          compact: compactRail,
-                          wide: largeUi,
-                        ),
-                        destinations: const [
-                          NavigationRailDestination(
-                            icon: Icon(Icons.explore_outlined),
-                            selectedIcon: Icon(Icons.explore),
-                            label: RemoteFocusable(
-                              key: ValueKey(
-                                'landscape-navigation-initial-focus',
-                              ),
-                              autofocus: true,
-                              borderRadius: BorderRadius.all(
-                                Radius.circular(6),
-                              ),
-                              child: Padding(
-                                padding: EdgeInsets.symmetric(horizontal: 4),
-                                child: Text('发现'),
+                    Row(
+                      children: [
+                        SafeArea(
+                          right: false,
+                          child: NavigationRail(
+                            key: const ValueKey('landscape-navigation'),
+                            minWidth: compactRail
+                                ? 96
+                                : (largeUi
+                                      ? (layout.isHighDensityCarDisplay
+                                            ? 136
+                                            : 132)
+                                      : 118),
+                            selectedIndex: _currentIndex,
+                            onDestinationSelected: _selectScreen,
+                            labelType: NavigationRailLabelType.all,
+                            groupAlignment: compactRail ? 0 : -0.28,
+                            useIndicator: true,
+                            indicatorColor: AppColors.primarySoft,
+                            indicatorShape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(
+                                AppRadius.control,
                               ),
                             ),
-                          ),
-                          NavigationRailDestination(
-                            icon: Icon(Icons.search_outlined),
-                            selectedIcon: Icon(Icons.search),
-                            label: Text('搜索'),
-                          ),
-                          NavigationRailDestination(
-                            icon: Icon(Icons.playlist_play_outlined),
-                            selectedIcon: Icon(Icons.playlist_play),
-                            label: Text('歌单'),
-                          ),
-                          NavigationRailDestination(
-                            icon: Icon(Icons.settings_outlined),
-                            selectedIcon: Icon(Icons.settings),
-                            label: Text('设置'),
-                          ),
-                        ],
-                      ),
-                    ),
-                    VerticalDivider(
-                      width: 1,
-                      thickness: 1,
-                      color: AppColors.surfaceSoft,
-                    ),
-                    Expanded(
-                      child: Column(
-                        children: [
-                          Expanded(child: content),
-                          if (hasCurrentSong && !showPlayerPane)
-                            const MiniPlayer(),
-                        ],
-                      ),
-                    ),
-                    if (showPlayerPane)
-                      SizedBox(
-                        width: 297,
-                        child: Row(
-                          children: [
-                            VerticalDivider(
-                              width: 1,
-                              thickness: 1,
-                              color: AppColors.surfaceSoft,
+                            selectedIconTheme: IconThemeData(
+                              color: AppColors.primary,
+                              size: compactRail ? 31 : (largeUi ? 38 : 34),
                             ),
-                            const SizedBox(
-                              width: 296,
-                              child: LandscapeMiniPlayer(),
+                            unselectedIconTheme: IconThemeData(
+                              color: AppColors.textSecondary,
+                              size: compactRail ? 29 : (largeUi ? 35 : 32),
                             ),
-                          ],
+                            selectedLabelTextStyle: TextStyle(
+                              color: AppColors.primary,
+                              fontSize: compactRail ? 15 : (largeUi ? 21 : 18),
+                              fontWeight: FontWeight.w700,
+                            ),
+                            unselectedLabelTextStyle: TextStyle(
+                              color: AppColors.textSecondary,
+                              fontSize: compactRail ? 15 : (largeUi ? 20 : 18),
+                              fontWeight: FontWeight.w600,
+                            ),
+                            leading: _buildLandscapeBrand(
+                              compact: compactRail,
+                              wide: largeUi,
+                            ),
+                            destinations: const [
+                              NavigationRailDestination(
+                                icon: Icon(Icons.explore_outlined),
+                                selectedIcon: Icon(Icons.explore),
+                                label: RemoteFocusable(
+                                  key: ValueKey(
+                                    'landscape-navigation-initial-focus',
+                                  ),
+                                  autofocus: true,
+                                  borderRadius: BorderRadius.all(
+                                    Radius.circular(6),
+                                  ),
+                                  child: Padding(
+                                    padding: EdgeInsets.symmetric(
+                                      horizontal: 4,
+                                    ),
+                                    child: Text('发现'),
+                                  ),
+                                ),
+                              ),
+                              NavigationRailDestination(
+                                icon: Icon(Icons.search_outlined),
+                                selectedIcon: Icon(Icons.search),
+                                label: Text('搜索'),
+                              ),
+                              NavigationRailDestination(
+                                icon: Icon(Icons.playlist_play_outlined),
+                                selectedIcon: Icon(Icons.playlist_play),
+                                label: Text('歌单'),
+                              ),
+                              NavigationRailDestination(
+                                icon: Icon(Icons.settings_outlined),
+                                selectedIcon: Icon(Icons.settings),
+                                label: Text('设置'),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
+                        VerticalDivider(
+                          width: 1,
+                          thickness: 1,
+                          color: AppColors.surfaceSoft,
+                        ),
+                        Expanded(
+                          child: Column(
+                            children: [
+                              Expanded(child: content),
+                              if (hasCurrentSong && !showPlayerPane)
+                                const MiniPlayer(),
+                            ],
+                          ),
+                        ),
+                        if (showPlayerPane)
+                          SizedBox(
+                            width: 297,
+                            child: Row(
+                              children: [
+                                VerticalDivider(
+                                  width: 1,
+                                  thickness: 1,
+                                  color: AppColors.surfaceSoft,
+                                ),
+                                const SizedBox(
+                                  width: 296,
+                                  child: LandscapeMiniPlayer(),
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+                    Selector<AiConfigController?, bool>(
+                      selector: (_, config) =>
+                          config?.showAssistantOnAllPages ?? true,
+                      builder: (context, visible, _) => visible
+                          ? AiAssistantPetOverlay(
+                              reservedInsets: EdgeInsets.only(
+                                right: showPlayerPane ? 297 : 0,
+                                bottom: hasCurrentSong && !showPlayerPane
+                                    ? 76
+                                    : 0,
+                              ),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
                   ],
                 ),
               );
@@ -458,13 +468,19 @@ class _MainScreenState extends State<MainScreen>
         }
 
         return Scaffold(
-          floatingActionButton: Selector<AiConfigController?, bool>(
-            selector: (_, config) => config?.showAssistantOnAllPages ?? true,
-            builder: (context, visible, _) => visible
-                ? const AiAssistantFloatingButton()
-                : const SizedBox.shrink(),
+          body: Stack(
+            fit: StackFit.expand,
+            children: [
+              content,
+              Selector<AiConfigController?, bool>(
+                selector: (_, config) =>
+                    config?.showAssistantOnAllPages ?? true,
+                builder: (context, visible, _) => visible
+                    ? const AiAssistantPetOverlay()
+                    : const SizedBox.shrink(),
+              ),
+            ],
           ),
-          body: content,
           bottomNavigationBar: SafeArea(
             top: false,
             child: Column(

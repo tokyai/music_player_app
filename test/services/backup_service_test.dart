@@ -77,7 +77,7 @@ void main() {
   );
 
   test(
-    'backup round-trips the complete AI configuration and visibility',
+    'backup round-trips all AI profiles, relays, keys and pet settings',
     () async {
       final player = PlayerProvider();
       addTearDown(player.dispose);
@@ -98,8 +98,25 @@ void main() {
           voiceModel: AiVoiceModelKind.paraformerBilingual,
         ),
       );
+      final primaryId = source.activeProfileId;
+      await source.renameProfile(primaryId, '主力模型');
+      final backupProfile = await source.createProfile(
+        name: '备用中转站',
+        config: const AiAssistantConfig(
+          provider: AiProviderKind.custom,
+          protocol: AiRequestProtocol.openAiChatCompletions,
+          baseUrl: 'https://backup.example/v1',
+          apiKey: 'backup-secret',
+          model: 'backup-model',
+          reasoningEffort: AiReasoningEffort.medium,
+          webSearchMode: AiWebSearchMode.disabled,
+        ),
+      );
+      await source.selectProfile(primaryId);
       await source.setShowAssistantOnAllPages(false);
       await source.setShowPetOnPlayerPage(false);
+      await source.setPetScale(1.6);
+      await source.setPetPosition(const AiPetPosition(x: 0.25, y: 0.75));
 
       final raw = BackupService.exportJson(
         favorites: favorites,
@@ -112,6 +129,15 @@ void main() {
       expect(
         exportedAi['config'],
         containsPair('voiceModel', AiVoiceModelKind.paraformerBilingual.value),
+      );
+      expect(exportedAi['activeProfileId'], primaryId);
+      final profiles = exportedAi['profiles'] as List<dynamic>;
+      expect(profiles, hasLength(2));
+      expect(
+        profiles
+            .map((item) => (item as Map<String, dynamic>)['config'])
+            .map((item) => (item as Map<String, dynamic>)['apiKey']),
+        containsAll(['ai-secret', 'backup-secret']),
       );
 
       final restored = AiConfigController(secretStore: MemoryAiSecretStore());
@@ -132,8 +158,20 @@ void main() {
       expect(restored.config.reasoningEffort, AiReasoningEffort.high);
       expect(restored.config.webSearchMode, AiWebSearchMode.always);
       expect(restored.config.voiceModel, AiVoiceModelKind.paraformerBilingual);
+      expect(restored.profiles.map((profile) => profile.name), [
+        '主力模型',
+        '备用中转站',
+      ]);
+      expect(restored.activeProfileId, primaryId);
+      await restored.selectProfile(backupProfile.id);
+      expect(restored.config.baseUrl, 'https://backup.example/v1');
+      expect(restored.config.apiKey, 'backup-secret');
+      expect(restored.config.model, 'backup-model');
       expect(restored.showAssistantOnAllPages, isFalse);
       expect(restored.showPetOnPlayerPage, isFalse);
+      expect(restored.petScale, closeTo(1.6, 0.001));
+      expect(restored.petPosition.x, closeTo(0.25, 0.001));
+      expect(restored.petPosition.y, closeTo(0.75, 0.001));
     },
   );
 }
