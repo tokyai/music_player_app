@@ -65,7 +65,16 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(VerticalDivider), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('favorites-overview-pane')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('favorites-songs-section')),
+      findsOneWidget,
+    );
     expect(find.text('2 首歌曲'), findsOneWidget);
+    expect(find.text('收藏歌曲'), findsOneWidget);
     expect(find.text('Favorite One'), findsOneWidget);
     expect(find.text('Favorite Two'), findsOneWidget);
     expect(find.text('收藏歌单'), findsOneWidget);
