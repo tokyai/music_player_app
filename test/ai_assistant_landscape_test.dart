@@ -539,7 +539,29 @@ void main() {
           'https://example.test/v1',
         );
 
-        expect(find.text('车机离线语音模型'), findsNothing);
+        final voiceModel = find.byKey(
+          ValueKey('ai-voice-model-${AiVoiceModelKind.zipformerChinese.value}'),
+        );
+        await tester.scrollUntilVisible(
+          voiceModel,
+          160,
+          scrollable: systemScroll,
+        );
+        expect(voiceModel.hitTestable(), findsOneWidget);
+        await tester.tap(voiceModel);
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.text(AiVoiceModelKind.paraformerBilingual.label).last,
+        );
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(
+            ValueKey(
+              'ai-voice-model-${AiVoiceModelKind.paraformerBilingual.value}',
+            ),
+          ),
+          findsOneWidget,
+        );
 
         for (final key in const [
           ValueKey('ai-model-fetch'),
@@ -555,6 +577,11 @@ void main() {
           );
           expect(action.hitTestable(), findsOneWidget);
         }
+        final save = find.byKey(const ValueKey('ai-config-save'));
+        await tester.scrollUntilVisible(save, 160, scrollable: systemScroll);
+        await tester.tap(save);
+        await tester.pumpAndSettle();
+        expect(config.config.voiceModel, AiVoiceModelKind.paraformerBilingual);
         expect(tester.takeException(), isNull);
 
         final qrInput = find.byKey(const ValueKey('ai-config-qr-input'));

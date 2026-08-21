@@ -44,6 +44,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   AiRequestProtocol _aiProtocol = AiRequestProtocol.openAiResponses;
   AiReasoningEffort _aiReasoning = AiReasoningEffort.platformDefault;
   AiWebSearchMode _aiWebSearch = AiWebSearchMode.automatic;
+  AiVoiceModelKind _aiVoiceModel = AiVoiceModelKind.zipformerChinese;
   bool _obscureAiKey = true;
   bool _aiConfigEdited = false;
   bool _testingAiConnection = false;
@@ -234,6 +235,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _aiProtocol = config.protocol;
     _aiReasoning = config.reasoningEffort;
     _aiWebSearch = config.webSearchMode;
+    _aiVoiceModel = config.voiceModel;
     _aiUrlController.text = config.baseUrl;
     _aiApiKeyController.text = config.apiKey;
     _aiModelController.text = config.model;
@@ -258,6 +260,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     model: _aiModelController.text.trim(),
     reasoningEffort: _aiReasoning,
     webSearchMode: _aiWebSearch,
+    voiceModel: _aiVoiceModel,
   );
 
   void _selectAiProvider(AiProviderKind provider) {
@@ -413,8 +416,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<bool> _receiveAndSaveAiConfig(LanAiConfigSession session) async {
-    final config = await session.receivedConfig;
-    if (config == null) return false;
+    final received = await session.receivedConfig;
+    if (received == null) return false;
+    final config = received.copyWith(voiceModel: _aiVoiceModel);
     await _aiConfigController.save(config);
     if (!mounted) return true;
     setState(() {
@@ -1781,6 +1785,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
               ],
+              const SizedBox(height: 10),
+              DropdownButtonFormField<AiVoiceModelKind>(
+                key: ValueKey('ai-voice-model-${_aiVoiceModel.value}'),
+                initialValue: _aiVoiceModel,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: '车机离线语音模型',
+                  helperText: '只加载当前选择的模型；保存后下次打开 AI 助手生效',
+                ),
+                items: AiVoiceModelKind.values
+                    .map(
+                      (model) => DropdownMenuItem(
+                        value: model,
+                        child: Text(model.label),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (model) {
+                  if (model == null) return;
+                  setState(() {
+                    _aiVoiceModel = model;
+                    _aiConfigEdited = true;
+                  });
+                },
+              ),
               const SizedBox(height: 10),
               DropdownButtonFormField<AiReasoningEffort>(
                 key: ValueKey('ai-reasoning-${_aiReasoning.value}'),

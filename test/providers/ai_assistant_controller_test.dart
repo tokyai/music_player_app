@@ -51,6 +51,20 @@ void main() {
     expect(fixture.speech.listenCalls, greaterThanOrEqualTo(4));
   });
 
+  test('uses the configured offline voice model for a new session', () async {
+    final fixture = await _Fixture.create();
+    addTearDown(fixture.dispose);
+    await fixture.config.save(
+      fixture.config.config.copyWith(
+        voiceModel: AiVoiceModelKind.paraformerBilingual,
+      ),
+    );
+
+    await fixture.controller.startSession();
+
+    expect(fixture.speech.voiceModel, AiVoiceModelKind.paraformerBilingual);
+  });
+
   test('waits for continued speech and sends combined text once', () async {
     final fixture = await _Fixture.create(
       speechCommitDelay: const Duration(milliseconds: 80),
@@ -327,12 +341,17 @@ class _TestGateway implements AiChatGateway {
   void close() => closed = true;
 }
 
-class _TestSpeech implements AiSpeechEngine {
+class _TestSpeech implements AiSpeechEngine, AiVoiceModelSelector {
   AiSpeechResultCallback? _resultCallback;
   void Function(String)? _errorCallback;
   void Function(String)? _statusCallback;
   bool listening = false;
   int listenCalls = 0;
+  AiVoiceModelKind? voiceModel;
+
+  @override
+  void setVoiceModel(AiVoiceModelKind model) => voiceModel = model;
+
   @override
   Future<bool> initialize({
     required void Function(String message) onError,

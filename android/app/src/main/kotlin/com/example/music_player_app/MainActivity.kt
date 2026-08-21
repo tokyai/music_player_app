@@ -42,7 +42,7 @@ class MainActivity : AudioServiceActivity() {
         const val AI_CAR_AUDIO_CONTROL_CHANNEL = "music_player/ai_car_audio_control"
         const val AI_CAR_AUDIO_STREAM_CHANNEL = "music_player/ai_car_audio_stream"
         const val ZIPFORMER_MODEL = "streaming-zipformer-zh-14M-2023-02-23"
-        const val LEGACY_PARAFORMER_MODEL = "streaming-paraformer-bilingual-zh-en"
+        const val PARAFORMER_MODEL = "streaming-paraformer-bilingual-zh-en"
         const val CAR_AUDIO_SAMPLE_RATE = 16000
         const val CAR_AUDIO_CHANNEL_MASK = 60
         const val CAR_AUDIO_CHANNEL_COUNT = 4
@@ -116,8 +116,6 @@ class MainActivity : AudioServiceActivity() {
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val appContext = applicationContext
-        removeLegacyParaformerCache()
-
         foregroundMediaKeyChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "music_player/foreground_media_keys"
@@ -185,7 +183,10 @@ class MainActivity : AudioServiceActivity() {
         ).also { channel ->
             channel.setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "prepare" -> prepareAiModel(result)
+                    "prepare" -> prepareAiModel(
+                        call.argument<String>("model") ?: ZIPFORMER_MODEL,
+                        result
+                    )
                     else -> result.notImplemented()
                 }
             }
@@ -549,26 +550,28 @@ class MainActivity : AudioServiceActivity() {
         aiCarAudioThread = null
     }
 
-    private fun removeLegacyParaformerCache() {
-        Thread {
-            val modelRoot = File(filesDir, "ai_models")
-            modelRoot.listFiles()
-                ?.filter { it.name.startsWith(LEGACY_PARAFORMER_MODEL) }
-                ?.forEach { it.deleteRecursively() }
-        }.start()
-    }
-
-    private fun prepareAiModel(result: MethodChannel.Result) {
+    private fun prepareAiModel(modelId: String, result: MethodChannel.Result) {
         Thread {
             try {
-                val modelFiles = linkedMapOf(
-                    "encoder" to "encoder-epoch-99-avg-1.int8.onnx",
-                    "decoder" to "decoder-epoch-99-avg-1.onnx",
-                    "joiner" to "joiner-epoch-99-avg-1.int8.onnx",
-                    "tokens" to "tokens.txt"
-                )
-                val modelVersion = "$ZIPFORMER_MODEL-mixed-precision-v2"
-                val assetDir = "assets/models/sherpa-onnx-$ZIPFORMER_MODEL"
+                val modelFiles = when (modelId) {
+                    ZIPFORMER_MODEL -> linkedMapOf(
+                        "encoder" to "encoder-epoch-99-avg-1.int8.onnx",
+                        "decoder" to "decoder-epoch-99-avg-1.onnx",
+                        "joiner" to "joiner-epoch-99-avg-1.int8.onnx",
+                        "tokens" to "tokens.txt"
+                    )
+                    PARAFORMER_MODEL -> linkedMapOf(
+                        "encoder" to "encoder.int8.onnx",
+                        "decoder" to "decoder.int8.onnx",
+                        "tokens" to "tokens.txt"
+                    )
+                    else -> throw IllegalArgumentException("不支持的离线语音模型：$modelId")
+                }
+                val modelVersion = when (modelId) {
+                    ZIPFORMER_MODEL -> "$modelId-mixed-precision-v2"
+                    else -> "$modelId-int8-v1"
+                }
+                val assetDir = "assets/models/sherpa-onnx-$modelId"
                 val modelDir = File(filesDir, "ai_models/$modelVersion")
                 val marker = File(modelDir, ".ready")
                 if (!marker.isFile ||

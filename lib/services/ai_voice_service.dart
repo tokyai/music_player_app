@@ -7,6 +7,7 @@ import 'package:record/record.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 import 'package:speech_to_text/speech_to_text.dart';
 
+import '../models/ai_assistant.dart';
 import 'sherpa_audio_utils.dart';
 
 typedef AiSpeechResultCallback = void Function(String text, bool isFinal);
@@ -20,6 +21,10 @@ abstract class AiSpeechEngine {
   Future<void> listen(AiSpeechResultCallback onResult);
   Future<void> stop();
   Future<void> cancel();
+}
+
+abstract class AiVoiceModelSelector {
+  void setVoiceModel(AiVoiceModelKind model);
 }
 
 /// Adapter around the platform recognizer so the permission/focus lifecycle
@@ -226,9 +231,9 @@ class _CarArrayAudioCapture implements _AiAudioCapture {
   }
 }
 
-class _SherpaOnnxRecognizer implements AiSpeechRecognizer {
+class _SherpaOnnxRecognizer
+    implements AiSpeechRecognizer, AiVoiceModelSelector {
   static const _sampleRate = 16000;
-  static const _modelName = 'streaming-zipformer-zh-14M-2023-02-23';
   static const _modelChannel = MethodChannel('music_player/ai_model');
   static bool _bindingsInitialized = false;
 
@@ -240,6 +245,8 @@ class _SherpaOnnxRecognizer implements AiSpeechRecognizer {
   void Function(String message)? _onError;
   void Function(String status)? _onStatus;
   AiSpeechResultCallback? _onResult;
+  AiVoiceModelKind _voiceModel = AiVoiceModelKind.zipformerChinese;
+  AiVoiceModelKind? _loadedVoiceModel;
   int _captureChannelCount = 1;
   int _captureMixDivisor = 1;
   String _lastText = '';
@@ -252,27 +259,35 @@ class _SherpaOnnxRecognizer implements AiSpeechRecognizer {
   Future<void> _cleanupFuture = Future<void>.value();
 
   @override
+  void setVoiceModel(AiVoiceModelKind model) {
+    _voiceModel = model;
+  }
+
+  @override
   Future<bool> initialize({
     required void Function(String message) onError,
     required void Function(String status) onStatus,
   }) async {
     _onError = onError;
     _onStatus = onStatus;
-    if (_recognizer != null) {
-      _log('model already loaded: $_modelName');
+    if (_recognizer != null && _loadedVoiceModel == _voiceModel) {
+      _log('model already loaded: ${_voiceModel.value}');
       return true;
     }
 
     try {
-      _log('preparing model: $_modelName');
+      _log('preparing model: ${_voiceModel.value}');
       await _cleanupFuture;
       if (_listening || _finishing) {
-        throw StateError('语音识别进行中，暂时无法初始化模型');
+        throw StateError('语音识别进行中，暂时无法切换模型');
       }
       _recognizer?.free();
       _recognizer = null;
+      _loadedVoiceModel = null;
       final rawPaths = await _modelChannel
-          .invokeMapMethod<Object?, Object?>('prepare')
+          .invokeMapMethod<Object?, Object?>('prepare', {
+            'model': _voiceModel.value,
+          })
           .timeout(const Duration(minutes: 3));
       final paths = rawPaths?.map(
         (key, value) => MapEntry(key.toString(), value.toString()),
@@ -287,21 +302,34 @@ class _SherpaOnnxRecognizer implements AiSpeechRecognizer {
         sherpa.initBindings();
         _bindingsInitialized = true;
       }
-      final model = sherpa.OnlineModelConfig(
-        transducer: sherpa.OnlineTransducerModelConfig(
-          encoder: encoder,
-          decoder: decoder,
-          joiner: paths?['joiner'] ?? (throw StateError('Zipformer 连接器路径缺失')),
+      final model = switch (_voiceModel) {
+        AiVoiceModelKind.zipformerChinese => sherpa.OnlineModelConfig(
+          transducer: sherpa.OnlineTransducerModelConfig(
+            encoder: encoder,
+            decoder: decoder,
+            joiner: paths?['joiner'] ?? (throw StateError('Zipformer 连接器路径缺失')),
+          ),
+          tokens: tokens,
+          numThreads: 2,
+          provider: 'cpu',
+          debug: false,
         ),
-        tokens: tokens,
-        numThreads: 2,
-        provider: 'cpu',
-        debug: false,
-      );
+        AiVoiceModelKind.paraformerBilingual => sherpa.OnlineModelConfig(
+          paraformer: sherpa.OnlineParaformerModelConfig(
+            encoder: encoder,
+            decoder: decoder,
+          ),
+          tokens: tokens,
+          numThreads: 2,
+          provider: 'cpu',
+          debug: false,
+        ),
+      };
       _recognizer = sherpa.OnlineRecognizer(
         sherpa.OnlineRecognizerConfig(model: model),
       );
-      _log('model ready: $_modelName');
+      _loadedVoiceModel = _voiceModel;
+      _log('model ready: ${_voiceModel.value}');
       return true;
     } catch (error, stackTrace) {
       _logError('model initialization failed', error, stackTrace);
@@ -676,7 +704,7 @@ abstract class AiTextToSpeechEngine {
   Future<void> stop();
 }
 
-class PlatformAiSpeechEngine implements AiSpeechEngine {
+class PlatformAiSpeechEngine implements AiSpeechEngine, AiVoiceModelSelector {
   final AiSpeechRecognizer _speech;
   final AiMicrophonePermission _microphonePermission;
   final AiAudioFocusCoordinator _audioFocus;
@@ -692,6 +720,14 @@ class PlatformAiSpeechEngine implements AiSpeechEngine {
        _microphonePermission =
            microphonePermission ?? PlatformAiMicrophonePermission(),
        _audioFocus = audioFocus ?? PlatformAiAudioFocusCoordinator();
+
+  @override
+  void setVoiceModel(AiVoiceModelKind model) {
+    final speech = _speech;
+    if (speech is AiVoiceModelSelector) {
+      (speech as AiVoiceModelSelector).setVoiceModel(model);
+    }
+  }
 
   @override
   Future<bool> initialize({

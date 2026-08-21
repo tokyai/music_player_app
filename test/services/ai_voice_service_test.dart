@@ -1,6 +1,5 @@
-import 'dart:async';
-
 import 'package:flutter_test/flutter_test.dart';
+import 'package:music_player_app/models/ai_assistant.dart';
 import 'package:music_player_app/services/ai_voice_service.dart';
 
 void main() {
@@ -89,6 +88,19 @@ void main() {
     expect(focus.abandonCalls, 1);
     expect(errors.single, contains('error_audio_focus_lost'));
   });
+
+  test('forwards the selected offline model to the recognizer', () {
+    final recognizer = _FakeRecognizer();
+    final engine = PlatformAiSpeechEngine(
+      speech: recognizer,
+      microphonePermission: _FakeMicrophonePermission(granted: true),
+      audioFocus: _FakeAudioFocus(),
+    );
+
+    engine.setVoiceModel(AiVoiceModelKind.paraformerBilingual);
+
+    expect(recognizer.voiceModel, AiVoiceModelKind.paraformerBilingual);
+  });
 }
 
 class _FakeMicrophonePermission implements AiMicrophonePermission {
@@ -129,12 +141,16 @@ class _FakeAudioFocus implements AiAudioFocusCoordinator {
   void emitFocusLost() => _onFocusLost?.call();
 }
 
-class _FakeRecognizer implements AiSpeechRecognizer {
+class _FakeRecognizer implements AiSpeechRecognizer, AiVoiceModelSelector {
   void Function(String)? _onError;
   void Function(String)? _onStatus;
   int initializeCalls = 0;
   int listenCalls = 0;
   int cancelCalls = 0;
+  AiVoiceModelKind? voiceModel;
+
+  @override
+  void setVoiceModel(AiVoiceModelKind model) => voiceModel = model;
 
   @override
   Future<bool> initialize({
