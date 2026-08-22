@@ -3,6 +3,7 @@ package com.example.music_player_app
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.ActivityManager
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageInfo
@@ -15,9 +16,13 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
+import android.os.Debug
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.util.Log
 import android.view.KeyEvent
 import androidx.annotation.NonNull
 import androidx.core.content.FileProvider
@@ -28,7 +33,9 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.ArrayDeque
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : AudioServiceActivity() {
     companion object {
@@ -48,6 +55,11 @@ class MainActivity : AudioServiceActivity() {
         const val CAR_AUDIO_CHANNEL_COUNT = 4
         const val CAR_AUDIO_MIX_DIVISOR = 2
         const val CAR_AUDIO_READ_BYTES = 4096
+        // A four-channel 4096-byte packet is about 32 ms at 16 kHz. Keep only
+        // a bounded amount of pending audio so a slow Sherpa decode cannot
+        // grow the Android main-thread queue without limit.
+        const val CAR_AUDIO_MAX_PENDING_CHUNKS = 32
+        const val CAR_AUDIO_MAX_BATCH_BYTES = 16 * 1024
         const val REQUEST_IMPORT_FAVORITES = 4101
         const val REQUEST_EXPORT_FAVORITES = 4102
         const val MAX_BACKUP_BYTES = 5 * 1024 * 1024
@@ -64,8 +76,18 @@ class MainActivity : AudioServiceActivity() {
     private var aiCarAudioEventChannel: EventChannel? = null
     @Volatile private var aiCarAudioRunning = false
     @Volatile private var aiCarAudioSink: EventChannel.EventSink? = null
-    private var aiCarAudioRecord: AudioRecord? = null
-    private var aiCarAudioThread: Thread? = null
+    @Volatile private var aiCarAudioRecord: AudioRecord? = null
+    @Volatile private var aiCarAudioThread: Thread? = null
+    private val aiCarAudioHandler = Handler(Looper.getMainLooper())
+    private val aiCarAudioQueue = ArrayDeque<ByteArray>()
+    private val aiCarAudioQueueLock = Any()
+    @Volatile private var aiCarAudioDrainPosted = false
+    @Volatile private var aiCarAudioGeneration = 0L
+    @Volatile private var aiCarAudioAwaitingAck = false
+    private var aiCarAudioChannelCount = CAR_AUDIO_CHANNEL_COUNT
+    @Volatile private var aiCarAudioStopFlag: AtomicBoolean? = null
+    private var aiCarAudioDroppedChunks = 0L
+    private val aiModelPreparationLock = Any()
     private var aiAudioFocusRequest: AudioFocusRequest? = null
     private var aiAudioFocusHeld = false
     private var aiTts: TextToSpeech? = null
@@ -187,6 +209,7 @@ class MainActivity : AudioServiceActivity() {
                         call.argument<String>("model") ?: ZIPFORMER_MODEL,
                         result
                     )
+                    "memory" -> result.success(aiMemorySnapshot())
                     else -> result.notImplemented()
                 }
             }
@@ -199,6 +222,10 @@ class MainActivity : AudioServiceActivity() {
             channel.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "getCaptureProfile" -> result.success(getCarAudioCaptureProfile())
+                    "ackCaptureBatch" -> {
+                        acknowledgeCarAudioBatch()
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -314,6 +341,7 @@ class MainActivity : AudioServiceActivity() {
         floatingCapsuleChannel?.setMethodCallHandler(null)
         floatingCapsuleChannel = null
         stopCarArrayCapture()
+        aiCarAudioHandler.removeCallbacksAndMessages(null)
         aiCarAudioEventChannel?.setStreamHandler(null)
         aiCarAudioEventChannel = null
         aiCarAudioControlChannel?.setMethodCallHandler(null)
@@ -398,24 +426,58 @@ class MainActivity : AudioServiceActivity() {
 
     private fun getCarAudioCaptureProfile(): Map<String, Any> {
         val deviceType = getSystemProperty("ro.build.ohos.devicetype")
-        val minBufferSize = if (deviceType == "car") {
-            AudioRecord.getMinBufferSize(
-                CAR_AUDIO_SAMPLE_RATE,
-                CAR_AUDIO_CHANNEL_MASK,
-                AudioFormat.ENCODING_PCM_16BIT
-            )
+        // Flyme and ordinary Android head units do not expose the HarmonyOS
+        // device property. They still need the same bounded native capture
+        // path; otherwise record_android posts one unbounded UI Runnable per
+        // PCM packet while a CPU ASR model is decoding.
+        val isCarArray = deviceType == "car"
+        val audioSource = if (isCarArray) {
+            MediaRecorder.AudioSource.VOICE_RECOGNITION
         } else {
-            AudioRecord.ERROR_BAD_VALUE
+            MediaRecorder.AudioSource.MIC
         }
+        val channelMask = if (isCarArray) {
+            CAR_AUDIO_CHANNEL_MASK
+        } else {
+            AudioFormat.CHANNEL_IN_STEREO
+        }
+        val channelCount = if (isCarArray) CAR_AUDIO_CHANNEL_COUNT else 2
+        val mixDivisor = if (isCarArray) CAR_AUDIO_MIX_DIVISOR else channelCount
+        val minBufferSize = AudioRecord.getMinBufferSize(
+            CAR_AUDIO_SAMPLE_RATE,
+            channelMask,
+            AudioFormat.ENCODING_PCM_16BIT
+        )
         return mapOf(
-            "supported" to (deviceType == "car" && minBufferSize > 0),
+            "supported" to (minBufferSize > 0),
+            "kind" to if (isCarArray) "carArray" else "standardNative",
             "deviceType" to deviceType,
             "sampleRate" to CAR_AUDIO_SAMPLE_RATE,
-            "audioSource" to MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            "channelMask" to CAR_AUDIO_CHANNEL_MASK,
-            "channelCount" to CAR_AUDIO_CHANNEL_COUNT,
-            "mixDivisor" to CAR_AUDIO_MIX_DIVISOR,
-            "minBufferSize" to minBufferSize
+            "audioSource" to audioSource,
+            "channelMask" to channelMask,
+            "channelCount" to channelCount,
+            "mixDivisor" to mixDivisor,
+            "minBufferSize" to minBufferSize,
+            "readBytes" to CAR_AUDIO_READ_BYTES
+        )
+    }
+
+    private fun aiMemorySnapshot(): Map<String, Any> {
+        val memory = Debug.MemoryInfo()
+        Debug.getMemoryInfo(memory)
+        val manager = getSystemService(ACTIVITY_SERVICE) as? ActivityManager
+        val systemMemory = ActivityManager.MemoryInfo()
+        manager?.getMemoryInfo(systemMemory)
+        return mapOf(
+            "totalPssKb" to memory.totalPss.toLong(),
+            "nativeHeapKb" to (Debug.getNativeHeapAllocatedSize() / 1024L),
+            "javaHeapKb" to (Runtime.getRuntime().totalMemory() -
+                Runtime.getRuntime().freeMemory()) / 1024L,
+            "availMemKb" to (systemMemory.availMem / 1024L),
+            "lowMemory" to systemMemory.lowMemory,
+            "memoryClassMb" to (manager?.memoryClass ?: 0),
+            "largeMemoryClassMb" to (manager?.largeMemoryClass ?: 0),
+            "isLowRamDevice" to (manager?.isLowRamDevice ?: false)
         )
     }
 
@@ -452,13 +514,21 @@ class MainActivity : AudioServiceActivity() {
             return
         }
 
-        val minBufferSize = profile["minBufferSize"] as Int
-        val internalBufferSize = maxOf(minBufferSize * 2, CAR_AUDIO_READ_BYTES * 2)
+        val audioSource = (profile["audioSource"] as Number).toInt()
+        val channelMask = (profile["channelMask"] as Number).toInt()
+        val channelCount = (profile["channelCount"] as Number).toInt()
+        val readBytes = if (profile["readBytes"] is Number) {
+            (profile["readBytes"] as Number).toInt()
+        } else {
+            CAR_AUDIO_READ_BYTES
+        }
+        val minBufferSize = (profile["minBufferSize"] as Number).toInt()
+        val internalBufferSize = maxOf(minBufferSize * 2, readBytes * 2)
         val recorder = try {
             AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                audioSource,
                 CAR_AUDIO_SAMPLE_RATE,
-                CAR_AUDIO_CHANNEL_MASK,
+                channelMask,
                 AudioFormat.ENCODING_PCM_16BIT,
                 internalBufferSize
             )
@@ -484,26 +554,34 @@ class MainActivity : AudioServiceActivity() {
             return
         }
 
-        aiCarAudioRecord = recorder
-        aiCarAudioSink = events
-        aiCarAudioRunning = true
+        val stopRequested = AtomicBoolean(false)
+        val generation = synchronized(aiCarAudioQueueLock) {
+            aiCarAudioQueue.clear()
+            aiCarAudioDroppedChunks = 0
+            aiCarAudioSink = events
+            aiCarAudioRecord = recorder
+            aiCarAudioChannelCount = channelCount
+            aiCarAudioRunning = true
+            aiCarAudioAwaitingAck = false
+            aiCarAudioStopFlag = stopRequested
+            aiCarAudioGeneration
+        }
         events.success(mapOf("event" to "started"))
-        aiCarAudioThread = Thread {
+        val captureThread = Thread {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-            val buffer = ByteArray(CAR_AUDIO_READ_BYTES)
+            val buffer = ByteArray(readBytes)
             try {
                 while (aiCarAudioRunning && aiCarAudioRecord === recorder) {
                     val count = recorder.read(buffer, 0, buffer.size)
                     if (count > 0) {
-                        val chunk = buffer.copyOf(count)
-                        runOnUiThread {
-                            if (aiCarAudioRunning &&
-                                aiCarAudioRecord === recorder &&
-                                aiCarAudioSink === events
-                            ) {
-                                events.success(chunk)
-                            }
-                        }
+                        enqueueCarAudioChunk(
+                            generation,
+                            recorder,
+                            events,
+                            channelCount,
+                            buffer,
+                            count
+                        )
                     } else if (count != 0) {
                         throw IllegalStateException("AudioRecord.read failed: $count")
                     }
@@ -517,90 +595,346 @@ class MainActivity : AudioServiceActivity() {
                     }
                 }
             } finally {
-                try {
-                    if (recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                        recorder.stop()
+                // The flag belongs to this recorder instance. A new capture
+                // may start before this worker exits, so a shared field must
+                // not be reused across generations.
+                val shouldStopRecorder = stopRequested.compareAndSet(false, true)
+                if (shouldStopRecorder) {
+                    try {
+                        if (recorder.recordingState ==
+                            AudioRecord.RECORDSTATE_RECORDING
+                        ) {
+                            recorder.stop()
+                        }
+                    } catch (_: Exception) {
                     }
+                }
+                try {
+                    recorder.release()
                 } catch (_: Exception) {
                 }
-                recorder.release()
-                if (aiCarAudioRecord === recorder) {
-                    aiCarAudioRecord = null
-                    aiCarAudioRunning = false
+                synchronized(aiCarAudioQueueLock) {
+                    if (aiCarAudioRecord === recorder &&
+                        aiCarAudioGeneration == generation
+                    ) {
+                        aiCarAudioRecord = null
+                        aiCarAudioSink = null
+                        aiCarAudioThread = null
+                        aiCarAudioRunning = false
+                        aiCarAudioAwaitingAck = false
+                        aiCarAudioQueue.clear()
+                        aiCarAudioDrainPosted = false
+                    }
+                    if (aiCarAudioStopFlag === stopRequested) {
+                        aiCarAudioStopFlag = null
+                    }
                 }
             }
-        }.also {
-            it.name = "ai-car-mic"
-            it.start()
+        }.also { it.name = "ai-car-mic" }
+        synchronized(aiCarAudioQueueLock) {
+            // Publish the thread before starting it so onCancel/onDestroy can
+            // always join the worker instead of racing an untracked thread.
+            aiCarAudioThread = captureThread
         }
+        captureThread.start()
     }
 
     private fun stopCarArrayCapture() {
-        aiCarAudioRunning = false
-        aiCarAudioSink = null
-        val recorder = aiCarAudioRecord
-        aiCarAudioRecord = null
-        try {
-            if (recorder?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                recorder.stop()
-            }
-        } catch (_: Exception) {
+        val recorder: AudioRecord?
+        val thread: Thread?
+        val stopRequested: AtomicBoolean?
+        synchronized(aiCarAudioQueueLock) {
+            aiCarAudioRunning = false
+            aiCarAudioSink = null
+            recorder = aiCarAudioRecord
+            aiCarAudioRecord = null
+            thread = aiCarAudioThread
+            aiCarAudioThread = null
+            stopRequested = aiCarAudioStopFlag
+            aiCarAudioStopFlag = null
+            aiCarAudioGeneration++
+            aiCarAudioAwaitingAck = false
+            aiCarAudioQueue.clear()
+            aiCarAudioDrainPosted = false
         }
-        aiCarAudioThread?.interrupt()
-        aiCarAudioThread = null
+        aiCarAudioHandler.removeCallbacksAndMessages(null)
+        // stop() is still needed to wake AudioRecord.read(), but the worker's
+        // idempotent stop marker guarantees it is the only caller if the
+        // worker reaches its finally block at the same time.
+        if (recorder != null &&
+            stopRequested?.compareAndSet(false, true) == true
+        ) {
+            try {
+                if (recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                    recorder.stop()
+                }
+            } catch (_: Exception) {
+            }
+        }
+        thread?.interrupt()
+        if (thread != null && thread !== Thread.currentThread()) {
+            try {
+                // AudioRecord.stop() normally wakes read() immediately. A
+                // bounded join prevents a new capture from racing an old
+                // thread's final stop/release sequence.
+                thread.join(500)
+                if (thread.isAlive) {
+                    Log.e("AiVoice", "capture worker did not stop within 500ms")
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+    }
+
+    /**
+     * AudioRecord runs faster than a CPU-only ASR model can decode on some
+     * head units. Posting one Runnable per packet would make the main-thread
+     * queue (and every packet copy captured by it) grow forever. Keep a small
+     * bounded queue and schedule at most one main-thread drain at a time.
+     */
+    private fun enqueueCarAudioChunk(
+        generation: Long,
+        recorder: AudioRecord,
+        events: EventChannel.EventSink,
+        channelCount: Int,
+        source: ByteArray,
+        count: Int
+    ) {
+        var shouldPost = false
+        synchronized(aiCarAudioQueueLock) {
+            if (!aiCarAudioRunning ||
+                aiCarAudioGeneration != generation ||
+                aiCarAudioRecord !== recorder ||
+                aiCarAudioSink !== events
+            ) {
+                return
+            }
+            if (aiCarAudioQueue.size >= CAR_AUDIO_MAX_PENDING_CHUNKS) {
+                // Drop the oldest packet when the decoder falls behind. This
+                // bounds memory and lets recognition catch up to live audio.
+                aiCarAudioQueue.removeFirst()
+                aiCarAudioDroppedChunks++
+                if (aiCarAudioDroppedChunks == 1L ||
+                    aiCarAudioDroppedChunks % 100L == 0L
+                ) {
+                    Log.w(
+                        "AiVoice",
+                        "audio queue full; dropped=$aiCarAudioDroppedChunks"
+                    )
+                }
+            }
+            aiCarAudioQueue.addLast(source.copyOf(count))
+            if (!aiCarAudioDrainPosted && !aiCarAudioAwaitingAck) {
+                aiCarAudioDrainPosted = true
+                shouldPost = true
+            }
+        }
+        if (shouldPost) {
+            scheduleCarAudioDrain(generation, recorder, events, channelCount, 0L)
+        }
+    }
+
+    private fun drainCarAudioChunks(
+        generation: Long,
+        recorder: AudioRecord,
+        events: EventChannel.EventSink,
+        channelCount: Int
+    ) {
+        val chunks = ArrayList<ByteArray>()
+        var totalBytes = 0
+        synchronized(aiCarAudioQueueLock) {
+            if (!aiCarAudioRunning ||
+                aiCarAudioGeneration != generation ||
+                aiCarAudioRecord !== recorder ||
+                aiCarAudioSink !== events
+            ) {
+                if (aiCarAudioGeneration == generation) {
+                    aiCarAudioQueue.clear()
+                    aiCarAudioDrainPosted = false
+                }
+                return
+            }
+            if (aiCarAudioAwaitingAck) {
+                aiCarAudioDrainPosted = false
+                return
+            }
+            while (aiCarAudioQueue.isNotEmpty() &&
+                totalBytes + aiCarAudioQueue.first.size <= CAR_AUDIO_MAX_BATCH_BYTES
+            ) {
+                val chunk = aiCarAudioQueue.removeFirst()
+                chunks.add(chunk)
+                totalBytes += chunk.size
+            }
+            aiCarAudioDrainPosted = false
+            if (chunks.isNotEmpty()) aiCarAudioAwaitingAck = true
+        }
+
+        if (chunks.isNotEmpty()) {
+            val payload = if (chunks.size == 1) {
+                chunks[0]
+            } else {
+                ByteArrayOutputStream(totalBytes).also { output ->
+                    chunks.forEach(output::write)
+                }.toByteArray()
+            }
+            try {
+                events.success(payload)
+            } catch (error: Exception) {
+                // A detached Flutter engine can race stream cancellation. Do
+                // not let a stale EventSink exception terminate the process.
+                Log.w("AiVoice", "audio event delivery failed", error)
+                var shouldPost = false
+                synchronized(aiCarAudioQueueLock) {
+                    if (aiCarAudioGeneration == generation &&
+                        aiCarAudioRecord === recorder &&
+                        aiCarAudioSink === events
+                    ) {
+                        aiCarAudioAwaitingAck = false
+                        if (aiCarAudioRunning &&
+                            aiCarAudioQueue.isNotEmpty() &&
+                            !aiCarAudioDrainPosted
+                        ) {
+                            aiCarAudioDrainPosted = true
+                            shouldPost = true
+                        }
+                    }
+                }
+                if (shouldPost) {
+                    scheduleCarAudioDrain(
+                        generation,
+                        recorder,
+                        events,
+                        channelCount,
+                        0L
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Flutter calls this after its synchronous stream listener has consumed a
+     * batch. Keeping one batch in flight prevents platform messages from
+     * accumulating when a native ASR decode is slower than real time.
+     */
+    private fun acknowledgeCarAudioBatch() {
+        var generation = 0L
+        var recorder: AudioRecord? = null
+        var events: EventChannel.EventSink? = null
+        var channelCount = CAR_AUDIO_CHANNEL_COUNT
+        var shouldPost = false
+        synchronized(aiCarAudioQueueLock) {
+            if (!aiCarAudioRunning || !aiCarAudioAwaitingAck) return
+            aiCarAudioAwaitingAck = false
+            recorder = aiCarAudioRecord
+            events = aiCarAudioSink
+            generation = aiCarAudioGeneration
+            channelCount = aiCarAudioChannelCount
+            if (recorder != null && events != null &&
+                aiCarAudioQueue.isNotEmpty() && !aiCarAudioDrainPosted
+            ) {
+                aiCarAudioDrainPosted = true
+                shouldPost = true
+            }
+        }
+        val nextRecorder = recorder
+        val nextEvents = events
+        if (shouldPost && nextRecorder != null && nextEvents != null) {
+            scheduleCarAudioDrain(
+                generation,
+                nextRecorder,
+                nextEvents,
+                channelCount,
+                0L
+            )
+        }
+    }
+
+    private fun scheduleCarAudioDrain(
+        generation: Long,
+        recorder: AudioRecord,
+        events: EventChannel.EventSink,
+        channelCount: Int,
+        delayMs: Long
+    ) {
+        val posted = aiCarAudioHandler.postDelayed(
+            {
+                drainCarAudioChunks(
+                    generation,
+                    recorder,
+                    events,
+                    channelCount
+                )
+            },
+            delayMs
+        )
+        if (!posted) {
+            synchronized(aiCarAudioQueueLock) {
+                if (aiCarAudioGeneration == generation) {
+                    aiCarAudioDrainPosted = false
+                }
+            }
+        }
     }
 
     private fun prepareAiModel(modelId: String, result: MethodChannel.Result) {
         Thread {
             try {
-                val modelFiles = when (modelId) {
-                    ZIPFORMER_MODEL -> linkedMapOf(
-                        "encoder" to "encoder-epoch-99-avg-1.int8.onnx",
-                        "decoder" to "decoder-epoch-99-avg-1.onnx",
-                        "joiner" to "joiner-epoch-99-avg-1.int8.onnx",
-                        "tokens" to "tokens.txt"
-                    )
-                    PARAFORMER_MODEL -> linkedMapOf(
-                        "encoder" to "encoder.int8.onnx",
-                        "decoder" to "decoder.int8.onnx",
-                        "tokens" to "tokens.txt"
-                    )
-                    else -> throw IllegalArgumentException("不支持的离线语音模型：$modelId")
-                }
-                val modelVersion = when (modelId) {
-                    ZIPFORMER_MODEL -> "$modelId-mixed-precision-v2"
-                    else -> "$modelId-int8-v1"
-                }
-                val assetDir = "assets/models/sherpa-onnx-$modelId"
-                val modelDir = File(filesDir, "ai_models/$modelVersion")
-                val marker = File(modelDir, ".ready")
-                if (!marker.isFile ||
-                    marker.readText() != modelVersion ||
-                    modelFiles.values.any { !File(modelDir, it).isFile }
-                ) {
-                    modelDir.mkdirs()
-                    modelFiles.values.forEach { fileName ->
-                        val assetName = "$assetDir/$fileName"
-                        val assetKey = FlutterInjector.instance().flutterLoader()
-                            .getLookupKeyForAsset(assetName)
-                        val output = File(modelDir, fileName)
-                        val temporary = File(modelDir, "$fileName.part")
-                        assets.open(assetKey).use { input ->
-                            temporary.outputStream().buffered().use { target ->
-                                input.copyTo(target, DEFAULT_BUFFER_SIZE)
+                val paths = synchronized(aiModelPreparationLock) {
+                    // Rapidly closing and reopening the assistant can leave a
+                    // previous prepare request in flight. Serialize copies so
+                    // two requests cannot replace the same ONNX file while a
+                    // recognizer is opening it.
+                    val modelFiles = when (modelId) {
+                        ZIPFORMER_MODEL -> linkedMapOf(
+                            "encoder" to "encoder-epoch-99-avg-1.int8.onnx",
+                            "decoder" to "decoder-epoch-99-avg-1.onnx",
+                            "joiner" to "joiner-epoch-99-avg-1.int8.onnx",
+                            "tokens" to "tokens.txt"
+                        )
+                        PARAFORMER_MODEL -> linkedMapOf(
+                            "encoder" to "encoder.int8.onnx",
+                            "decoder" to "decoder.int8.onnx",
+                            "tokens" to "tokens.txt"
+                        )
+                        else -> throw IllegalArgumentException("不支持的离线语音模型：$modelId")
+                    }
+                    val modelVersion = when (modelId) {
+                        ZIPFORMER_MODEL -> "$modelId-mixed-precision-v2"
+                        else -> "$modelId-int8-v1"
+                    }
+                    val assetDir = "assets/models/sherpa-onnx-$modelId"
+                    val modelDir = File(filesDir, "ai_models/$modelVersion")
+                    val marker = File(modelDir, ".ready")
+                    if (!marker.isFile ||
+                        marker.readText() != modelVersion ||
+                        modelFiles.values.any { !File(modelDir, it).isFile }
+                    ) {
+                        modelDir.mkdirs()
+                        modelFiles.values.forEach { fileName ->
+                            val assetName = "$assetDir/$fileName"
+                            val assetKey = FlutterInjector.instance().flutterLoader()
+                                .getLookupKeyForAsset(assetName)
+                            val output = File(modelDir, fileName)
+                            val temporary = File(modelDir, "$fileName.part")
+                            assets.open(assetKey).use { input ->
+                                temporary.outputStream().buffered().use { target ->
+                                    input.copyTo(target, DEFAULT_BUFFER_SIZE)
+                                }
+                            }
+                            if (output.exists() && !output.delete()) {
+                                throw IllegalStateException("无法替换旧语音模型：$fileName")
+                            }
+                            if (!temporary.renameTo(output)) {
+                                throw IllegalStateException("无法保存语音模型：$fileName")
                             }
                         }
-                        if (output.exists() && !output.delete()) {
-                            throw IllegalStateException("无法替换旧语音模型：$fileName")
-                        }
-                        if (!temporary.renameTo(output)) {
-                            throw IllegalStateException("无法保存语音模型：$fileName")
-                        }
+                        marker.writeText(modelVersion)
                     }
-                    marker.writeText(modelVersion)
-                }
-                val paths = modelFiles.mapValues { (_, fileName) ->
-                    File(modelDir, fileName).absolutePath
+                    modelFiles.mapValues { (_, fileName) ->
+                        File(modelDir, fileName).absolutePath
+                    }
                 }
                 runOnUiThread { result.success(paths) }
             } catch (error: Exception) {

@@ -36,6 +36,13 @@ const _foregroundMediaKeyChannel = MethodChannel(
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Music lists can contain hundreds of covers. Flutter's default image
+  // cache is item-count based and may retain a large decoded-image working
+  // set on a car display. Bound only the in-memory decoded cache; the disk
+  // cache and user audio cache remain untouched.
+  final imageCache = PaintingBinding.instance.imageCache;
+  imageCache.maximumSize = 300;
+  imageCache.maximumSizeBytes = 64 << 20;
   PlatformDispatcher.instance.onError = (error, stack) {
     debugPrint('未捕获的后台异常: $error');
     debugPrintStack(stackTrace: stack);

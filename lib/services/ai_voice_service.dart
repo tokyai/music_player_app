@@ -27,6 +27,12 @@ abstract class AiVoiceModelSelector {
   void setVoiceModel(AiVoiceModelKind model);
 }
 
+/// Optional lifecycle hook for recognizers that own native resources.
+/// Lightweight test/fallback recognizers do not need to implement it.
+abstract class AiSpeechResourceOwner {
+  Future<void> dispose();
+}
+
 /// Adapter around the platform recognizer so the permission/focus lifecycle
 /// can be tested without constructing native recognition objects.
 abstract class AiSpeechRecognizer {
@@ -132,7 +138,13 @@ class _CarArrayAudioCapture implements _AiAudioCapture {
   );
   static const _eventChannel = EventChannel('music_player/ai_car_audio_stream');
 
-  final StreamController<Uint8List> _controller = StreamController<Uint8List>();
+  // Native capture sends one bounded batch at a time and waits for the ACK
+  // issued below. A synchronous controller lets the ACK happen only after
+  // the recognizer has consumed the bytes, keeping Flutter's platform queue
+  // bounded as well.
+  final StreamController<Uint8List> _controller = StreamController<Uint8List>(
+    sync: true,
+  );
   final Completer<void> _ready = Completer<void>();
   StreamSubscription<Object?>? _nativeSubscription;
   bool _disposed = false;
@@ -168,8 +180,11 @@ class _CarArrayAudioCapture implements _AiAudioCapture {
   Future<void> _start(Map<String, Object?> profile) async {
     channelCount = (profile['channelCount'] as num?)?.toInt() ?? 4;
     mixDivisor = (profile['mixDivisor'] as num?)?.toInt() ?? 2;
+    final kind = profile['kind']?.toString() == 'standardNative'
+        ? 'native'
+        : 'carArray';
     description =
-        'carArray(source=${profile['audioSource']}, '
+        '$kind(source=${profile['audioSource']}, '
         'mask=${profile['channelMask']}, channels=$channelCount, '
         'deviceType=${profile['deviceType']})';
     _nativeSubscription = _eventChannel.receiveBroadcastStream().listen(
@@ -187,11 +202,35 @@ class _CarArrayAudioCapture implements _AiAudioCapture {
       return;
     }
     if (event is Uint8List) {
-      if (!_disposed) _controller.add(event);
+      if (!_disposed) {
+        try {
+          _controller.add(event);
+        } finally {
+          unawaited(_acknowledgeNativeBatch());
+        }
+      }
       return;
     }
     if (event is ByteData) {
-      if (!_disposed) _controller.add(event.buffer.asUint8List());
+      if (!_disposed) {
+        try {
+          _controller.add(event.buffer.asUint8List());
+        } finally {
+          unawaited(_acknowledgeNativeBatch());
+        }
+      }
+    }
+  }
+
+  Future<void> _acknowledgeNativeBatch() async {
+    if (_disposed) return;
+    try {
+      await _controlChannel
+          .invokeMethod<void>('ackCaptureBatch')
+          .timeout(const Duration(seconds: 2));
+    } catch (_) {
+      // Capture teardown or an older host build can remove the channel while
+      // the final batch is being delivered.
     }
   }
 
@@ -232,7 +271,7 @@ class _CarArrayAudioCapture implements _AiAudioCapture {
 }
 
 class _SherpaOnnxRecognizer
-    implements AiSpeechRecognizer, AiVoiceModelSelector {
+    implements AiSpeechRecognizer, AiVoiceModelSelector, AiSpeechResourceOwner {
   static const _sampleRate = 16000;
   static const _modelChannel = MethodChannel('music_player/ai_model');
   static bool _bindingsInitialized = false;
@@ -257,17 +296,42 @@ class _SherpaOnnxRecognizer
   double _maxObservedPeak = 0;
   int _generation = 0;
   Future<void> _cleanupFuture = Future<void>.value();
+  Future<bool>? _initializing;
+  Future<void>? _disposeOperation;
+  int _modelGeneration = 0;
+  bool _disposed = false;
 
   @override
   void setVoiceModel(AiVoiceModelKind model) {
+    if (_disposed || _voiceModel == model) return;
     _voiceModel = model;
+    _modelGeneration++;
   }
 
   @override
   Future<bool> initialize({
     required void Function(String message) onError,
     required void Function(String status) onStatus,
+  }) {
+    final pending = _initializing;
+    if (pending != null) return pending;
+    late final Future<bool> operation;
+    operation = _initializeInternal(onError: onError, onStatus: onStatus)
+        .whenComplete(() {
+          if (identical(_initializing, operation)) _initializing = null;
+        });
+    _initializing = operation;
+    return operation;
+  }
+
+  Future<bool> _initializeInternal({
+    required void Function(String message) onError,
+    required void Function(String status) onStatus,
   }) async {
+    if (_disposed) {
+      onError('speech_not_supported: 语音识别服务已释放');
+      return false;
+    }
     _onError = onError;
     _onStatus = onStatus;
     if (_recognizer != null && _loadedVoiceModel == _voiceModel) {
@@ -275,20 +339,32 @@ class _SherpaOnnxRecognizer
       return true;
     }
 
+    final requestedModel = _voiceModel;
+    final requestGeneration = _modelGeneration;
     try {
-      _log('preparing model: ${_voiceModel.value}');
+      _log('preparing model: ${requestedModel.value}');
       await _cleanupFuture;
-      if (_listening || _finishing) {
+      if (!_canContinueModelInitialization(requestedModel, requestGeneration)) {
+        return false;
+      }
+      if (_listening ||
+          _finishing ||
+          _stream != null ||
+          _capture != null ||
+          _audioSubscription != null) {
         throw StateError('语音识别进行中，暂时无法切换模型');
       }
-      _recognizer?.free();
+      _freeRecognizer(_recognizer);
       _recognizer = null;
       _loadedVoiceModel = null;
       final rawPaths = await _modelChannel
           .invokeMapMethod<Object?, Object?>('prepare', {
-            'model': _voiceModel.value,
+            'model': requestedModel.value,
           })
           .timeout(const Duration(minutes: 3));
+      if (!_canContinueModelInitialization(requestedModel, requestGeneration)) {
+        return false;
+      }
       final paths = rawPaths?.map(
         (key, value) => MapEntry(key.toString(), value.toString()),
       );
@@ -302,7 +378,7 @@ class _SherpaOnnxRecognizer
         sherpa.initBindings();
         _bindingsInitialized = true;
       }
-      final model = switch (_voiceModel) {
+      final model = switch (requestedModel) {
         AiVoiceModelKind.zipformerChinese => sherpa.OnlineModelConfig(
           transducer: sherpa.OnlineTransducerModelConfig(
             encoder: encoder,
@@ -325,27 +401,50 @@ class _SherpaOnnxRecognizer
           debug: false,
         ),
       };
-      _recognizer = sherpa.OnlineRecognizer(
+      final nextRecognizer = sherpa.OnlineRecognizer(
         sherpa.OnlineRecognizerConfig(model: model),
       );
-      _loadedVoiceModel = _voiceModel;
-      _log('model ready: ${_voiceModel.value}');
+      if (!_canContinueModelInitialization(requestedModel, requestGeneration)) {
+        _freeRecognizer(nextRecognizer);
+        return false;
+      }
+      _recognizer = nextRecognizer;
+      _loadedVoiceModel = requestedModel;
+      _log('model ready: ${requestedModel.value}');
+      unawaited(_logMemory('model-ready'));
       return true;
     } catch (error, stackTrace) {
+      _recognizer = null;
+      _loadedVoiceModel = null;
       _logError('model initialization failed', error, stackTrace);
-      onError('speech_not_supported: 离线语音模型初始化失败：$error');
+      if (!_disposed) {
+        onError('speech_not_supported: 离线语音模型初始化失败：$error');
+      }
       return false;
     }
   }
 
+  bool _canContinueModelInitialization(
+    AiVoiceModelKind requestedModel,
+    int requestGeneration,
+  ) =>
+      !_disposed &&
+      requestedModel == _voiceModel &&
+      requestGeneration == _modelGeneration;
+
   @override
   Future<void> listen(AiSpeechResultCallback onResult) async {
+    if (_disposed) throw StateError('离线语音识别服务已释放');
     final recognizer = _recognizer;
     if (recognizer == null) {
       throw StateError('离线语音识别器尚未初始化');
     }
     await _cleanupFuture;
-    if (_listening || _finishing) return;
+    if (_disposed || _listening || _finishing) return;
+    if (!identical(recognizer, _recognizer) ||
+        _loadedVoiceModel != _voiceModel) {
+      throw StateError('离线语音识别器正在切换模型');
+    }
 
     final generation = ++_generation;
     _pcmDecoder.reset();
@@ -354,12 +453,17 @@ class _SherpaOnnxRecognizer
     _audioSampleCount = 0;
     _maxObservedPeak = 0;
     _onResult = onResult;
-    _stream = recognizer.createStream();
+    final stream = recognizer.createStream();
+    _stream = stream;
     try {
       final capture = await _startCapture();
       if (generation != _generation) {
         await capture.cancel();
         await capture.dispose();
+        _freeStream(stream);
+        if (identical(_stream, stream)) _stream = null;
+        _onResult = null;
+        _pcmDecoder.reset();
         return;
       }
       _capture = capture;
@@ -378,8 +482,15 @@ class _SherpaOnnxRecognizer
       _onStatus?.call('listening');
     } catch (error, stackTrace) {
       _logError('capture startup failed', error, stackTrace);
-      _stream?.free();
-      _stream = null;
+      try {
+        await _capture?.cancel();
+      } catch (_) {}
+      try {
+        await _capture?.dispose();
+      } catch (_) {}
+      _capture = null;
+      _freeStream(stream);
+      if (identical(_stream, stream)) _stream = null;
       _onResult = null;
       rethrow;
     }
@@ -459,7 +570,9 @@ class _SherpaOnnxRecognizer
   }
 
   void _processAudio(int generation, Uint8List bytes) {
-    if (generation != _generation || !_listening || _finishing) return;
+    if (_disposed || generation != _generation || !_listening || _finishing) {
+      return;
+    }
     final recognizer = _recognizer;
     final stream = _stream;
     if (recognizer == null || stream == null) return;
@@ -486,9 +599,15 @@ class _SherpaOnnxRecognizer
         );
       }
       stream.acceptWaveform(samples: samples, sampleRate: _sampleRate);
+      var decoded = false;
       while (recognizer.isReady(stream)) {
         recognizer.decode(stream);
+        decoded = true;
       }
+      // getResult() allocates and parses a native JSON result. Calling it for
+      // every audio packet is unnecessary when the recognizer did not decode
+      // a frame, and creates avoidable Dart/native heap churn on car hardware.
+      if (!decoded && !recognizer.isEndpoint(stream)) return;
       final text = recognizer.getResult(stream).text.trim();
       if (text.isNotEmpty && text != _lastText) {
         _lastText = text;
@@ -569,7 +688,7 @@ class _SherpaOnnxRecognizer
         try {
           await capture?.dispose();
         } catch (_) {}
-        stream?.free();
+        _freeStream(stream);
         _pcmDecoder.reset();
         _onResult = null;
         _lastText = '';
@@ -579,6 +698,7 @@ class _SherpaOnnxRecognizer
           'samples=$_audioSampleCount '
           'maxPeak=${_maxObservedPeak.toStringAsFixed(4)}',
         );
+        unawaited(_logMemory('capture-finished'));
         if (emitStatus) _onStatus?.call('done');
       }
     }();
@@ -586,7 +706,80 @@ class _SherpaOnnxRecognizer
     await cleanup;
   }
 
+  @override
+  Future<void> dispose() {
+    final pending = _disposeOperation;
+    if (pending != null) return pending;
+    late final Future<void> operation;
+    operation = _disposeInternal().whenComplete(() {
+      if (identical(_disposeOperation, operation)) _disposeOperation = null;
+    });
+    _disposeOperation = operation;
+    return operation;
+  }
+
+  Future<void> _disposeInternal() async {
+    if (_disposed) return;
+    _disposed = true;
+    _modelGeneration++;
+    _generation++;
+    // Do not let an in-flight asset copy/recognizer construction finish and
+    // publish a native pointer after disposal. It has explicit disposed
+    // checks as well, while this bounded wait keeps normal teardown ordered.
+    final initializing = _initializing;
+    if (initializing != null) {
+      try {
+        await initializing.timeout(const Duration(seconds: 5));
+      } catch (_) {}
+    }
+    await _finishCapture();
+    _freeRecognizer(_recognizer);
+    _recognizer = null;
+    _loadedVoiceModel = null;
+    _onResult = null;
+    _onError = null;
+    _onStatus = null;
+  }
+
   void _log(String message) => debugPrint('[AiVoice] $message');
+
+  Future<void> _logMemory(String stage) async {
+    try {
+      final snapshot = await _modelChannel
+          .invokeMapMethod<Object?, Object?>('memory')
+          .timeout(const Duration(seconds: 2));
+      if (snapshot == null) return;
+      _log(
+        'memory[$stage]: pss=${snapshot['totalPssKb']}KB '
+        'native=${snapshot['nativeHeapKb']}KB '
+        'java=${snapshot['javaHeapKb']}KB '
+        'avail=${snapshot['availMemKb']}KB '
+        'low=${snapshot['lowMemory']} '
+        'limit=${snapshot['memoryClassMb']}MB/'
+        '${snapshot['largeMemoryClassMb']}MB',
+      );
+    } catch (_) {
+      // Older host builds do not expose diagnostics; recognition still works.
+    }
+  }
+
+  void _freeStream(sherpa.OnlineStream? stream) {
+    if (stream == null) return;
+    try {
+      stream.free();
+    } catch (error, stackTrace) {
+      _logError('recognition stream release failed', error, stackTrace);
+    }
+  }
+
+  void _freeRecognizer(sherpa.OnlineRecognizer? recognizer) {
+    if (recognizer == null) return;
+    try {
+      recognizer.free();
+    } catch (error, stackTrace) {
+      _logError('recognizer release failed', error, stackTrace);
+    }
+  }
 
   void _logError(String context, Object error, StackTrace stackTrace) {
     _log('$context: $error');
@@ -704,13 +897,17 @@ abstract class AiTextToSpeechEngine {
   Future<void> stop();
 }
 
-class PlatformAiSpeechEngine implements AiSpeechEngine, AiVoiceModelSelector {
+class PlatformAiSpeechEngine
+    implements AiSpeechEngine, AiVoiceModelSelector, AiSpeechResourceOwner {
   final AiSpeechRecognizer _speech;
   final AiMicrophonePermission _microphonePermission;
   final AiAudioFocusCoordinator _audioFocus;
   bool _initialized = false;
   bool _focusHeld = false;
+  bool _disposed = false;
   Future<void> _focusReleaseFuture = Future<void>.value();
+  Future<bool>? _initializeOperation;
+  Future<void>? _disposeOperation;
 
   PlatformAiSpeechEngine({
     AiSpeechRecognizer? speech,
@@ -723,6 +920,7 @@ class PlatformAiSpeechEngine implements AiSpeechEngine, AiVoiceModelSelector {
 
   @override
   void setVoiceModel(AiVoiceModelKind model) {
+    if (_disposed) return;
     final speech = _speech;
     if (speech is AiVoiceModelSelector) {
       (speech as AiVoiceModelSelector).setVoiceModel(model);
@@ -733,39 +931,68 @@ class PlatformAiSpeechEngine implements AiSpeechEngine, AiVoiceModelSelector {
   Future<bool> initialize({
     required void Function(String message) onError,
     required void Function(String status) onStatus,
+  }) {
+    if (_disposed) return Future<bool>.value(false);
+    final pending = _initializeOperation;
+    if (pending != null) return pending;
+    late final Future<bool> operation;
+    operation = _initializeInternal(onError: onError, onStatus: onStatus)
+        .whenComplete(() {
+          if (identical(_initializeOperation, operation)) {
+            _initializeOperation = null;
+          }
+        });
+    _initializeOperation = operation;
+    return operation;
+  }
+
+  Future<bool> _initializeInternal({
+    required void Function(String message) onError,
+    required void Function(String status) onStatus,
   }) async {
+    if (_disposed) return false;
     _audioFocus.setOnFocusLost(() {
       unawaited(_handleFocusLost(onError));
     });
     if (!await _microphonePermission.ensureGranted()) {
-      onError('麦克风权限未授予');
+      if (!_disposed) onError('麦克风权限未授予');
       return false;
     }
+    if (_disposed) return false;
     final ready = await _speech.initialize(
       onError: (message) {
+        if (_disposed) return;
         unawaited(_releaseFocus());
         onError(message);
       },
       onStatus: (status) {
+        if (_disposed) return;
         if (status == 'done' || status == 'notListening') {
           unawaited(_releaseFocus());
         }
         onStatus(status);
       },
     );
+    if (_disposed) return false;
     _initialized = ready;
     return ready;
   }
 
   @override
   Future<void> listen(AiSpeechResultCallback onResult) async {
+    if (_disposed) throw StateError('语音识别服务已释放');
     if (!_initialized) {
       throw StateError('语音识别服务尚未初始化');
     }
     // A recognizer status callback may release focus asynchronously just as
     // the controller schedules its next listening segment.
     await _focusReleaseFuture;
+    if (_disposed) throw StateError('语音识别服务已释放');
     final granted = await _audioFocus.request();
+    if (_disposed) {
+      if (granted) await _audioFocus.abandon();
+      throw StateError('语音识别服务已释放');
+    }
     if (!granted) {
       throw StateError('error_audio_focus: 无法获取语音输入音频焦点');
     }
@@ -813,7 +1040,45 @@ class PlatformAiSpeechEngine implements AiSpeechEngine, AiVoiceModelSelector {
       await _speech.cancel();
     } catch (_) {}
     await _releaseFocus();
-    onError('error_audio_focus_lost: 车机语音焦点已被其他应用占用');
+    if (!_disposed) {
+      onError('error_audio_focus_lost: 车机语音焦点已被其他应用占用');
+    }
+  }
+
+  @override
+  Future<void> dispose() {
+    final pending = _disposeOperation;
+    if (pending != null) return pending;
+    late final Future<void> operation;
+    operation = _disposeInternal().whenComplete(() {
+      if (identical(_disposeOperation, operation)) _disposeOperation = null;
+    });
+    _disposeOperation = operation;
+    return operation;
+  }
+
+  Future<void> _disposeInternal() async {
+    if (_disposed) return;
+    _disposed = true;
+    final initializing = _initializeOperation;
+    try {
+      await _speech.cancel();
+    } catch (_) {}
+    await _releaseFocus();
+    if (initializing != null) {
+      try {
+        await initializing.timeout(const Duration(seconds: 5));
+      } catch (_) {}
+    }
+    final speech = _speech;
+    final resourceOwner = speech is AiSpeechResourceOwner
+        ? speech as AiSpeechResourceOwner
+        : null;
+    if (resourceOwner != null) {
+      try {
+        await resourceOwner.dispose();
+      } catch (_) {}
+    }
   }
 }
 

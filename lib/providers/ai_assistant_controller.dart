@@ -25,6 +25,9 @@ enum AiSessionState {
 class AiAssistantController extends ChangeNotifier {
   static const _speechRestartDelay = Duration(milliseconds: 180);
   static const _speechErrorRestartDelay = Duration(milliseconds: 600);
+  // Keep the visible transcript bounded during long in-car sessions. The
+  // request context is already limited separately in _contextMessages().
+  static const _maxStoredMessages = 100;
 
   final PlayerProvider player;
   final AiConfigController configController;
@@ -305,7 +308,7 @@ class AiAssistantController extends ChangeNotifier {
 
   Future<void> _sendUserText(String text, int generation, int turn) async {
     if (!_isCurrentTurn(generation, turn)) return;
-    _messages.add(AiConversationMessage(role: AiMessageRole.user, text: text));
+    _appendMessage(AiConversationMessage(role: AiMessageRole.user, text: text));
     _transcript = '';
     _setState(AiSessionState.processing);
     try {
@@ -315,7 +318,7 @@ class AiAssistantController extends ChangeNotifier {
       );
       if (!_isCurrentTurn(generation, turn)) return;
       if (result.reply.trim().isNotEmpty) {
-        _messages.add(
+        _appendMessage(
           AiConversationMessage(
             role: AiMessageRole.assistant,
             text: result.reply.trim(),
@@ -334,7 +337,7 @@ class AiAssistantController extends ChangeNotifier {
           await stopSession(restoreMusic: false);
           return;
         }
-        _messages.add(
+        _appendMessage(
           AiConversationMessage(
             role: AiMessageRole.assistant,
             text: resolution.message,
@@ -355,7 +358,7 @@ class AiAssistantController extends ChangeNotifier {
           ? error.message
           : '请求失败：$error';
       _error = message;
-      _messages.add(
+      _appendMessage(
         AiConversationMessage(role: AiMessageRole.assistant, text: message),
       );
       _setState(AiSessionState.error);
@@ -381,7 +384,7 @@ class AiAssistantController extends ChangeNotifier {
     await _stopSpeaking();
     if (!_isCurrentTurn(generation, turn)) return;
     const goodbye = '好的，我先退下了。';
-    _messages.add(
+    _appendMessage(
       AiConversationMessage(role: AiMessageRole.assistant, text: goodbye),
     );
     notifyListeners();
@@ -541,6 +544,13 @@ class AiAssistantController extends ChangeNotifier {
     return _messages.sublist(_messages.length - maxMessages);
   }
 
+  void _appendMessage(AiConversationMessage message) {
+    _messages.add(message);
+    if (_messages.length > _maxStoredMessages) {
+      _messages.removeRange(0, _messages.length - _maxStoredMessages);
+    }
+  }
+
   bool _containsExitPhrase(String text) {
     final normalized = text.replaceAll(RegExp(r'[，。！？,.!?\s]+'), '');
     if (normalized == '结束') return true;
@@ -563,9 +573,24 @@ class AiAssistantController extends ChangeNotifier {
     _generation++;
     _turnGeneration++;
     _cancelSpeechTimers();
-    unawaited(_stopRecognition());
+    unawaited(_disposeSpeechResources());
     unawaited(textToSpeech.stop());
     gateway.close();
     super.dispose();
+  }
+
+  Future<void> _disposeSpeechResources() async {
+    try {
+      await _stopRecognition();
+    } catch (_) {}
+    final owner = speech;
+    final resourceOwner = owner is AiSpeechResourceOwner
+        ? owner as AiSpeechResourceOwner
+        : null;
+    if (resourceOwner != null) {
+      try {
+        await resourceOwner.dispose();
+      } catch (_) {}
+    }
   }
 }
