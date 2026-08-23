@@ -192,6 +192,39 @@ void main() {
       expect(result.playRequest?.artist, '周杰伦');
       expect(result.playRequest?.title, '夜曲');
     });
+
+    test('bounds text extracted from an unusually large response', () async {
+      final service = AiAssistantService(
+        client: MockClient((_) async {
+          final huge = '回答' * 100000;
+          return _jsonResponse({
+            'output': [
+              {
+                'content': [
+                  {'text': huge},
+                ],
+              },
+            ],
+            'choices': [
+              {
+                'message': {'content': huge},
+              },
+            ],
+          });
+        }),
+      );
+      addTearDown(service.close);
+
+      final result = await service.sendMessage(
+        _config(
+          provider: AiProviderKind.openAi,
+          protocol: AiRequestProtocol.openAiResponses,
+        ),
+        [_userMessage('请回答')],
+      );
+
+      expect(result.reply.length, lessThanOrEqualTo(128 * 1024));
+    });
   });
 
   group('MiMo request mapping', () {

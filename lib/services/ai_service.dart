@@ -44,6 +44,10 @@ abstract class AiChatGateway {
 class AiAssistantService implements AiChatGateway {
   static const _timeout = Duration(seconds: 35);
   static const _maxResponseBytes = 3 * 1024 * 1024;
+  // A response can contain the same text in several provider-specific fields.
+  // Bound extracted text before joining/cleaning so a large but valid JSON
+  // response cannot multiply its temporary Dart string allocations.
+  static const _maxExtractedTextChars = 128 * 1024;
 
   final http.Client _client;
 
@@ -533,8 +537,17 @@ class AiAssistantService implements AiChatGateway {
 
   List<String> _extractTexts(Map<String, dynamic> response) {
     final values = <String>[];
+    var extractedChars = 0;
     void add(dynamic value) {
-      if (value is String && value.trim().isNotEmpty) values.add(value.trim());
+      if (value is! String || extractedChars >= _maxExtractedTextChars) return;
+      final text = value.trim();
+      if (text.isEmpty) return;
+      final remaining = _maxExtractedTextChars - extractedChars;
+      final bounded = text.length <= remaining
+          ? text
+          : text.substring(0, remaining);
+      values.add(bounded);
+      extractedChars += bounded.length;
     }
 
     // OpenAI Responses.
