@@ -56,6 +56,12 @@ class FavoriteService extends ChangeNotifier {
       List.unmodifiable(_favoritePlaylists);
   bool get loaded => _loaded;
 
+  @override
+  void notifyListeners() {
+    if (_disposed) return;
+    super.notifyListeners();
+  }
+
   static String songKey(MusicPlatform platform, String id) {
     return '${platform.code}\u001f$id';
   }
