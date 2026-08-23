@@ -200,6 +200,8 @@ class _AiProfileEditorDialogState extends State<AiProfileEditorDialog> {
           duration: const Duration(seconds: 4),
         ),
       );
+    } catch (error) {
+      if (mounted) _showMessage('连接测试失败：$error');
     } finally {
       service.close();
       if (mounted) setState(() => _testing = false);
