@@ -21,6 +21,7 @@ class ApiService {
   static const _catalogFallbackTimeout = Duration(seconds: 8);
   static const _retryDelay = Duration(milliseconds: 350);
   static const _maxJsonResponseBytes = 5 * 1024 * 1024;
+  static const _maxNeteasePlaylistIndexes = 4;
   static const _catalogUserAgent =
       'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
       'Chrome/120 Mobile Safari/537.36';
@@ -59,6 +60,9 @@ class ApiService {
   }
 
   void close() {
+    // Playlist indexes can contain tens of thousands of IDs. Release them
+    // together with the HTTP client when the owning player is disposed.
+    _neteasePlaylistIndexes.clear();
     _client.close();
     bilibili.dispose();
   }
@@ -990,6 +994,14 @@ class ApiService {
     if (existing != null) return existing;
     final request = _loadNeteasePlaylistIndex(id);
     _neteasePlaylistIndexes[id] = request;
+    while (_neteasePlaylistIndexes.length > _maxNeteasePlaylistIndexes) {
+      final oldest = _neteasePlaylistIndexes.keys.firstWhere(
+        (key) => key != id,
+        orElse: () => id,
+      );
+      if (oldest == id) break;
+      _neteasePlaylistIndexes.remove(oldest);
+    }
     try {
       return await request;
     } catch (_) {
