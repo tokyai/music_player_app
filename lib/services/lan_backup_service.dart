@@ -99,7 +99,7 @@ class LanBackupSession {
   final String pin;
   final String host;
   final String Function() _exportBackup;
-  final Completer<String> _restoreCompleter = Completer<String>();
+  final Completer<String?> _restoreCompleter = Completer<String?>();
   late final Timer _expiryTimer;
   late final DateTime expiresAt;
   bool _stopped = false;
@@ -125,7 +125,7 @@ class LanBackupSession {
   /// filled into the browser page after scanning.
   String get qrUrl =>
       Uri.parse(url).replace(queryParameters: {'pin': pin}).toString();
-  Future<String> get restored => _restoreCompleter.future;
+  Future<String?> get restored => _restoreCompleter.future;
   bool get isActive => !_stopped;
 
   void _listen() {
@@ -286,6 +286,9 @@ async function uploadBackup(){if(!/^\\d{6}\$/.test(pin())){status('请输入 6 �
     if (_stopped) return;
     _stopped = true;
     _expiryTimer.cancel();
+    // Wake any page waiting for a phone upload so the session and its
+    // callback closure can be collected after timeout or route disposal.
+    if (!_restoreCompleter.isCompleted) _restoreCompleter.complete(null);
     try {
       await _server.close(force: true);
     } catch (_) {

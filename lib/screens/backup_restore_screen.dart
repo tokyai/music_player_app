@@ -422,6 +422,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
   Future<void> _watchLanRestore(LanBackupSession session) async {
     try {
       final raw = await session.restored;
+      if (raw == null || raw.isEmpty) return;
       if (!mounted || !identical(_lanSession, session)) return;
       await _restoreRaw(raw, source: '手机');
       if (!mounted || !identical(_lanSession, session)) return;
