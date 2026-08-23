@@ -1,4 +1,5 @@
 import 'package:audio_service/audio_service.dart';
+import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../models/song.dart';
@@ -15,11 +16,23 @@ class PlayerMediaHandler extends BaseAudioHandler with SeekHandler {
   int? _publishedQueueFingerprint;
   int? _publishedPlaybackFingerprint;
   List<MediaItem> _publishedQueue = const [];
+  bool _disposed = false;
 
   void _syncFromPlayer() {
-    _publishQueue();
-    _publishCurrentItem();
-    _publishPlaybackState();
+    if (_disposed) return;
+    try {
+      _publishQueue();
+      _publishCurrentItem();
+      _publishPlaybackState();
+    } catch (error, stackTrace) {
+      // A just_audio callback can race handler teardown. Do not let a stale
+      // native callback terminate the Flutter isolate while its streams are
+      // being released.
+      if (!_disposed) {
+        debugPrint('系统媒体状态同步失败: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+    }
   }
 
   void _publishQueue() {
@@ -187,6 +200,7 @@ class PlayerMediaHandler extends BaseAudioHandler with SeekHandler {
   Future<void> skipToQueueItem(int index) => _player.playQueueItem(index);
 
   void dispose() {
+    _disposed = true;
     _player.removeListener(_syncFromPlayer);
   }
 }
