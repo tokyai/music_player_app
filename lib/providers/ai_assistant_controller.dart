@@ -89,8 +89,9 @@ class AiAssistantController extends ChangeNotifier {
   };
 
   Future<void> startSession() async {
-    if (_active) return;
+    if (_disposed || _active) return;
     await configController.ready;
+    if (_disposed || _active) return;
     if (!configController.config.isComplete) {
       _setState(AiSessionState.error, error: '请先在设置中配置 AI URL、Key 和模型');
       return;
@@ -110,6 +111,7 @@ class AiAssistantController extends ChangeNotifier {
     if (_wasPlayingBeforeSession) {
       await player.pause();
     }
+    if (_disposed) return;
     _setState(AiSessionState.initializing);
 
     var speechReady = false;
@@ -132,7 +134,7 @@ class AiAssistantController extends ChangeNotifier {
     } catch (_) {
       // 语音播报不可用时仍可继续识别和文字对话。
     }
-    if (!_active) return;
+    if (_disposed || !_active) return;
     if (!speechReady) {
       _setState(AiSessionState.textOnly);
       return;
@@ -142,7 +144,7 @@ class AiAssistantController extends ChangeNotifier {
 
   Future<void> sendText(String text) async {
     final normalized = text.trim();
-    if (normalized.isEmpty || !_active) return;
+    if (_disposed || normalized.isEmpty || !_active) return;
     if (_containsExitPhrase(normalized)) {
       await _finishWithGoodbye();
       return;
@@ -160,6 +162,7 @@ class AiAssistantController extends ChangeNotifier {
   }
 
   Future<void> toggleListening() async {
+    if (_disposed) return;
     if (!_active) {
       await startSession();
       return;
@@ -187,6 +190,7 @@ class AiAssistantController extends ChangeNotifier {
   }
 
   Future<void> newSession() async {
+    if (_disposed) return;
     if (!_active) {
       await startSession();
       return;
@@ -196,16 +200,18 @@ class AiAssistantController extends ChangeNotifier {
     final generation = _generation;
     _ignoreSpeechEvents = true;
     await _stopRecognition();
+    if (_disposed || !_active || generation != _generation) return;
     await _stopSpeaking();
+    if (_disposed || !_active || generation != _generation) return;
     _messages.clear();
     _resetSpeechBuffer();
     _error = null;
-    notifyListeners();
+    _notify();
     await _startListening(generation);
   }
 
   Future<void> stopSession({bool restoreMusic = true}) async {
-    if (!_active && _state == AiSessionState.idle) return;
+    if (_disposed || (!_active && _state == AiSessionState.idle)) return;
     _generation++;
     _turnGeneration++;
     final wasActive = _active;
@@ -235,7 +241,8 @@ class AiAssistantController extends ChangeNotifier {
     int generation, {
     bool preserveTranscript = false,
   }) async {
-    if (!_active ||
+    if (_disposed ||
+        !_active ||
         generation != _generation ||
         _recognitionActive ||
         _listenStarting) {
@@ -281,7 +288,7 @@ class AiAssistantController extends ChangeNotifier {
       _scheduleSpeechCommit(generation);
       _scheduleRecognitionRestart(generation);
     }
-    notifyListeners();
+    _notify();
   }
 
   Future<void> _commitSpeech(int generation) async {
@@ -324,7 +331,7 @@ class AiAssistantController extends ChangeNotifier {
             text: result.reply.trim(),
           ),
         );
-        notifyListeners();
+        _notify();
       }
       if (result.playRequest != null) {
         final resolution = await songResolver.resolveAndPlay(
@@ -343,7 +350,7 @@ class AiAssistantController extends ChangeNotifier {
             text: resolution.message,
           ),
         );
-        notifyListeners();
+        _notify();
         if (await _speak(resolution.message, generation, turn)) {
           await _startListening(generation);
         }
@@ -387,7 +394,7 @@ class AiAssistantController extends ChangeNotifier {
     _appendMessage(
       AiConversationMessage(role: AiMessageRole.assistant, text: goodbye),
     );
-    notifyListeners();
+    _notify();
     if (await _speak(goodbye, generation, turn)) {
       await stopSession();
     }
@@ -423,7 +430,7 @@ class AiAssistantController extends ChangeNotifier {
         _currentSpeechText = '';
         _transcript = _finalSpeechText;
         _scheduleSpeechCommit(_generation);
-        notifyListeners();
+        _notify();
       }
       _scheduleRecognitionRestart(_generation);
     }
@@ -536,7 +543,10 @@ class AiAssistantController extends ChangeNotifier {
   }
 
   bool _isCurrentTurn(int generation, int turn) =>
-      _active && generation == _generation && turn == _turnGeneration;
+      !_disposed &&
+      _active &&
+      generation == _generation &&
+      turn == _turnGeneration;
 
   List<AiConversationMessage> _contextMessages() {
     const maxMessages = 24;
@@ -563,7 +573,11 @@ class AiAssistantController extends ChangeNotifier {
     if (_disposed) return;
     _state = state;
     if (error != null) _error = error;
-    notifyListeners();
+    _notify();
+  }
+
+  void _notify() {
+    if (!_disposed) notifyListeners();
   }
 
   @override
