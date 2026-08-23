@@ -43,7 +43,8 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   }
 
   void _handleTrackScroll() {
-    if (!_trackScrollController.hasClients ||
+    if (!mounted ||
+        !_trackScrollController.hasClients ||
         _loading ||
         _loadingMore ||
         !_hasMore) {
@@ -60,6 +61,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     bool saveOnSuccess = false,
     PlaylistInfo? savedMetadata,
   }) async {
+    if (!mounted) return;
     final player = context.read<PlayerProvider>();
     final favorites = context.read<FavoriteService>();
     final requestId = ++_loadRequestId;
@@ -166,6 +168,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   }
 
   Future<void> _loadMoreTracks() async {
+    if (!mounted) return;
     final playlist = _playlist;
     final platform = _platform;
     final requestId = _loadRequestId;
@@ -714,6 +717,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   }
 
   Future<void> _confirmDeletePlaylist(FavoritePlaylist favorite) async {
+    if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -746,14 +750,21 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
         _error = null;
       });
     }
-    await context.read<FavoriteService>().removePlaylist(
-      favorite.platform,
-      favorite.id,
-    );
-    if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('已删除：${favorite.playlist.name}')));
+    try {
+      await context.read<FavoriteService>().removePlaylist(
+        favorite.platform,
+        favorite.id,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已删除：${favorite.playlist.name}')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('删除歌单失败：$error')));
+    }
   }
 
   Widget _buildAnimatedTrackArea({AppLayout? layout}) {
