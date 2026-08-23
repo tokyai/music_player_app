@@ -374,46 +374,66 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   void _initAudioPlayer() {
-    _playerSub = _audioPlayer.playerStateStream.listen((state) {
-      if (_disposed) return;
-      _isPlaying = state.playing;
-      // 系统悬浮胶囊同步播放状态
-      if (FloatingCapsuleService.enabled) {
-        FloatingCapsuleService.updatePlayState(state.playing);
-      }
-      // 空音频/加载失败保护：加载或解码失败（如 404、空文件、格式不支持）
-      // 会触发 playbackEventStream 的 onError（下方 _errorSub 统一处理：停止 + 提示）
-      if (state.processingState == ProcessingState.completed) {
-        _recordCurrentHistory(position: Duration.zero, immediate: true);
-        _onSongComplete();
-      } else if (!state.playing &&
-          state.processingState != ProcessingState.idle) {
-        // A pause is an explicit persistence boundary, so a resumed session
-        // does not lose the latest position while waiting for the debounce.
-        _recordCurrentHistory(immediate: true);
-      }
-      notifyListeners();
-    });
+    _playerSub = _audioPlayer.playerStateStream.listen(
+      (state) {
+        if (_disposed) return;
+        _isPlaying = state.playing;
+        // 系统悬浮胶囊同步播放状态
+        if (FloatingCapsuleService.enabled) {
+          FloatingCapsuleService.updatePlayState(state.playing);
+        }
+        // 空音频/加载失败保护：加载或解码失败（如 404、空文件、格式不支持）
+        // 会触发 playbackEventStream 的 onError（下方 _errorSub 统一处理：停止 + 提示）
+        if (state.processingState == ProcessingState.completed) {
+          _recordCurrentHistory(position: Duration.zero, immediate: true);
+          _onSongComplete();
+        } else if (!state.playing &&
+            state.processingState != ProcessingState.idle) {
+          // A pause is an explicit persistence boundary, so a resumed session
+          // does not lose the latest position while waiting for the debounce.
+          _recordCurrentHistory(immediate: true);
+        }
+        notifyListeners();
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _handlePlayerStreamError('player state', error, stackTrace);
+      },
+    );
 
-    _durationSub = _audioPlayer.durationStream.listen((d) {
-      if (_disposed) return;
-      _duration = d ?? Duration.zero;
-      notifyListeners();
-    });
+    _durationSub = _audioPlayer.durationStream.listen(
+      (d) {
+        if (_disposed) return;
+        _duration = d ?? Duration.zero;
+        notifyListeners();
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _handlePlayerStreamError('duration', error, stackTrace);
+      },
+    );
 
-    _positionSub = _audioPlayer.positionStream.listen((p) {
-      if (_disposed) return;
-      _position = p;
-      _updateLyricIndex();
-      if (_isPlaying) _recordCurrentHistory(position: p);
-      notifyListeners();
-    });
+    _positionSub = _audioPlayer.positionStream.listen(
+      (p) {
+        if (_disposed) return;
+        _position = p;
+        _updateLyricIndex();
+        if (_isPlaying) _recordCurrentHistory(position: p);
+        notifyListeners();
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _handlePlayerStreamError('position', error, stackTrace);
+      },
+    );
 
-    _bufferSub = _audioPlayer.bufferedPositionStream.listen((b) {
-      if (_disposed) return;
-      _buffered = b;
-      notifyListeners();
-    });
+    _bufferSub = _audioPlayer.bufferedPositionStream.listen(
+      (b) {
+        if (_disposed) return;
+        _buffered = b;
+        notifyListeners();
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _handlePlayerStreamError('buffered position', error, stackTrace);
+      },
+    );
 
     _errorSub = _audioPlayer.playbackEventStream.listen(
       (_) {},
@@ -427,6 +447,16 @@ class PlayerProvider extends ChangeNotifier {
         notifyListeners();
       },
     );
+  }
+
+  void _handlePlayerStreamError(
+    String streamName,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    if (_disposed) return;
+    debugPrint('播放器 $streamName 状态流异常: $error');
+    debugPrintStack(stackTrace: stackTrace);
   }
 
   Future<void> _stopAfterPlaybackError() async {
