@@ -55,7 +55,10 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   }
 
   void _handleTrackScroll() {
-    if (!_trackScrollController.hasClients || _loadingMore || !_hasMore) {
+    if (!mounted ||
+        !_trackScrollController.hasClients ||
+        _loadingMore ||
+        !_hasMore) {
       return;
     }
     final position = _trackScrollController.position;
@@ -186,11 +189,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         }
       }
 
-      if (mounted) {
-        setState(appendPage);
-      } else {
-        appendPage();
-      }
+      if (!mounted) return const <SongSearchResult>[];
+      setState(appendPage);
       return nextTracks;
     } catch (e) {
       if (mounted) {
@@ -321,7 +321,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
     final canPlay = _detail != null && _detail!.tracks.isNotEmpty;
     Future<void> playAll() async {
-      if (!canPlay || _loadingAll) return;
+      if (!mounted || !canPlay || _loadingAll) return;
       final player = context.read<PlayerProvider>();
       final initialTracks = List<SongSearchResult>.of(_tracks);
       setState(() => _loadingAll = true);
@@ -331,6 +331,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       try {
         while (_hasMore && player.queueSessionId == queueSessionId) {
           final nextTracks = await _loadMore(player);
+          if (!mounted) return;
           if (nextTracks.isEmpty ||
               !player.addTracksToQueue(
                 nextTracks,
@@ -407,11 +408,18 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 : AppColors.surfaceSoft,
           ),
           onPressed: () async {
-            final added = await favorites.togglePlaylist(widget.platform, p);
-            if (!context.mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text(added ? '已收藏歌单: ${p.name}' : '已取消收藏歌单')),
-            );
+            try {
+              final added = await favorites.togglePlaylist(widget.platform, p);
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(added ? '已收藏歌单: ${p.name}' : '已取消收藏歌单')),
+              );
+            } catch (error) {
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(SnackBar(content: Text('收藏歌单失败：$error')));
+            }
           },
           icon: AppAnimatedIcon(
             stateKey: isFavorite,
