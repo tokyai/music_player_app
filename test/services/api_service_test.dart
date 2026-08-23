@@ -187,6 +187,51 @@ void main() {
     expect(requested.last.queryParameters['ids'], contains('41'));
   });
 
+  test('evicts the previous large Netease playlist index', () async {
+    final detailRequests = <String>[];
+    await http.runWithClient(
+      () async {
+        final api = ApiService(apiKey: '');
+        try {
+          await api.neteasePlaylistTracks('first', limit: 1);
+          await api.neteasePlaylistTracks('second', limit: 1);
+          await api.neteasePlaylistTracks('first', limit: 1);
+        } finally {
+          api.close();
+        }
+      },
+      () => MockClient((request) async {
+        if (request.url.path == '/api/v6/playlist/detail') {
+          final id = request.url.queryParameters['id'] ?? '';
+          detailRequests.add(id);
+          return _jsonResponse({
+            'code': 200,
+            'playlist': {
+              'trackCount': 1,
+              'trackIds': [
+                {'id': id},
+              ],
+            },
+          });
+        }
+        return _jsonResponse({
+          'code': 200,
+          'songs': [
+            {
+              'id': request.url.queryParameters['ids'] ?? '',
+              'name': '测试歌曲',
+              'ar': [
+                {'name': '歌手'},
+              ],
+              'al': {'name': '专辑'},
+            },
+          ],
+        });
+      }),
+    );
+    expect(detailRequests, ['first', 'second', 'first']);
+  });
+
   test('requests native Kugou pages', () async {
     Uri? requested;
     await http.runWithClient(

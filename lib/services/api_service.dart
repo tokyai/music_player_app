@@ -21,7 +21,10 @@ class ApiService {
   static const _catalogFallbackTimeout = Duration(seconds: 8);
   static const _retryDelay = Duration(milliseconds: 350);
   static const _maxJsonResponseBytes = 5 * 1024 * 1024;
-  static const _maxNeteasePlaylistIndexes = 4;
+  // A playlist index may contain up to 100,000 IDs. Retain only the active
+  // index so visiting several large playlists cannot keep their ID arrays
+  // alive for the lifetime of the player.
+  static const _maxNeteasePlaylistIndexes = 1;
   static const _catalogUserAgent =
       'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
       'Chrome/120 Mobile Safari/537.36';
