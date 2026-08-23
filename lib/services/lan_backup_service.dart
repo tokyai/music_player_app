@@ -114,7 +114,9 @@ class LanBackupSession {
        _token = token,
        _exportBackup = exportBackup {
     expiresAt = DateTime.now().add(_lanSessionDuration);
-    _expiryTimer = Timer(_lanSessionDuration, stop);
+    _expiryTimer = Timer(_lanSessionDuration, () {
+      unawaited(stop());
+    });
   }
 
   String get url => 'http://$host:${_server.port}/$_token/';
@@ -284,6 +286,10 @@ async function uploadBackup(){if(!/^\\d{6}\$/.test(pin())){status('请输入 6 �
     if (_stopped) return;
     _stopped = true;
     _expiryTimer.cancel();
-    await _server.close(force: true);
+    try {
+      await _server.close(force: true);
+    } catch (_) {
+      // The socket may already be closed by the platform or Activity teardown.
+    }
   }
 }

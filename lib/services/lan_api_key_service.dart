@@ -86,7 +86,9 @@ class LanApiKeySession {
     required this.host,
   }) : _server = server,
        _token = token {
-    _expiryTimer = Timer(_sessionDuration, stop);
+    _expiryTimer = Timer(_sessionDuration, () {
+      unawaited(stop());
+    });
   }
 
   String get url => 'http://$host:${_server.port}/$_token/';
@@ -185,12 +187,16 @@ async function submitKey(){const key=input.value.trim();if(!key){status.textCont
     int statusCode,
     String message,
   ) async {
-    final response = request.response;
-    response.statusCode = statusCode;
-    response.headers.set('Content-Type', 'text/plain; charset=utf-8');
-    response.headers.set('Cache-Control', 'no-store');
-    response.write(message);
-    await response.close();
+    try {
+      final response = request.response;
+      response.statusCode = statusCode;
+      response.headers.set('Content-Type', 'text/plain; charset=utf-8');
+      response.headers.set('Cache-Control', 'no-store');
+      response.write(message);
+      await response.close();
+    } catch (_) {
+      // The phone can disconnect while the response is being written.
+    }
   }
 
   Future<void> stop() async {
@@ -198,6 +204,10 @@ async function submitKey(){const key=input.value.trim();if(!key){status.textCont
     _stopped = true;
     _expiryTimer.cancel();
     if (!_apiKeyCompleter.isCompleted) _apiKeyCompleter.complete(null);
-    await _server.close(force: true);
+    try {
+      await _server.close(force: true);
+    } catch (_) {
+      // The socket may already be closed by the platform or Activity teardown.
+    }
   }
 }

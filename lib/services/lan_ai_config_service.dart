@@ -76,7 +76,9 @@ class LanAiConfigSession {
     required this.host,
   }) : _server = server,
        _token = token {
-    _expiryTimer = Timer(_aiConfigSessionDuration, stop);
+    _expiryTimer = Timer(_aiConfigSessionDuration, () {
+      unawaited(stop());
+    });
   }
 
   String get url => 'http://$host:${_server.port}/$_token/';
@@ -185,12 +187,16 @@ async function submitConfig(){const payload={provider:provider.value,protocol:pr
     int statusCode,
     String message,
   ) async {
-    final response = request.response;
-    response.statusCode = statusCode;
-    response.headers.set('Content-Type', 'text/plain; charset=utf-8');
-    response.headers.set('Cache-Control', 'no-store');
-    response.write(message);
-    await response.close();
+    try {
+      final response = request.response;
+      response.statusCode = statusCode;
+      response.headers.set('Content-Type', 'text/plain; charset=utf-8');
+      response.headers.set('Cache-Control', 'no-store');
+      response.write(message);
+      await response.close();
+    } catch (_) {
+      // The phone can disconnect while the response is being written.
+    }
   }
 
   Future<void> stop() async {
@@ -198,6 +204,10 @@ async function submitConfig(){const payload={provider:provider.value,protocol:pr
     _stopped = true;
     _expiryTimer.cancel();
     if (!_configCompleter.isCompleted) _configCompleter.complete(null);
-    await _server.close(force: true);
+    try {
+      await _server.close(force: true);
+    } catch (_) {
+      // The socket may already be closed by the platform or Activity teardown.
+    }
   }
 }
