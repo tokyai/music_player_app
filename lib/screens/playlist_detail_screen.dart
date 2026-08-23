@@ -176,17 +176,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         _tracks.addAll(nextTracks);
         _nextOffset = offset + nextTracks.length;
         _hasMore = nextTracks.isNotEmpty && _pageHasMore(page, _nextOffset);
-        if (_detail != null) {
-          _detail = PlaylistInfo(
-            id: _detail!.id,
-            name: _detail!.name,
-            coverUrl: _detail!.coverUrl,
-            creator: _detail!.creator,
-            trackCount: _detail!.trackCount,
-            description: _detail!.description,
-            tracks: List.unmodifiable(_tracks),
-          );
-        }
       }
 
       if (!mounted) return const <SongSearchResult>[];
