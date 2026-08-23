@@ -132,7 +132,7 @@ class LanBackupSession {
 
   Future<void> _handleRequest(HttpRequest request) async {
     if (_stopped) {
-      _respond(request, 410, '本次传输已结束');
+      await _respond(request, 410, '本次传输已结束');
       return;
     }
     if (request.method == 'OPTIONS') {
@@ -151,7 +151,7 @@ class LanBackupSession {
 
     final segments = request.uri.pathSegments;
     if (segments.isEmpty || segments.first != _token) {
-      _respond(request, 404, '地址无效');
+      await _respond(request, 404, '地址无效');
       return;
     }
     final endpoint = segments.length == 1 ? '' : segments[1];
@@ -163,11 +163,11 @@ class LanBackupSession {
       } else if (request.method == 'POST' && endpoint == 'restore') {
         await _receiveRestore(request);
       } else {
-        _respond(request, 404, '请求不存在');
+        await _respond(request, 404, '请求不存在');
       }
     } catch (error) {
       try {
-        _respond(request, 500, '传输失败：$error');
+        await _respond(request, 500, '传输失败：$error');
       } catch (_) {}
     }
   }
@@ -199,13 +199,13 @@ async function uploadBackup(){if(!/^\\d{6}\$/.test(pin())){status('请输入 6 �
 
   Future<void> _serveBackup(HttpRequest request) async {
     if (!_authorize(request)) {
-      _respond(request, 401, 'PIN 不正确');
+      await _respond(request, 401, 'PIN 不正确');
       return;
     }
     final content = _exportBackup();
     final bytes = utf8.encode(content);
     if (bytes.length > _lanMaxBackupBytes) {
-      _respond(request, 413, '备份文件不能超过 5 MB');
+      await _respond(request, 413, '备份文件不能超过 5 MB');
       return;
     }
     final response = request.response;
@@ -221,18 +221,18 @@ async function uploadBackup(){if(!/^\\d{6}\$/.test(pin())){status('请输入 6 �
 
   Future<void> _receiveRestore(HttpRequest request) async {
     if (!_authorize(request)) {
-      _respond(request, 401, 'PIN 不正确');
+      await _respond(request, 401, 'PIN 不正确');
       return;
     }
     if (request.headers.contentLength > _lanMaxBackupBytes) {
-      _respond(request, 413, '备份文件不能超过 5 MB');
+      await _respond(request, 413, '备份文件不能超过 5 MB');
       return;
     }
     final bytes = <int>[];
     await for (final chunk in request.timeout(const Duration(seconds: 20))) {
       bytes.addAll(chunk);
       if (bytes.length > _lanMaxBackupBytes) {
-        _respond(request, 413, '备份文件不能超过 5 MB');
+        await _respond(request, 413, '备份文件不能超过 5 MB');
         return;
       }
     }
@@ -240,18 +240,18 @@ async function uploadBackup(){if(!/^\\d{6}\$/.test(pin())){status('请输入 6 �
     try {
       raw = utf8.decode(bytes, allowMalformed: false);
     } on FormatException {
-      _respond(request, 400, '上传内容不是有效的 UTF-8 文本');
+      await _respond(request, 400, '上传内容不是有效的 UTF-8 文本');
       return;
     }
     try {
       final parsed = jsonDecode(raw);
       if (parsed is! Map && parsed is! List) throw const FormatException();
     } on FormatException {
-      _respond(request, 400, '上传内容不是有效的 JSON 备份');
+      await _respond(request, 400, '上传内容不是有效的 JSON 备份');
       return;
     }
     if (!_restoreCompleter.isCompleted) _restoreCompleter.complete(raw);
-    _respond(request, 200, '上传成功，请回到车机选择合并或覆盖。');
+    await _respond(request, 200, '上传成功，请回到车机选择合并或覆盖。');
   }
 
   bool _authorize(HttpRequest request) {
@@ -267,12 +267,17 @@ async function uploadBackup(){if(!/^\\d{6}\$/.test(pin())){status('请输入 6 �
     return different == 0;
   }
 
-  void _respond(HttpRequest request, int status, String message) {
-    final response = request.response;
-    response.statusCode = status;
-    response.headers.set('Content-Type', 'text/plain; charset=utf-8');
-    response.write(message);
-    unawaited(response.close());
+  Future<void> _respond(HttpRequest request, int status, String message) async {
+    try {
+      final response = request.response;
+      response.statusCode = status;
+      response.headers.set('Content-Type', 'text/plain; charset=utf-8');
+      response.write(message);
+      await response.close();
+    } catch (_) {
+      // The phone can disconnect while a response is being written. The
+      // request is already over, so there is nothing useful to propagate.
+    }
   }
 
   Future<void> stop() async {
