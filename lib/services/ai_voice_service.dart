@@ -172,7 +172,9 @@ class _CarArrayAudioCapture implements _AiAudioCapture {
       await capture._start(profile!);
       return capture;
     } catch (_) {
-      await capture.dispose();
+      try {
+        await capture.dispose();
+      } catch (_) {}
       rethrow;
     }
   }
@@ -205,6 +207,8 @@ class _CarArrayAudioCapture implements _AiAudioCapture {
       if (!_disposed) {
         try {
           _controller.add(event);
+        } catch (_) {
+          // A final platform event can race with StreamController.close().
         } finally {
           unawaited(_acknowledgeNativeBatch());
         }
@@ -215,6 +219,8 @@ class _CarArrayAudioCapture implements _AiAudioCapture {
       if (!_disposed) {
         try {
           _controller.add(event.buffer.asUint8List());
+        } catch (_) {
+          // A final platform event can race with StreamController.close().
         } finally {
           unawaited(_acknowledgeNativeBatch());
         }
@@ -238,15 +244,20 @@ class _CarArrayAudioCapture implements _AiAudioCapture {
     if (!_ready.isCompleted) {
       _ready.completeError(error, stackTrace);
     } else if (!_disposed) {
-      _controller.addError(error, stackTrace);
+      try {
+        _controller.addError(error, stackTrace);
+      } catch (_) {
+        // Ignore an error delivered after the event stream has closed.
+      }
     }
   }
 
   void _handleDone() {
+    _disposed = true;
     if (!_ready.isCompleted) {
       _ready.completeError(StateError('车机阵列麦克风在启动前关闭'));
     }
-    if (!_disposed) unawaited(_controller.close());
+    unawaited(_controller.close().catchError((_) {}));
   }
 
   Future<void> _stopNative() async {
@@ -265,8 +276,12 @@ class _CarArrayAudioCapture implements _AiAudioCapture {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
-    await _stopNative();
-    await _controller.close();
+    try {
+      await _stopNative();
+    } catch (_) {}
+    try {
+      await _controller.close();
+    } catch (_) {}
   }
 }
 
