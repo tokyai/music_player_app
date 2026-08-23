@@ -26,6 +26,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
   }
 
   Future<void> _loadCacheList() async {
+    if (!mounted) return;
     setState(() => _loading = true);
     try {
       final list = await AudioCacheService.getCacheList();
@@ -36,6 +37,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
 
   Future<void> _removeCache(CachedSongInfo info) async {
     await AudioCacheService.removeCache(info.platformCode, info.songId);
+    if (!mounted) return;
     _loadCacheList();
   }
 
@@ -81,9 +83,10 @@ class _CacheListScreenState extends State<CacheListScreen> {
         ],
       ),
     );
-    if (confirmed != true) return;
+    if (confirmed != true || !mounted) return;
 
     await AudioCacheService.clearCache();
+    if (!mounted) return;
     _loadCacheList();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
