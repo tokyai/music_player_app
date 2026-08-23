@@ -71,6 +71,7 @@ void main() {
       fixture.gateway.requests.single.single.text.length,
       lessThanOrEqualTo(32768),
     );
+    expect(fixture.tts.spoken.single.length, lessThanOrEqualTo(8192));
   });
 
   test('uses the configured offline voice model for a new session', () async {

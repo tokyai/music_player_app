@@ -33,6 +33,9 @@ class AiAssistantController extends ChangeNotifier {
   // a few turns. Normal replies are far below this limit.
   static const _maxMessageChars = 32 * 1024;
   static const _maxContextChars = 64 * 1024;
+  // TTS engines may copy the complete input into native buffers. Keep an
+  // unusually long gateway reply from creating another large memory peak.
+  static const _maxTtsChars = 8 * 1024;
 
   final PlayerProvider player;
   final AiConfigController configController;
@@ -393,10 +396,14 @@ class AiAssistantController extends ChangeNotifier {
 
   Future<bool> _speak(String text, int generation, int turn) async {
     if (!_isCurrentTurn(generation, turn)) return false;
-    if (text.trim().isEmpty) return true;
+    final normalized = text.trim();
+    if (normalized.isEmpty) return true;
+    final spoken = normalized.length <= _maxTtsChars
+        ? normalized
+        : '${normalized.substring(0, _maxTtsChars - 1)}…';
     _setState(AiSessionState.speaking);
     try {
-      await textToSpeech.speak(text);
+      await textToSpeech.speak(spoken);
     } catch (_) {}
     return _isCurrentTurn(generation, turn);
   }
