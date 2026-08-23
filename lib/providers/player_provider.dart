@@ -106,6 +106,16 @@ class PlayerProvider extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
+  /// Audio/plugin callbacks can arrive after [dispose] starts cancelling the
+  /// subscriptions. Keep every existing notification call safe at the
+  /// provider boundary instead of relying on each async path to remember a
+  /// separate mounted-style check.
+  @override
+  void notifyListeners() {
+    if (_disposed) return;
+    super.notifyListeners();
+  }
+
   // ==================== Getters ====================
 
   List<PlayQueueItem> get queue => _queue;
@@ -357,6 +367,7 @@ class PlayerProvider extends ChangeNotifier {
 
   void _initAudioPlayer() {
     _playerSub = _audioPlayer.playerStateStream.listen((state) {
+      if (_disposed) return;
       _isPlaying = state.playing;
       // 系统悬浮胶囊同步播放状态
       if (FloatingCapsuleService.enabled) {
@@ -377,11 +388,13 @@ class PlayerProvider extends ChangeNotifier {
     });
 
     _durationSub = _audioPlayer.durationStream.listen((d) {
+      if (_disposed) return;
       _duration = d ?? Duration.zero;
       notifyListeners();
     });
 
     _positionSub = _audioPlayer.positionStream.listen((p) {
+      if (_disposed) return;
       _position = p;
       _updateLyricIndex();
       if (_isPlaying) _recordCurrentHistory(position: p);
@@ -389,6 +402,7 @@ class PlayerProvider extends ChangeNotifier {
     });
 
     _bufferSub = _audioPlayer.bufferedPositionStream.listen((b) {
+      if (_disposed) return;
       _buffered = b;
       notifyListeners();
     });
@@ -396,6 +410,7 @@ class PlayerProvider extends ChangeNotifier {
     _errorSub = _audioPlayer.playbackEventStream.listen(
       (_) {},
       onError: (e) {
+        if (_disposed) return;
         // 播放中途出错（解码失败/数据流中断）：停止并提示，避免静默
         _isLoading = false;
         _errorMessage = '播放错误: $e';
@@ -496,7 +511,7 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   Future<void> clearPlaybackHistory() async {
-    if (_playbackHistory.isEmpty) return;
+    if (_disposed || _playbackHistory.isEmpty) return;
     _playbackHistory = [];
     _playbackHistoryRevision++;
     _historyPersistTimer?.cancel();
