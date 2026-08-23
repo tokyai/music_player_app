@@ -1,10 +1,14 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// 系统悬浮窗胶囊（类灵动岛/华为流体云）原生桥接。
 /// 通过 MethodChannel 与 Android 原生悬浮窗通信。
 class FloatingCapsuleService {
-  static const MethodChannel _channel =
-      MethodChannel('music_player/floating_capsule');
+  static const MethodChannel _channel = MethodChannel(
+    'music_player/floating_capsule',
+  );
 
   /// 功能开关（设置页控制，持久化在 shared_preferences）
   static bool _enabled = false;
@@ -14,21 +18,36 @@ class FloatingCapsuleService {
   static void setEnabled(bool value) => _enabled = value;
 
   /// 原生回调（由 main.dart 注入实现）
-  static void Function()? onPlayPauseTap;
-  static void Function()? onCapsuleTap;
+  static FutureOr<void> Function()? onPlayPauseTap;
+  static FutureOr<void> Function()? onCapsuleTap;
 
   static void init() {
     _channel.setMethodCallHandler((call) async {
       switch (call.method) {
         case 'onPlayPauseTap':
-          onPlayPauseTap?.call();
+          await _invokeCallback(onPlayPauseTap, '悬浮胶囊播放操作');
           break;
         case 'onCapsuleTap':
-          onCapsuleTap?.call();
+          await _invokeCallback(onCapsuleTap, '悬浮胶囊打开操作');
           break;
       }
       return null;
     });
+  }
+
+  static Future<void> _invokeCallback(
+    FutureOr<void> Function()? callback,
+    String label,
+  ) async {
+    if (callback == null) return;
+    try {
+      await callback();
+    } catch (error, stackTrace) {
+      // Native overlay callbacks can arrive while Flutter is rebuilding or
+      // tearing down. A failed app action must not reject the platform call.
+      debugPrint('$label失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
   }
 
   /// 是否有悬浮窗权限
