@@ -46,7 +46,8 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
 
   @override
   void dispose() {
-    unawaited(_lanSession?.stop());
+    final session = _lanSession;
+    if (session != null) unawaited(_stopSessionQuietly(session));
     _urlController.dispose();
     _usernameController.dispose();
     _passwordController.dispose();
@@ -98,6 +99,9 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       return await showBackupRestoreSelectionDialog(context, contents);
     } on FormatException catch (error) {
       _showStatus(error.message, error: true);
+      return null;
+    } catch (error) {
+      _showStatus('检查备份失败：$error', error: true);
       return null;
     }
   }
@@ -269,6 +273,12 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         _status = error.message ?? '读取备份失败';
         _statusError = true;
       });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _status = '读取备份失败：$error';
+        _statusError = true;
+      });
     }
   }
 
@@ -416,8 +426,12 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     final session = _lanSession;
     if (session == null) return;
     if (mounted) setState(() => _lanSession = null);
-    await session.stop();
-    if (mounted) _showStatus('局域网传输已关闭');
+    try {
+      await session.stop();
+      if (mounted) _showStatus('局域网传输已关闭');
+    } catch (error) {
+      if (mounted) _showStatus('关闭局域网传输失败：$error', error: true);
+    }
   }
 
   void _showStatus(String message, {bool error = false}) {
@@ -429,8 +443,18 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
   }
 
   Future<void> _copy(String value, String label) async {
-    await Clipboard.setData(ClipboardData(text: value));
-    if (mounted) _showStatus('$label已复制');
+    try {
+      await Clipboard.setData(ClipboardData(text: value));
+      if (mounted) _showStatus('$label已复制');
+    } catch (error) {
+      if (mounted) _showStatus('复制失败：$error', error: true);
+    }
+  }
+
+  Future<void> _stopSessionQuietly(LanBackupSession session) async {
+    try {
+      await session.stop();
+    } catch (_) {}
   }
 
   @override
