@@ -143,18 +143,19 @@ class BackupService {
     FavoriteImportMode mode = FavoriteImportMode.merge,
     Iterable<BackupRestoreSection>? sections,
   }) async {
+    final decoded = _decodeJson(raw);
     final selectedSections = sections == null
         ? BackupRestoreSection.values.toSet()
         : sections.toSet();
     final aiBackup = selectedSections.contains(BackupRestoreSection.aiAssistant)
-        ? _readAiBackup(raw)
+        ? _readAiBackupValue(decoded)
         : null;
     final playerBackup =
         selectedSections.contains(BackupRestoreSection.playerSettings)
-        ? _readPlayerBackup(raw)
+        ? _readPlayerBackupValue(decoded)
         : null;
-    final result = await favorites.importJson(
-      raw,
+    final result = await favorites.importDecoded(
+      decoded,
       mode: mode,
       importSongs: selectedSections.contains(BackupRestoreSection.songs),
       importBilibili: selectedSections.contains(BackupRestoreSection.bilibili),
@@ -197,14 +198,26 @@ class BackupService {
     );
   }
 
-  static Map<String, dynamic>? _readAiBackup(String raw) {
-    final dynamic decoded;
+  static dynamic _decodeJson(String raw) {
     try {
-      decoded = jsonDecode(raw);
+      return jsonDecode(raw);
+    } on FormatException {
+      throw const FormatException('备份文件不是有效的 JSON');
+    }
+  }
+
+  static Map<String, dynamic>? _readAiBackup(String raw) {
+    dynamic decoded;
+    try {
+      decoded = _decodeJson(raw);
     } on FormatException {
       // FavoriteService owns the user-facing JSON error for malformed files.
       return null;
     }
+    return _readAiBackupValue(decoded);
+  }
+
+  static Map<String, dynamic>? _readAiBackupValue(dynamic decoded) {
     if (decoded is! Map || !decoded.containsKey('aiAssistant')) return null;
     final value = decoded['aiAssistant'];
     if (value is! Map) {
@@ -214,12 +227,16 @@ class BackupService {
   }
 
   static Map<String, dynamic>? _readPlayerBackup(String raw) {
-    final dynamic decoded;
+    dynamic decoded;
     try {
-      decoded = jsonDecode(raw);
+      decoded = _decodeJson(raw);
     } on FormatException {
       return null;
     }
+    return _readPlayerBackupValue(decoded);
+  }
+
+  static Map<String, dynamic>? _readPlayerBackupValue(dynamic decoded) {
     if (decoded is! Map || !decoded.containsKey('playerSettings')) return null;
     final value = decoded['playerSettings'];
     if (value is! Map) {

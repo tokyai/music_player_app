@@ -299,11 +299,39 @@ class FavoriteService extends ChangeNotifier {
     bool importPlaylists = true,
     bool importApiKey = true,
   }) async {
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(raw);
+    } on FormatException {
+      throw const FormatException('备份文件不是有效的 JSON');
+    }
+    return importDecoded(
+      decoded,
+      mode: mode,
+      importSongs: importSongs,
+      importBilibili: importBilibili,
+      importPlaylists: importPlaylists,
+      importApiKey: importApiKey,
+    );
+  }
+
+  /// Imports an already decoded backup document.
+  ///
+  /// BackupService uses this entry point so the same JSON tree can be shared
+  /// with the AI/player sections instead of decoding a large backup again.
+  Future<FavoriteImportResult> importDecoded(
+    dynamic decodedJson, {
+    FavoriteImportMode mode = FavoriteImportMode.merge,
+    bool importSongs = true,
+    bool importBilibili = true,
+    bool importPlaylists = true,
+    bool importApiKey = true,
+  }) async {
     await load();
     if (_disposed) {
       return const FavoriteImportResult(added: 0, skipped: 0, total: 0);
     }
-    final decoded = _decodeBackup(raw);
+    final decoded = _decodeBackupValue(decodedJson);
     var skipped = importSongs ? decoded.skipped : 0;
     var added = 0;
     var bilibiliSkipped = importBilibili ? decoded.bilibiliSkipped : 0;
@@ -405,7 +433,10 @@ class FavoriteService extends ChangeNotifier {
     } on FormatException {
       throw const FormatException('备份文件不是有效的 JSON');
     }
+    return _decodeBackupValue(decoded);
+  }
 
+  static _DecodedBackup _decodeBackupValue(dynamic decoded) {
     final List<dynamic> entries;
     List<dynamic> bilibiliEntries = const [];
     var hasPlaylists = false;
