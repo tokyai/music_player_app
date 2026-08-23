@@ -42,23 +42,33 @@ class FavoriteService extends ChangeNotifier {
 
   final List<SongSearchResult> _favorites = [];
   final List<FavoritePlaylist> _favoritePlaylists = [];
+  List<SongSearchResult>? _favoritesView;
+  List<SongSearchResult>? _bilibiliFavoritesView;
+  List<SongSearchResult>? _allFavoritesView;
+  List<FavoritePlaylist>? _favoritePlaylistsView;
   bool _loaded = false;
   bool _disposed = false;
 
-  List<SongSearchResult> get favorites => List.unmodifiable(
+  List<SongSearchResult> get favorites => _favoritesView ??= List.unmodifiable(
     _favorites.where((song) => song.platform != MusicPlatform.bilibili),
   );
-  List<SongSearchResult> get bilibiliFavorites => List.unmodifiable(
-    _favorites.where((song) => song.platform == MusicPlatform.bilibili),
-  );
-  List<SongSearchResult> get allFavorites => List.unmodifiable(_favorites);
+  List<SongSearchResult> get bilibiliFavorites =>
+      _bilibiliFavoritesView ??= List.unmodifiable(
+        _favorites.where((song) => song.platform == MusicPlatform.bilibili),
+      );
+  List<SongSearchResult> get allFavorites =>
+      _allFavoritesView ??= List.unmodifiable(_favorites);
   List<FavoritePlaylist> get favoritePlaylists =>
-      List.unmodifiable(_favoritePlaylists);
+      _favoritePlaylistsView ??= List.unmodifiable(_favoritePlaylists);
   bool get loaded => _loaded;
 
   @override
   void notifyListeners() {
     if (_disposed) return;
+    _favoritesView = null;
+    _bilibiliFavoritesView = null;
+    _allFavoritesView = null;
+    _favoritePlaylistsView = null;
     super.notifyListeners();
   }
 

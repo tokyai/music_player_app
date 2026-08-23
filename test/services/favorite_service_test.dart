@@ -56,6 +56,19 @@ void main() {
     expect(exported['songs'], hasLength(2));
   });
 
+  test('reuses read-only favorite views until data changes', () async {
+    final service = FavoriteService();
+    await service.toggle(_song(MusicPlatform.qq, 'song-1', 'Song One'));
+
+    final first = service.favorites;
+    expect(identical(first, service.favorites), isTrue);
+
+    await service.toggle(_song(MusicPlatform.qq, 'song-2', 'Song Two'));
+
+    expect(identical(first, service.favorites), isFalse);
+    expect(service.favorites.map((song) => song.id), ['song-2', 'song-1']);
+  });
+
   test(
     'replace import overwrites existing favorites and persists them',
     () async {
