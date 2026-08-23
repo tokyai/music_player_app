@@ -304,10 +304,14 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     setState(() {});
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients) return;
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOut,
+      unawaited(
+        _scrollController
+            .animateTo(
+              _scrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOut,
+            )
+            .catchError((_) {}),
       );
     });
   }
