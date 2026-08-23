@@ -82,6 +82,7 @@ void main() {
       final player = PlayerProvider();
       addTearDown(player.dispose);
       await player.settingsReady;
+      await player.setApiKey('music-secret');
       final favorites = FavoriteService();
       final source = AiConfigController(secretStore: MemoryAiSecretStore());
       addTearDown(source.dispose);
@@ -124,6 +125,7 @@ void main() {
         aiConfig: source,
       );
       final exported = jsonDecode(raw) as Map<String, dynamic>;
+      expect(exported['apiKey'], 'music-secret');
       final exportedAi = exported['aiAssistant'] as Map<String, dynamic>;
       expect(exportedAi['config'], containsPair('apiKey', 'ai-secret'));
       expect(
@@ -174,6 +176,44 @@ void main() {
       expect(restored.petPosition.y, closeTo(0.75, 0.001));
     },
   );
+
+  test('restores an API key from a legacy single AI config backup', () async {
+    final player = PlayerProvider();
+    addTearDown(player.dispose);
+    await player.settingsReady;
+    final aiConfig = AiConfigController(secretStore: MemoryAiSecretStore());
+    addTearDown(aiConfig.dispose);
+    await aiConfig.ready;
+
+    final result = await BackupService.importJson(
+      raw: jsonEncode({
+        'format': FavoriteService.exportFormat,
+        'version': 3,
+        'songs': <dynamic>[],
+        'apiKey': 'legacy-music-key',
+        'aiAssistant': {
+          'config': {
+            'provider': 'custom',
+            'protocol': 'openai_chat',
+            'baseUrl': 'https://legacy.example/v1',
+            'model': 'legacy-model',
+            'apiKey': 'legacy-ai-key',
+          },
+        },
+      }),
+      favorites: FavoriteService(),
+      player: player,
+      aiConfig: aiConfig,
+      mode: FavoriteImportMode.replace,
+    );
+
+    expect(result.apiKeyRestored, isTrue);
+    expect(result.aiConfigRestored, isTrue);
+    expect(player.apiKey, 'legacy-music-key');
+    expect(aiConfig.config.baseUrl, 'https://legacy.example/v1');
+    expect(aiConfig.config.model, 'legacy-model');
+    expect(aiConfig.config.apiKey, 'legacy-ai-key');
+  });
 
   test('backup round-trips playback sources and player preferences', () async {
     final source = PlayerProvider();
@@ -327,6 +367,66 @@ void main() {
       throwsA(isA<FormatException>()),
     );
   });
+
+  test('rejects an invalid AI API key before changing existing data', () async {
+    final oldSong = _song(MusicPlatform.qq, 'old-song', '旧歌曲');
+    final newSong = _song(MusicPlatform.qq, 'new-song', '新歌曲');
+    final favorites = FavoriteService();
+    await favorites.toggle(oldSong);
+    final player = PlayerProvider();
+    addTearDown(player.dispose);
+    await player.settingsReady;
+    await player.setApiKey('old-music-key');
+    final aiConfig = AiConfigController(secretStore: MemoryAiSecretStore());
+    addTearDown(aiConfig.dispose);
+    await aiConfig.ready;
+    await aiConfig.save(
+      _config(
+        url: 'https://old.example/v1',
+        key: 'old-ai-key',
+        model: 'old-model',
+      ),
+    );
+
+    final malformed = jsonEncode({
+      'format': FavoriteService.exportFormat,
+      'version': FavoriteService.exportVersion,
+      'songs': [newSong.toJson()],
+      'apiKey': 'new-music-key',
+      'aiAssistant': {
+        'profiles': [
+          {
+            'id': 'invalid-profile',
+            'name': '无效配置',
+            'config': {
+              'provider': 'custom',
+              'protocol': 'openai_chat',
+              'baseUrl': 'https://new.example/v1',
+              'model': 'new-model',
+              'apiKey': 123,
+            },
+          },
+        ],
+      },
+    });
+
+    await expectLater(
+      BackupService.importJson(
+        raw: malformed,
+        favorites: favorites,
+        player: player,
+        aiConfig: aiConfig,
+        mode: FavoriteImportMode.replace,
+      ),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(favorites.favorites.map((song) => song.id), ['old-song']);
+    expect(player.apiKey, 'old-music-key');
+    expect(aiConfig.config.baseUrl, 'https://old.example/v1');
+    expect(aiConfig.config.model, 'old-model');
+    expect(aiConfig.config.apiKey, 'old-ai-key');
+  });
 }
 
 SongSearchResult _song(MusicPlatform platform, String id, String name) {
@@ -338,3 +438,17 @@ SongSearchResult _song(MusicPlatform platform, String id, String name) {
     album: '测试专辑',
   );
 }
+
+AiAssistantConfig _config({
+  required String url,
+  required String key,
+  required String model,
+}) => AiAssistantConfig(
+  provider: AiProviderKind.custom,
+  protocol: AiRequestProtocol.openAiChatCompletions,
+  baseUrl: url,
+  apiKey: key,
+  model: model,
+  reasoningEffort: AiReasoningEffort.platformDefault,
+  webSearchMode: AiWebSearchMode.disabled,
+);

@@ -108,8 +108,37 @@ class AiConfigController extends ChangeNotifier {
     'petPosition': _petPosition.toJson(),
   };
 
+  /// Validates a portable AI configuration before another backup section is
+  /// changed. Restore callers use this as a preflight for all-or-nothing input
+  /// validation across favorites, player credentials and AI credentials.
+  Future<void> validateBackupJson(Map<String, dynamic> json) async {
+    await ready;
+    if (_disposed) throw StateError('AI 助手配置已释放');
+    _parseBackupJson(json);
+  }
+
   Future<void> restoreBackupJson(Map<String, dynamic> json) async {
     await ready;
+    if (_disposed) throw StateError('AI 助手配置已释放');
+    final restored = _parseBackupJson(json);
+
+    _profiles
+      ..clear()
+      ..addAll(restored.profiles);
+    _apiKeys
+      ..clear()
+      ..addAll(restored.apiKeys);
+    _activeProfileId = restored.activeProfileId;
+    _syncActiveConfig();
+    _showAssistantOnAllPages = restored.showAssistantOnAllPages;
+    _showPetOnPlayerPage = restored.showPetOnPlayerPage;
+    _petScale = restored.petScale;
+    _petPosition = restored.petPosition;
+    await _persist();
+    if (!_disposed) notifyListeners();
+  }
+
+  _AiConfigBackupState _parseBackupJson(Map<String, dynamic> json) {
     final restoredProfiles = <AiAssistantProfile>[];
     final restoredKeys = <String, String>{};
     final rawProfiles = json['profiles'];
@@ -121,9 +150,16 @@ class AiConfigController extends ChangeNotifier {
         if (raw is! Map) {
           throw const FormatException('备份文件中的 AI 模型配置格式错误');
         }
-        final profile = AiAssistantProfile.fromJson(
-          Map<String, dynamic>.from(raw),
-        );
+        final profileMap = Map<String, dynamic>.from(raw);
+        final rawConfig = profileMap['config'];
+        if (rawConfig != null && rawConfig is! Map) {
+          throw const FormatException('备份文件中的 AI 模型配置格式错误');
+        }
+        final configMap = rawConfig is Map
+            ? Map<String, dynamic>.from(rawConfig)
+            : profileMap;
+        _validateBackupApiKey(configMap);
+        final profile = AiAssistantProfile.fromJson(profileMap);
         if (profile.id.trim().isEmpty ||
             restoredProfiles.any((item) => item.id == profile.id)) {
           throw const FormatException('备份文件中的 AI 模型配置 ID 无效');
@@ -142,10 +178,8 @@ class AiConfigController extends ChangeNotifier {
         throw const FormatException('备份文件中的 AI 配置格式错误');
       }
       final configMap = Map<String, dynamic>.from(rawConfig);
+      _validateBackupApiKey(configMap);
       final rawApiKey = configMap['apiKey'];
-      if (rawApiKey != null && rawApiKey is! String) {
-        throw const FormatException('备份文件中的 AI API Key 格式错误');
-      }
       final legacyConfig = _normalizeConfig(
         AiAssistantConfig.fromJson(
           configMap,
@@ -163,29 +197,35 @@ class AiConfigController extends ChangeNotifier {
     }
 
     final requestedActive = json['activeProfileId']?.toString();
-    _profiles
-      ..clear()
-      ..addAll(restoredProfiles);
-    _apiKeys
-      ..clear()
-      ..addAll(restoredKeys);
-    _activeProfileId =
+    final activeProfileId =
         restoredProfiles.any((item) => item.id == requestedActive)
         ? requestedActive!
         : restoredProfiles.first.id;
-    _syncActiveConfig();
-    _showAssistantOnAllPages =
+    final showAssistantOnAllPages =
         _readOptionalBool(json, 'showAssistantOnAllPages') ??
         _showAssistantOnAllPages;
-    _showPetOnPlayerPage =
+    final showPetOnPlayerPage =
         _readOptionalBool(json, 'showPetOnPlayerPage') ?? _showPetOnPlayerPage;
     final rawScale = json['petScale'];
-    if (rawScale is num) _petScale = _normalizePetScale(rawScale.toDouble());
-    if (json.containsKey('petPosition')) {
-      _petPosition = AiPetPosition.fromJson(json['petPosition']);
+    if (rawScale != null && rawScale is! num) {
+      throw const FormatException('备份文件中的 petScale 格式错误');
     }
-    await _persist();
-    if (!_disposed) notifyListeners();
+    final petScale = rawScale is num
+        ? _normalizePetScale(rawScale.toDouble())
+        : _petScale;
+    final petPosition = json.containsKey('petPosition')
+        ? AiPetPosition.fromJson(json['petPosition'])
+        : _petPosition;
+
+    return _AiConfigBackupState(
+      profiles: restoredProfiles,
+      apiKeys: restoredKeys,
+      activeProfileId: activeProfileId,
+      showAssistantOnAllPages: showAssistantOnAllPages,
+      showPetOnPlayerPage: showPetOnPlayerPage,
+      petScale: petScale,
+      petPosition: petPosition,
+    );
   }
 
   Future<AiAssistantProfile> createProfile({
@@ -502,6 +542,13 @@ class AiConfigController extends ChangeNotifier {
     return value;
   }
 
+  static void _validateBackupApiKey(Map<String, dynamic> config) {
+    final value = config['apiKey'];
+    if (value != null && value is! String) {
+      throw const FormatException('备份文件中的 AI API Key 格式错误');
+    }
+  }
+
   String _newProfileId() {
     final base = DateTime.now().microsecondsSinceEpoch.toString();
     var id = 'ai-$base';
@@ -518,4 +565,24 @@ class AiConfigController extends ChangeNotifier {
     _disposed = true;
     super.dispose();
   }
+}
+
+class _AiConfigBackupState {
+  final List<AiAssistantProfile> profiles;
+  final Map<String, String> apiKeys;
+  final String activeProfileId;
+  final bool showAssistantOnAllPages;
+  final bool showPetOnPlayerPage;
+  final double petScale;
+  final AiPetPosition petPosition;
+
+  const _AiConfigBackupState({
+    required this.profiles,
+    required this.apiKeys,
+    required this.activeProfileId,
+    required this.showAssistantOnAllPages,
+    required this.showPetOnPlayerPage,
+    required this.petScale,
+    required this.petPosition,
+  });
 }

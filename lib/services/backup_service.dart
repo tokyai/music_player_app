@@ -150,6 +150,12 @@ class BackupService {
         selectedSections.contains(BackupRestoreSection.playerSettings)
         ? _readPlayerBackupValue(decoded)
         : null;
+    // Validate portable AI credentials before FavoriteService writes any
+    // selected collection. A malformed key must not leave a half-restored
+    // backup with new favorites but old settings.
+    if (aiBackup != null && aiConfig != null) {
+      await aiConfig.validateBackupJson(aiBackup);
+    }
     final result = await favorites.importDecoded(
       decoded,
       mode: mode,
