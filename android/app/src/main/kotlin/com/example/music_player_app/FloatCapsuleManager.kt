@@ -197,6 +197,11 @@ object FloatCapsuleManager {
             layoutParams = params
             capsuleView = view
             windowManager?.addView(view, params)
+        } catch (_: OutOfMemoryError) {
+            // Overlay inflation can allocate a view hierarchy on the main
+            // thread. Release any partially attached view and let the next
+            // playback update retry after memory pressure subsides.
+            hide()
         } catch (_: Exception) {
             // Layout inflation and window-manager operations can fail on OEM
             // overlays after permission revocation or an Activity recreation.
