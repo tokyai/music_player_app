@@ -1258,6 +1258,22 @@ class MainActivity : AudioServiceActivity() {
                     )
                 }
             }
+        } catch (_: OutOfMemoryError) {
+            if (aiTtsInitializingGeneration == generation) {
+                aiTtsInitializing = false
+                aiTtsInitializingGeneration = null
+                aiTtsReady = false
+                try {
+                    aiTts?.shutdown()
+                } catch (_: Exception) {
+                }
+                aiTts = null
+                completeAiTtsInit(
+                    generation,
+                    false,
+                    "车机内存不足，系统语音播报已停用"
+                )
+            }
         } catch (error: Exception) {
             if (aiTtsInitializingGeneration == generation) {
                 aiTtsInitializing = false
@@ -1322,6 +1338,11 @@ class MainActivity : AudioServiceActivity() {
             if (status != TextToSpeech.SUCCESS) {
                 failAiTtsSpeak(utteranceId, "系统语音播报启动失败（$status）")
             }
+        } catch (_: OutOfMemoryError) {
+            failAiTtsSpeak(
+                pendingAiTtsUtteranceId,
+                "车机内存不足，系统语音播报已停止"
+            )
         } catch (error: Exception) {
             failAiTtsSpeak(
                 pendingAiTtsUtteranceId,
