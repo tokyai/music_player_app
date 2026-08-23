@@ -359,7 +359,15 @@ class PlayerProvider extends ChangeNotifier {
   // ==================== 初始化 ====================
 
   Future<void> _loadPlaybackHistory() async {
-    _playbackHistory = await PlaybackHistoryService.load();
+    try {
+      _playbackHistory = await PlaybackHistoryService.load();
+    } catch (error, stackTrace) {
+      // Keep the constructor-owned future contained if storage fails outside
+      // the service's normal error boundary.
+      debugPrint('读取播放历史失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      _playbackHistory = [];
+    }
     _playbackHistoryRevision++;
     _historyLoaded = true;
     if (!_disposed) notifyListeners();
@@ -1637,17 +1645,24 @@ class PlayerProvider extends ChangeNotifier {
     String url, {
     Map<String, String>? headers,
   }) async {
-    await Future<void>.delayed(const Duration(milliseconds: 1200));
-    if (!_isCurrentRequest(requestId, item)) return;
-    final localPath = await AudioCacheService.cacheAudio(
-      platformCode: item.platform.code,
-      songId: _audioCacheSongId(item),
-      url: url,
-      name: item.name,
-      artist: item.artist,
-      headers: headers,
-    );
-    if (localPath != null) debugPrint('后台缓存完成: $localPath');
+    try {
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      if (!_isCurrentRequest(requestId, item)) return;
+      final localPath = await AudioCacheService.cacheAudio(
+        platformCode: item.platform.code,
+        songId: _audioCacheSongId(item),
+        url: url,
+        name: item.name,
+        artist: item.artist,
+        headers: headers,
+      );
+      if (localPath != null) debugPrint('后台缓存完成: $localPath');
+    } catch (error, stackTrace) {
+      // Caching is optional and must not surface as an unhandled background
+      // Future error after playback has already started.
+      debugPrint('后台缓存失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
   }
 
   Future<void> _startPlayback(int requestId, PlayQueueItem item) async {
