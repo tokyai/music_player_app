@@ -1077,6 +1077,7 @@ class MainActivity : AudioServiceActivity() {
             pendingAiModelResults.add(PendingAiModelResult(generation, result))
         }
         val worker = Thread {
+            var preparationDirectory: File? = null
             try {
                 val paths = synchronized(aiModelPreparationLock) {
                     // Rapidly closing and reopening the assistant can leave a
@@ -1103,6 +1104,7 @@ class MainActivity : AudioServiceActivity() {
                     }
                     val assetDir = "assets/models/sherpa-onnx-$modelId"
                     val modelDir = File(filesDir, "ai_models/$modelVersion")
+                    preparationDirectory = modelDir
                     val marker = File(modelDir, ".ready")
                     if (!marker.isFile ||
                         marker.readText() != modelVersion ||
@@ -1136,6 +1138,22 @@ class MainActivity : AudioServiceActivity() {
                 postIfActivityAlive(generation) {
                     if (takePendingAiModelResult(generation, result)) {
                         safelyResultSuccess(result, paths)
+                    }
+                }
+            } catch (_: OutOfMemoryError) {
+                // Asset copies and native recognizer construction can exceed
+                // the Java heap on low-memory car builds. Remove only
+                // incomplete copies so a later retry can start cleanly.
+                preparationDirectory?.listFiles()
+                    ?.filter { it.name.endsWith(".part") }
+                    ?.forEach { it.delete() }
+                postIfActivityAlive(generation) {
+                    if (takePendingAiModelResult(generation, result)) {
+                        safelyResultError(
+                            result,
+                            "ai_model_prepare_oom",
+                            "车机内存不足，无法加载离线语音模型"
+                        )
                     }
                 }
             } catch (error: Exception) {
