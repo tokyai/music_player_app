@@ -32,6 +32,19 @@ class CachedSongInfo {
 class AudioCacheService {
   static Directory? _cacheDir;
   static Map<String, Map<String, dynamic>>? _index;
+  // Playback caching runs in the background while settings can clear or
+  // remove a cache entry. Serialize filesystem/index mutations so two calls
+  // cannot share the same `.tmp` path or write `_index.json` concurrently.
+  static Future<void> _cacheOperationTail = Future<void>.value();
+
+  static Future<T> _withCacheLock<T>(Future<T> Function() operation) {
+    final run = _cacheOperationTail.then<T>((_) => operation());
+    _cacheOperationTail = run.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace __) {},
+    );
+    return run;
+  }
 
   /// 获取缓存目录（延迟初始化）
   static Future<Directory> _getCacheDir() async {
@@ -155,83 +168,85 @@ class AudioCacheService {
     Map<String, String>? headers,
     void Function(int received, int total)? onProgress,
   }) async {
-    try {
-      final dir = await _getCacheDir();
-      final index = await _loadIndex();
-      final key = _cacheKey(platformCode, songId);
-
-      // 先检查索引中是否已有缓存
-      final existing = index[key];
-      if (existing != null) {
-        final existingPath = existing['filePath'] as String?;
-        if (existingPath != null) {
-          final file = File(existingPath);
-          if (await file.exists() && await file.length() > 10240) {
-            return existingPath;
-          }
-        }
-      }
-
-      final ext = _extractExt(url);
-      final fileName = _cacheFileName(name, artist, ext);
-      final path = '${dir.path}/$fileName';
-
-      // 先下载到临时文件，成功后重命名
-      final tempPath = '$path.tmp';
-      final tempFile = File(tempPath);
-      if (await tempFile.exists()) await tempFile.delete();
-
-      final dio = Dio();
-      await dio.download(
-        url,
-        tempPath,
-        onReceiveProgress: onProgress,
-        options: Options(
-          headers: headers,
-          receiveTimeout: const Duration(seconds: 30),
-          sendTimeout: const Duration(seconds: 10),
-        ),
-      );
-
-      // 下载完成，重命名为正式缓存文件
-      if (await tempFile.exists()) {
-        final size = await tempFile.length();
-        if (size > 10240) {
-          // 如果目标文件已存在（同名不同歌曲），加 id 后缀
-          String finalPath = path;
-          if (await File(path).exists()) {
-            finalPath =
-                '${dir.path}/${_sanitizeName(name)}-${_sanitizeName(artist)}_${songId}.$ext';
-          }
-          await tempFile.rename(finalPath);
-          // 更新索引
-          index[key] = {
-            'name': name,
-            'artist': artist,
-            'platformCode': platformCode,
-            'songId': songId,
-            'filePath': finalPath,
-            'fileSize': size,
-          };
-          _index = index;
-          await _saveIndex();
-          debugPrint('缓存成功: $finalPath ($size bytes)');
-          return finalPath;
-        } else {
-          await tempFile.delete();
-        }
-      }
-    } catch (e) {
-      debugPrint('缓存下载失败: $e');
+    return _withCacheLock(() async {
       try {
         final dir = await _getCacheDir();
+        final index = await _loadIndex();
+        final key = _cacheKey(platformCode, songId);
+
+        // 先检查索引中是否已有缓存
+        final existing = index[key];
+        if (existing != null) {
+          final existingPath = existing['filePath'] as String?;
+          if (existingPath != null) {
+            final file = File(existingPath);
+            if (await file.exists() && await file.length() > 10240) {
+              return existingPath;
+            }
+          }
+        }
+
         final ext = _extractExt(url);
         final fileName = _cacheFileName(name, artist, ext);
-        final tempFile = File('${dir.path}/$fileName.tmp');
+        final path = '${dir.path}/$fileName';
+
+        // 先下载到临时文件，成功后重命名
+        final tempPath = '$path.tmp';
+        final tempFile = File(tempPath);
         if (await tempFile.exists()) await tempFile.delete();
-      } catch (_) {}
-    }
-    return null;
+
+        final dio = Dio();
+        await dio.download(
+          url,
+          tempPath,
+          onReceiveProgress: onProgress,
+          options: Options(
+            headers: headers,
+            receiveTimeout: const Duration(seconds: 30),
+            sendTimeout: const Duration(seconds: 10),
+          ),
+        );
+
+        // 下载完成，重命名为正式缓存文件
+        if (await tempFile.exists()) {
+          final size = await tempFile.length();
+          if (size > 10240) {
+            // 如果目标文件已存在（同名不同歌曲），加 id 后缀
+            String finalPath = path;
+            if (await File(path).exists()) {
+              finalPath =
+                  '${dir.path}/${_sanitizeName(name)}-${_sanitizeName(artist)}_${songId}.$ext';
+            }
+            await tempFile.rename(finalPath);
+            // 更新索引
+            index[key] = {
+              'name': name,
+              'artist': artist,
+              'platformCode': platformCode,
+              'songId': songId,
+              'filePath': finalPath,
+              'fileSize': size,
+            };
+            _index = index;
+            await _saveIndex();
+            debugPrint('缓存成功: $finalPath ($size bytes)');
+            return finalPath;
+          } else {
+            await tempFile.delete();
+          }
+        }
+      } catch (e) {
+        debugPrint('缓存下载失败: $e');
+        try {
+          final dir = await _getCacheDir();
+          final ext = _extractExt(url);
+          final fileName = _cacheFileName(name, artist, ext);
+          final tempFile = File('${dir.path}/$fileName.tmp');
+          if (await tempFile.exists()) await tempFile.delete();
+        } catch (_) {}
+      }
+      return null;
+    });
   }
 
   /// 获取缓存总大小（字节）
@@ -317,41 +332,45 @@ class AudioCacheService {
 
   /// 清除全部缓存
   static Future<void> clearCache() async {
-    try {
-      final dir = await _getCacheDir();
-      await for (final entity in dir.list(recursive: false)) {
-        if (entity is File) {
-          await entity.delete();
+    await _withCacheLock(() async {
+      try {
+        final dir = await _getCacheDir();
+        await for (final entity in dir.list(recursive: false)) {
+          if (entity is File) {
+            await entity.delete();
+          }
         }
+        _index = {};
+        await _saveIndex();
+        debugPrint('缓存已清除');
+      } catch (e) {
+        debugPrint('清除缓存失败: $e');
       }
-      _index = {};
-      await _saveIndex();
-      debugPrint('缓存已清除');
-    } catch (e) {
-      debugPrint('清除缓存失败: $e');
-    }
+    });
   }
 
   /// 删除指定歌曲的缓存
   static Future<void> removeCache(String platformCode, String songId) async {
-    try {
-      final index = await _loadIndex();
-      final key = _cacheKey(platformCode, songId);
-      final entry = index[key];
-      if (entry != null) {
-        final filePath = entry['filePath'] as String?;
-        if (filePath != null) {
-          final file = File(filePath);
-          if (await file.exists()) {
-            await file.delete();
+    await _withCacheLock(() async {
+      try {
+        final index = await _loadIndex();
+        final key = _cacheKey(platformCode, songId);
+        final entry = index[key];
+        if (entry != null) {
+          final filePath = entry['filePath'] as String?;
+          if (filePath != null) {
+            final file = File(filePath);
+            if (await file.exists()) {
+              await file.delete();
+            }
           }
+          index.remove(key);
+          _index = index;
+          await _saveIndex();
         }
-        index.remove(key);
-        _index = index;
-        await _saveIndex();
+      } catch (e) {
+        debugPrint('删除缓存失败: $e');
       }
-    } catch (e) {
-      debugPrint('删除缓存失败: $e');
-    }
+    });
   }
 }
