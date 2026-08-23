@@ -148,7 +148,10 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     return message;
   }
 
-  Future<List<SongSearchResult>> _loadMore(PlayerProvider player) {
+  Future<List<SongSearchResult>> _loadMore(
+    PlayerProvider player, {
+    bool retainTracks = true,
+  }) {
     final pending = _loadMoreFuture;
     if (pending != null) return pending;
     if (_loading || !_hasMore) {
@@ -156,16 +159,21 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     }
 
     late final Future<List<SongSearchResult>> operation;
-    operation = _loadMorePage(player).whenComplete(() {
-      if (identical(_loadMoreFuture, operation)) {
-        _loadMoreFuture = null;
-      }
-    });
+    operation = _loadMorePage(player, retainTracks: retainTracks).whenComplete(
+      () {
+        if (identical(_loadMoreFuture, operation)) {
+          _loadMoreFuture = null;
+        }
+      },
+    );
     _loadMoreFuture = operation;
     return operation;
   }
 
-  Future<List<SongSearchResult>> _loadMorePage(PlayerProvider player) async {
+  Future<List<SongSearchResult>> _loadMorePage(
+    PlayerProvider player, {
+    required bool retainTracks,
+  }) async {
     final offset = _nextOffset;
     _loadingMore = true;
     if (mounted) setState(() {});
@@ -173,7 +181,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       final page = await _fetchPage(player, offset);
       final nextTracks = List<SongSearchResult>.of(page.tracks);
       void appendPage() {
-        _tracks.addAll(nextTracks);
+        if (retainTracks) _tracks.addAll(nextTracks);
         _nextOffset = offset + nextTracks.length;
         _hasMore = nextTracks.isNotEmpty && _pageHasMore(page, _nextOffset);
       }
@@ -312,14 +320,15 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     Future<void> playAll() async {
       if (!mounted || !canPlay || _loadingAll) return;
       final player = context.read<PlayerProvider>();
-      final initialTracks = List<SongSearchResult>.of(_tracks);
       setState(() => _loadingAll = true);
-      final playback = player.playFromPlaylist(initialTracks, 0);
+      // playFromPlaylist converts the list synchronously before its first
+      // await, so passing the existing page avoids another full-list copy.
+      final playback = player.playFromPlaylist(_tracks, 0);
       final queueSessionId = player.queueSessionId;
       unawaited(playback);
       try {
         while (_hasMore && player.queueSessionId == queueSessionId) {
-          final nextTracks = await _loadMore(player);
+          final nextTracks = await _loadMore(player, retainTracks: false);
           if (!mounted) return;
           if (nextTracks.isEmpty ||
               !player.addTracksToQueue(
@@ -342,7 +351,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       ),
     );
     final loadingLabel = p.trackCount > 0
-        ? '加载中 ${_tracks.length}/${p.trackCount}'
+        ? '加载中 $_nextOffset/${p.trackCount}'
         : '加载中';
     final playButton = canPlay
         ? isLandscape
