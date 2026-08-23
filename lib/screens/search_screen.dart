@@ -651,12 +651,16 @@ class _SearchScreenState extends State<SearchScreen>
         if (hasPlaylists && i == 0) {
           return _buildRelatedPlaylists(platform, playlists);
         }
-        final song = list[i - (hasPlaylists ? 1 : 0)];
+        final songIndex = i - (hasPlaylists ? 1 : 0);
+        final song = list[songIndex];
         return SongTile(
           song: song,
           showFavorite: true,
           onTap: () {
-            context.read<PlayerProvider>().playSingle(song);
+            context.read<PlayerProvider>().playFromSearchResults(
+              list,
+              songIndex,
+            );
           },
           onAddToQueue: () {
             context.read<PlayerProvider>().addToQueue(song);

@@ -14,9 +14,13 @@ import 'player_screen.dart';
 class PlaybackHistoryScreen extends StatelessWidget {
   const PlaybackHistoryScreen({super.key});
 
-  Future<void> _play(BuildContext context, PlaybackHistoryEntry entry) async {
+  Future<void> _play(
+    BuildContext context,
+    List<PlaybackHistoryEntry> entries,
+    int index,
+  ) async {
     final player = context.read<PlayerProvider>();
-    unawaited(player.playFromHistory(entry));
+    unawaited(player.playFromHistoryEntries(entries, index));
     await Navigator.push(context, PlayerScreen.route(context));
   }
 
@@ -91,7 +95,7 @@ class PlaybackHistoryScreen extends StatelessWidget {
                       key: ValueKey('playback-history-${entry.key}'),
                       entry: entry,
                       layout: layout,
-                      onTap: () => _play(context, entry),
+                      onTap: () => _play(context, history, index),
                     );
                   },
                 );

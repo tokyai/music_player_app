@@ -435,7 +435,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
           return _FavoriteSongCard(
             song: song,
             cardSize: cardSize,
-            onTap: () => context.read<PlayerProvider>().playSingle(song),
+            onTap: () =>
+                context.read<PlayerProvider>().playFromPlaylist(songs, index),
           );
         },
       ),
@@ -645,7 +646,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
           return _FavoriteSongCard(
             song: video,
             cardSize: cardSize,
-            onTap: () => context.read<PlayerProvider>().playSingle(video),
+            onTap: () =>
+                context.read<PlayerProvider>().playFromPlaylist(videos, index),
           );
         },
       ),
@@ -744,7 +746,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
           return _PlaybackHistoryCard(
             entry: entry,
             cardSize: cardSize,
-            onTap: () => _playPlaybackHistory(entry),
+            onTap: () => _playPlaybackHistory(display, index),
           );
         },
       ),
@@ -758,9 +760,9 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     );
   }
 
-  void _playPlaybackHistory(PlaybackHistoryEntry entry) {
+  void _playPlaybackHistory(List<PlaybackHistoryEntry> entries, int index) {
     final player = context.read<PlayerProvider>();
-    unawaited(player.playFromHistory(entry));
+    unawaited(player.playFromHistoryEntries(entries, index));
     Navigator.push(context, PlayerScreen.route(context));
   }
 

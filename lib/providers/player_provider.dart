@@ -1252,6 +1252,28 @@ class PlayerProvider extends ChangeNotifier {
     await _playCurrent(resumePosition: entry.position);
   }
 
+  /// 从历史列表播放，保留列表中其他歌曲作为后续队列。
+  ///
+  /// 单条列表继续走旧入口，便于车机遥控和旧调用方保持相同的行为。
+  Future<void> playFromHistoryEntries(
+    List<PlaybackHistoryEntry> entries,
+    int index,
+  ) async {
+    if (index < 0 || index >= entries.length) return;
+    if (entries.length == 1) {
+      await playFromHistory(entries.first);
+      return;
+    }
+    _recordCurrentHistory(immediate: true);
+    _queueSessionId++;
+    _queue = entries
+        .map((entry) => PlayQueueItem.fromSearchResult(entry.song))
+        .toList();
+    _currentIndex = index;
+    notifyListeners();
+    await _playCurrent(resumePosition: entries[index].position);
+  }
+
   Future<void> _playCurrent({Duration? resumePosition}) async {
     if (_currentIndex < 0 || _currentIndex >= _queue.length) return;
     var item = _queue[_currentIndex];
