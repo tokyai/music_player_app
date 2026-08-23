@@ -231,22 +231,13 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           ),
           FavoriteCollectionView.all => const SizedBox.shrink(),
         };
-        final maxWidth = layout.isLandscape && layout.isWideLandscape
-            ? 980.0
-            : double.infinity;
         return Material(
           color: AppColors.background,
           child: SafeArea(
             top: false,
             child: Stack(
               children: [
-                Align(
-                  alignment: Alignment.topCenter,
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(maxWidth: maxWidth),
-                    child: content,
-                  ),
-                ),
+                Positioned.fill(child: content),
                 if (_switchingSources)
                   Positioned.fill(child: _buildSwitchProgress()),
               ],
@@ -280,15 +271,20 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       controller: _collectionScrollController,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.fromLTRB(
-        layout.isLandscape ? layout.pagePadding : 12,
-        10,
-        layout.isLandscape ? layout.pagePadding : 12,
-        20,
+        layout.isCompactLandscape ? 8 : 12,
+        8,
+        layout.isCompactLandscape ? 8 : 12,
+        24,
       ),
       itemCount: songs.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 8),
-      itemBuilder: (context, index) =>
-          _buildSongTile(songs, index, collectionCard: true),
+      separatorBuilder: (_, _) => const Divider(height: 1),
+      itemBuilder: (context, index) => _buildSongTile(
+        songs,
+        index,
+        itemKey: ValueKey(
+          'favorite-song-${songs[index].platform.code}-${songs[index].id}',
+        ),
+      ),
     );
   }
 
@@ -318,13 +314,13 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       controller: _collectionScrollController,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.fromLTRB(
-        layout.isLandscape ? layout.pagePadding : 12,
-        10,
-        layout.isLandscape ? layout.pagePadding : 12,
-        20,
+        layout.isCompactLandscape ? 8 : 12,
+        8,
+        layout.isCompactLandscape ? 8 : 12,
+        24,
       ),
       itemCount: playlists.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 8),
+      separatorBuilder: (_, _) => const Divider(height: 1),
       itemBuilder: (context, index) {
         final favorite = playlists[index];
         return _FavoritePlaylistListTile(
@@ -372,13 +368,13 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       controller: _collectionScrollController,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.fromLTRB(
-        layout.isLandscape ? layout.pagePadding : 12,
-        10,
-        layout.isLandscape ? layout.pagePadding : 12,
-        20,
+        layout.isCompactLandscape ? 8 : 12,
+        8,
+        layout.isCompactLandscape ? 8 : 12,
+        24,
       ),
       itemCount: videos.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 8),
+      separatorBuilder: (_, _) => const Divider(height: 1),
       itemBuilder: (context, index) {
         final video = videos[index];
         return SongTile(
@@ -386,7 +382,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           song: video,
           showPlatformTag: true,
           showFavorite: true,
-          collectionCard: true,
+          historyListLayout: true,
           onTap: () =>
               context.read<PlayerProvider>().playFromPlaylist(videos, index),
           onAddToQueue: () {
@@ -1035,20 +1031,18 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   Widget _buildSongTile(
     List<SongSearchResult> songs,
     int index, {
-    bool collectionCard = false,
+    Key? itemKey,
   }) {
     final song = songs[index];
     final favoriteKey = FavoriteService.keyOf(song);
     return SongTile(
-      key: collectionCard
-          ? ValueKey('favorite-song-${song.platform.code}-${song.id}')
-          : null,
+      key: itemKey,
       song: song,
       showPlatformTag: true,
       showFavorite: !_selecting,
+      historyListLayout: itemKey != null,
       selectionMode: _selecting,
       selected: _selectedKeys.contains(favoriteKey),
-      collectionCard: collectionCard,
       onSelectionChanged: (selected) => _setSelected(favoriteKey, selected),
       onLongPress: () => _startSelection(favoriteKey),
       onTap: () =>
@@ -1735,11 +1729,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 }
 
-/// 纵向收藏歌单行。
-///
-/// 首页预览仍使用方形卡片；进入歌单页后改成一行一个条目，能在手机和
-/// 横屏车机上同时显示名称、平台、作者和曲目数，也避免横向轮播嵌套在
-/// 页面主滚动区域中。
+/// 收藏歌单行，与播放历史页使用相同的连续列表尺寸和留白。
 class _FavoritePlaylistListTile extends StatelessWidget {
   final FavoritePlaylist favorite;
   final VoidCallback onTap;
@@ -1758,8 +1748,8 @@ class _FavoritePlaylistListTile extends StatelessWidget {
     final playlist = favorite.playlist;
     final platformColor = PlatformColors.of(favorite.platform);
     final coverSize = layout.usesLargeTypography
-        ? 88.0
-        : (layout.isCompactLandscape ? 58.0 : 72.0);
+        ? 78.0
+        : (layout.isCompactLandscape ? 54.0 : 66.0);
     return RemoteFocusable(
       key: ValueKey(
         'favorite-playlist-list-${favorite.platform.code}-${playlist.id}',
@@ -1767,64 +1757,54 @@ class _FavoritePlaylistListTile extends StatelessWidget {
       onPressed: onTap,
       semanticLabel: '打开歌单 ${playlist.name}',
       borderRadius: BorderRadius.circular(AppRadius.card),
-      child: Container(
-        padding: EdgeInsets.all(layout.isCompactLandscape ? 8 : 10),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(AppRadius.card),
-          border: Border.all(color: AppColors.outline),
+      child: ListTile(
+        minTileHeight: layout.usesLargeTypography
+            ? 104
+            : (layout.isCompactLandscape ? 70 : 86),
+        contentPadding: EdgeInsets.symmetric(
+          horizontal: layout.isCompactLandscape ? 8 : 14,
+          vertical: layout.usesLargeTypography ? 8 : 4,
         ),
-        child: Row(
+        leading: ClipRRect(
+          borderRadius: BorderRadius.circular(AppRadius.media),
+          child: SizedBox.square(
+            dimension: coverSize,
+            child: playlist.coverUrl != null && playlist.coverUrl!.isNotEmpty
+                ? SmartCover(
+                    url: playlist.coverUrl,
+                    fit: BoxFit.cover,
+                    maxDecodeWidth: 512,
+                    placeholder: () => _placeholder(platformColor),
+                  )
+                : _placeholder(platformColor),
+          ),
+        ),
+        title: Text(
+          playlist.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: layout.songTitleSize,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        subtitle: Text(
+          [
+            favorite.platform.label,
+            if (playlist.creator?.isNotEmpty ?? false) playlist.creator!,
+            if (playlist.trackCount > 0) '${playlist.trackCount} 首',
+          ].join(' · '),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: layout.songSubtitleSize,
+          ),
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(AppRadius.media),
-              child: SizedBox.square(
-                dimension: coverSize,
-                child:
-                    playlist.coverUrl != null && playlist.coverUrl!.isNotEmpty
-                    ? SmartCover(
-                        url: playlist.coverUrl,
-                        fit: BoxFit.cover,
-                        maxDecodeWidth: 512,
-                        placeholder: () => _placeholder(platformColor),
-                      )
-                    : _placeholder(platformColor),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    playlist.name,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: layout.songTitleSize,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
-                    [
-                      favorite.platform.label,
-                      if (playlist.creator?.isNotEmpty ?? false)
-                        playlist.creator!,
-                      if (playlist.trackCount > 0) '${playlist.trackCount} 首',
-                    ].join(' · '),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: layout.songSubtitleSize,
-                    ),
-                  ),
-                ],
-              ),
-            ),
             IconButton(
               tooltip: '取消收藏歌单',
               onPressed: onFavoritePressed,
@@ -1833,6 +1813,7 @@ class _FavoritePlaylistListTile extends StatelessWidget {
             Icon(Icons.chevron_right_rounded, color: AppColors.textHint),
           ],
         ),
+        onTap: onTap,
       ),
     );
   }
