@@ -750,9 +750,12 @@ class MainActivity : AudioServiceActivity() {
             return
         }
         val captureThread = Thread {
-            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-            val buffer = ByteArray(readBytes)
             try {
+                // Device-specific audio drivers can reject the requested
+                // priority or buffer allocation. Keep those failures inside
+                // the same cleanup boundary as AudioRecord.read().
+                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+                val buffer = ByteArray(readBytes)
                 while (aiCarAudioRunning && aiCarAudioRecord === recorder) {
                     val count = recorder.read(buffer, 0, buffer.size)
                     if (count > 0) {
