@@ -1347,6 +1347,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   void _startSelection(String key) {
+    if (!mounted) return;
     setState(() {
       _selecting = true;
       _selectedKeys.add(key);
@@ -1354,6 +1355,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   void _setSelected(String key, bool selected) {
+    if (!mounted) return;
     setState(() {
       if (selected) {
         _selectedKeys.add(key);
@@ -1364,6 +1366,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   void _toggleSelectAll(List<SongSearchResult> songs) {
+    if (!mounted) return;
     setState(() {
       if (_selectedKeys.length == songs.length) {
         _selectedKeys.clear();
@@ -1376,6 +1379,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   void _exitSelection() {
+    if (!mounted) return;
     setState(() {
       _selecting = false;
       _selectedKeys.clear();
@@ -1383,6 +1387,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   Future<void> _deleteSelected() async {
+    if (!mounted) return;
     final count = _selectedKeys.length;
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1402,17 +1407,25 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       ),
     );
     if (confirmed != true || !mounted) return;
-    final removed = await context.read<FavoriteService>().removeMany(
-      Set.of(_selectedKeys),
-    );
-    if (!mounted) return;
-    _exitSelection();
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('已删除 $removed 首收藏')));
+    try {
+      final removed = await context.read<FavoriteService>().removeMany(
+        Set.of(_selectedKeys),
+      );
+      if (!mounted) return;
+      _exitSelection();
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已删除 $removed 首收藏')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('删除失败：$error')));
+    }
   }
 
   Future<void> _switchSelectedSources(List<SongSearchResult> allSongs) async {
+    if (!mounted) return;
     final target = await _chooseTargetPlatform();
     if (target == null || !mounted) return;
 
@@ -1502,14 +1515,21 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       for (final match in matches)
         FavoriteService.keyOf(match.original): match.replacement!,
     };
-    final replaced = await context.read<FavoriteService>().replaceMany(
-      replacements,
-    );
-    if (!mounted) return;
-    _exitSelection();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已将 $replaced 首歌曲切换为 ${target.label} 音源')),
-    );
+    try {
+      final replaced = await context.read<FavoriteService>().replaceMany(
+        replacements,
+      );
+      if (!mounted) return;
+      _exitSelection();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已将 $replaced 首歌曲切换为 ${target.label} 音源')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('换源失败：$error')));
+    }
   }
 
   Future<MusicPlatform?> _chooseTargetPlatform() {
@@ -1594,6 +1614,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   Future<void> _exportFavorites() async {
+    if (!mounted) return;
     final favorites = context.read<FavoriteService>();
     final player = context.read<PlayerProvider>();
     final messenger = ScaffoldMessenger.of(context);
@@ -1623,10 +1644,14 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     } on PlatformException catch (error) {
       if (!mounted) return;
       messenger.showSnackBar(SnackBar(content: Text(error.message ?? '导出失败')));
+    } catch (error) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('导出失败：$error')));
     }
   }
 
   Future<void> _importFavorites() async {
+    if (!mounted) return;
     String? raw;
     try {
       raw = await FavoriteFileService.importBackup();
@@ -1638,6 +1663,12 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(error.message ?? '读取备份失败')));
+      return;
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('读取备份失败：$error')));
       return;
     }
     if (raw == null || raw.trim().isEmpty || !mounted) return;
@@ -1651,6 +1682,12 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(error.message)));
+      return;
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('检查备份失败：$error')));
       return;
     }
     if (selection == null || !mounted) return;
@@ -1686,10 +1723,16 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('导入失败：$error')));
     }
   }
 
   Future<String?> _showPasteImportDialog() async {
+    if (!mounted) return null;
     final controller = TextEditingController();
     final value = await showDialog<String>(
       context: context,
@@ -1722,6 +1765,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   void _openBackupScreen() {
+    if (!mounted) return;
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const BackupRestoreScreen()),
