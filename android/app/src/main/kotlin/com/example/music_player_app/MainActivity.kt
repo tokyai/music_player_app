@@ -267,7 +267,20 @@ class MainActivity : AudioServiceActivity() {
         ).also { channel ->
             channel.setStreamHandler(object : EventChannel.StreamHandler {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
-                    startCarArrayCapture(events)
+                    try {
+                        startCarArrayCapture(events)
+                    } catch (error: Exception) {
+                        // OEM AudioRecord implementations occasionally throw
+                        // outside the normal constructor/start checks. Keep
+                        // that failure on the recoverable stream boundary.
+                        stopCarArrayCapture()
+                        safelySendCarAudioError(
+                            events,
+                            "CAR_ARRAY_START_FAILED",
+                            error.message ?: "车机麦克风启动失败",
+                            null
+                        )
+                    }
                 }
 
                 override fun onCancel(arguments: Any?) {
@@ -706,7 +719,7 @@ class MainActivity : AudioServiceActivity() {
             return
         }
         if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-            recorder.release()
+            releaseCarAudioRecorder(recorder)
             safelySendCarAudioError(
                 events,
                 "CAR_ARRAY_INIT_FAILED",
@@ -718,12 +731,12 @@ class MainActivity : AudioServiceActivity() {
         try {
             recorder.startRecording()
         } catch (error: Exception) {
-            recorder.release()
+            releaseCarAudioRecorder(recorder)
             safelySendCarAudioError(events, "CAR_ARRAY_START_FAILED", error.message, profile)
             return
         }
         if (recorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-            recorder.release()
+            releaseCarAudioRecorder(recorder)
             safelySendCarAudioError(
                 events,
                 "CAR_ARRAY_START_FAILED",
@@ -799,10 +812,7 @@ class MainActivity : AudioServiceActivity() {
                     } catch (_: Exception) {
                     }
                 }
-                try {
-                    recorder.release()
-                } catch (_: Exception) {
-                }
+                releaseCarAudioRecorder(recorder)
                 synchronized(aiCarAudioQueueLock) {
                     if (aiCarAudioRecord === recorder &&
                         aiCarAudioGeneration == generation
@@ -827,6 +837,15 @@ class MainActivity : AudioServiceActivity() {
             aiCarAudioThread = captureThread
         }
         captureThread.start()
+    }
+
+    private fun releaseCarAudioRecorder(recorder: AudioRecord?) {
+        if (recorder == null) return
+        try {
+            recorder.release()
+        } catch (error: Exception) {
+            Log.w("AiVoice", "AudioRecord release failed", error)
+        }
     }
 
     private fun stopCarArrayCapture() {
