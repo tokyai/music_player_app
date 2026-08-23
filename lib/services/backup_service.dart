@@ -104,8 +104,10 @@ class BackupService {
         rawApiKey is! String) {
       throw const FormatException('备份文件中的 API Key 格式错误');
     }
-    final aiAssistant = _readAiBackup(raw);
-    final playerSettings = _readPlayerBackup(raw);
+    // The payload has already been decoded and validated above. Reuse this
+    // tree instead of decoding the complete backup once per optional section.
+    final aiAssistant = _readAiBackupValue(decoded);
+    final playerSettings = _readPlayerBackupValue(decoded);
     return BackupRestoreContents(
       songs: true,
       bilibili: bilibili is List ? true : _containsBilibili(songs),
@@ -224,17 +226,6 @@ class BackupService {
     }
   }
 
-  static Map<String, dynamic>? _readAiBackup(String raw) {
-    dynamic decoded;
-    try {
-      decoded = _decodeJson(raw);
-    } on FormatException {
-      // FavoriteService owns the user-facing JSON error for malformed files.
-      return null;
-    }
-    return _readAiBackupValue(decoded);
-  }
-
   static Map<String, dynamic>? _readAiBackupValue(dynamic decoded) {
     if (decoded is! Map || !decoded.containsKey('aiAssistant')) return null;
     final value = decoded['aiAssistant'];
@@ -242,16 +233,6 @@ class BackupService {
       throw const FormatException('备份文件中的 AI 助理数据格式错误');
     }
     return Map<String, dynamic>.from(value);
-  }
-
-  static Map<String, dynamic>? _readPlayerBackup(String raw) {
-    dynamic decoded;
-    try {
-      decoded = _decodeJson(raw);
-    } on FormatException {
-      return null;
-    }
-    return _readPlayerBackupValue(decoded);
   }
 
   static Map<String, dynamic>? _readPlayerBackupValue(dynamic decoded) {
