@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -121,14 +122,26 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     expect(find.byKey(const ValueKey('kuzai-pet-wave-active')), findsNothing);
 
-    await tester.longPress(find.byKey(const ValueKey('test-kuzai-pet')));
-    await tester.pump();
-    expect(tapCount, 1);
-    expect(
-      find.byKey(const ValueKey('kuzai-pet-petting-active')),
-      findsOneWidget,
-    );
-    expect(tester.takeException(), isNull);
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'HapticFeedback.vibrate') {
+        throw StateError('haptic channel unavailable');
+      }
+      return null;
+    });
+    try {
+      await tester.longPress(find.byKey(const ValueKey('test-kuzai-pet')));
+      await tester.pump();
+      expect(tapCount, 1);
+      expect(
+        find.byKey(const ValueKey('kuzai-pet-petting-active')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    } finally {
+      messenger.setMockMethodCallHandler(SystemChannels.platform, null);
+    }
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
