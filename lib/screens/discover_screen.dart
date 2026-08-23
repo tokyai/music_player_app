@@ -52,6 +52,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   }
 
   Future<void> _loadKugouDaily() async {
+    if (!mounted) return;
     setState(() {
       _loadingKugouDaily = true;
       _errKugouDaily = null;
