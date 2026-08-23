@@ -599,11 +599,19 @@ class MainActivity : AudioServiceActivity() {
         }
         val channelCount = if (isCarArray) CAR_AUDIO_CHANNEL_COUNT else 2
         val mixDivisor = if (isCarArray) CAR_AUDIO_MIX_DIVISOR else channelCount
-        val minBufferSize = AudioRecord.getMinBufferSize(
-            CAR_AUDIO_SAMPLE_RATE,
-            channelMask,
-            AudioFormat.ENCODING_PCM_16BIT
-        )
+        val minBufferSize = try {
+            AudioRecord.getMinBufferSize(
+                CAR_AUDIO_SAMPLE_RATE,
+                channelMask,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+        } catch (error: Exception) {
+            // Some Flyme builds throw for an OEM-only channel mask instead of
+            // returning ERROR_BAD_VALUE. Report an unavailable profile so the
+            // Dart side can fall back or show a recoverable error.
+            Log.w("AiVoice", "audio capture profile is unsupported", error)
+            -1
+        }
         return mapOf(
             "supported" to (minBufferSize > 0),
             "kind" to if (isCarArray) "carArray" else "standardNative",
