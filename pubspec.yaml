@@ -64,3 +64,4 @@ flutter:
     - assets/models/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23/
     - assets/models/sherpa-onnx-streaming-paraformer-bilingual-zh-en/
     - assets/models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8/
+    - assets/models/sherpa-onnx-homophone-replacer-zh/

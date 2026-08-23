@@ -1,1 +1,2 @@
 assets/models/**/*.onnx filter=lfs diff=lfs merge=lfs -text
+assets/models/sherpa-onnx-homophone-replacer-zh/* -text

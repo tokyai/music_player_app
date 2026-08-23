@@ -5,6 +5,27 @@ import 'package:music_player_app/services/ai_voice_service.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('enables homophone replacement only with complete resources', () {
+    final complete = aiHomophoneConfigFromPaths(const {
+      'lexicon': '/models/lexicon.txt',
+      'rules': '/models/replace.fst',
+    });
+    final incomplete = aiHomophoneConfigFromPaths(const {
+      'lexicon': '/models/lexicon.txt',
+    });
+    final blank = aiHomophoneConfigFromPaths(const {
+      'lexicon': ' ',
+      'rules': '/models/replace.fst',
+    });
+
+    expect(complete.lexicon, '/models/lexicon.txt');
+    expect(complete.ruleFsts, '/models/replace.fst');
+    expect(incomplete.lexicon, isEmpty);
+    expect(incomplete.ruleFsts, isEmpty);
+    expect(blank.lexicon, isEmpty);
+    expect(blank.ruleFsts, isEmpty);
+  });
+
   test(
     'does not initialize recognition without microphone permission',
     () async {

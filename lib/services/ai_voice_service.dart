@@ -299,6 +299,7 @@ class _SherpaOnnxRecognizer
         AiSpeechIdleResourceOwner {
   static const _sampleRate = 16000;
   static const _modelChannel = MethodChannel('music_player/ai_model');
+  static const _homophoneModelId = 'homophone-replacer-zh';
   static bool _bindingsInitialized = false;
 
   sherpa.OnlineRecognizer? _recognizer;
@@ -426,9 +427,26 @@ class _SherpaOnnxRecognizer
           debug: false,
         ),
       };
-      final nextRecognizer = sherpa.OnlineRecognizer(
-        sherpa.OnlineRecognizerConfig(model: model),
-      );
+      final homophoneConfig = await _prepareHomophoneConfig();
+      if (!_canContinueModelInitialization(requestedModel, requestGeneration)) {
+        return false;
+      }
+      late final sherpa.OnlineRecognizer nextRecognizer;
+      try {
+        nextRecognizer = sherpa.OnlineRecognizer(
+          sherpa.OnlineRecognizerConfig(model: model, hr: homophoneConfig),
+        );
+      } catch (error, stackTrace) {
+        if (homophoneConfig.lexicon.isEmpty) rethrow;
+        _logError(
+          'homophone initialization failed; using original recognizer',
+          error,
+          stackTrace,
+        );
+        nextRecognizer = sherpa.OnlineRecognizer(
+          sherpa.OnlineRecognizerConfig(model: model),
+        );
+      }
       if (!_canContinueModelInitialization(requestedModel, requestGeneration)) {
         _freeRecognizer(nextRecognizer);
         return false;
@@ -446,6 +464,24 @@ class _SherpaOnnxRecognizer
         _emitError(onError, 'speech_not_supported: 离线语音模型初始化失败：$error');
       }
       return false;
+    }
+  }
+
+  Future<sherpa.HomophoneReplacerConfig> _prepareHomophoneConfig() async {
+    try {
+      final rawPaths = await _modelChannel
+          .invokeMapMethod<Object?, Object?>('prepare', {
+            'model': _homophoneModelId,
+          })
+          .timeout(const Duration(seconds: 30));
+      return aiHomophoneConfigFromPaths(
+        rawPaths?.map(
+          (key, value) => MapEntry(key.toString(), value.toString()),
+        ),
+      );
+    } catch (error, stackTrace) {
+      _logError('homophone resources unavailable', error, stackTrace);
+      return const sherpa.HomophoneReplacerConfig();
     }
   }
 
@@ -874,6 +910,18 @@ class _SherpaOnnxRecognizer
       _logError('recognition status callback failed', error, stackTrace);
     }
   }
+}
+
+@visibleForTesting
+sherpa.HomophoneReplacerConfig aiHomophoneConfigFromPaths(
+  Map<String, String>? paths,
+) {
+  final lexicon = paths?['lexicon']?.trim() ?? '';
+  final rules = paths?['rules']?.trim() ?? '';
+  if (lexicon.isEmpty || rules.isEmpty) {
+    return const sherpa.HomophoneReplacerConfig();
+  }
+  return sherpa.HomophoneReplacerConfig(lexicon: lexicon, ruleFsts: rules);
 }
 
 abstract class AiMicrophonePermission {
