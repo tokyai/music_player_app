@@ -7,11 +7,6 @@ import '../providers/player_provider.dart';
 
 /// Bridges Android media-session commands to the application's real queue.
 class PlayerMediaHandler extends BaseAudioHandler with SeekHandler {
-  // Android media-session clients do not need the application's entire queue.
-  // Keep a bounded window so a very large playlist cannot be duplicated into
-  // thousands of MediaItem objects during a native callback.
-  static const _maxPublishedQueueItems = 2000;
-
   PlayerMediaHandler(this._player) {
     _player.addListener(_syncFromPlayer);
     _syncFromPlayer();
@@ -21,7 +16,6 @@ class PlayerMediaHandler extends BaseAudioHandler with SeekHandler {
   int? _publishedQueueFingerprint;
   int? _publishedPlaybackFingerprint;
   List<MediaItem> _publishedQueue = const [];
-  int _publishedQueueStartIndex = 0;
   bool _disposed = false;
 
   void _syncFromPlayer() {
@@ -44,37 +38,24 @@ class PlayerMediaHandler extends BaseAudioHandler with SeekHandler {
   void _publishQueue() {
     final items = _player.queue;
     final currentIndex = _player.currentIndex;
-    final startIndex = _publishedStartIndex(items.length, currentIndex);
-    final fingerprint = Object.hash(
+    var fingerprint = Object.hash(
       _player.queueSessionId,
       items.length,
       currentIndex,
-      startIndex,
-      items.isNotEmpty ? _itemFingerprint(items.first) : 0,
-      items.isNotEmpty ? _itemFingerprint(items.last) : 0,
-      currentIndex >= 0 && currentIndex < items.length
-          ? _itemFingerprint(items[currentIndex])
-          : 0,
     );
+    // Fold the item metadata directly into the fingerprint. Object.hashAll
+    // first materialized a second list containing one hash per queue item.
+    for (final item in items) {
+      fingerprint = Object.hash(fingerprint, _itemFingerprint(item));
+    }
     if (_publishedQueueFingerprint == fingerprint) return;
 
-    final endIndex = (startIndex + _maxPublishedQueueItems)
-        .clamp(startIndex, items.length)
-        .toInt();
     _publishedQueue = [
-      for (var index = startIndex; index < endIndex; index++)
+      for (var index = 0; index < items.length; index++)
         _toMediaItem(items[index], index),
     ];
-    _publishedQueueStartIndex = startIndex;
     _publishedQueueFingerprint = fingerprint;
     queue.add(_publishedQueue);
-  }
-
-  int _publishedStartIndex(int itemCount, int currentIndex) {
-    if (itemCount <= _maxPublishedQueueItems || itemCount == 0) return 0;
-    final safeIndex = currentIndex.clamp(0, itemCount - 1).toInt();
-    final centered = safeIndex - _maxPublishedQueueItems ~/ 2;
-    return centered.clamp(0, itemCount - _maxPublishedQueueItems).toInt();
   }
 
   int _itemFingerprint(PlayQueueItem item) => Object.hash(
@@ -90,13 +71,12 @@ class PlayerMediaHandler extends BaseAudioHandler with SeekHandler {
 
   void _publishCurrentItem() {
     final index = _player.currentIndex;
-    final publishedIndex = index - _publishedQueueStartIndex;
-    if (publishedIndex < 0 || publishedIndex >= _publishedQueue.length) {
+    if (index < 0 || index >= _publishedQueue.length) {
       if (mediaItem.valueOrNull != null) mediaItem.add(null);
       return;
     }
 
-    final queuedItem = _publishedQueue[publishedIndex];
+    final queuedItem = _publishedQueue[index];
     final actualDuration = _player.duration > Duration.zero
         ? _player.duration
         : queuedItem.duration;
@@ -155,9 +135,7 @@ class PlayerMediaHandler extends BaseAudioHandler with SeekHandler {
         updatePosition: _player.position,
         bufferedPosition: _player.buffered,
         speed: _player.audioPlayer.speed,
-        queueIndex: hasCurrent
-            ? _player.currentIndex - _publishedQueueStartIndex
-            : null,
+        queueIndex: hasCurrent ? _player.currentIndex : null,
         repeatMode: _player.playMode == PlayMode.repeat
             ? AudioServiceRepeatMode.one
             : AudioServiceRepeatMode.all,
@@ -227,9 +205,7 @@ class PlayerMediaHandler extends BaseAudioHandler with SeekHandler {
   Future<void> skipToPrevious() => _player.playPrevious();
 
   @override
-  Future<void> skipToQueueItem(int index) => _player.playQueueItem(
-    index + _publishedQueueStartIndex,
-  );
+  Future<void> skipToQueueItem(int index) => _player.playQueueItem(index);
 
   void dispose() {
     _disposed = true;

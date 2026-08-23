@@ -39,7 +39,7 @@ void main() {
     expect(player.pauseCalls, 1);
   });
 
-  test('bounds the published queue for very large application queues', () {
+  test('fingerprints very large queues without changing queue semantics', () {
     final player = _MediaTestPlayer(itemCount: 3000, currentIndex: 2500);
     final handler = PlayerMediaHandler(player);
     addTearDown(() {
@@ -49,9 +49,9 @@ void main() {
 
     player.loadQueue();
 
-    expect(handler.queue.value.length, 2000);
+    expect(handler.queue.value.length, 3000);
     expect(handler.mediaItem.value?.title, 'Song 2501');
-    expect(handler.playbackState.value.queueIndex, 1500);
+    expect(handler.playbackState.value.queueIndex, 2500);
   });
 }
 
