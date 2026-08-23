@@ -1145,9 +1145,18 @@ class PlayerProvider extends ChangeNotifier {
     int index,
   ) async {
     if (index < 0 || index >= results.length) return;
+    late final List<PlayQueueItem> nextQueue;
+    try {
+      nextQueue = results
+          .map((result) => PlayQueueItem.fromSearchResult(result))
+          .toList(growable: true);
+    } catch (error, stackTrace) {
+      _handleQueueAllocationFailure(error, stackTrace);
+      return;
+    }
     _recordCurrentHistory(immediate: true);
     _queueSessionId++;
-    _queue = results.map((e) => PlayQueueItem.fromSearchResult(e)).toList();
+    _queue = nextQueue;
     _currentIndex = index;
     notifyListeners();
     await _playCurrent();
@@ -1179,7 +1188,14 @@ class PlayerProvider extends ChangeNotifier {
       return false;
     }
     if (tracks.isEmpty) return true;
-    _queue.addAll(tracks.map(PlayQueueItem.fromSearchResult));
+    try {
+      _queue.addAll(
+        tracks.map(PlayQueueItem.fromSearchResult).toList(growable: false),
+      );
+    } catch (error, stackTrace) {
+      _handleQueueAllocationFailure(error, stackTrace);
+      return false;
+    }
     notifyListeners();
     return true;
   }
@@ -1190,12 +1206,30 @@ class PlayerProvider extends ChangeNotifier {
     int index,
   ) async {
     if (index < 0 || index >= tracks.length) return;
+    late final List<PlayQueueItem> nextQueue;
+    try {
+      nextQueue = tracks
+          .map((track) => PlayQueueItem.fromSearchResult(track))
+          .toList(growable: true);
+    } catch (error, stackTrace) {
+      _handleQueueAllocationFailure(error, stackTrace);
+      return;
+    }
     _recordCurrentHistory(immediate: true);
     _queueSessionId++;
-    _queue = tracks.map((e) => PlayQueueItem.fromSearchResult(e)).toList();
+    _queue = nextQueue;
     _currentIndex = index;
     notifyListeners();
     await _playCurrent();
+  }
+
+  void _handleQueueAllocationFailure(Object error, StackTrace stackTrace) {
+    debugPrint('创建播放队列失败: $error');
+    debugPrintStack(stackTrace: stackTrace);
+    if (_disposed) return;
+    _errorMessage = '播放列表过大，无法继续加入队列';
+    _lastError = _errorMessage;
+    notifyListeners();
   }
 
   /// 从历史记录重新播放，并在音源准备完成后跳回上次断点。
