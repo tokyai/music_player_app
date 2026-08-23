@@ -15,6 +15,7 @@ class ThemeController extends ChangeNotifier {
   ThemeMode _mode = ThemeMode.system;
   double _fontScale = defaultFontScale;
   bool _fontScaleChangedByUser = false;
+  bool _disposed = false;
 
   ThemeMode get mode => _mode;
   double get fontScale => _fontScale;
@@ -41,11 +42,12 @@ class ThemeController extends ChangeNotifier {
       if (!_fontScaleChangedByUser && rawFontScale is num) {
         _fontScale = _normalizeFontScale(rawFontScale.toDouble());
       }
-      notifyListeners();
+      if (!_disposed) notifyListeners();
     } catch (_) {}
   }
 
   Future<void> setMode(ThemeMode mode) async {
+    if (_disposed) return;
     if (_mode == mode) return;
     _mode = mode;
     notifyListeners();
@@ -68,6 +70,7 @@ class ThemeController extends ChangeNotifier {
 
   /// 拖动过程中只更新界面，避免连续写入本地存储。
   void previewFontScale(double value) {
+    if (_disposed) return;
     _fontScaleChangedByUser = true;
     final normalized = _normalizeFontScale(value);
     if (_fontScale == normalized) return;
@@ -77,11 +80,18 @@ class ThemeController extends ChangeNotifier {
 
   /// 拖动结束或恢复默认值时保存最终比例。
   Future<void> setFontScale(double value) async {
+    if (_disposed) return;
     previewFontScale(value);
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setDouble(_fontScalePrefKey, _fontScale);
     } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 
   static double _normalizeFontScale(double value) {

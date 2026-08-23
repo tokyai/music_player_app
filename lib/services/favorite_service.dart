@@ -43,6 +43,7 @@ class FavoriteService extends ChangeNotifier {
   final List<SongSearchResult> _favorites = [];
   final List<FavoritePlaylist> _favoritePlaylists = [];
   bool _loaded = false;
+  bool _disposed = false;
 
   List<SongSearchResult> get favorites => List.unmodifiable(
     _favorites.where((song) => song.platform != MusicPlatform.bilibili),
@@ -73,7 +74,7 @@ class FavoriteService extends ChangeNotifier {
 
   /// 启动时加载一次，继续兼容上游使用的纯歌曲数组格式。
   Future<void> load() async {
-    if (_loaded) return;
+    if (_loaded || _disposed) return;
     try {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_prefsKey);
@@ -94,6 +95,7 @@ class FavoriteService extends ChangeNotifier {
       _favorites.clear();
       _favoritePlaylists.clear();
     }
+    if (_disposed) return;
     _loaded = true;
     notifyListeners();
   }
@@ -111,6 +113,7 @@ class FavoriteService extends ChangeNotifier {
   /// 切换收藏状态，返回操作后是否已收藏。
   Future<bool> toggle(SongSearchResult song) async {
     await load();
+    if (_disposed) return false;
     final key = keyOf(song);
     final index = _favorites.indexWhere((item) => keyOf(item) == key);
     if (index >= 0) {
@@ -132,6 +135,7 @@ class FavoriteService extends ChangeNotifier {
     PlaylistInfo playlist,
   ) async {
     await load();
+    if (_disposed) return false;
     final key = playlistKey(platform, playlist.id);
     final index = _favoritePlaylists.indexWhere(
       (item) => playlistKeyOf(item) == key,
@@ -160,6 +164,7 @@ class FavoriteService extends ChangeNotifier {
     PlaylistInfo playlist,
   ) async {
     await load();
+    if (_disposed) return false;
     final key = playlistKey(platform, playlist.id);
     final index = _favoritePlaylists.indexWhere(
       (item) => playlistKeyOf(item) == key,
@@ -180,6 +185,7 @@ class FavoriteService extends ChangeNotifier {
 
   Future<void> removePlaylist(MusicPlatform platform, String id) async {
     await load();
+    if (_disposed) return;
     final key = playlistKey(platform, id);
     final before = _favoritePlaylists.length;
     _favoritePlaylists.removeWhere(
@@ -192,11 +198,13 @@ class FavoriteService extends ChangeNotifier {
   }
 
   Future<void> remove(MusicPlatform platform, String id) async {
+    if (_disposed) return;
     await removeMany({songKey(platform, id)});
   }
 
   Future<int> removeMany(Set<String> keys) async {
     await load();
+    if (_disposed) return 0;
     final before = _favorites.length;
     _favorites.removeWhere((song) => keys.contains(keyOf(song)));
     final removed = before - _favorites.length;
@@ -209,6 +217,7 @@ class FavoriteService extends ChangeNotifier {
 
   Future<void> clear() async {
     await load();
+    if (_disposed) return;
     if (_favorites.isEmpty) return;
     _favorites.clear();
     notifyListeners();
@@ -218,6 +227,7 @@ class FavoriteService extends ChangeNotifier {
   /// 用匹配到的新平台歌曲替换收藏项，未匹配项保持不变。
   Future<int> replaceMany(Map<String, SongSearchResult> replacements) async {
     await load();
+    if (_disposed) return 0;
     if (replacements.isEmpty) return 0;
 
     final replacementKeys = replacements.keys.toSet();
@@ -284,6 +294,9 @@ class FavoriteService extends ChangeNotifier {
     bool importApiKey = true,
   }) async {
     await load();
+    if (_disposed) {
+      return const FavoriteImportResult(added: 0, skipped: 0, total: 0);
+    }
     final decoded = _decodeBackup(raw);
     var skipped = importSongs ? decoded.skipped : 0;
     var added = 0;
@@ -371,6 +384,12 @@ class FavoriteService extends ChangeNotifier {
       apiKeyPresent: importApiKey && decoded.apiKeyPresent,
       apiKey: importApiKey ? decoded.apiKey : null,
     );
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 
   static _DecodedBackup _decodeBackup(String raw) {

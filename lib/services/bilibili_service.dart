@@ -118,6 +118,7 @@ class BilibiliService extends ChangeNotifier {
   DateTime? _mixinKeyExpiresAt;
   BilibiliUser? _user;
   bool _accountLoading = false;
+  bool _disposed = false;
 
   BilibiliService({http.Client? client})
     : _client = client ?? http.Client(),
@@ -158,13 +159,14 @@ class BilibiliService extends ChangeNotifier {
 
   Future<void> refreshAccount() async {
     await ready;
+    if (_disposed) return;
     if (!hasCookie) {
       _user = null;
-      notifyListeners();
+      if (!_disposed) notifyListeners();
       return;
     }
     _accountLoading = true;
-    notifyListeners();
+    if (!_disposed) notifyListeners();
     try {
       final response = await _getJson('$_apiBase/x/web-interface/nav');
       final data = response['data'];
@@ -181,7 +183,7 @@ class BilibiliService extends ChangeNotifier {
       _user = null;
     } finally {
       _accountLoading = false;
-      notifyListeners();
+      if (!_disposed) notifyListeners();
     }
   }
 
@@ -267,7 +269,9 @@ class BilibiliService extends ChangeNotifier {
         .map((entry) => '${entry.key}=${entry.value}')
         .join('; ');
     final preferences = await SharedPreferences.getInstance();
+    if (_disposed) return;
     await preferences.setString(_cookiePreferenceKey, _cookie!);
+    if (_disposed) return;
     await refreshAccount();
   }
 
@@ -280,6 +284,7 @@ class BilibiliService extends ChangeNotifier {
   ];
 
   Future<void> logout() async {
+    if (_disposed) return;
     _cookie = null;
     _user = null;
     _mixinKey = null;
@@ -290,7 +295,7 @@ class BilibiliService extends ChangeNotifier {
     } catch (error) {
       debugPrint('清除 B 站会话失败: $error');
     }
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   Future<List<SongSearchResult>> search(String keyword) async {
@@ -770,6 +775,7 @@ class BilibiliService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     if (_ownsClient) _client.close();
     super.dispose();
   }
