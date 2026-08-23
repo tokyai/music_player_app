@@ -714,6 +714,14 @@ class MainActivity : AudioServiceActivity() {
                 AudioFormat.ENCODING_PCM_16BIT,
                 internalBufferSize
             )
+        } catch (_: OutOfMemoryError) {
+            safelySendCarAudioError(
+                events,
+                "CAR_ARRAY_CREATE_FAILED",
+                "车机内存不足，无法创建录音缓冲区",
+                profile
+            )
+            return
         } catch (error: Exception) {
             safelySendCarAudioError(events, "CAR_ARRAY_CREATE_FAILED", error.message, profile)
             return
@@ -730,6 +738,15 @@ class MainActivity : AudioServiceActivity() {
         }
         try {
             recorder.startRecording()
+        } catch (_: OutOfMemoryError) {
+            releaseCarAudioRecorder(recorder)
+            safelySendCarAudioError(
+                events,
+                "CAR_ARRAY_START_FAILED",
+                "车机内存不足，无法启动录音",
+                profile
+            )
+            return
         } catch (error: Exception) {
             releaseCarAudioRecorder(recorder)
             safelySendCarAudioError(events, "CAR_ARRAY_START_FAILED", error.message, profile)
@@ -784,6 +801,19 @@ class MainActivity : AudioServiceActivity() {
                         throw IllegalStateException("AudioRecord.read failed: $count")
                     }
                 }
+            } catch (_: OutOfMemoryError) {
+                if (aiCarAudioRunning && aiCarAudioRecord === recorder) {
+                    postIfActivityAlive {
+                        if (aiCarAudioSink === events) {
+                            safelySendCarAudioError(
+                                events,
+                                "CAR_ARRAY_READ_FAILED",
+                                "车机内存不足，录音线程已停止",
+                                null
+                            )
+                        }
+                    }
+                }
             } catch (error: Exception) {
                 if (aiCarAudioRunning && aiCarAudioRecord === recorder) {
                     postIfActivityAlive {
@@ -836,7 +866,17 @@ class MainActivity : AudioServiceActivity() {
             // always join the worker instead of racing an untracked thread.
             aiCarAudioThread = captureThread
         }
-        captureThread.start()
+        try {
+            captureThread.start()
+        } catch (_: OutOfMemoryError) {
+            stopCarArrayCapture()
+            safelySendCarAudioError(
+                events,
+                "CAR_ARRAY_START_FAILED",
+                "车机内存不足，无法启动录音线程",
+                profile
+            )
+        }
     }
 
     private fun releaseCarAudioRecorder(recorder: AudioRecord?) {
