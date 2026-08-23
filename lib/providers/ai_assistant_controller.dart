@@ -33,6 +33,9 @@ class AiAssistantController extends ChangeNotifier {
   // a few turns. Normal replies are far below this limit.
   static const _maxMessageChars = 32 * 1024;
   static const _maxContextChars = 64 * 1024;
+  // A recognizer can emit many final fragments before the pause timer gets a
+  // chance to submit them. Keep that transient speech buffer bounded too.
+  static const _maxSpeechChars = 32 * 1024;
   // TTS engines may copy the complete input into native buffers. Keep an
   // unusually long gateway reply from creating another large memory peak.
   static const _maxTtsChars = 8 * 1024;
@@ -396,7 +399,7 @@ class AiAssistantController extends ChangeNotifier {
 
   Future<bool> _speak(String text, int generation, int turn) async {
     if (!_isCurrentTurn(generation, turn)) return false;
-    final normalized = text.trim();
+    final normalized = _boundSpeechText(text.trim());
     if (normalized.isEmpty) return true;
     final spoken = normalized.length <= _maxTtsChars
         ? normalized
@@ -536,8 +539,8 @@ class AiAssistantController extends ChangeNotifier {
   }
 
   String _mergeSpeechText(String existing, String next) {
-    final first = existing.trim();
-    final second = next.trim();
+    final first = _boundSpeechText(existing.trim());
+    final second = _boundSpeechText(next.trim());
     if (first.isEmpty) return second;
     if (second.isEmpty || first == second || first.endsWith(second)) {
       return first;
@@ -549,10 +552,17 @@ class AiAssistantController extends ChangeNotifier {
     for (var length = overlapLimit; length > 0; length--) {
       if (first.substring(first.length - length) ==
           second.substring(0, length)) {
-        return '${first.substring(0, first.length - length)}$second';
+        return _boundSpeechText(
+          '${first.substring(0, first.length - length)}$second',
+        );
       }
     }
-    return '$first $second';
+    return _boundSpeechText('$first $second');
+  }
+
+  String _boundSpeechText(String value) {
+    if (value.length <= _maxSpeechChars) return value;
+    return '${value.substring(0, _maxSpeechChars - 1)}…';
   }
 
   bool _isUnavailableSpeechError(String message) {

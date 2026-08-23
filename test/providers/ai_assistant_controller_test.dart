@@ -74,6 +74,18 @@ void main() {
     expect(fixture.tts.spoken.single.length, lessThanOrEqualTo(8192));
   });
 
+  test('bounds a long continuous speech transcript', () async {
+    final fixture = await _Fixture.create(
+      speechCommitDelay: const Duration(hours: 1),
+    );
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('语音' * 40000, isFinal: true);
+
+    expect(fixture.controller.transcript.length, lessThanOrEqualTo(32768));
+  });
+
   test('uses the configured offline voice model for a new session', () async {
     final fixture = await _Fixture.create();
     addTearDown(fixture.dispose);
