@@ -205,6 +205,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     });
     try {
       await _prepareExport();
+      if (!mounted) return;
       final result = await FavoriteFileService.exportBackup(_backupJson());
       if (!mounted) return;
       setState(() {
@@ -234,6 +235,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     });
     try {
       await _prepareExport();
+      if (!mounted) return;
       await Clipboard.setData(ClipboardData(text: _backupJson()));
       if (mounted) _showStatus('备份 JSON 已复制');
     } catch (error) {
@@ -285,6 +287,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     try {
       final config = _configFromFields();
       await config.save();
+      if (!mounted) return null;
       return WebDavBackupService(config: config);
     } on WebDavException catch (error) {
       _showStatus(error.message, error: true);
@@ -332,6 +335,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     }
     try {
       await _prepareExport();
+      if (!mounted) return;
       await service.upload(_backupJson());
       _showStatus('备份已上传到 WebDAV');
     } on WebDavException catch (error) {
@@ -356,7 +360,8 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     }
     try {
       final raw = await service.download();
-      if (mounted) setState(() => _busy = false);
+      if (!mounted) return;
+      setState(() => _busy = false);
       await _restoreRaw(raw, source: 'WebDAV');
     } on WebDavException catch (error) {
       _showStatus(error.message, error: true);
@@ -375,6 +380,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     });
     try {
       await _prepareExport();
+      if (!mounted) return;
       final session = await LanBackupService.start(exportBackup: _backupJson);
       if (!mounted) {
         await session.stop();
@@ -401,6 +407,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       final raw = await session.restored;
       if (!mounted || !identical(_lanSession, session)) return;
       await _restoreRaw(raw, source: '手机');
+      if (!mounted || !identical(_lanSession, session)) return;
       await _stopLanTransfer();
     } catch (_) {}
   }
@@ -408,7 +415,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
   Future<void> _stopLanTransfer() async {
     final session = _lanSession;
     if (session == null) return;
-    setState(() => _lanSession = null);
+    if (mounted) setState(() => _lanSession = null);
     await session.stop();
     if (mounted) _showStatus('局域网传输已关闭');
   }
