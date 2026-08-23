@@ -269,6 +269,14 @@ class MainActivity : AudioServiceActivity() {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
                     try {
                         startCarArrayCapture(events)
+                    } catch (_: OutOfMemoryError) {
+                        stopCarArrayCapture()
+                        safelySendCarAudioError(
+                            events,
+                            "CAR_ARRAY_START_OOM",
+                            "车机内存不足，无法启动录音",
+                            null
+                        )
                     } catch (error: Exception) {
                         // OEM AudioRecord implementations occasionally throw
                         // outside the normal constructor/start checks. Keep
@@ -1085,12 +1093,35 @@ class MainActivity : AudioServiceActivity() {
     ) {
         val posted = aiCarAudioHandler.postDelayed(
             {
-                drainCarAudioChunks(
-                    generation,
-                    recorder,
-                    events,
-                    channelCount
-                )
+                try {
+                    drainCarAudioChunks(
+                        generation,
+                        recorder,
+                        events,
+                        channelCount
+                    )
+                } catch (_: OutOfMemoryError) {
+                    // Combining PCM batches allocates on the main thread;
+                    // stop the capture instead of letting an allocation
+                    // failure terminate the Activity.
+                    Log.e("AiVoice", "audio batch delivery out of memory")
+                    failCarAudioDelivery(generation, recorder, events)
+                    safelySendCarAudioError(
+                        events,
+                        "CAR_ARRAY_DELIVERY_OOM",
+                        "车机内存不足，录音已停止",
+                        null
+                    )
+                } catch (error: Exception) {
+                    Log.w("AiVoice", "audio batch drain failed", error)
+                    failCarAudioDelivery(generation, recorder, events)
+                    safelySendCarAudioError(
+                        events,
+                        "CAR_ARRAY_DELIVERY_FAILED",
+                        error.message ?: "车机录音传输失败",
+                        null
+                    )
+                }
             },
             delayMs
         )
