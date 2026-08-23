@@ -12,11 +12,22 @@ class PlayerMediaHandler extends BaseAudioHandler with SeekHandler {
     _syncFromPlayer();
   }
 
-  final PlayerProvider _player;
+  PlayerProvider _player;
   int? _publishedQueueFingerprint;
   int? _publishedPlaybackFingerprint;
   List<MediaItem> _publishedQueue = const [];
   bool _disposed = false;
+
+  void bindPlayer(PlayerProvider player) {
+    if (_disposed || identical(_player, player)) return;
+    _player.removeListener(_syncFromPlayer);
+    _player = player;
+    _publishedQueueFingerprint = null;
+    _publishedPlaybackFingerprint = null;
+    _publishedQueue = const [];
+    _player.addListener(_syncFromPlayer);
+    _syncFromPlayer();
+  }
 
   void _syncFromPlayer() {
     if (_disposed) return;

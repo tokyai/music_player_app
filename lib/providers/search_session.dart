@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/song.dart';
 import '../services/api_service.dart';
+import '../services/user_data_scope.dart';
 
 enum SearchSubject { general, title, artist, album }
 
@@ -47,10 +48,11 @@ class SearchSession extends ChangeNotifier {
   int _requestId = 0;
   int _navigationId = 0;
   bool _disposed = false;
-  late final Future<void> _historyReady;
+  late final Future<void> historyReady;
+  final UserDataScope dataScope;
 
-  SearchSession() {
-    _historyReady = _loadSearchHistory();
+  SearchSession({this.dataScope = UserDataScope.defaultScope}) {
+    historyReady = _loadSearchHistory();
   }
 
   String get keyword => _keyword;
@@ -216,7 +218,7 @@ class SearchSession extends ChangeNotifier {
   }
 
   Future<void> removeSearchHistory(String keyword) async {
-    await _historyReady;
+    await historyReady;
     if (_disposed) return;
     final normalized = _normalize(keyword);
     final oldLength = _searchHistory.length;
@@ -319,7 +321,9 @@ class SearchSession extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       if (_disposed) return;
-      final saved = prefs.getStringList(_historyPrefsKey) ?? const <String>[];
+      final saved =
+          prefs.getStringList(dataScope.preferenceKey(_historyPrefsKey)) ??
+          const <String>[];
       final seen = <String>{};
       for (final item in saved) {
         final keyword = item.trim();
@@ -332,7 +336,7 @@ class SearchSession extends ChangeNotifier {
   }
 
   Future<void> _rememberSearch(String keyword) async {
-    await _historyReady;
+    await historyReady;
     if (_disposed) return;
     final normalized = _normalize(keyword);
     _searchHistory.removeWhere((item) => _normalize(item) == normalized);
@@ -345,9 +349,14 @@ class SearchSession extends ChangeNotifier {
   }
 
   Future<void> _saveSearchHistory() async {
+    if (dataScope.isDeleted) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList(_historyPrefsKey, _searchHistory);
+      if (dataScope.isDeleted) return;
+      await prefs.setStringList(
+        dataScope.preferenceKey(_historyPrefsKey),
+        _searchHistory,
+      );
     } catch (_) {}
   }
 

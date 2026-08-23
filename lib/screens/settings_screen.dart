@@ -4,22 +4,27 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/ai_assistant.dart';
+import '../models/app_user.dart';
 import '../models/song.dart';
 import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
 import '../providers/theme_controller.dart';
+import '../providers/user_controller.dart';
 import '../services/audio_cache_service.dart';
 import '../services/app_exit_service.dart';
 import '../services/favorite_service.dart';
 import '../services/floating_capsule_service.dart';
 import '../services/lan_ai_config_service.dart';
 import '../services/lan_api_key_service.dart';
+import '../services/user_data_scope.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../theme/lyric_style.dart';
 import '../widgets/bilibili_login_dialog.dart';
 import '../widgets/ai_profile_editor_dialog.dart';
 import '../widgets/remote_focusable.dart';
+import '../widgets/app_user_avatar.dart';
+import '../widgets/user_profile_editor_dialog.dart';
 import 'backup_restore_screen.dart';
 import 'cache_list_screen.dart';
 import 'favorites_screen.dart';
@@ -37,6 +42,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _obscureKey = true;
   bool _apiKeyEdited = false;
   late final AiConfigController _aiConfigController;
+  late final UserDataScope _dataScope;
   late final bool _ownsAiConfigController;
   double _petScaleDraft = AiConfigController.minPetScale + 0.35;
 
@@ -50,6 +56,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    final player = context.read<PlayerProvider>();
+    _dataScope = player.dataScope;
     final sharedAiConfig = Provider.of<AiConfigController?>(
       context,
       listen: false,
@@ -57,7 +65,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _ownsAiConfigController = sharedAiConfig == null;
     _aiConfigController =
         sharedAiConfig ??
-        AiConfigController(secretStore: MemoryAiSecretStore());
+        AiConfigController(
+          dataScope: _dataScope,
+          secretStore: MemoryAiSecretStore(),
+        );
     _petScaleDraft = _aiConfigController.petScale;
     _aiConfigController.addListener(_syncPetScaleDraft);
     _aiConfigController.ready.then((_) {
@@ -67,7 +78,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         });
       }
     });
-    final player = context.read<PlayerProvider>();
     _apiKeyController.text = player.apiKey;
     player.settingsReady.then((_) {
       if (mounted && !_apiKeyEdited) {
@@ -101,8 +111,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadCacheInfo() async {
     try {
       final results = await Future.wait([
-        AudioCacheService.getCacheSize(),
-        AudioCacheService.getCacheCount(),
+        AudioCacheService.getCacheSize(scope: _dataScope),
+        AudioCacheService.getCacheCount(scope: _dataScope),
       ]);
       if (!mounted) return;
       setState(() {
@@ -116,9 +126,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       final family = LyricFontFamilyPreset.fromValue(
-        prefs.getString(LyricStylePreferences.fontFamilyKey),
+        prefs.getString(
+          _dataScope.preferenceKey(LyricStylePreferences.fontFamilyKey),
+        ),
       );
-      final rawWeight = prefs.get(LyricStylePreferences.fontWeightKey);
+      final rawWeight = prefs.get(
+        _dataScope.preferenceKey(LyricStylePreferences.fontWeightKey),
+      );
       final weight = LyricFontWeightPreset.fromValue(
         rawWeight is num ? rawWeight.toInt() : null,
       );
@@ -131,22 +145,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _setLyricFontFamily(LyricFontFamilyPreset family) async {
+    if (_dataScope.isDeleted) return;
     if (_lyricFontFamily != family && mounted) {
       setState(() => _lyricFontFamily = family);
     }
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(LyricStylePreferences.fontFamilyKey, family.value);
+      if (_dataScope.isDeleted) return;
+      await prefs.setString(
+        _dataScope.preferenceKey(LyricStylePreferences.fontFamilyKey),
+        family.value,
+      );
     } catch (_) {}
   }
 
   Future<void> _setLyricFontWeight(LyricFontWeightPreset weight) async {
+    if (_dataScope.isDeleted) return;
     if (_lyricFontWeight != weight && mounted) {
       setState(() => _lyricFontWeight = weight);
     }
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt(LyricStylePreferences.fontWeightKey, weight.value);
+      if (_dataScope.isDeleted) return;
+      await prefs.setInt(
+        _dataScope.preferenceKey(LyricStylePreferences.fontWeightKey),
+        weight.value,
+      );
     } catch (_) {}
   }
 
@@ -169,9 +193,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     if (confirmed != true) return;
+    if (!mounted) return;
 
     try {
-      await AudioCacheService.clearCache();
+      await AudioCacheService.clearCache(scope: _dataScope);
       await _loadCacheInfo();
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -462,7 +487,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           );
         }
       }
-      await FloatingCapsuleService.persistEnabled(value);
+      await FloatingCapsuleService.persistEnabled(value, scope: _dataScope);
       if (mounted) setState(() {});
     } catch (error) {
       if (!mounted) return;
@@ -489,6 +514,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       padding: const EdgeInsets.only(bottom: 24),
       children: [
         _buildPageTitle(),
+        _buildUsersCard(),
         _buildAppearanceCard(),
         _buildLyricsCard(),
         _buildLibraryCard(),
@@ -526,6 +552,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       child: Column(
                         children: [
+                          _buildUsersCard(compact: compact),
                           _buildAppearanceCard(compact: compact),
                           _buildLyricsCard(compact: compact),
                           _buildLibraryCard(compact: compact),
@@ -769,6 +796,147 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ],
     );
+  }
+
+  Widget _buildUsersCard({bool compact = false}) {
+    final users = Provider.of<UserController?>(context);
+    if (users == null) return const SizedBox.shrink();
+    return _buildCard(
+      compact: compact,
+      children: [
+        Padding(
+          padding: EdgeInsets.only(right: compact ? 8 : 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: _buildSectionHeader(
+                  icon: Icons.group_outlined,
+                  title: '用户',
+                ),
+              ),
+              IconButton(
+                key: const ValueKey('user-add'),
+                tooltip: '新增用户',
+                onPressed:
+                    users.switching ||
+                        users.users.length >= UserController.maxUsers
+                    ? null
+                    : () => _editUser(users),
+                icon: const Icon(Icons.person_add_alt_1_rounded),
+              ),
+            ],
+          ),
+        ),
+        for (final user in users.users)
+          ListTile(
+            key: ValueKey('user-management-${user.id}'),
+            dense: compact,
+            leading: AppUserAvatar(user: user, size: compact ? 40 : 44),
+            title: Text(
+              user.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: Text(
+              user.id == users.activeUserId
+                  ? '当前用户${user.isDefault ? ' · 系统默认' : ''}'
+                  : user.isDefault
+                  ? '系统默认'
+                  : '独立数据空间',
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  key: ValueKey('user-edit-${user.id}'),
+                  tooltip: '编辑用户',
+                  onPressed: users.switching
+                      ? null
+                      : () => _editUser(users, user),
+                  icon: const Icon(Icons.edit_outlined),
+                ),
+                if (!user.isDefault)
+                  IconButton(
+                    key: ValueKey('user-delete-${user.id}'),
+                    tooltip: '删除用户',
+                    onPressed: users.switching
+                        ? null
+                        : () => _deleteUser(users, user),
+                    icon: Icon(
+                      Icons.delete_outline_rounded,
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Future<void> _editUser(UserController users, [AppUserProfile? user]) async {
+    final draft = await showDialog<UserProfileDraft>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => UserProfileEditorDialog(initialUser: user),
+    );
+    if (draft == null || !mounted) return;
+    try {
+      if (user == null) {
+        await users.createUser(
+          name: draft.name,
+          avatarId: draft.avatarId,
+          avatarColorIndex: draft.avatarColorIndex,
+        );
+      } else {
+        await users.updateUser(
+          user.id,
+          name: draft.name,
+          avatarId: draft.avatarId,
+          avatarColorIndex: draft.avatarColorIndex,
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('保存用户失败：$error')));
+    }
+  }
+
+  Future<void> _deleteUser(UserController users, AppUserProfile user) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        key: const ValueKey('user-delete-dialog'),
+        title: const Text('删除用户？'),
+        content: Text('将永久删除“${user.name}”的收藏、历史、配置、账号和缓存数据。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const ValueKey('user-delete-confirm'),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await users.deleteUser(user.id);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('删除用户失败：$error')));
+    }
   }
 
   Widget _buildLyricsCard({bool compact = false}) {

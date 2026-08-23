@@ -4,6 +4,7 @@ import '../models/song.dart';
 import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
 import '../services/favorite_service.dart';
+import '../services/user_data_scope.dart';
 
 /// A user-selectable portion of an exported backup.
 enum BackupRestoreSection {
@@ -143,6 +144,57 @@ class BackupService {
     final selectedSections = sections == null
         ? BackupRestoreSection.values.toSet()
         : sections.toSet();
+    if (_isLegacyBackup(decoded) && !player.dataScope.isDefault) {
+      const scope = UserDataScope.defaultScope;
+      final defaultFavorites = FavoriteService(dataScope: scope);
+      final defaultPlayer = PlayerProvider(
+        dataScope: scope,
+        activateRestoredSession: false,
+      );
+      final defaultAiConfig = aiConfig == null
+          ? null
+          : AiConfigController(dataScope: scope);
+      try {
+        await Future.wait<void>([
+          defaultFavorites.load(),
+          defaultPlayer.settingsReady,
+          defaultPlayer.historyReady,
+          defaultPlayer.playbackStateReady,
+          if (defaultAiConfig != null) defaultAiConfig.ready,
+        ]);
+        final result = await _importDecoded(
+          decoded: decoded,
+          favorites: defaultFavorites,
+          player: defaultPlayer,
+          aiConfig: defaultAiConfig,
+          mode: mode,
+          selectedSections: selectedSections,
+        );
+        return result.copyWith(restoredToDefaultUser: true);
+      } finally {
+        defaultAiConfig?.dispose();
+        defaultFavorites.dispose();
+        defaultPlayer.dispose();
+      }
+    }
+    return _importDecoded(
+      decoded: decoded,
+      favorites: favorites,
+      player: player,
+      aiConfig: aiConfig,
+      mode: mode,
+      selectedSections: selectedSections,
+    );
+  }
+
+  static Future<BackupRestoreResult> _importDecoded({
+    required dynamic decoded,
+    required FavoriteService favorites,
+    required PlayerProvider player,
+    required AiConfigController? aiConfig,
+    required FavoriteImportMode mode,
+    required Set<BackupRestoreSection> selectedSections,
+  }) async {
     final aiBackup = selectedSections.contains(BackupRestoreSection.aiAssistant)
         ? _readAiBackupValue(decoded)
         : null;
@@ -229,6 +281,14 @@ class BackupService {
     }
   }
 
+  static bool _isLegacyBackup(dynamic decoded) {
+    if (decoded is List) return true;
+    if (decoded is! Map) return false;
+    final version = decoded['version'];
+    if (version is num) return version.toInt() <= 3;
+    return decoded['userDataVersion'] != 1;
+  }
+
   static Map<String, dynamic>? _readAiBackupValue(dynamic decoded) {
     if (decoded is! Map || !decoded.containsKey('aiAssistant')) return null;
     final value = decoded['aiAssistant'];
@@ -267,6 +327,7 @@ class BackupRestoreResult {
   final bool apiKeyRestored;
   final bool aiConfigRestored;
   final bool playerSettingsRestored;
+  final bool restoredToDefaultUser;
 
   const BackupRestoreResult({
     required this.songsAdded,
@@ -280,5 +341,24 @@ class BackupRestoreResult {
     required this.apiKeyRestored,
     this.aiConfigRestored = false,
     this.playerSettingsRestored = false,
+    this.restoredToDefaultUser = false,
   });
+
+  BackupRestoreResult copyWith({bool? restoredToDefaultUser}) {
+    return BackupRestoreResult(
+      songsAdded: songsAdded,
+      songsSkipped: songsSkipped,
+      songsTotal: songsTotal,
+      bilibiliAdded: bilibiliAdded,
+      bilibiliSkipped: bilibiliSkipped,
+      bilibiliTotal: bilibiliTotal,
+      playlistsAdded: playlistsAdded,
+      playlistsSkipped: playlistsSkipped,
+      apiKeyRestored: apiKeyRestored,
+      aiConfigRestored: aiConfigRestored,
+      playerSettingsRestored: playerSettingsRestored,
+      restoredToDefaultUser:
+          restoredToDefaultUser ?? this.restoredToDefaultUser,
+    );
+  }
 }

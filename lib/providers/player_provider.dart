@@ -9,6 +9,7 @@ import '../services/bilibili_service.dart';
 import '../services/floating_capsule_service.dart';
 import '../services/playback_history_service.dart';
 import '../services/playback_state_service.dart';
+import '../services/user_data_scope.dart';
 import '../utils/lyric_parser.dart';
 
 // Lyrics are returned as user-facing text but then expanded into many parsed
@@ -91,7 +92,9 @@ class PlayerProvider extends ChangeNotifier {
   bool _playbackStateLoaded = false;
   bool _restoredPlaybackPending = false;
   bool _playbackStateInteraction = false;
+  bool _restoredSessionActivationEnabled;
   bool _preparingForExit = false;
+  bool _resumeAfterCancelledUserSwitch = false;
   Future<void>? _exitPreparationFuture;
 
   // 音质
@@ -121,9 +124,16 @@ class PlayerProvider extends ChangeNotifier {
   int _playRequestId = 0;
   int _queueSessionId = 0;
   bool _disposed = false;
+  final UserDataScope dataScope;
 
-  PlayerProvider() {
-    _api = ApiService(apiKey: '');
+  PlayerProvider({
+    this.dataScope = UserDataScope.defaultScope,
+    bool activateRestoredSession = true,
+  }) : _restoredSessionActivationEnabled = activateRestoredSession {
+    _api = ApiService(
+      apiKey: '',
+      bilibili: BilibiliService(dataScope: dataScope),
+    );
     _api.bilibili.addListener(_handleBilibiliChanged);
     _initAudioPlayer();
     historyReady = _loadPlaybackHistory();
@@ -332,30 +342,54 @@ class PlayerProvider extends ChangeNotifier {
     _playUrlResolvedAt.clear();
     await _savePreference('播放器设置', (prefs) async {
       await Future.wait([
-        prefs.setString('netease_level', _neteaseLevel.value),
-        prefs.setString('common_level', _commonLevel.value),
         prefs.setString(
-          _playbackSourcePreferenceKey(MusicPlatform.netease),
+          dataScope.preferenceKey('netease_level'),
+          _neteaseLevel.value,
+        ),
+        prefs.setString(
+          dataScope.preferenceKey('common_level'),
+          _commonLevel.value,
+        ),
+        prefs.setString(
+          dataScope.preferenceKey(
+            _playbackSourcePreferenceKey(MusicPlatform.netease),
+          ),
           _neteasePlaybackSource.value,
         ),
         prefs.setString(
-          _playbackSourcePreferenceKey(MusicPlatform.qq),
+          dataScope.preferenceKey(
+            _playbackSourcePreferenceKey(MusicPlatform.qq),
+          ),
           _qqPlaybackSource.value,
         ),
         prefs.setString(
-          _playbackSourcePreferenceKey(MusicPlatform.kugou),
+          dataScope.preferenceKey(
+            _playbackSourcePreferenceKey(MusicPlatform.kugou),
+          ),
           _kugouPlaybackSource.value,
         ),
-        prefs.setInt('bilibili_audio_quality', _bilibiliAudioQuality),
-        prefs.setInt('bilibili_video_quality', _bilibiliVideoQuality),
+        prefs.setInt(
+          dataScope.preferenceKey('bilibili_audio_quality'),
+          _bilibiliAudioQuality,
+        ),
+        prefs.setInt(
+          dataScope.preferenceKey('bilibili_video_quality'),
+          _bilibiliVideoQuality,
+        ),
         prefs.setStringList(
-          _bilibiliLyricPlatformOrderKey,
+          dataScope.preferenceKey(_bilibiliLyricPlatformOrderKey),
           _bilibiliLyricPlatformOrder
               .map((platform) => platform.code)
               .toList(growable: false),
         ),
-        prefs.setInt(_lyricOffsetStepKey, _lyricOffsetStep.inMilliseconds),
-        prefs.setString('video_player_mode', _videoPlayerMode.value),
+        prefs.setInt(
+          dataScope.preferenceKey(_lyricOffsetStepKey),
+          _lyricOffsetStep.inMilliseconds,
+        ),
+        prefs.setString(
+          dataScope.preferenceKey('video_player_mode'),
+          _videoPlayerMode.value,
+        ),
       ]);
       return true;
     });
@@ -419,7 +453,7 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> _loadPlaybackHistory() async {
     try {
-      _playbackHistory = await PlaybackHistoryService.load();
+      _playbackHistory = await PlaybackHistoryService.load(scope: dataScope);
     } catch (error, stackTrace) {
       // Keep the constructor-owned future contained if storage fails outside
       // the service's normal error boundary.
@@ -433,7 +467,7 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   Future<void> _loadPlaybackState() async {
-    final snapshot = await PlaybackStateService.load();
+    final snapshot = await PlaybackStateService.load(scope: dataScope);
     if (_disposed) return;
     _playbackStateLoaded = true;
     if (snapshot == null || _playbackStateInteraction) {
@@ -461,7 +495,9 @@ class PlayerProvider extends ChangeNotifier {
       // always-on-top car mini window informative even when no audio source
       // needs to be resolved on startup.
       final restoredSong = currentSong;
-      if (restoredSong != null && FloatingCapsuleService.enabled) {
+      if (_restoredSessionActivationEnabled &&
+          restoredSong != null &&
+          FloatingCapsuleService.enabled) {
         unawaited(
           FloatingCapsuleService.show(
             title: restoredSong.name,
@@ -471,7 +507,9 @@ class PlayerProvider extends ChangeNotifier {
           ),
         );
       }
-      if (snapshot.isPlaying && !_preparingForExit) {
+      if (_restoredSessionActivationEnabled &&
+          snapshot.isPlaying &&
+          !_preparingForExit) {
         unawaited(_resumeRestoredPlayback());
       }
     } catch (error, stackTrace) {
@@ -494,6 +532,22 @@ class PlayerProvider extends ChangeNotifier {
   void _cancelPendingPlaybackRestore() {
     _restoredPlaybackPending = false;
     _playbackStateInteraction = true;
+  }
+
+  Future<void> activateRestoredSession() async {
+    await playbackStateReady;
+    if (_disposed || _restoredSessionActivationEnabled) return;
+    _restoredSessionActivationEnabled = true;
+    final song = currentSong;
+    if (song != null && FloatingCapsuleService.enabled) {
+      await FloatingCapsuleService.show(
+        title: song.name,
+        artist: song.artist,
+        coverUrl: song.coverUrl,
+        isPlaying: _restoredPlaybackPending,
+      );
+    }
+    if (_restoredPlaybackPending) await _resumeRestoredPlayback();
   }
 
   void _initAudioPlayer() {
@@ -664,7 +718,7 @@ class PlayerProvider extends ChangeNotifier {
     _historyPersistCompletion = completion;
     final snapshot = List<PlaybackHistoryEntry>.of(_playbackHistory);
     try {
-      await PlaybackHistoryService.save(snapshot);
+      await PlaybackHistoryService.save(snapshot, scope: dataScope);
     } catch (error) {
       debugPrint('保存播放历史失败: $error');
     } finally {
@@ -748,7 +802,7 @@ class PlayerProvider extends ChangeNotifier {
     _playbackStatePersistCompletion = completion;
     final snapshot = _playbackStateSnapshot();
     try {
-      await PlaybackStateService.save(snapshot);
+      await PlaybackStateService.save(snapshot, scope: dataScope);
     } catch (error, stackTrace) {
       debugPrint('保存播放会话失败: $error');
       debugPrintStack(stackTrace: stackTrace);
@@ -778,44 +832,67 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> _loadSettings() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      _apiKey = prefs.getString('api_key') ?? '';
+      _apiKey = prefs.getString(dataScope.preferenceKey('api_key')) ?? '';
       _api.setApiKey(_apiKey);
-      final levelStr = prefs.getString('netease_level');
+      final levelStr = prefs.getString(
+        dataScope.preferenceKey('netease_level'),
+      );
       if (levelStr != null) {
         _neteaseLevel = NeteaseLevel.values.firstWhere(
           (e) => e.value == levelStr,
           orElse: () => NeteaseLevel.jymaster,
         );
       }
-      final commonStr = prefs.getString('common_level');
+      final commonStr = prefs.getString(
+        dataScope.preferenceKey('common_level'),
+      );
       if (commonStr != null) {
         _commonLevel = CommonLevel.values.firstWhere(
           (e) => e.value == commonStr,
           orElse: () => CommonLevel.flac,
         );
       }
-      _bilibiliAudioQuality = prefs.getInt('bilibili_audio_quality') ?? 30280;
-      _bilibiliVideoQuality = prefs.getInt('bilibili_video_quality') ?? 80;
+      _bilibiliAudioQuality =
+          prefs.getInt(dataScope.preferenceKey('bilibili_audio_quality')) ??
+          30280;
+      _bilibiliVideoQuality =
+          prefs.getInt(dataScope.preferenceKey('bilibili_video_quality')) ?? 80;
       _neteasePlaybackSource = _readPlaybackSource(
-        prefs.getString(_playbackSourcePreferenceKey(MusicPlatform.netease)),
+        prefs.getString(
+          dataScope.preferenceKey(
+            _playbackSourcePreferenceKey(MusicPlatform.netease),
+          ),
+        ),
       );
       _qqPlaybackSource = _readPlaybackSource(
-        prefs.getString(_playbackSourcePreferenceKey(MusicPlatform.qq)),
+        prefs.getString(
+          dataScope.preferenceKey(
+            _playbackSourcePreferenceKey(MusicPlatform.qq),
+          ),
+        ),
       );
       _kugouPlaybackSource = _readPlaybackSource(
-        prefs.getString(_playbackSourcePreferenceKey(MusicPlatform.kugou)),
+        prefs.getString(
+          dataScope.preferenceKey(
+            _playbackSourcePreferenceKey(MusicPlatform.kugou),
+          ),
+        ),
       );
       _bilibiliLyricPlatformOrder = _readBilibiliLyricPlatformOrder(
-        prefs.getStringList(_bilibiliLyricPlatformOrderKey),
+        prefs.getStringList(
+          dataScope.preferenceKey(_bilibiliLyricPlatformOrderKey),
+        ),
       );
       _lyricOffsetStep = _normalizeLyricOffsetStep(
         Duration(
           milliseconds:
-              prefs.getInt(_lyricOffsetStepKey) ??
+              prefs.getInt(dataScope.preferenceKey(_lyricOffsetStepKey)) ??
               defaultLyricOffsetStep.inMilliseconds,
         ),
       );
-      final savedVideoPlayerMode = prefs.getString('video_player_mode');
+      final savedVideoPlayerMode = prefs.getString(
+        dataScope.preferenceKey('video_player_mode'),
+      );
       _videoPlayerMode = VideoPlayerMode.values.firstWhere(
         (mode) => mode.value == savedVideoPlayerMode,
         // 旧版的 built_in/system 都迁移到不依赖系统播放器的自动兼容模式。
@@ -835,8 +912,10 @@ class PlayerProvider extends ChangeNotifier {
     String label,
     Future<bool> Function(SharedPreferences prefs) write,
   ) async {
+    if (dataScope.isDeleted) return;
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (dataScope.isDeleted) return;
       await write(prefs);
     } catch (error, stack) {
       // Settings remain active in memory even when the platform store is
@@ -853,7 +932,7 @@ class PlayerProvider extends ChangeNotifier {
     _api.setApiKey(key);
     await _savePreference(
       'API Key',
-      (prefs) => prefs.setString('api_key', key),
+      (prefs) => prefs.setString(dataScope.preferenceKey('api_key'), key),
     );
     notifyListeners();
   }
@@ -865,7 +944,10 @@ class PlayerProvider extends ChangeNotifier {
     _playUrlResolvedAt.clear();
     await _savePreference(
       '网易云音质',
-      (prefs) => prefs.setString('netease_level', level.value),
+      (prefs) => prefs.setString(
+        dataScope.preferenceKey('netease_level'),
+        level.value,
+      ),
     );
     notifyListeners();
   }
@@ -877,7 +959,8 @@ class PlayerProvider extends ChangeNotifier {
     _playUrlResolvedAt.clear();
     await _savePreference(
       '通用音质',
-      (prefs) => prefs.setString('common_level', level.value),
+      (prefs) =>
+          prefs.setString(dataScope.preferenceKey('common_level'), level.value),
     );
     notifyListeners();
   }
@@ -907,8 +990,10 @@ class PlayerProvider extends ChangeNotifier {
     );
     await _savePreference(
       '${platform.label}音源',
-      (prefs) =>
-          prefs.setString(_playbackSourcePreferenceKey(platform), source.value),
+      (prefs) => prefs.setString(
+        dataScope.preferenceKey(_playbackSourcePreferenceKey(platform)),
+        source.value,
+      ),
     );
     notifyListeners();
   }
@@ -921,7 +1006,7 @@ class PlayerProvider extends ChangeNotifier {
     await _savePreference(
       'B 站歌词平台顺序',
       (prefs) => prefs.setStringList(
-        _bilibiliLyricPlatformOrderKey,
+        dataScope.preferenceKey(_bilibiliLyricPlatformOrderKey),
         normalized.map((platform) => platform.code).toList(growable: false),
       ),
     );
@@ -937,7 +1022,10 @@ class PlayerProvider extends ChangeNotifier {
     notifyListeners();
     await _savePreference(
       '歌词偏移步长',
-      (prefs) => prefs.setInt(_lyricOffsetStepKey, normalized.inMilliseconds),
+      (prefs) => prefs.setInt(
+        dataScope.preferenceKey(_lyricOffsetStepKey),
+        normalized.inMilliseconds,
+      ),
     );
   }
 
@@ -955,7 +1043,10 @@ class PlayerProvider extends ChangeNotifier {
     _videoPlayerMode = mode;
     await _savePreference(
       '视频播放器模式',
-      (prefs) => prefs.setString('video_player_mode', mode.value),
+      (prefs) => prefs.setString(
+        dataScope.preferenceKey('video_player_mode'),
+        mode.value,
+      ),
     );
     notifyListeners();
   }
@@ -975,7 +1066,10 @@ class PlayerProvider extends ChangeNotifier {
     _bilibiliAudioQuality = quality;
     await _savePreference(
       'B 站音频音质',
-      (prefs) => prefs.setInt('bilibili_audio_quality', quality),
+      (prefs) => prefs.setInt(
+        dataScope.preferenceKey('bilibili_audio_quality'),
+        quality,
+      ),
     );
     final song = currentSong;
     if (song?.platform == MusicPlatform.bilibili) {
@@ -996,7 +1090,10 @@ class PlayerProvider extends ChangeNotifier {
     _bilibiliVideoQuality = quality;
     await _savePreference(
       'B 站视频清晰度',
-      (prefs) => prefs.setInt('bilibili_video_quality', quality),
+      (prefs) => prefs.setInt(
+        dataScope.preferenceKey('bilibili_video_quality'),
+        quality,
+      ),
     );
     notifyListeners();
   }
@@ -1505,6 +1602,7 @@ class PlayerProvider extends ChangeNotifier {
       final cachedPath = await AudioCacheService.getCachedPath(
         platformCode: item.platform.code,
         songId: _audioCacheSongId(item),
+        scope: dataScope,
       );
       if (!_isCurrentRequest(requestId, item)) return;
 
@@ -1966,6 +2064,7 @@ class PlayerProvider extends ChangeNotifier {
         name: item.name,
         artist: item.artist,
         headers: headers,
+        scope: dataScope,
       );
       if (localPath != null) debugPrint('后台缓存完成: $localPath');
     } catch (error, stackTrace) {
@@ -2150,16 +2249,35 @@ class PlayerProvider extends ChangeNotifier {
   /// Saves the last playable session and releases active playback before the
   /// Android task is terminated. Repeated exit requests share one operation.
   Future<void> prepareForAppExit() {
-    return _exitPreparationFuture ??= _prepareForAppExit();
+    return _exitPreparationFuture ??= _prepareForSessionEnd();
   }
 
-  Future<void> _prepareForAppExit() async {
+  Future<void> prepareForUserSwitch() => _prepareForSessionEnd();
+
+  Future<void> cancelPreparedUserSwitch() async {
+    if (_disposed || _exitPreparationFuture != null) return;
+    final shouldResume = _resumeAfterCancelledUserSwitch;
+    _resumeAfterCancelledUserSwitch = false;
+    _preparingForExit = false;
+    if (!shouldResume || currentSong == null) return;
+    if (_audioPlayer.processingState == ProcessingState.idle) {
+      await _tryAudioCommand(
+        '恢复用户切换前的播放',
+        () => _playCurrent(resumePosition: _position),
+      );
+    } else {
+      await _tryAudioCommand('恢复用户切换前的播放', _audioPlayer.play);
+    }
+  }
+
+  Future<void> _prepareForSessionEnd() async {
     // Mark shutdown before restoration completes so an auto-resume cannot
     // start while the final snapshot is being prepared. The queue itself is
     // still restored and preserved below.
     _preparingForExit = true;
     try {
       await playbackStateReady;
+      _resumeAfterCancelledUserSwitch = _isPlaying || _restoredPlaybackPending;
       _cancelPendingPlaybackRestore();
       await historyReady;
     } catch (error, stackTrace) {
@@ -2181,11 +2299,14 @@ class PlayerProvider extends ChangeNotifier {
         ? _playbackStateSnapshot()
         : null;
 
-    try {
-      await _audioPlayer.stop().timeout(const Duration(seconds: 2));
-    } catch (error, stackTrace) {
-      debugPrint('退出前停止播放器失败: $error');
-      debugPrintStack(stackTrace: stackTrace);
+    if (_queue.isNotEmpty ||
+        _audioPlayer.processingState != ProcessingState.idle) {
+      try {
+        await _audioPlayer.stop().timeout(const Duration(seconds: 2));
+      } catch (error, stackTrace) {
+        debugPrint('退出前停止播放器失败: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
     }
 
     final pendingWrites = <Future<void>>[
@@ -2201,7 +2322,6 @@ class PlayerProvider extends ChangeNotifier {
         debugPrintStack(stackTrace: stackTrace);
       }
     }
-
     await Future.wait([
       _saveExitHistory(historySnapshot),
       if (playbackSnapshot != null) _saveExitPlaybackState(playbackSnapshot),
@@ -2210,7 +2330,7 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> _saveExitHistory(List<PlaybackHistoryEntry> snapshot) async {
     try {
-      await PlaybackHistoryService.save(snapshot);
+      await PlaybackHistoryService.save(snapshot, scope: dataScope);
     } catch (error, stackTrace) {
       debugPrint('退出前保存播放历史失败: $error');
       debugPrintStack(stackTrace: stackTrace);
@@ -2219,7 +2339,7 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> _saveExitPlaybackState(PlaybackSessionSnapshot snapshot) async {
     try {
-      await PlaybackStateService.save(snapshot);
+      await PlaybackStateService.save(snapshot, scope: dataScope);
     } catch (error, stackTrace) {
       debugPrint('退出前保存播放会话失败: $error');
       debugPrintStack(stackTrace: stackTrace);

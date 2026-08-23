@@ -12,6 +12,7 @@ import 'providers/ai_config_controller.dart';
 import 'providers/player_provider.dart';
 import 'providers/search_session.dart';
 import 'providers/theme_controller.dart';
+import 'providers/user_controller.dart';
 import 'screens/discover_screen.dart';
 import 'screens/player_screen.dart';
 import 'screens/search_screen.dart';
@@ -21,6 +22,7 @@ import 'services/favorite_service.dart';
 import 'services/app_exit_service.dart';
 import 'services/floating_capsule_service.dart';
 import 'services/player_media_handler.dart';
+import 'services/user_data_scope.dart';
 import 'theme/app_layout.dart';
 import 'theme/app_motion.dart';
 import 'theme/app_theme.dart';
@@ -54,8 +56,10 @@ void main() async {
   // player can restore a paused queue immediately, and that song should still
   // be available in the always-on-top window.
   FloatingCapsuleService.init();
-  await FloatingCapsuleService.restoreEnabled();
-  final player = PlayerProvider();
+  final users = UserController();
+  await users.ready;
+  await FloatingCapsuleService.restoreEnabled(scope: users.activeScope);
+  final player = PlayerProvider(dataScope: users.activeScope);
   try {
     final audioSession = await AudioSession.instance;
     await audioSession.configure(const AudioSessionConfiguration.music());
@@ -64,8 +68,9 @@ void main() async {
     debugPrintStack(stackTrace: stack);
   }
   // 系统媒体会话：通知栏、锁屏和车机方向盘共用应用内播放队列。
+  PlayerMediaHandler? mediaHandler;
   try {
-    await AudioService.init(
+    mediaHandler = await AudioService.init<PlayerMediaHandler>(
       builder: () => PlayerMediaHandler(player),
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'com.example.music_player_app.audio',
@@ -82,14 +87,15 @@ void main() async {
   }
   // Some car launchers deliver next/previous to the foreground Activity
   // instead of the active MediaSession. Keep a narrow fallback for that path.
+  var activePlayer = player;
   _foregroundMediaKeyChannel.setMethodCallHandler((call) async {
     try {
       switch (call.method) {
         case 'next':
-          await player.playNext();
+          await activePlayer.playNext();
           break;
         case 'previous':
-          await player.playPrevious();
+          await activePlayer.playPrevious();
           break;
       }
     } catch (error) {
@@ -99,7 +105,7 @@ void main() async {
   });
   bool? foregroundMediaKeysEnabled;
   void syncForegroundMediaKeys() {
-    final enabled = player.currentSong != null && player.isPlaying;
+    final enabled = activePlayer.currentSong != null && activePlayer.isPlaying;
     if (foregroundMediaKeysEnabled == enabled) return;
     foregroundMediaKeysEnabled = enabled;
     unawaited(
@@ -109,35 +115,137 @@ void main() async {
     );
   }
 
-  player.addListener(syncForegroundMediaKeys);
+  void bindSystemPlayer(PlayerProvider next) {
+    if (identical(activePlayer, next)) return;
+    activePlayer.removeListener(syncForegroundMediaKeys);
+    activePlayer = next;
+    mediaHandler?.bindPlayer(next);
+    foregroundMediaKeysEnabled = null;
+    activePlayer.addListener(syncForegroundMediaKeys);
+    syncForegroundMediaKeys();
+  }
+
+  activePlayer.addListener(syncForegroundMediaKeys);
   syncForegroundMediaKeys();
   // Android 13+ 请求通知权限（否则系统媒体通知不显示）
   try {
     await Permission.notification.request();
   } catch (_) {}
-  runApp(MusicPlayerApp(player: player));
+  runApp(
+    MusicPlayerApp(
+      player: player,
+      users: users,
+      bindSystemPlayer: bindSystemPlayer,
+    ),
+  );
 }
 
-class MusicPlayerApp extends StatelessWidget {
-  const MusicPlayerApp({super.key, required this.player});
+class MusicPlayerApp extends StatefulWidget {
+  const MusicPlayerApp({
+    super.key,
+    required this.player,
+    required this.users,
+    required this.bindSystemPlayer,
+  });
 
   final PlayerProvider player;
+  final UserController users;
+  final void Function(PlayerProvider player) bindSystemPlayer;
+
+  @override
+  State<MusicPlayerApp> createState() => _MusicPlayerAppState();
+}
+
+class _MusicPlayerAppState extends State<MusicPlayerApp> {
+  late _UserSession _session;
+
+  @override
+  void initState() {
+    super.initState();
+    _session = _UserSession(
+      scope: widget.users.activeScope,
+      player: widget.player,
+    );
+    widget.users.attachSessionSwitcher(_switchUserSession);
+    FloatingCapsuleService.onPlayPauseTap = () => _session.player.playPause();
+    FloatingCapsuleService.onCapsuleTap = () {
+      final context = _navigatorKey.currentContext;
+      if (context != null) {
+        _navigatorKey.currentState?.push(PlayerScreen.route(context));
+      }
+    };
+  }
+
+  Future<void> _switchUserSession(String userId) async {
+    if (userId == _session.scope.userId) return;
+    final target = _UserSession(
+      scope: UserDataScope(userId),
+      activateRestoredSession: false,
+    );
+    var previousPrepared = false;
+    try {
+      await target.ready;
+      await _session.aiAssistant.stopSession(restoreMusic: false);
+      await _session.player.prepareForUserSwitch();
+      previousPrepared = true;
+      if (!mounted) throw StateError('应用正在关闭，无法切换用户');
+      await widget.users.activatePreparedUser(userId);
+      if (!mounted) {
+        target.dispose();
+        return;
+      }
+      final previous = _session;
+      setState(() => _session = target);
+      WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
+      try {
+        _navigatorKey.currentState?.popUntil((route) => route.isFirst);
+        widget.bindSystemPlayer(target.player);
+        await FloatingCapsuleService.hide();
+        await FloatingCapsuleService.restoreEnabled(scope: target.scope);
+        await target.player.activateRestoredSession();
+      } catch (error, stackTrace) {
+        // The user/session commit is already complete. Optional platform
+        // integrations must not roll the UI back to providers being disposed.
+        debugPrint('切换用户后同步系统播放状态失败: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+    } catch (error) {
+      if (previousPrepared && _session.scope.userId != userId) {
+        await _session.player.cancelPreparedUserSwitch();
+      }
+      if (!identical(_session, target)) target.dispose();
+      rethrow;
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.users.detachSessionSwitcher();
+    FloatingCapsuleService.onPlayPauseTap = null;
+    FloatingCapsuleService.onCapsuleTap = null;
+    _session.dispose();
+    widget.users.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
+      key: ValueKey('user-session-${_session.scope.userId}'),
       providers: [
-        ChangeNotifierProvider<PlayerProvider>.value(value: player),
-        ChangeNotifierProvider(create: (_) => AiConfigController()),
-        ChangeNotifierProvider(
-          create: (context) => AiAssistantController(
-            player: player,
-            configController: context.read<AiConfigController>(),
-          ),
+        ChangeNotifierProvider<UserController>.value(value: widget.users),
+        ChangeNotifierProvider<PlayerProvider>.value(value: _session.player),
+        ChangeNotifierProvider<AiConfigController>.value(
+          value: _session.aiConfig,
         ),
-        ChangeNotifierProvider(create: (_) => SearchSession()),
-        ChangeNotifierProvider(create: (_) => ThemeController()),
-        ChangeNotifierProvider(create: (_) => FavoriteService()..load()),
+        ChangeNotifierProvider<AiAssistantController>.value(
+          value: _session.aiAssistant,
+        ),
+        ChangeNotifierProvider<SearchSession>.value(value: _session.search),
+        ChangeNotifierProvider<ThemeController>.value(value: _session.theme),
+        ChangeNotifierProvider<FavoriteService>.value(
+          value: _session.favorites,
+        ),
       ],
       child: Consumer<ThemeController>(
         builder: (context, themeCtrl, _) {
@@ -157,15 +265,6 @@ class MusicPlayerApp extends StatelessWidget {
             builder: (context, child) {
               AppColors.syncWithTheme(context);
               applySystemUi(dark: AppColors.isDark);
-              // 注入系统悬浮窗胶囊回调（仅一次）
-              if (FloatingCapsuleService.onPlayPauseTap == null) {
-                FloatingCapsuleService.onPlayPauseTap = () {
-                  context.read<PlayerProvider>().playPause();
-                };
-                FloatingCapsuleService.onCapsuleTap = () {
-                  _navigatorKey.currentState?.push(PlayerScreen.route(context));
-                };
-              }
               // 在车机大屏上统一放大未显式使用 AppLayout 尺寸令牌的文字，
               // 同时合并系统无障碍字号和用户设置的整体字号比例。
               return TvRemoteScope(
@@ -179,11 +278,64 @@ class MusicPlayerApp extends StatelessWidget {
                 ),
               );
             },
-            home: const MainScreen(),
+            home: MainScreen(key: ValueKey(_session.scope.userId)),
           );
         },
       ),
     );
+  }
+}
+
+class _UserSession {
+  final UserDataScope scope;
+  final PlayerProvider player;
+  late final AiConfigController aiConfig;
+  late final AiAssistantController aiAssistant;
+  late final SearchSession search;
+  late final ThemeController theme;
+  late final FavoriteService favorites;
+  bool _disposed = false;
+
+  _UserSession({
+    required this.scope,
+    PlayerProvider? player,
+    bool activateRestoredSession = true,
+  }) : player =
+           player ??
+           PlayerProvider(
+             dataScope: scope,
+             activateRestoredSession: activateRestoredSession,
+           ) {
+    aiConfig = AiConfigController(dataScope: scope);
+    aiAssistant = AiAssistantController(
+      player: this.player,
+      configController: aiConfig,
+    );
+    search = SearchSession(dataScope: scope);
+    theme = ThemeController(dataScope: scope);
+    favorites = FavoriteService(dataScope: scope);
+    ready = Future.wait<void>([
+      this.player.settingsReady,
+      this.player.historyReady,
+      this.player.playbackStateReady,
+      aiConfig.ready,
+      search.historyReady,
+      theme.ready,
+      favorites.load(),
+    ]);
+  }
+
+  late final Future<void> ready;
+
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    aiAssistant.dispose();
+    aiConfig.dispose();
+    search.dispose();
+    theme.dispose();
+    favorites.dispose();
+    player.dispose();
   }
 }
 

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/song.dart';
+import 'user_data_scope.dart';
 
 /// A persisted playback entry. Playback URLs are deliberately excluded because
 /// most platform URLs expire; clicking an entry resolves a fresh URL again.
@@ -69,10 +70,12 @@ class PlaybackHistoryService {
     return '${song.platform.code}:${song.id}';
   }
 
-  static Future<List<PlaybackHistoryEntry>> load() async {
+  static Future<List<PlaybackHistoryEntry>> load({
+    UserDataScope scope = UserDataScope.defaultScope,
+  }) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(preferenceKey);
+      final raw = prefs.getString(scope.preferenceKey(preferenceKey));
       if (raw == null || raw.trim().isEmpty) return [];
       final decoded = jsonDecode(raw);
       if (decoded is! List) return [];
@@ -94,9 +97,17 @@ class PlaybackHistoryService {
     }
   }
 
-  static Future<void> save(List<PlaybackHistoryEntry> entries) async {
+  static Future<void> save(
+    List<PlaybackHistoryEntry> entries, {
+    UserDataScope scope = UserDataScope.defaultScope,
+  }) async {
+    if (scope.isDeleted) return;
     final prefs = await SharedPreferences.getInstance();
+    if (scope.isDeleted) return;
     final normalized = entries.take(maxEntries).map((entry) => entry.toJson());
-    await prefs.setString(preferenceKey, jsonEncode(normalized.toList()));
+    await prefs.setString(
+      scope.preferenceKey(preferenceKey),
+      jsonEncode(normalized.toList()),
+    );
   }
 }

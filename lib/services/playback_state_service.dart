@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/song.dart';
+import 'user_data_scope.dart';
 
 /// The local playback session that should survive an app restart.
 ///
@@ -90,10 +91,12 @@ class PlaybackStateService {
 
   const PlaybackStateService._();
 
-  static Future<PlaybackSessionSnapshot?> load() async {
+  static Future<PlaybackSessionSnapshot?> load({
+    UserDataScope scope = UserDataScope.defaultScope,
+  }) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(preferenceKey);
+      final raw = prefs.getString(scope.preferenceKey(preferenceKey));
       if (raw == null || raw.trim().isEmpty) return null;
       final decoded = jsonDecode(raw);
       if (decoded is! Map) return null;
@@ -105,8 +108,16 @@ class PlaybackStateService {
     }
   }
 
-  static Future<void> save(PlaybackSessionSnapshot snapshot) async {
+  static Future<void> save(
+    PlaybackSessionSnapshot snapshot, {
+    UserDataScope scope = UserDataScope.defaultScope,
+  }) async {
+    if (scope.isDeleted) return;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(preferenceKey, jsonEncode(snapshot.toJson()));
+    if (scope.isDeleted) return;
+    await prefs.setString(
+      scope.preferenceKey(preferenceKey),
+      jsonEncode(snapshot.toJson()),
+    );
   }
 }

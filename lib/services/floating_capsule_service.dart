@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'user_data_scope.dart';
+
 /// 车机迷你窗（系统级悬浮窗）原生桥接。
 ///
 /// Android 使用 TYPE_APPLICATION_OVERLAY，因此用户切换到其他应用后，
@@ -22,29 +24,42 @@ class FloatingCapsuleService {
   static void setEnabled(bool value) => _enabled = value;
 
   /// 恢复迷你窗开关。旧版本的胶囊开关会自动迁移到新设置键。
-  static Future<bool> restoreEnabled() async {
+  static Future<bool> restoreEnabled({
+    UserDataScope scope = UserDataScope.defaultScope,
+  }) async {
+    if (scope.isDeleted) {
+      _enabled = false;
+      return false;
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
       final value =
-          prefs.getBool(preferenceKey) ??
-          prefs.getBool(legacyPreferenceKey) ??
+          prefs.getBool(scope.preferenceKey(preferenceKey)) ??
+          prefs.getBool(scope.preferenceKey(legacyPreferenceKey)) ??
           false;
       _enabled = value;
-      if (!prefs.containsKey(preferenceKey)) {
-        await prefs.setBool(preferenceKey, value);
+      final scopedKey = scope.preferenceKey(preferenceKey);
+      if (!prefs.containsKey(scopedKey)) {
+        await prefs.setBool(scopedKey, value);
       }
       return value;
     } catch (_) {
-      return _enabled;
+      _enabled = false;
+      return false;
     }
   }
 
   /// 保存开关，失败时不影响播放器或页面操作。
-  static Future<void> persistEnabled(bool value) async {
+  static Future<void> persistEnabled(
+    bool value, {
+    UserDataScope scope = UserDataScope.defaultScope,
+  }) async {
     _enabled = value;
+    if (scope.isDeleted) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(preferenceKey, value);
+      if (scope.isDeleted) return;
+      await prefs.setBool(scope.preferenceKey(preferenceKey), value);
     } catch (_) {}
   }
 

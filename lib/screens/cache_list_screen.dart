@@ -29,7 +29,9 @@ class _CacheListScreenState extends State<CacheListScreen> {
     if (!mounted) return;
     setState(() => _loading = true);
     try {
-      final list = await AudioCacheService.getCacheList();
+      final list = await AudioCacheService.getCacheList(
+        scope: context.read<PlayerProvider>().dataScope,
+      );
       if (mounted) setState(() => _cacheList = list);
     } catch (_) {}
     if (mounted) setState(() => _loading = false);
@@ -37,7 +39,11 @@ class _CacheListScreenState extends State<CacheListScreen> {
 
   Future<void> _removeCache(CachedSongInfo info) async {
     try {
-      await AudioCacheService.removeCache(info.platformCode, info.songId);
+      await AudioCacheService.removeCache(
+        info.platformCode,
+        info.songId,
+        scope: context.read<PlayerProvider>().dataScope,
+      );
       if (!mounted) return;
       await _loadCacheList();
     } catch (error) {
@@ -75,7 +81,9 @@ class _CacheListScreenState extends State<CacheListScreen> {
 
   Future<void> _clearAllCache() async {
     try {
-      final totalSize = await AudioCacheService.getCacheSize();
+      final totalSize = await AudioCacheService.getCacheSize(
+        scope: context.read<PlayerProvider>().dataScope,
+      );
       if (!mounted) return;
       final confirmed = await showDialog<bool>(
         context: context,
@@ -100,7 +108,9 @@ class _CacheListScreenState extends State<CacheListScreen> {
       );
       if (confirmed != true || !mounted) return;
 
-      await AudioCacheService.clearCache();
+      await AudioCacheService.clearCache(
+        scope: context.read<PlayerProvider>().dataScope,
+      );
       if (!mounted) return;
       await _loadCacheList();
       if (mounted) {

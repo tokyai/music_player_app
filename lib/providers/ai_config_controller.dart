@@ -5,6 +5,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/ai_assistant.dart';
+import '../services/user_data_scope.dart';
 
 abstract class AiSecretStore {
   Future<String?> read();
@@ -15,13 +16,23 @@ class SecureAiSecretStore implements AiSecretStore {
   static const _key = 'ai_assistant_api_key';
   static const _storage = FlutterSecureStorage();
 
-  const SecureAiSecretStore();
+  final UserDataScope dataScope;
+
+  const SecureAiSecretStore({this.dataScope = UserDataScope.defaultScope});
 
   @override
-  Future<String?> read() => _storage.read(key: _key);
+  Future<String?> read() async {
+    if (dataScope.isDeleted) return null;
+    return _storage.read(key: dataScope.secureStorageKey(_key));
+  }
 
   @override
-  Future<void> write(String value) => _storage.write(key: _key, value: value);
+  Future<void> write(String value) async {
+    if (dataScope.isDeleted) return;
+    final key = dataScope.secureStorageKey(_key);
+    await _storage.write(key: key, value: value);
+    if (dataScope.isDeleted) await _storage.delete(key: key);
+  }
 }
 
 class MemoryAiSecretStore implements AiSecretStore {
@@ -55,6 +66,7 @@ class AiConfigController extends ChangeNotifier {
   static const maxPetScale = 2.0;
 
   final AiSecretStore _secretStore;
+  final UserDataScope dataScope;
   final List<AiAssistantProfile> _profiles = [];
   final Map<String, String> _apiKeys = {};
   AiAssistantConfig _config = AiAssistantConfig.defaults();
@@ -65,8 +77,10 @@ class AiConfigController extends ChangeNotifier {
   AiPetPosition _petPosition = AiPetPosition.centered;
   bool _disposed = false;
 
-  AiConfigController({AiSecretStore? secretStore})
-    : _secretStore = secretStore ?? const SecureAiSecretStore() {
+  AiConfigController({
+    AiSecretStore? secretStore,
+    this.dataScope = UserDataScope.defaultScope,
+  }) : _secretStore = secretStore ?? SecureAiSecretStore(dataScope: dataScope) {
     ready = _load();
   }
 
@@ -359,18 +373,34 @@ class AiConfigController extends ChangeNotifier {
       final prefs = results[0] as SharedPreferences;
       _apiKeys.addAll(_decodeSecretMap(results[1] as String?));
       _showAssistantOnAllPages =
-          prefs.getBool(showAssistantOnAllPagesPreferenceKey) ?? true;
+          prefs.getBool(
+            dataScope.preferenceKey(showAssistantOnAllPagesPreferenceKey),
+          ) ??
+          true;
       _showPetOnPlayerPage =
-          prefs.getBool(showPetOnPlayerPagePreferenceKey) ?? true;
+          prefs.getBool(
+            dataScope.preferenceKey(showPetOnPlayerPagePreferenceKey),
+          ) ??
+          true;
       _petScale = _normalizePetScale(
-        prefs.getDouble(petScalePreferenceKey) ?? 1,
+        prefs.getDouble(dataScope.preferenceKey(petScalePreferenceKey)) ?? 1,
       );
       _petPosition = AiPetPosition(
-        x: prefs.getDouble(petPositionXPreferenceKey) ?? 1,
-        y: prefs.getDouble(petPositionYPreferenceKey) ?? 0,
+        x:
+            prefs.getDouble(
+              dataScope.preferenceKey(petPositionXPreferenceKey),
+            ) ??
+            1,
+        y:
+            prefs.getDouble(
+              dataScope.preferenceKey(petPositionYPreferenceKey),
+            ) ??
+            0,
       ).normalized();
 
-      final profilesRaw = prefs.getString(_profilesPreferencesKey);
+      final profilesRaw = prefs.getString(
+        dataScope.preferenceKey(_profilesPreferencesKey),
+      );
       if (profilesRaw != null) {
         final decoded = jsonDecode(profilesRaw);
         if (decoded is List) {
@@ -394,7 +424,9 @@ class AiConfigController extends ChangeNotifier {
       }
 
       if (_profiles.isEmpty) {
-        final legacyRaw = prefs.getString(_legacyPreferencesKey);
+        final legacyRaw = prefs.getString(
+          dataScope.preferenceKey(_legacyPreferencesKey),
+        );
         if (legacyRaw != null) {
           final decoded = jsonDecode(legacyRaw);
           if (decoded is Map) {
@@ -419,7 +451,9 @@ class AiConfigController extends ChangeNotifier {
         _profiles.add(profile);
         _apiKeys[profile.id] = profile.config.apiKey;
       }
-      final requested = prefs.getString(_activeProfilePreferenceKey);
+      final requested = prefs.getString(
+        dataScope.preferenceKey(_activeProfilePreferenceKey),
+      );
       _activeProfileId = _profiles.any((profile) => profile.id == requested)
           ? requested!
           : _profiles.first.id;
@@ -452,17 +486,20 @@ class AiConfigController extends ChangeNotifier {
   }
 
   Future<void> _persist() async {
+    if (dataScope.isDeleted) return;
     // Settings callbacks are allowed to return a Future, but Flutter does
     // not await callback results. A storage/plugin failure must therefore be
     // contained here instead of becoming an uncaught async error.
     SharedPreferences prefs;
     try {
       prefs = await SharedPreferences.getInstance();
+      if (dataScope.isDeleted) return;
     } catch (error, stackTrace) {
       debugPrint('保存 AI 助理偏好失败: $error\n$stackTrace');
       return;
     }
 
+    if (dataScope.isDeleted) return;
     try {
       await _secretStore.write(jsonEncode(_apiKeys));
     } catch (error, stackTrace) {
@@ -472,20 +509,35 @@ class AiConfigController extends ChangeNotifier {
     try {
       await Future.wait([
         prefs.setString(
-          _profilesPreferencesKey,
+          dataScope.preferenceKey(_profilesPreferencesKey),
           jsonEncode(
             _profiles.map((profile) => profile.toPreferencesJson()).toList(),
           ),
         ),
-        prefs.setString(_activeProfilePreferenceKey, _activeProfileId),
+        prefs.setString(
+          dataScope.preferenceKey(_activeProfilePreferenceKey),
+          _activeProfileId,
+        ),
         prefs.setBool(
-          showAssistantOnAllPagesPreferenceKey,
+          dataScope.preferenceKey(showAssistantOnAllPagesPreferenceKey),
           _showAssistantOnAllPages,
         ),
-        prefs.setBool(showPetOnPlayerPagePreferenceKey, _showPetOnPlayerPage),
-        prefs.setDouble(petScalePreferenceKey, _petScale),
-        prefs.setDouble(petPositionXPreferenceKey, _petPosition.x),
-        prefs.setDouble(petPositionYPreferenceKey, _petPosition.y),
+        prefs.setBool(
+          dataScope.preferenceKey(showPetOnPlayerPagePreferenceKey),
+          _showPetOnPlayerPage,
+        ),
+        prefs.setDouble(
+          dataScope.preferenceKey(petScalePreferenceKey),
+          _petScale,
+        ),
+        prefs.setDouble(
+          dataScope.preferenceKey(petPositionXPreferenceKey),
+          _petPosition.x,
+        ),
+        prefs.setDouble(
+          dataScope.preferenceKey(petPositionYPreferenceKey),
+          _petPosition.y,
+        ),
       ]);
     } catch (error, stackTrace) {
       debugPrint('保存 AI 助理偏好失败: $error\n$stackTrace');

@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/song.dart';
 import 'bounded_http_response.dart';
+import 'user_data_scope.dart';
 
 class BilibiliUser {
   final int mid;
@@ -119,10 +120,13 @@ class BilibiliService extends ChangeNotifier {
   BilibiliUser? _user;
   bool _accountLoading = false;
   bool _disposed = false;
+  final UserDataScope dataScope;
 
-  BilibiliService({http.Client? client})
-    : _client = client ?? http.Client(),
-      _ownsClient = client == null {
+  BilibiliService({
+    http.Client? client,
+    this.dataScope = UserDataScope.defaultScope,
+  }) : _client = client ?? http.Client(),
+       _ownsClient = client == null {
     ready = _loadSession();
   }
 
@@ -150,7 +154,9 @@ class BilibiliService extends ChangeNotifier {
   Future<void> _loadSession() async {
     try {
       final preferences = await SharedPreferences.getInstance();
-      _cookie = preferences.getString(_cookiePreferenceKey);
+      _cookie = preferences.getString(
+        dataScope.preferenceKey(_cookiePreferenceKey),
+      );
     } catch (error) {
       _cookie = null;
       debugPrint('读取 B 站会话失败: $error');
@@ -243,6 +249,7 @@ class BilibiliService extends ChangeNotifier {
     http.Response response,
     Map<String, dynamic> data,
   ) async {
+    if (dataScope.isDeleted) return;
     final cookies = <String, String>{};
     final callback = Uri.tryParse(data['url']?.toString() ?? '');
     if (callback != null) {
@@ -269,8 +276,11 @@ class BilibiliService extends ChangeNotifier {
         .map((entry) => '${entry.key}=${entry.value}')
         .join('; ');
     final preferences = await SharedPreferences.getInstance();
-    if (_disposed) return;
-    await preferences.setString(_cookiePreferenceKey, _cookie!);
+    if (_disposed || dataScope.isDeleted) return;
+    await preferences.setString(
+      dataScope.preferenceKey(_cookiePreferenceKey),
+      _cookie!,
+    );
     if (_disposed) return;
     await refreshAccount();
   }
@@ -284,14 +294,15 @@ class BilibiliService extends ChangeNotifier {
   ];
 
   Future<void> logout() async {
-    if (_disposed) return;
+    if (_disposed || dataScope.isDeleted) return;
     _cookie = null;
     _user = null;
     _mixinKey = null;
     _mixinKeyExpiresAt = null;
     try {
       final preferences = await SharedPreferences.getInstance();
-      await preferences.remove(_cookiePreferenceKey);
+      if (dataScope.isDeleted) return;
+      await preferences.remove(dataScope.preferenceKey(_cookiePreferenceKey));
     } catch (error) {
       debugPrint('清除 B 站会话失败: $error');
     }

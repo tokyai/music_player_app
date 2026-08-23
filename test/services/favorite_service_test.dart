@@ -167,7 +167,7 @@ void main() {
     },
   );
 
-  test('version 3 backup separates Bilibili favorites', () async {
+  test('version 4 backup separates Bilibili favorites by user', () async {
     final service = FavoriteService();
     await service.toggle(_song(MusicPlatform.qq, 'song-1', 'Song One'));
     await service.toggle(_song(MusicPlatform.bilibili, 'BV1test', 'Video One'));
@@ -184,7 +184,8 @@ void main() {
 
     final raw = service.exportJson(apiKey: 'api-key-for-backup');
     final exported = jsonDecode(raw) as Map<String, dynamic>;
-    expect(exported['version'], 3);
+    expect(exported['version'], 4);
+    expect(exported['userDataVersion'], 1);
     expect(exported['songs'], hasLength(1));
     expect(exported['bilibili'], hasLength(1));
     expect(exported['playlists'], hasLength(1));

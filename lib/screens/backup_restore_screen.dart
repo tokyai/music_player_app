@@ -57,7 +57,9 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
 
   Future<void> _loadConfig() async {
     try {
-      final config = await WebDavConfig.load();
+      final config = await WebDavConfig.load(
+        dataScope: context.read<PlayerProvider>().dataScope,
+      );
       if (!mounted) return;
       setState(() {
         _urlController.text = config.url;
@@ -166,7 +168,8 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     if (result.playerSettingsRestored) parts.add('播放器设置');
     final skipped =
         result.songsSkipped + result.bilibiliSkipped + result.playlistsSkipped;
-    return '恢复完成：${parts.join('，')}${skipped > 0 ? '（重复或无效项目已跳过）' : ''}';
+    final target = result.restoredToDefaultUser ? '默认用户：' : '';
+    return '恢复完成：$target${parts.join('，')}${skipped > 0 ? '（重复或无效项目已跳过）' : ''}';
   }
 
   Future<String?> _showPasteDialog() async {
@@ -184,12 +187,9 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
             maxLines: 12,
             maxLength: BackupService.maxBackupBytes,
             maxLengthEnforcement: MaxLengthEnforcement.enforced,
-            buildCounter: (
-              _, {
-              required currentLength,
-              required isFocused,
-              maxLength,
-            }) => null,
+            buildCounter:
+                (_, {required currentLength, required isFocused, maxLength}) =>
+                    null,
             decoration: const InputDecoration(hintText: 'JSON 内容'),
           ),
         ),
@@ -298,6 +298,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       certificateSha256: WebDavConfig.normalizeFingerprint(
         _fingerprintController.text,
       ),
+      dataScope: context.read<PlayerProvider>().dataScope,
     );
   }
 

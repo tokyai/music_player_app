@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/song.dart';
+import '../models/app_user.dart';
 import '../providers/player_provider.dart';
+import '../providers/user_controller.dart';
 import '../services/favorite_service.dart';
 import '../services/playback_history_service.dart';
 import '../theme/app_layout.dart';
@@ -13,6 +15,7 @@ import '../widgets/favorite_playlist_card.dart';
 import '../widgets/remote_focusable.dart';
 import '../widgets/song_tile.dart';
 import '../widgets/smart_cover.dart';
+import '../widgets/app_user_avatar.dart';
 import 'favorites_screen.dart';
 import 'playback_history_screen.dart';
 import 'player_screen.dart';
@@ -199,6 +202,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   /// 顶部问候区
   Widget _buildHeader() {
     final layout = AppLayout.fromContext(context);
+    final users = Provider.of<UserController?>(context);
+    final user = users?.activeUser ?? AppUserProfile.defaultUser;
     final hour = DateTime.now().hour;
     final greet = hour < 6
         ? '夜深了'
@@ -216,13 +221,21 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
       ),
       child: Row(
         children: [
-          ClipRRect(
+          RemoteFocusable(
+            key: const ValueKey('home-user-avatar'),
             borderRadius: BorderRadius.circular(AppRadius.media),
-            child: Image.asset(
-              'assets/images/app_logo.png',
-              width: layout.usesLargeTypography ? 60 : 48,
-              height: layout.usesLargeTypography ? 60 : 48,
-              fit: BoxFit.cover,
+            onPressed: users == null || users.switching
+                ? null
+                : () => _showUserSwitcher(users),
+            child: Tooltip(
+              message: '切换用户',
+              child: Padding(
+                padding: const EdgeInsets.all(2),
+                child: AppUserAvatar(
+                  user: user,
+                  size: layout.usesLargeTypography ? 60 : 48,
+                ),
+              ),
             ),
           ),
           const SizedBox(width: 12),
@@ -231,7 +244,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '$greet 👋',
+                  '$greet，${user.name}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
@@ -256,6 +269,47 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _showUserSwitcher(UserController users) async {
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        key: const ValueKey('user-switch-dialog'),
+        title: const Text('切换用户'),
+        children: [
+          for (final user in users.users)
+            SimpleDialogOption(
+              key: ValueKey('user-switch-${user.id}'),
+              onPressed: () => Navigator.pop(dialogContext, user.id),
+              child: Row(
+                children: [
+                  AppUserAvatar(user: user, size: 44),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      user.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (user.id == users.activeUserId)
+                    Icon(Icons.check_rounded, color: AppColors.primary),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+    if (selected == null || selected == users.activeUserId || !mounted) return;
+    try {
+      await users.switchUser(selected);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('切换用户失败：$error')));
+    }
   }
 
   Widget _buildSectionHeader(

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/song.dart';
+import 'user_data_scope.dart';
 
 enum FavoriteImportMode { merge, replace }
 
@@ -38,7 +39,7 @@ class FavoriteService extends ChangeNotifier {
   static const String _prefsKey = 'favorites';
   static const String _playlistPrefsKey = 'favorite_playlists';
   static const String exportFormat = 'kuzai_music_favorites';
-  static const int exportVersion = 3;
+  static const int exportVersion = 4;
 
   final List<SongSearchResult> _favorites = [];
   final List<FavoritePlaylist> _favoritePlaylists = [];
@@ -48,6 +49,10 @@ class FavoriteService extends ChangeNotifier {
   List<FavoritePlaylist>? _favoritePlaylistsView;
   bool _loaded = false;
   bool _disposed = false;
+
+  final UserDataScope dataScope;
+
+  FavoriteService({this.dataScope = UserDataScope.defaultScope});
 
   List<SongSearchResult> get favorites => _favoritesView ??= List.unmodifiable(
     _favorites.where((song) => song.platform != MusicPlatform.bilibili),
@@ -93,7 +98,7 @@ class FavoriteService extends ChangeNotifier {
     if (_loaded || _disposed) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_prefsKey);
+      final raw = prefs.getString(dataScope.preferenceKey(_prefsKey));
       if (raw != null && raw.isNotEmpty) {
         final decoded = _decodeBackup(raw);
         _favorites
@@ -101,7 +106,9 @@ class FavoriteService extends ChangeNotifier {
           ..addAll(decoded.songs)
           ..addAll(decoded.bilibili);
       }
-      final playlistRaw = prefs.getString(_playlistPrefsKey);
+      final playlistRaw = prefs.getString(
+        dataScope.preferenceKey(_playlistPrefsKey),
+      );
       if (playlistRaw != null && playlistRaw.isNotEmpty) {
         _favoritePlaylists
           ..clear()
@@ -284,7 +291,7 @@ class FavoriteService extends ChangeNotifier {
 
   /// 导出统一备份。API Key 由调用方传入，避免收藏服务直接依赖播放器。
   ///
-  /// 版本 3 将音乐歌曲与 B站收藏分开保存，同时保留歌单元数据和 API Key。
+  /// 版本 4 标记备份属于单个用户；版本 3 及更早版本还原到默认用户。
   /// 歌单曲目不写入备份，还原后会按平台重新获取最新曲目。
   Map<String, dynamic> exportData({String? apiKey}) {
     final songs = <Map<String, dynamic>>[];
@@ -300,6 +307,7 @@ class FavoriteService extends ChangeNotifier {
     return {
       'format': exportFormat,
       'version': exportVersion,
+      'userDataVersion': 1,
       'exportedAt': DateTime.now().toUtc().toIso8601String(),
       'songs': songs,
       'bilibili': bilibili,
@@ -633,10 +641,12 @@ class FavoriteService extends ChangeNotifier {
   }
 
   Future<void> _save() async {
+    if (dataScope.isDeleted) return;
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (dataScope.isDeleted) return;
       await prefs.setString(
-        _prefsKey,
+        dataScope.preferenceKey(_prefsKey),
         jsonEncode(_favorites.map((song) => song.toJson()).toList()),
       );
     } catch (error) {
@@ -647,10 +657,12 @@ class FavoriteService extends ChangeNotifier {
   }
 
   Future<void> _savePlaylists() async {
+    if (dataScope.isDeleted) return;
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (dataScope.isDeleted) return;
       await prefs.setString(
-        _playlistPrefsKey,
+        dataScope.preferenceKey(_playlistPrefsKey),
         jsonEncode(
           _favoritePlaylists.map((playlist) => playlist.toJson()).toList(),
         ),
