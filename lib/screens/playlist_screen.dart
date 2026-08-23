@@ -113,12 +113,18 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
       case MusicPlatform.qq:
         if (savedMetadata == null) {
           final playlist = await player.api.qqPlaylist(id);
-          return (playlist, playlist.tracks.length < playlist.trackCount);
+          return (
+            _copyPlaylist(
+              playlist,
+              List<SongSearchResult>.of(playlist.tracks, growable: true),
+            ),
+            playlist.tracks.length < playlist.trackCount,
+          );
         }
         final page = await player.api.qqPlaylistTracks(id, limit: _pageSize);
         final playlist = _copyPlaylist(
           savedMetadata,
-          page.tracks,
+          List<SongSearchResult>.of(page.tracks, growable: true),
           trackCount: page.total,
         );
         return (playlist, page.hasMore(0, _pageSize));
@@ -131,7 +137,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
         );
         final playlist = _copyPlaylist(
           metadata,
-          page.tracks,
+          List<SongSearchResult>.of(page.tracks, growable: true),
           trackCount: page.total,
         );
         return (playlist, page.hasMore(0, _pageSize));
@@ -142,7 +148,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
         final page = await player.api.kugouPlaylistTracks(id, limit: _pageSize);
         final playlist = _copyPlaylist(
           savedMetadata,
-          page.tracks,
+          List<SongSearchResult>.of(page.tracks, growable: true),
           trackCount: page.total,
         );
         return (playlist, page.hasMore(0, _pageSize));
@@ -163,6 +169,8 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
       creator: source.creator,
       trackCount: trackCount ?? source.trackCount,
       description: source.description,
+      // This page owns its loaded track list. Keeping it growable lets later
+      // pages append in place instead of copying the entire playlist again.
       tracks: tracks,
     );
   }
@@ -207,7 +215,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
       final nextTracks = page.tracks;
       final total = page.total;
       if (!mounted || requestId != _loadRequestId) return;
-      final combined = [...playlist.tracks, ...nextTracks];
+      final combined = playlist.tracks..addAll(nextTracks);
       setState(() {
         _playlist = _copyPlaylist(playlist, combined);
         _hasMore =
