@@ -887,6 +887,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           name: draft.name,
           avatarId: draft.avatarId,
           avatarColorIndex: draft.avatarColorIndex,
+          customAvatarBytes: draft.customAvatarBytes,
         );
       } else {
         await users.updateUser(
@@ -894,6 +895,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           name: draft.name,
           avatarId: draft.avatarId,
           avatarColorIndex: draft.avatarColorIndex,
+          customAvatarBytes: draft.customAvatarBytes,
         );
       }
     } catch (error) {

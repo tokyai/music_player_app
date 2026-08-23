@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_user.dart';
 import '../services/audio_cache_service.dart';
+import '../services/user_avatar_storage.dart';
 import '../services/user_data_scope.dart';
 
 class UserController extends ChangeNotifier {
@@ -17,12 +18,14 @@ class UserController extends ChangeNotifier {
 
   final List<AppUserProfile> _users = [];
   final Random _random = Random.secure();
+  final UserAvatarStorage _avatarStorage;
   String _activeUserId = AppUserProfile.defaultUserId;
   bool _switching = false;
   bool _disposed = false;
   Future<void> Function(String userId)? _sessionSwitcher;
 
-  UserController() {
+  UserController({UserAvatarStorage? avatarStorage})
+    : _avatarStorage = avatarStorage ?? UserAvatarStorage.shared {
     ready = _load();
   }
 
@@ -57,27 +60,41 @@ class UserController extends ChangeNotifier {
     required String name,
     required String avatarId,
     required int avatarColorIndex,
+    Uint8List? customAvatarBytes,
   }) async {
     await ready;
     if (_disposed) throw StateError('用户管理已释放');
     if (_users.length >= maxUsers) throw StateError('最多可创建 $maxUsers 个用户');
     final normalizedName = AppUserProfile.normalizeName(name);
     _ensureUniqueName(normalizedName);
-    final profile = AppUserProfile(
-      id: _newUserId(),
-      name: normalizedName,
-      avatarId: AppUserProfile.avatarIds.contains(avatarId)
-          ? avatarId
-          : 'person',
-      avatarColorIndex: avatarColorIndex
-          .clamp(0, AppUserProfile.avatarColorCount - 1)
-          .toInt(),
-    );
-    final next = [..._users, profile];
-    await _persistUsers(next);
-    _users
-      ..clear()
-      ..addAll(next);
+    final id = _newUserId();
+    String? avatarFileName;
+    late final AppUserProfile profile;
+    try {
+      if (customAvatarBytes != null) {
+        avatarFileName = await _avatarStorage.save(id, customAvatarBytes);
+      }
+      if (_disposed) throw StateError('用户管理已释放');
+      profile = AppUserProfile(
+        id: id,
+        name: normalizedName,
+        avatarId: avatarFileName != null
+            ? AppUserProfile.customAvatarId
+            : _builtInAvatarId(avatarId),
+        avatarColorIndex: avatarColorIndex
+            .clamp(0, AppUserProfile.avatarColorCount - 1)
+            .toInt(),
+        avatarFileName: avatarFileName,
+      );
+      final next = [..._users, profile];
+      await _persistUsers(next);
+      _users
+        ..clear()
+        ..addAll(next);
+    } catch (_) {
+      await _tryDeleteAvatar(avatarFileName);
+      rethrow;
+    }
     _notify();
     return profile;
   }
@@ -87,6 +104,7 @@ class UserController extends ChangeNotifier {
     required String name,
     required String avatarId,
     required int avatarColorIndex,
+    Uint8List? customAvatarBytes,
   }) async {
     await ready;
     if (_disposed) throw StateError('用户管理已释放');
@@ -94,19 +112,43 @@ class UserController extends ChangeNotifier {
     if (index < 0) throw StateError('用户不存在');
     final normalizedName = AppUserProfile.normalizeName(name);
     _ensureUniqueName(normalizedName, exceptId: id);
-    final updated = _users[index].copyWith(
-      name: normalizedName,
-      avatarId: AppUserProfile.avatarIds.contains(avatarId)
-          ? avatarId
-          : 'person',
-      avatarColorIndex: avatarColorIndex
-          .clamp(0, AppUserProfile.avatarColorCount - 1)
-          .toInt(),
-    );
-    final next = [..._users]..[index] = updated;
-    await _persistUsers(next);
+    final previous = _users[index];
+    String? newAvatarFileName;
+    late final AppUserProfile updated;
+    try {
+      if (customAvatarBytes != null) {
+        newAvatarFileName = await _avatarStorage.save(id, customAvatarBytes);
+      }
+      if (_disposed) throw StateError('用户管理已释放');
+      final preserveCustomAvatar =
+          newAvatarFileName == null &&
+          avatarId == AppUserProfile.customAvatarId &&
+          previous.hasCustomAvatar;
+      final selectedAvatarFileName =
+          newAvatarFileName ??
+          (preserveCustomAvatar ? previous.avatarFileName : null);
+      updated = previous.copyWith(
+        name: normalizedName,
+        avatarId: selectedAvatarFileName != null
+            ? AppUserProfile.customAvatarId
+            : _builtInAvatarId(avatarId),
+        avatarColorIndex: avatarColorIndex
+            .clamp(0, AppUserProfile.avatarColorCount - 1)
+            .toInt(),
+        avatarFileName: selectedAvatarFileName,
+        clearAvatarFileName: selectedAvatarFileName == null,
+      );
+      final next = [..._users]..[index] = updated;
+      await _persistUsers(next);
+    } catch (_) {
+      await _tryDeleteAvatar(newAvatarFileName);
+      rethrow;
+    }
     _users[index] = updated;
     _notify();
+    if (previous.avatarFileName != updated.avatarFileName) {
+      await _tryDeleteAvatar(previous.avatarFileName);
+    }
   }
 
   Future<void> switchUser(String id) async {
@@ -157,7 +199,11 @@ class UserController extends ChangeNotifier {
       ..addAll(next);
     _notify();
     UserDataScope.markDeleted(id);
-    await _deleteUserData(UserDataScope(id));
+    try {
+      await _deleteUserData(UserDataScope(id));
+    } finally {
+      await _tryDeleteUserAvatars(id);
+    }
   }
 
   Future<void> _load() async {
@@ -266,6 +312,28 @@ class UserController extends ChangeNotifier {
       (user) => user.id != exceptId && user.name.toLowerCase() == normalized,
     )) {
       throw StateError('用户名称已存在');
+    }
+  }
+
+  static String _builtInAvatarId(String avatarId) =>
+      AppUserProfile.avatarIds.contains(avatarId) ? avatarId : 'person';
+
+  Future<void> _tryDeleteAvatar(String? fileName) async {
+    if (fileName == null) return;
+    try {
+      await _avatarStorage.delete(fileName);
+    } catch (error, stackTrace) {
+      debugPrint('清理用户头像失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  Future<void> _tryDeleteUserAvatars(String userId) async {
+    try {
+      await _avatarStorage.deleteAllForUser(userId);
+    } catch (error, stackTrace) {
+      debugPrint('清理用户头像目录失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
     }
   }
 

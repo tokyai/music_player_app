@@ -20,11 +20,15 @@ import 'package:music_player_app/services/favorite_service.dart';
 import 'package:music_player_app/services/floating_capsule_service.dart';
 import 'package:music_player_app/services/playback_history_service.dart';
 import 'package:music_player_app/services/playback_state_service.dart';
+import 'package:music_player_app/services/user_avatar_storage.dart';
 import 'package:music_player_app/services/user_data_scope.dart';
 import 'package:music_player_app/services/webdav_backup_service.dart';
 import 'package:music_player_app/theme/app_theme.dart';
+import 'package:music_player_app/widgets/app_user_avatar.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'test_avatar_fixture.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -303,6 +307,210 @@ void main() {
     );
   });
 
+  test(
+    'custom avatars persist, replace, clear, and delete with users',
+    () async {
+      const secureStorageChannel = MethodChannel(
+        'plugins.it_nomads.com/flutter_secure_storage',
+      );
+      const pathProviderChannel = MethodChannel(
+        'plugins.flutter.io/path_provider',
+      );
+      final temporaryRoot = await Directory.systemTemp.createTemp(
+        'kuzai-user-avatar-',
+      );
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(secureStorageChannel, (_) async => null);
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            pathProviderChannel,
+            (_) async => temporaryRoot.path,
+          );
+      final users = UserController(
+        avatarStorage: UserAvatarStorage(rootDirectory: temporaryRoot),
+      );
+      addTearDown(() async {
+        users.dispose();
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(secureStorageChannel, null);
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(pathProviderChannel, null);
+        if (await temporaryRoot.exists()) {
+          await temporaryRoot.delete(recursive: true);
+        }
+      });
+      await users.ready;
+
+      final created = await users.createUser(
+        name: '头像用户',
+        avatarId: 'person',
+        avatarColorIndex: 2,
+        customAvatarBytes: testAvatarJpeg,
+      );
+      expect(created.hasCustomAvatar, isTrue);
+      final firstFile = File(
+        '${temporaryRoot.path}${Platform.pathSeparator}user_avatars'
+        '${Platform.pathSeparator}${created.avatarFileName}',
+      );
+      expect(await firstFile.exists(), isTrue);
+
+      await users.updateUser(
+        created.id,
+        name: '头像用户改名',
+        avatarId: AppUserProfile.customAvatarId,
+        avatarColorIndex: 3,
+      );
+      expect(users.userById(created.id).avatarFileName, created.avatarFileName);
+      expect(await firstFile.exists(), isTrue);
+
+      await users.updateUser(
+        created.id,
+        name: '头像用户改名',
+        avatarId: AppUserProfile.customAvatarId,
+        avatarColorIndex: 3,
+        customAvatarBytes: testAvatarJpeg,
+      );
+      final replacement = users.userById(created.id);
+      expect(replacement.avatarFileName, isNot(created.avatarFileName));
+      expect(await firstFile.exists(), isFalse);
+      final replacementFile = File(
+        '${temporaryRoot.path}${Platform.pathSeparator}user_avatars'
+        '${Platform.pathSeparator}${replacement.avatarFileName}',
+      );
+      expect(await replacementFile.exists(), isTrue);
+
+      await users.updateUser(
+        created.id,
+        name: '头像用户改名',
+        avatarId: 'music',
+        avatarColorIndex: 3,
+      );
+      expect(users.userById(created.id).hasCustomAvatar, isFalse);
+      expect(await replacementFile.exists(), isFalse);
+
+      await users.updateUser(
+        created.id,
+        name: '头像用户改名',
+        avatarId: 'music',
+        avatarColorIndex: 3,
+        customAvatarBytes: testAvatarJpeg,
+      );
+      final deletedAvatarName = users.userById(created.id).avatarFileName;
+      await users.deleteUser(created.id);
+      expect(
+        await File(
+          '${temporaryRoot.path}${Platform.pathSeparator}user_avatars'
+          '${Platform.pathSeparator}$deletedAvatarName',
+        ).exists(),
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'old user JSON remains compatible and unsafe avatar paths are ignored',
+    () {
+      final legacy = AppUserProfile.fromJson({
+        'id': 'legacy',
+        'name': '旧用户',
+        'avatarId': 'music',
+        'avatarColorIndex': 2,
+      });
+      expect(legacy.avatarId, 'music');
+      expect(legacy.avatarFileName, isNull);
+
+      final unsafe = AppUserProfile.fromJson({
+        'id': 'unsafe',
+        'name': '异常头像',
+        'avatarId': AppUserProfile.customAvatarId,
+        'avatarColorIndex': 0,
+        'avatarFileName': '../outside.jpg',
+      });
+      expect(unsafe.avatarId, 'person');
+      expect(unsafe.avatarFileName, isNull);
+    },
+  );
+
+  testWidgets(
+    'custom avatar widget resolves private files for repeated views',
+    (tester) async {
+      const pathProviderChannel = MethodChannel(
+        'plugins.flutter.io/path_provider',
+      );
+      late final Directory temporaryRoot;
+      const fileName = 'avatar_test_user_0123456789abcdef.jpg';
+      await tester.runAsync(() async {
+        temporaryRoot = await Directory.systemTemp.createTemp(
+          'kuzai-avatar-widget-',
+        );
+        final avatarDirectory = Directory(
+          '${temporaryRoot.path}${Platform.pathSeparator}user_avatars',
+        );
+        await avatarDirectory.create(recursive: true);
+        await File(
+          '${avatarDirectory.path}${Platform.pathSeparator}$fileName',
+        ).writeAsBytes(testAvatarJpeg);
+      });
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        pathProviderChannel,
+        (_) async => temporaryRoot.path,
+      );
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          if (await temporaryRoot.exists()) {
+            await temporaryRoot.delete(recursive: true);
+          }
+        });
+        PaintingBinding.instance.imageCache.clear();
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          pathProviderChannel,
+          null,
+        );
+      });
+      const user = AppUserProfile(
+        id: 'test_user',
+        name: '头像用户',
+        avatarId: AppUserProfile.customAvatarId,
+        avatarColorIndex: 0,
+        avatarFileName: fileName,
+      );
+      final resolved = await tester.runAsync(
+        () => UserAvatarStorage.shared.resolve(fileName),
+      );
+      expect(resolved, isNotNull);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light(),
+          home: const Scaffold(
+            body: Row(
+              children: [
+                AppUserAvatar(user: user, size: 44),
+                AppUserAvatar(user: user, size: 52),
+                AppUserAvatar(user: user, size: 72),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      for (var attempt = 0; attempt < 3; attempt++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 50)),
+        );
+        await tester.pump();
+      }
+
+      expect(
+        find.byKey(const ValueKey('user-custom-avatar-test_user')),
+        findsNWidgets(3),
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   test('version 3 backup restores to default instead of active user', () async {
     const activeScope = UserDataScope('backup-active-user');
     final activeFavorites = FavoriteService(dataScope: activeScope);
@@ -531,6 +739,10 @@ void main() {
         findsOneWidget,
       );
       expect(find.byKey(const ValueKey('user-profile-save')), findsOneWidget);
+      final scan = find.byKey(const ValueKey('user-profile-scan'));
+      await tester.ensureVisible(scan);
+      expect(scan.hitTestable(), findsOneWidget);
+      expect(tester.getRect(scan).height, greaterThanOrEqualTo(48));
       expect(tester.takeException(), isNull);
       final editor = find.byKey(const ValueKey('user-profile-editor-dialog'));
       await tester.tap(find.descendant(of: editor, matching: find.text('取消')));
