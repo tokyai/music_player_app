@@ -1,7 +1,10 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/providers/player_provider.dart';
 import 'package:music_player_app/services/playback_history_service.dart';
+import 'package:music_player_app/services/playback_state_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -54,6 +57,54 @@ void main() {
       ]);
       expect(player.currentIndex, 1);
       expect(player.currentSong?.name, '历史二');
+    },
+  );
+
+  test('restores a paused playback session on startup', () async {
+    final snapshot = PlaybackSessionSnapshot(
+      queue: [_song('saved-one', '已保存一'), _song('saved-two', '已保存二')],
+      currentIndex: 1,
+      position: const Duration(seconds: 27),
+      isPlaying: false,
+      playMode: 'repeat',
+    );
+    SharedPreferences.setMockInitialValues({
+      PlaybackStateService.preferenceKey: jsonEncode(snapshot.toJson()),
+    });
+    final player = PlayerProvider();
+    addTearDown(player.dispose);
+
+    await player.playbackStateReady;
+
+    expect(player.queue.map((item) => item.id), ['saved-one', 'saved-two']);
+    expect(player.currentIndex, 1);
+    expect(player.position, const Duration(seconds: 27));
+    expect(player.playMode, PlayMode.repeat);
+    expect(player.isPlaying, isFalse);
+  });
+
+  test(
+    'persists the selected queue and play mode after a queue change',
+    () async {
+      final player = PlayerProvider();
+      addTearDown(player.dispose);
+      await player.playbackStateReady;
+
+      await player.playFromPlaylist([
+        _song('persist-one', '保存一'),
+        _song('persist-two', '保存二'),
+      ], 1);
+      player.togglePlayMode();
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+
+      final restored = await PlaybackStateService.load();
+      expect(restored, isNotNull);
+      expect(restored!.queue.map((song) => song.id), [
+        'persist-one',
+        'persist-two',
+      ]);
+      expect(restored.currentIndex, 1);
+      expect(restored.playMode, 'repeat');
     },
   );
 }
