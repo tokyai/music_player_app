@@ -68,6 +68,7 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Future<void> _search(String keyword) async {
+    if (!mounted) return;
     final normalized = keyword.trim();
     if (normalized.isEmpty) return;
     _searchFocusNode.unfocus();
@@ -156,7 +157,7 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   void _handleTabChanged() {
-    if (_tabController.indexIsChanging) return;
+    if (!mounted || _tabController.indexIsChanging) return;
     unawaited(
       _session.selectPlatform(
         context.read<PlayerProvider>().api,
@@ -166,15 +167,18 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   void _retryPlatform(MusicPlatform platform) {
+    if (!mounted) return;
     unawaited(_session.retry(context.read<PlayerProvider>().api, platform));
   }
 
   void _clearSearch() {
+    if (!mounted) return;
     _controller.clear();
     _session.clear();
   }
 
   void _handleQueryChanged(String value) {
+    if (!mounted) return;
     if (value.trim().isEmpty && _session.keyword.isNotEmpty) {
       _session.clear();
       return;
@@ -183,6 +187,7 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   void _switchMode(bool playlistMode) {
+    if (!mounted) return;
     unawaited(
       _session.setPlaylistMode(
         context.read<PlayerProvider>().api,
@@ -957,14 +962,26 @@ class _SearchScreenState extends State<SearchScreen>
             tooltip: isFavorite ? '取消收藏歌单' : '收藏歌单',
             visualDensity: VisualDensity.compact,
             onPressed: () async {
-              final added = await favorites.togglePlaylist(platform, playlist);
-              if (!context.mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(added ? '已收藏歌单: ${playlist.name}' : '已取消收藏歌单'),
-                  duration: const Duration(seconds: 1),
-                ),
-              );
+              try {
+                final added = await favorites.togglePlaylist(
+                  platform,
+                  playlist,
+                );
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      added ? '已收藏歌单: ${playlist.name}' : '已取消收藏歌单',
+                    ),
+                    duration: const Duration(seconds: 1),
+                  ),
+                );
+              } catch (error) {
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text('收藏歌单失败：$error')));
+              }
             },
             icon: AppAnimatedIcon(
               stateKey: isFavorite,
