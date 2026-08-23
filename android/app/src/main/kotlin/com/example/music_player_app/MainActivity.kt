@@ -50,6 +50,8 @@ class MainActivity : AudioServiceActivity() {
         const val AI_CAR_AUDIO_STREAM_CHANNEL = "music_player/ai_car_audio_stream"
         const val ZIPFORMER_MODEL = "streaming-zipformer-zh-14M-2023-02-23"
         const val PARAFORMER_MODEL = "streaming-paraformer-bilingual-zh-en"
+        const val PUNCTUATION_MODEL =
+            "punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8"
         const val CAR_AUDIO_SAMPLE_RATE = 16000
         const val CAR_AUDIO_CHANNEL_MASK = 60
         const val CAR_AUDIO_CHANNEL_COUNT = 4
@@ -1167,10 +1169,14 @@ class MainActivity : AudioServiceActivity() {
                             "decoder" to "decoder.int8.onnx",
                             "tokens" to "tokens.txt"
                         )
+                        PUNCTUATION_MODEL -> linkedMapOf(
+                            "model" to "model.int8.onnx"
+                        )
                         else -> throw IllegalArgumentException("不支持的离线语音模型：$modelId")
                     }
                     val modelVersion = when (modelId) {
                         ZIPFORMER_MODEL -> "$modelId-mixed-precision-v2"
+                        PUNCTUATION_MODEL -> "$modelId-v1"
                         else -> "$modelId-int8-v1"
                     }
                     val assetDir = "assets/models/sherpa-onnx-$modelId"

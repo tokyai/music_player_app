@@ -6,6 +6,7 @@ import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/providers/ai_assistant_controller.dart';
 import 'package:music_player_app/providers/ai_config_controller.dart';
 import 'package:music_player_app/providers/player_provider.dart';
+import 'package:music_player_app/services/ai_punctuation_service.dart';
 import 'package:music_player_app/services/ai_service.dart';
 import 'package:music_player_app/services/ai_song_resolver.dart';
 import 'package:music_player_app/services/ai_voice_service.dart';
@@ -101,9 +102,17 @@ void main() {
   });
 
   test('waits for continued speech and sends combined text once', () async {
+    String? punctuationInput;
+    final punctuation = MemoryAiPunctuationService(
+      transform: (text) {
+        punctuationInput = text;
+        return '$text！';
+      },
+    );
     final fixture = await _Fixture.create(
       speechCommitDelay: const Duration(milliseconds: 80),
       gatewayResults: const [AiChatResult(reply: '收到完整问题。')],
+      punctuation: punctuation,
     );
     addTearDown(fixture.dispose);
 
@@ -116,7 +125,49 @@ void main() {
     fixture.speech.emit('夜曲', isFinal: true);
 
     await _waitFor(() => fixture.gateway.requests.length == 1);
-    expect(fixture.gateway.requests.single.single.text, '我想听周杰伦的 夜曲');
+    expect(punctuationInput, '我想听周杰伦的 夜曲');
+    expect(fixture.gateway.requests.single.single.text, '我想听周杰伦的 夜曲！');
+    expect(punctuation.calls, 1);
+  });
+
+  test('keyboard input bypasses speech punctuation', () async {
+    final punctuation = MemoryAiPunctuationService(
+      transform: (text) => '$text！',
+    );
+    final fixture = await _Fixture.create(punctuation: punctuation);
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    await fixture.controller.sendText('键盘输入');
+
+    expect(fixture.gateway.requests.single.single.text, '键盘输入');
+    expect(punctuation.calls, 0);
+  });
+
+  test('punctuation failure falls back to the recognized text', () async {
+    final punctuation = MemoryAiPunctuationService(
+      transform: (_) => throw StateError('模型不可用'),
+    );
+    final fixture = await _Fixture.create(punctuation: punctuation);
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('播放周杰伦', isFinal: true);
+
+    await _waitFor(() => fixture.gateway.requests.length == 1);
+    expect(fixture.gateway.requests.single.single.text, '播放周杰伦');
+  });
+
+  test('stopping and disposing release punctuation resources', () async {
+    final punctuation = MemoryAiPunctuationService();
+    final fixture = await _Fixture.create(punctuation: punctuation);
+
+    await fixture.controller.startSession();
+    await fixture.controller.stopSession();
+    expect(punctuation.releaseCalls, 1);
+
+    await fixture.dispose();
+    await _waitFor(() => punctuation.disposeCalls == 1);
   });
 
   test(
@@ -291,6 +342,7 @@ class _Fixture {
   final AiConfigController config;
   final _TestGateway gateway;
   final _TestSpeech speech;
+  final AiPunctuationService punctuation;
   final _TestTts tts;
   final AiAssistantController controller;
 
@@ -299,6 +351,7 @@ class _Fixture {
     required this.config,
     required this.gateway,
     required this.speech,
+    required this.punctuation,
     required this.tts,
     required this.controller,
   });
@@ -309,6 +362,7 @@ class _Fixture {
     List<AiChatResult> gatewayResults = const [],
     int blockedSpeakCount = 0,
     Duration speechCommitDelay = const Duration(milliseconds: 10),
+    AiPunctuationService? punctuation,
   }) async {
     final actualPlayer = player ?? _TestPlayer();
     final config = AiConfigController(secretStore: MemoryAiSecretStore());
@@ -316,6 +370,7 @@ class _Fixture {
     await config.save(_completeConfig());
     final gateway = _TestGateway(gatewayResults);
     final speech = _TestSpeech();
+    final actualPunctuation = punctuation ?? MemoryAiPunctuationService();
     final tts = _TestTts(blockedSpeakCount: blockedSpeakCount);
     final controller = AiAssistantController(
       player: actualPlayer,
@@ -323,6 +378,7 @@ class _Fixture {
       gateway: gateway,
       songResolver: resolver ?? _TestResolver.notFound(),
       speech: speech,
+      punctuation: actualPunctuation,
       textToSpeech: tts,
       speechCommitDelay: speechCommitDelay,
     );
@@ -331,6 +387,7 @@ class _Fixture {
       config: config,
       gateway: gateway,
       speech: speech,
+      punctuation: actualPunctuation,
       tts: tts,
       controller: controller,
     );

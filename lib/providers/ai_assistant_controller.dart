@@ -6,6 +6,7 @@ import '../models/ai_assistant.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../services/ai_service.dart';
+import '../services/ai_punctuation_service.dart';
 import '../services/ai_song_resolver.dart';
 import '../services/ai_voice_service.dart';
 import 'ai_config_controller.dart';
@@ -45,6 +46,7 @@ class AiAssistantController extends ChangeNotifier {
   final AiChatGateway gateway;
   final AiSongPlaybackResolver songResolver;
   final AiSpeechEngine speech;
+  final AiPunctuationService punctuation;
   final AiTextToSpeechEngine textToSpeech;
   final Duration speechCommitDelay;
 
@@ -73,11 +75,13 @@ class AiAssistantController extends ChangeNotifier {
     AiChatGateway? gateway,
     AiSongPlaybackResolver? songResolver,
     AiSpeechEngine? speech,
+    AiPunctuationService? punctuation,
     AiTextToSpeechEngine? textToSpeech,
     this.speechCommitDelay = const Duration(milliseconds: 1500),
   }) : gateway = gateway ?? AiAssistantService(),
        songResolver = songResolver ?? const AiSongResolver(),
        speech = speech ?? PlatformAiSpeechEngine(),
+       punctuation = punctuation ?? defaultAiPunctuationService(),
        textToSpeech = textToSpeech ?? PlatformAiTextToSpeechEngine();
 
   AiSessionState get state => _state;
@@ -231,7 +235,7 @@ class AiAssistantController extends ChangeNotifier {
     _setState(AiSessionState.stopping);
     await _stopRecognition();
     await _stopSpeaking();
-    await _releaseIdleSpeechResources();
+    await _releaseIdleVoiceResources();
     if (restoreMusic &&
         wasActive &&
         _wasPlayingBeforeSession &&
@@ -249,16 +253,20 @@ class AiAssistantController extends ChangeNotifier {
     _setState(AiSessionState.idle);
   }
 
-  Future<void> _releaseIdleSpeechResources() async {
+  Future<void> _releaseIdleVoiceResources() async {
     final owner = speech is AiSpeechIdleResourceOwner
         ? speech as AiSpeechIdleResourceOwner
         : null;
-    if (owner == null) return;
-    try {
-      await owner.releaseIdleResources();
-    } catch (_) {
-      // Releasing the optional native model must not block session shutdown.
+    if (owner != null) {
+      try {
+        await owner.releaseIdleResources();
+      } catch (_) {
+        // Releasing an optional native model must not block session shutdown.
+      }
     }
+    try {
+      await punctuation.releaseIdleResources();
+    } catch (_) {}
   }
 
   Future<void> _startListening(
@@ -334,7 +342,15 @@ class AiAssistantController extends ChangeNotifier {
       await _finishWithGoodbye();
       return;
     }
-    await _sendUserText(normalized, generation, turn);
+    _setState(AiSessionState.processing);
+    var punctuated = normalized;
+    try {
+      punctuated = await punctuation.addPunctuation(normalized);
+    } catch (_) {
+      // Optional post-processing must not discard a valid speech command.
+    }
+    if (!_isCurrentTurn(generation, turn)) return;
+    await _sendUserText(punctuated, generation, turn);
   }
 
   Future<void> _sendUserText(String text, int generation, int turn) async {
@@ -674,5 +690,8 @@ class AiAssistantController extends ChangeNotifier {
         await resourceOwner.dispose();
       } catch (_) {}
     }
+    try {
+      await punctuation.dispose();
+    } catch (_) {}
   }
 }
