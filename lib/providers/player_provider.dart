@@ -10,6 +10,16 @@ import '../services/floating_capsule_service.dart';
 import '../services/playback_history_service.dart';
 import '../utils/lyric_parser.dart';
 
+// Lyrics are returned as user-facing text but then expanded into many parsed
+// objects and retained in a session cache. Keep a malformed or unexpectedly
+// large response from creating a second memory spike in the player.
+const _maxLyricTextChars = 256 * 1024;
+
+String? _boundLyricText(String? value) {
+  if (value == null || value.length <= _maxLyricTextChars) return value;
+  return value.substring(0, _maxLyricTextChars);
+}
+
 /// 播放模式
 enum PlayMode { sequence, repeat, shuffle }
 
@@ -1666,15 +1676,18 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   _ResolvedLyrics? _resolveLyricData(LyricData data) {
-    final enhanced = LyricParser.parseEnhanced(data.wordSynced);
+    final wordSynced = _boundLyricText(data.wordSynced);
+    final originalText = _boundLyricText(data.original);
+    final translatedText = _boundLyricText(data.translated);
+    final enhanced = LyricParser.parseEnhanced(wordSynced);
     final hasWordTiming = enhanced.any((line) => line.words.isNotEmpty);
     final original = hasWordTiming
         ? enhanced
-        : LyricParser.parseBestEffort(data.original);
+        : LyricParser.parseBestEffort(originalText);
     if (original.isEmpty) return null;
-    final translated = LyricParser.parse(data.translated);
+    final translated = LyricParser.parse(translatedText);
     return _ResolvedLyrics(
-      rawText: hasWordTiming ? data.wordSynced : data.original,
+      rawText: hasWordTiming ? wordSynced : originalText,
       lines: LyricParser.mergeTranslation(original, translated),
     );
   }
@@ -2105,10 +2118,11 @@ class _ResolvedLyrics {
   const _ResolvedLyrics({required this.rawText, required this.lines});
 
   static _ResolvedLyrics? fromPlainText(String? rawText) {
-    if (rawText == null || rawText.trim().isEmpty) return null;
+    final boundedText = _boundLyricText(rawText);
+    if (boundedText == null || boundedText.trim().isEmpty) return null;
     return _ResolvedLyrics(
-      rawText: rawText,
-      lines: LyricParser.parseBestEffort(rawText),
+      rawText: boundedText,
+      lines: LyricParser.parseBestEffort(boundedText),
     );
   }
 }
