@@ -7,7 +7,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'providers/ai_assistant_controller.dart';
 import 'providers/ai_config_controller.dart';
 import 'providers/player_provider.dart';
@@ -50,6 +49,11 @@ void main() async {
   };
   // 全面屏适配：内容延伸到状态栏/导航栏区域（各页面已用 SafeArea 保护内容）
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  // Restore the mini-window preference before constructing the player. The
+  // player can restore a paused queue immediately, and that song should still
+  // be available in the always-on-top window.
+  FloatingCapsuleService.init();
+  await FloatingCapsuleService.restoreEnabled();
   final player = PlayerProvider();
   try {
     final audioSession = await AudioSession.instance;
@@ -109,14 +113,6 @@ void main() async {
   // Android 13+ 请求通知权限（否则系统媒体通知不显示）
   try {
     await Permission.notification.request();
-  } catch (_) {}
-  // 系统悬浮窗胶囊：初始化通道 + 恢复开关状态
-  FloatingCapsuleService.init();
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    FloatingCapsuleService.setEnabled(
-      prefs.getBool('floating_capsule_enabled') ?? false,
-    );
   } catch (_) {}
   runApp(MusicPlayerApp(player: player));
 }

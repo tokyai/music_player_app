@@ -2,13 +2,17 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-/// 系统悬浮窗胶囊（类灵动岛/华为流体云）原生桥接。
-/// 通过 MethodChannel 与 Android 原生悬浮窗通信。
+/// 车机迷你窗（系统级悬浮窗）原生桥接。
+///
+/// Android 使用 TYPE_APPLICATION_OVERLAY，因此用户切换到其他应用后，
+/// 迷你窗仍会置顶显示当前歌曲信息。保留旧类名以兼容已有播放器入口。
 class FloatingCapsuleService {
-  static const MethodChannel _channel = MethodChannel(
-    'music_player/floating_capsule',
-  );
+  static const channelName = 'music_player/floating_capsule';
+  static const preferenceKey = 'floating_mini_window_enabled';
+  static const legacyPreferenceKey = 'floating_capsule_enabled';
+  static const MethodChannel _channel = MethodChannel(channelName);
 
   /// 功能开关（设置页控制，持久化在 shared_preferences）
   static bool _enabled = false;
@@ -16,6 +20,33 @@ class FloatingCapsuleService {
   static bool get enabled => _enabled;
 
   static void setEnabled(bool value) => _enabled = value;
+
+  /// 恢复迷你窗开关。旧版本的胶囊开关会自动迁移到新设置键。
+  static Future<bool> restoreEnabled() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final value =
+          prefs.getBool(preferenceKey) ??
+          prefs.getBool(legacyPreferenceKey) ??
+          false;
+      _enabled = value;
+      if (!prefs.containsKey(preferenceKey)) {
+        await prefs.setBool(preferenceKey, value);
+      }
+      return value;
+    } catch (_) {
+      return _enabled;
+    }
+  }
+
+  /// 保存开关，失败时不影响播放器或页面操作。
+  static Future<void> persistEnabled(bool value) async {
+    _enabled = value;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(preferenceKey, value);
+    } catch (_) {}
+  }
 
   /// 原生回调（由 main.dart 注入实现）
   static FutureOr<void> Function()? onPlayPauseTap;
@@ -66,7 +97,7 @@ class FloatingCapsuleService {
     } catch (_) {}
   }
 
-  /// 显示悬浮胶囊（已显示则更新）
+  /// 显示车机迷你窗（已显示则更新）。
   static Future<void> show({
     required String title,
     required String artist,
@@ -84,7 +115,7 @@ class FloatingCapsuleService {
     } catch (_) {}
   }
 
-  /// 更新悬浮胶囊信息
+  /// 更新迷你窗歌曲信息。
   static Future<void> update({
     required String title,
     required String artist,
@@ -102,7 +133,7 @@ class FloatingCapsuleService {
     } catch (_) {}
   }
 
-  /// 仅更新播放/暂停状态
+  /// 仅更新播放/暂停状态。
   static Future<void> updatePlayState(bool isPlaying) async {
     if (!_enabled) return;
     try {
@@ -110,7 +141,7 @@ class FloatingCapsuleService {
     } catch (_) {}
   }
 
-  /// 隐藏悬浮胶囊
+  /// 隐藏迷你窗。
   static Future<void> hide() async {
     try {
       await _channel.invokeMethod('hide');

@@ -427,13 +427,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.dispose();
   }
 
-  /// 系统悬浮胶囊开关
+  /// 车机迷你窗开关：允许在其他应用上方持续查看当前歌曲。
   Future<void> _toggleFloatingCapsule(bool value) async {
     try {
       if (value) {
         final hasPerm = await FloatingCapsuleService.hasPermission();
         if (!hasPerm) {
-          FloatingCapsuleService.openPermissionSettings();
+          await FloatingCapsuleService.openPermissionSettings();
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
@@ -445,7 +445,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           return;
         }
       } else {
-        FloatingCapsuleService.hide();
+        await FloatingCapsuleService.hide();
       }
       if (!mounted) return;
       FloatingCapsuleService.setEnabled(value);
@@ -461,16 +461,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
           );
         }
       }
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool('floating_capsule_enabled', value);
-      } catch (_) {}
+      await FloatingCapsuleService.persistEnabled(value);
       if (mounted) setState(() {});
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('悬浮胶囊设置失败：$error')));
+      ).showSnackBar(SnackBar(content: Text('车机迷你窗设置失败：$error')));
     }
   }
 
@@ -747,13 +744,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const Divider(height: 24),
                   SwitchListTile(
+                    key: const ValueKey('floating-mini-window-toggle'),
                     contentPadding: EdgeInsets.zero,
-                    secondary: const Icon(Icons.circle_notifications),
-                    title: const Text('系统悬浮胶囊'),
+                    secondary: const Icon(Icons.picture_in_picture_alt_rounded),
+                    title: const Text('车机迷你窗（置顶）'),
                     subtitle: Text(
                       FloatingCapsuleService.enabled
-                          ? '播放时跨 App 悬浮显示（需悬浮窗权限）'
-                          : '在任意界面顶部显示播放胶囊',
+                          ? '切换到其他应用后仍显示封面、歌名和歌手'
+                          : '在其他应用上方显示当前歌曲信息（需悬浮窗权限）',
                       style: TextStyle(
                         fontSize: layout.secondarySize,
                         color: AppColors.textSecondary,

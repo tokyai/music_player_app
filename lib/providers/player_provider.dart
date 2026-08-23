@@ -453,6 +453,20 @@ class PlayerProvider extends ChangeNotifier {
       };
       _restoredPlaybackPending = snapshot.isPlaying;
       notifyListeners();
+      // A paused session still has a meaningful current song. Keep the
+      // always-on-top car mini window informative even when no audio source
+      // needs to be resolved on startup.
+      final restoredSong = currentSong;
+      if (restoredSong != null && FloatingCapsuleService.enabled) {
+        unawaited(
+          FloatingCapsuleService.show(
+            title: restoredSong.name,
+            artist: restoredSong.artist,
+            coverUrl: restoredSong.coverUrl,
+            isPlaying: snapshot.isPlaying,
+          ),
+        );
+      }
       if (snapshot.isPlaying) unawaited(_resumeRestoredPlayback());
     } catch (error, stackTrace) {
       debugPrint('恢复播放会话失败: $error');

@@ -26,8 +26,9 @@ import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 系统悬浮窗胶囊（类灵动岛/华为流体云）
- * 用 ApplicationContext + TYPE_APPLICATION_OVERLAY 实现跨 App 悬浮显示。
+ * 车机迷你窗（系统级置顶窗口）。
+ * 用 ApplicationContext + TYPE_APPLICATION_OVERLAY 实现跨 App 悬浮显示，
+ * Activity 销毁或切换到其他应用时窗口仍可继续展示当前歌曲。
  */
 object FloatCapsuleManager {
     private const val MAX_COVER_BYTES = 4 * 1024 * 1024
@@ -77,10 +78,12 @@ object FloatCapsuleManager {
         onPlayPause: () -> Unit,
         onTap: () -> Unit
     ) {
-        // Refresh callbacks even when the overlay survived an Activity/engine
-        // recreation; retaining an old binary messenger can crash on tap.
+        // Always refresh callbacks first. The overlay can outlive a Flutter
+        // Activity, so a later show call must immediately restore live actions.
         onPlayPauseTap = onPlayPause
         onCapsuleTap = onTap
+        // Refresh callbacks even when the overlay survived an Activity/engine
+        // recreation; retaining an old binary messenger can crash on tap.
         try {
             if (capsuleView != null) {
                 update(title, artist, coverUrl, isPlaying)
@@ -100,12 +103,16 @@ object FloatCapsuleManager {
             val view = LayoutInflater.from(context).inflate(R.layout.float_capsule, null)
             val titleView = view.findViewById<TextView>(R.id.fc_title)
             val artistView = view.findViewById<TextView>(R.id.fc_artist)
+            val statusView = view.findViewById<TextView>(R.id.fc_status)
             val coverView = view.findViewById<ImageView>(R.id.fc_cover)
             val playBtn = view.findViewById<ImageButton>(R.id.fc_play)
+            val hideBtn = view.findViewById<ImageButton>(R.id.fc_hide)
 
             titleView.text = title
             artistView.text = artist
             playBtn.setImageResource(if (isPlaying) R.drawable.ic_pause_white else R.drawable.ic_play_white)
+            statusView.text = if (isPlaying) "播放中" else "已暂停"
+            statusView.alpha = if (isPlaying) 1f else 0.72f
             if (!coverUrl.isNullOrEmpty()) {
                 loadImage(coverUrl, coverView)
             }
@@ -116,6 +123,8 @@ object FloatCapsuleManager {
                 } catch (_: Exception) {
                 }
             }
+
+            hideBtn.setOnClickListener { hide() }
 
             view.setOnClickListener {
                 try {
@@ -191,7 +200,7 @@ object FloatCapsuleManager {
                 PixelFormat.TRANSLUCENT
             )
             params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            params.y = 100
+            params.y = 88
             params.x = 0
 
             layoutParams = params
@@ -220,6 +229,10 @@ object FloatCapsuleManager {
             try {
                 view.findViewById<TextView>(R.id.fc_title)?.text = title
                 view.findViewById<TextView>(R.id.fc_artist)?.text = artist
+                view.findViewById<TextView>(R.id.fc_status)?.let { status ->
+                    status.text = if (isPlaying) "播放中" else "已暂停"
+                    status.alpha = if (isPlaying) 1f else 0.72f
+                }
                 view.findViewById<ImageButton>(R.id.fc_play)?.setImageResource(
                     if (isPlaying) R.drawable.ic_pause_white else R.drawable.ic_play_white
                 )
@@ -251,6 +264,10 @@ object FloatCapsuleManager {
                 view.findViewById<ImageButton>(R.id.fc_play)?.setImageResource(
                     if (isPlaying) R.drawable.ic_pause_white else R.drawable.ic_play_white
                 )
+                view.findViewById<TextView>(R.id.fc_status)?.let { status ->
+                    status.text = if (isPlaying) "播放中" else "已暂停"
+                    status.alpha = if (isPlaying) 1f else 0.72f
+                }
             } catch (_: OutOfMemoryError) {
                 hide()
             } catch (_: Exception) {
