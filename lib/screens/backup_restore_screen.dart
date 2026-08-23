@@ -325,6 +325,8 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       _showStatus('WebDAV 连接成功');
     } on WebDavException catch (error) {
       _showStatus(error.message, error: true);
+    } catch (error) {
+      _showStatus('WebDAV 连接失败：$error', error: true);
     } finally {
       service.close();
       if (mounted) setState(() => _busy = false);
@@ -350,6 +352,8 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       _showStatus('备份已上传到 WebDAV');
     } on WebDavException catch (error) {
       _showStatus(error.message, error: true);
+    } catch (error) {
+      _showStatus('WebDAV 上传失败：$error', error: true);
     } finally {
       service.close();
       if (mounted) setState(() => _busy = false);
@@ -375,6 +379,9 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       await _restoreRaw(raw, source: 'WebDAV');
     } on WebDavException catch (error) {
       _showStatus(error.message, error: true);
+      if (mounted) setState(() => _busy = false);
+    } catch (error) {
+      _showStatus('WebDAV 下载失败：$error', error: true);
       if (mounted) setState(() => _busy = false);
     } finally {
       service.close();
