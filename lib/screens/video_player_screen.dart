@@ -829,6 +829,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!mounted) return;
     if (state != AppLifecycleState.resumed && _controller.isPlaying) {
       final controller = _controller;
       unawaited(_pauseForLifecycle(controller));
@@ -852,6 +853,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   void _toggleControls() {
+    if (!mounted) return;
     _controlsTimer?.cancel();
     setState(() => _controlsVisible = !_controlsVisible);
     if (_controlsVisible) _scheduleControlsHide();
@@ -870,6 +872,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool get _controlsHaveFocus => _topControlsFocused || _bottomControlsFocused;
 
   void _handleControlsFocus({required bool top, required bool focused}) {
+    if (!mounted) return;
     if (top) {
       _topControlsFocused = focused;
     } else {
@@ -883,6 +886,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   KeyEventResult _handleRemoteKey(FocusNode _, KeyEvent event) {
+    if (!mounted) return KeyEventResult.ignored;
     final isPress = event is KeyDownEvent || event is KeyRepeatEvent;
     if (event.logicalKey == LogicalKeyboardKey.mediaPlayPause) {
       if (isPress && _controller.isInitialized) unawaited(_togglePlayback());
