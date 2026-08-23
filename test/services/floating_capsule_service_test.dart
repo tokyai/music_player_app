@@ -40,15 +40,19 @@ void main() {
     final calls = <MethodCall>[];
     messenger.setMockMethodCallHandler(channel, (call) async {
       calls.add(call);
+      if (call.method == 'show') return true;
       return null;
     });
     FloatingCapsuleService.setEnabled(true);
 
-    await FloatingCapsuleService.show(
-      title: '夜曲',
-      artist: '周杰伦',
-      coverUrl: 'https://example.test/cover.jpg',
-      isPlaying: true,
+    expect(
+      await FloatingCapsuleService.show(
+        title: '夜曲',
+        artist: '周杰伦',
+        coverUrl: 'https://example.test/cover.jpg',
+        isPlaying: true,
+      ),
+      isTrue,
     );
     await FloatingCapsuleService.update(
       title: '晴天',
@@ -86,10 +90,13 @@ void main() {
       return null;
     });
 
-    await FloatingCapsuleService.show(
-      title: '不会显示',
-      artist: '测试',
-      isPlaying: false,
+    expect(
+      await FloatingCapsuleService.show(
+        title: '不会显示',
+        artist: '测试',
+        isPlaying: false,
+      ),
+      isFalse,
     );
     await FloatingCapsuleService.update(
       title: '不会显示',
@@ -99,5 +106,14 @@ void main() {
     await FloatingCapsuleService.updatePlayState(false);
 
     expect(calls, isEmpty);
+  });
+
+  test('permission settings reports whether the system page opened', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'openPermissionSettings') return true;
+      return null;
+    });
+
+    expect(await FloatingCapsuleService.openPermissionSettings(), isTrue);
   });
 }

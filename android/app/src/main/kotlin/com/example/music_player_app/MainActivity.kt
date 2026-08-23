@@ -338,8 +338,7 @@ class MainActivity : AudioServiceActivity() {
                 when (call.method) {
                     "hasPermission" -> result.success(FloatCapsuleManager.hasPermission(appContext))
                     "openPermissionSettings" -> {
-                        FloatCapsuleManager.openPermissionSettings(appContext)
-                        result.success(null)
+                        result.success(FloatCapsuleManager.openPermissionSettings(appContext))
                     }
                     "show" -> {
                         val title = call.argument<String>("title") ?: ""
@@ -347,17 +346,21 @@ class MainActivity : AudioServiceActivity() {
                         val coverUrl = call.argument<String>("coverUrl")
                         val isPlaying = call.argument<Boolean>("isPlaying") ?: false
                         runOnUiThread {
-                            FloatCapsuleManager.show(
-                                appContext, title, artist, coverUrl, isPlaying,
-                                onPlayPause = {
-                                    invokeCapsuleCallback("onPlayPauseTap")
-                                },
-                                onTap = {
-                                    invokeCapsuleCallback("onCapsuleTap")
-                                }
+                            val shown = FloatCapsuleManager.show(
+                                appContext,
+                                title,
+                                artist,
+                                coverUrl,
+                                isPlaying,
+                                onPlayPause = { invokeCapsuleCallback("onPlayPauseTap") },
+                                onTap = { invokeCapsuleCallback("onCapsuleTap") }
                             )
+                            try {
+                                result.success(shown)
+                            } catch (error: Exception) {
+                                Log.w("FloatCapsule", "Unable to return overlay result", error)
+                            }
                         }
-                        result.success(null)
                     }
                     "update" -> {
                         val title = call.argument<String>("title") ?: ""

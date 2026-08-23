@@ -106,28 +106,36 @@ class FloatingCapsuleService {
   }
 
   /// 跳转系统设置开启悬浮窗权限
-  static Future<void> openPermissionSettings() async {
+  static Future<bool> openPermissionSettings() async {
     try {
-      await _channel.invokeMethod('openPermissionSettings');
-    } catch (_) {}
+      return await _channel.invokeMethod<bool>('openPermissionSettings') ??
+          false;
+    } catch (error) {
+      debugPrint('打开悬浮窗权限设置失败: $error');
+      return false;
+    }
   }
 
   /// 显示车机迷你窗（已显示则更新）。
-  static Future<void> show({
+  static Future<bool> show({
     required String title,
     required String artist,
     String? coverUrl,
     required bool isPlaying,
   }) async {
-    if (!_enabled) return;
+    if (!_enabled) return false;
     try {
-      await _channel.invokeMethod('show', {
-        'title': title,
-        'artist': artist,
-        'coverUrl': coverUrl,
-        'isPlaying': isPlaying,
-      });
-    } catch (_) {}
+      return await _channel.invokeMethod<bool>('show', {
+            'title': title,
+            'artist': artist,
+            'coverUrl': coverUrl,
+            'isPlaying': isPlaying,
+          }) ??
+          false;
+    } catch (error) {
+      debugPrint('显示车机迷你窗失败: $error');
+      return false;
+    }
   }
 
   /// 更新迷你窗歌曲信息。

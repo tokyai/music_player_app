@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
@@ -37,7 +39,8 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _SettingsScreenState extends State<SettingsScreen>
+    with WidgetsBindingObserver {
   final _apiKeyController = TextEditingController();
   bool _obscureKey = true;
   bool _apiKeyEdited = false;
@@ -52,10 +55,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int _cacheCount = 0;
   LyricFontFamilyPreset _lyricFontFamily = LyricFontFamilyPreset.system;
   LyricFontWeightPreset _lyricFontWeight = LyricFontWeightPreset.medium;
+  bool _waitingForFloatingPermission = false;
+  bool _leftForFloatingPermission = false;
+  bool _changingFloatingCapsule = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     final player = context.read<PlayerProvider>();
     _dataScope = player.dataScope;
     final sharedAiConfig = Provider.of<AiConfigController?>(
@@ -447,54 +454,129 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _apiKeyController.dispose();
     _aiConfigController.removeListener(_syncPetScaleDraft);
     if (_ownsAiConfigController) _aiConfigController.dispose();
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_waitingForFloatingPermission && state != AppLifecycleState.resumed) {
+      _leftForFloatingPermission = true;
+    }
+    if (state == AppLifecycleState.resumed &&
+        _waitingForFloatingPermission &&
+        _leftForFloatingPermission) {
+      unawaited(_finishFloatingPermissionRequest());
+    }
+  }
+
   /// 车机迷你窗开关：允许在其他应用上方持续查看当前歌曲。
   Future<void> _toggleFloatingCapsule(bool value) async {
+    if (_changingFloatingCapsule) return;
+    setState(() => _changingFloatingCapsule = true);
     try {
       if (value) {
         final hasPerm = await FloatingCapsuleService.hasPermission();
+        if (!mounted) return;
         if (!hasPerm) {
-          await FloatingCapsuleService.openPermissionSettings();
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('请在系统设置中开启「悬浮窗」权限，返回后重新打开开关'),
-                duration: Duration(seconds: 3),
-              ),
-            );
+          _waitingForFloatingPermission = true;
+          _leftForFloatingPermission = false;
+          final opened = await FloatingCapsuleService.openPermissionSettings();
+          if (!mounted) return;
+          if (!opened) {
+            _waitingForFloatingPermission = false;
+            _leftForFloatingPermission = false;
+            _showFloatingMessage('无法打开悬浮窗权限设置，请在系统设置中手动授权');
+          } else {
+            _showFloatingMessage('授权后返回库仔音乐，迷你窗会自动开启');
           }
           return;
         }
+        _waitingForFloatingPermission = false;
+        _leftForFloatingPermission = false;
+        final shown = await _enableFloatingCapsule();
+        if (mounted) _announceFloatingEnableResult(shown);
       } else {
+        _waitingForFloatingPermission = false;
+        _leftForFloatingPermission = false;
+        FloatingCapsuleService.setEnabled(false);
         await FloatingCapsuleService.hide();
+        await FloatingCapsuleService.persistEnabled(false, scope: _dataScope);
+        if (mounted) setState(() {});
       }
-      if (!mounted) return;
-      FloatingCapsuleService.setEnabled(value);
-      if (value) {
-        final player = context.read<PlayerProvider>();
-        final song = player.currentSong;
-        if (song != null) {
-          await FloatingCapsuleService.show(
-            title: song.name,
-            artist: song.artist,
-            coverUrl: song.coverUrl,
-            isPlaying: player.isPlaying,
-          );
-        }
-      }
-      await FloatingCapsuleService.persistEnabled(value, scope: _dataScope);
-      if (mounted) setState(() {});
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('车机迷你窗设置失败：$error')));
+      _showFloatingMessage('车机迷你窗设置失败：$error');
+    } finally {
+      if (mounted) setState(() => _changingFloatingCapsule = false);
+      if (mounted &&
+          _waitingForFloatingPermission &&
+          _leftForFloatingPermission &&
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+        unawaited(_finishFloatingPermissionRequest());
+      }
     }
+  }
+
+  Future<void> _finishFloatingPermissionRequest() async {
+    if (!_waitingForFloatingPermission || _changingFloatingCapsule) return;
+    _waitingForFloatingPermission = false;
+    _leftForFloatingPermission = false;
+    if (mounted) setState(() => _changingFloatingCapsule = true);
+    try {
+      final granted = await FloatingCapsuleService.hasPermission();
+      if (!mounted) return;
+      if (!granted) {
+        await FloatingCapsuleService.persistEnabled(false, scope: _dataScope);
+        _showFloatingMessage('未获得悬浮窗权限，迷你窗未开启');
+        return;
+      }
+      final shown = await _enableFloatingCapsule();
+      if (mounted) _announceFloatingEnableResult(shown);
+    } catch (error) {
+      if (mounted) _showFloatingMessage('启用车机迷你窗失败：$error');
+    } finally {
+      if (mounted) setState(() => _changingFloatingCapsule = false);
+    }
+  }
+
+  Future<bool?> _enableFloatingCapsule() async {
+    if (!mounted) return false;
+    final player = context.read<PlayerProvider>();
+    final song = player.currentSong;
+    FloatingCapsuleService.setEnabled(true);
+    bool? shown;
+    if (song != null) {
+      shown = await FloatingCapsuleService.show(
+        title: song.name,
+        artist: song.artist,
+        coverUrl: song.coverUrl,
+        isPlaying: player.isPlaying,
+      );
+    }
+    await FloatingCapsuleService.persistEnabled(true, scope: _dataScope);
+    if (mounted) setState(() {});
+    return shown;
+  }
+
+  void _announceFloatingEnableResult(bool? shown) {
+    if (shown == true) {
+      _showFloatingMessage('车机迷你窗已开启');
+    } else if (shown == null) {
+      _showFloatingMessage('车机迷你窗已开启，播放歌曲后会自动显示');
+    } else {
+      _showFloatingMessage('权限已生效，窗口将在下次播放或返回应用时重试');
+    }
+  }
+
+  void _showFloatingMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
+    );
   }
 
   @override
@@ -778,7 +860,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     secondary: const Icon(Icons.picture_in_picture_alt_rounded),
                     title: const Text('车机迷你窗（置顶）'),
                     subtitle: Text(
-                      FloatingCapsuleService.enabled
+                      _changingFloatingCapsule
+                          ? '正在检查悬浮窗状态…'
+                          : FloatingCapsuleService.enabled
                           ? '切换到其他应用后仍显示封面、歌名和歌手'
                           : '在其他应用上方显示当前歌曲信息（需悬浮窗权限）',
                       style: TextStyle(
@@ -787,7 +871,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ),
                     value: FloatingCapsuleService.enabled,
-                    onChanged: _toggleFloatingCapsule,
+                    onChanged: _changingFloatingCapsule
+                        ? null
+                        : _toggleFloatingCapsule,
                   ),
                 ],
               ),

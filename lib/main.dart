@@ -156,12 +156,14 @@ class MusicPlayerApp extends StatefulWidget {
   State<MusicPlayerApp> createState() => _MusicPlayerAppState();
 }
 
-class _MusicPlayerAppState extends State<MusicPlayerApp> {
+class _MusicPlayerAppState extends State<MusicPlayerApp>
+    with WidgetsBindingObserver {
   late _UserSession _session;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _session = _UserSession(
       scope: widget.users.activeScope,
       player: widget.player,
@@ -174,6 +176,26 @@ class _MusicPlayerAppState extends State<MusicPlayerApp> {
         _navigatorKey.currentState?.push(PlayerScreen.route(context));
       }
     };
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_syncFloatingCapsuleOnResume());
+    }
+  }
+
+  Future<void> _syncFloatingCapsuleOnResume() async {
+    if (!mounted || !FloatingCapsuleService.enabled) return;
+    final player = _session.player;
+    final song = player.currentSong;
+    if (song == null) return;
+    await FloatingCapsuleService.show(
+      title: song.name,
+      artist: song.artist,
+      coverUrl: song.coverUrl,
+      isPlaying: player.isPlaying,
+    );
   }
 
   Future<void> _switchUserSession(String userId) async {
@@ -220,6 +242,7 @@ class _MusicPlayerAppState extends State<MusicPlayerApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.users.detachSessionSwitcher();
     FloatingCapsuleService.onPlayPauseTap = null;
     FloatingCapsuleService.onCapsuleTap = null;
