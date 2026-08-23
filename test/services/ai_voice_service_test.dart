@@ -101,6 +101,23 @@ void main() {
 
     expect(recognizer.voiceModel, AiVoiceModelKind.paraformerBilingual);
   });
+
+  test('contains recognizer callbacks that throw', () async {
+    final recognizer = _FakeRecognizer();
+    final engine = PlatformAiSpeechEngine(
+      speech: recognizer,
+      microphonePermission: _FakeMicrophonePermission(granted: true),
+      audioFocus: _FakeAudioFocus(),
+    );
+
+    await engine.initialize(
+      onError: (_) => throw StateError('callback error'),
+      onStatus: (_) => throw StateError('callback error'),
+    );
+
+    expect(() => recognizer.emitError('native error'), returnsNormally);
+    expect(() => recognizer.emitStatus('done'), returnsNormally);
+  });
 }
 
 class _FakeMicrophonePermission implements AiMicrophonePermission {

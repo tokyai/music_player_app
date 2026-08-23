@@ -344,7 +344,7 @@ class _SherpaOnnxRecognizer
     required void Function(String status) onStatus,
   }) async {
     if (_disposed) {
-      onError('speech_not_supported: 语音识别服务已释放');
+      _emitError(onError, 'speech_not_supported: 语音识别服务已释放');
       return false;
     }
     _onError = onError;
@@ -433,7 +433,7 @@ class _SherpaOnnxRecognizer
       _loadedVoiceModel = null;
       _logError('model initialization failed', error, stackTrace);
       if (!_disposed) {
-        onError('speech_not_supported: 离线语音模型初始化失败：$error');
+        _emitError(onError, 'speech_not_supported: 离线语音模型初始化失败：$error');
       }
       return false;
     }
@@ -494,7 +494,7 @@ class _SherpaOnnxRecognizer
         cancelOnError: false,
       );
       _log('capture listening: generation=$generation ${capture.description}');
-      _onStatus?.call('listening');
+      _emitStatus('listening');
     } catch (error, stackTrace) {
       _logError('capture startup failed', error, stackTrace);
       try {
@@ -627,11 +627,11 @@ class _SherpaOnnxRecognizer
       if (text.isNotEmpty && text != _lastText) {
         _lastText = text;
         _log('partial result: chars=${text.length}');
-        _onResult?.call(text, false);
+        _emitResult(text, false);
       }
       if (recognizer.isEndpoint(stream)) {
         _log('endpoint: resultChars=${text.length}');
-        if (text.isNotEmpty) _onResult?.call(text, true);
+        if (text.isNotEmpty) _emitResult(text, true);
         unawaited(_finishCapture(emitStatus: true));
       }
     } catch (error, stackTrace) {
@@ -649,7 +649,7 @@ class _SherpaOnnxRecognizer
   void _handleCaptureError(int generation, Object error) {
     if (generation != _generation || _finishing) return;
     _log('capture error: generation=$generation error=$error');
-    _onError?.call('error_audio: 麦克风音频流异常：$error');
+    _emitError(null, 'error_audio: 麦克风音频流异常：$error');
     unawaited(_finishCapture());
   }
 
@@ -704,7 +704,7 @@ class _SherpaOnnxRecognizer
             }
             final text = recognizer.getResult(stream).text.trim();
             _log('final result: chars=${text.length}');
-            if (text.isNotEmpty) _onResult?.call(text, true);
+            if (text.isNotEmpty) _emitResult(text, true);
           } catch (error, stackTrace) {
             // Native recognizers may be torn down concurrently with the last
             // audio callback. Finalization is best-effort and must not leak an
@@ -728,11 +728,7 @@ class _SherpaOnnxRecognizer
         );
         unawaited(_logMemory('capture-finished'));
         if (emitStatus) {
-          try {
-            _onStatus?.call('done');
-          } catch (error, stackTrace) {
-            _logError('capture completion callback failed', error, stackTrace);
-          }
+          _emitStatus('done');
         }
       }
     }();
@@ -819,6 +815,36 @@ class _SherpaOnnxRecognizer
     _log('$context: $error');
     debugPrintStack(label: '[AiVoice] $context', stackTrace: stackTrace);
   }
+
+  void _emitResult(String text, bool isFinal) {
+    final callback = _onResult;
+    if (callback == null) return;
+    try {
+      callback(text, isFinal);
+    } catch (error, stackTrace) {
+      _logError('recognition result callback failed', error, stackTrace);
+    }
+  }
+
+  void _emitError(void Function(String message)? callback, String message) {
+    final target = callback ?? _onError;
+    if (target == null) return;
+    try {
+      target(message);
+    } catch (error, stackTrace) {
+      _logError('recognition error callback failed', error, stackTrace);
+    }
+  }
+
+  void _emitStatus(String status) {
+    final callback = _onStatus;
+    if (callback == null) return;
+    try {
+      callback(status);
+    } catch (error, stackTrace) {
+      _logError('recognition status callback failed', error, stackTrace);
+    }
+  }
 }
 
 abstract class AiMicrophonePermission {
@@ -879,7 +905,15 @@ class PlatformAiAudioFocusCoordinator implements AiAudioFocusCoordinator {
             : null;
         if (change == -1 || change == -2) {
           _held = false;
-          _onFocusLost?.call();
+          final callback = _onFocusLost;
+          if (callback != null) {
+            try {
+              callback();
+            } catch (error, stackTrace) {
+              debugPrint('AI 音频焦点回调失败: $error');
+              debugPrintStack(stackTrace: stackTrace);
+            }
+          }
         }
       }
       return null;
@@ -985,11 +1019,16 @@ class PlatformAiSpeechEngine
     required void Function(String status) onStatus,
   }) async {
     if (_disposed) return false;
-    _audioFocus.setOnFocusLost(() {
-      unawaited(_handleFocusLost(onError));
-    });
+    try {
+      _audioFocus.setOnFocusLost(() {
+        unawaited(_handleFocusLost(onError));
+      });
+    } catch (error, stackTrace) {
+      debugPrint('AI 音频焦点回调安装失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
     if (!await _microphonePermission.ensureGranted()) {
-      if (!_disposed) onError('麦克风权限未授予');
+      if (!_disposed) _safeError(onError, '麦克风权限未授予');
       return false;
     }
     if (_disposed) return false;
@@ -997,14 +1036,14 @@ class PlatformAiSpeechEngine
       onError: (message) {
         if (_disposed) return;
         unawaited(_releaseFocus());
-        onError(message);
+        _safeError(onError, message);
       },
       onStatus: (status) {
         if (_disposed) return;
         if (status == 'done' || status == 'notListening') {
           unawaited(_releaseFocus());
         }
-        onStatus(status);
+        _safeStatus(onStatus, status);
       },
     );
     if (_disposed) return false;
@@ -1075,7 +1114,25 @@ class PlatformAiSpeechEngine
     } catch (_) {}
     await _releaseFocus();
     if (!_disposed) {
-      onError('error_audio_focus_lost: 车机语音焦点已被其他应用占用');
+      _safeError(onError, 'error_audio_focus_lost: 车机语音焦点已被其他应用占用');
+    }
+  }
+
+  void _safeError(void Function(String message) callback, String message) {
+    try {
+      callback(message);
+    } catch (error, stackTrace) {
+      debugPrint('AI 语音错误回调失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  void _safeStatus(void Function(String status) callback, String status) {
+    try {
+      callback(status);
+    } catch (error, stackTrace) {
+      debugPrint('AI 语音状态回调失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
     }
   }
 
