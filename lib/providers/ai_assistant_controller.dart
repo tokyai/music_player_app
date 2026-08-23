@@ -28,6 +28,11 @@ class AiAssistantController extends ChangeNotifier {
   // Keep the visible transcript bounded during long in-car sessions. The
   // request context is already limited separately in _contextMessages().
   static const _maxStoredMessages = 100;
+  // A gateway response is bounded at the HTTP layer, but a multi-megabyte
+  // reply retained in every message would still exhaust a car's heap after
+  // a few turns. Normal replies are far below this limit.
+  static const _maxMessageChars = 32 * 1024;
+  static const _maxContextChars = 64 * 1024;
 
   final PlayerProvider player;
   final AiConfigController configController;
@@ -563,12 +568,38 @@ class AiAssistantController extends ChangeNotifier {
 
   List<AiConversationMessage> _contextMessages() {
     const maxMessages = 24;
-    if (_messages.length <= maxMessages) return List.of(_messages);
-    return _messages.sublist(_messages.length - maxMessages);
+    if (_messages.isEmpty) return const [];
+    final selected = <AiConversationMessage>[];
+    var chars = 0;
+    for (
+      var index = _messages.length - 1;
+      index >= 0 && selected.length < maxMessages;
+      index--
+    ) {
+      final message = _messages[index];
+      if (selected.isNotEmpty &&
+          chars + message.text.length > _maxContextChars) {
+        break;
+      }
+      selected.add(message);
+      chars += message.text.length;
+    }
+    return selected.reversed.toList(growable: false);
   }
 
   void _appendMessage(AiConversationMessage message) {
-    _messages.add(message);
+    final text = message.text.length <= _maxMessageChars
+        ? message.text
+        : '${message.text.substring(0, _maxMessageChars - 1)}…';
+    _messages.add(
+      identical(text, message.text)
+          ? message
+          : AiConversationMessage(
+              role: message.role,
+              text: text,
+              createdAt: message.createdAt,
+            ),
+    );
     if (_messages.length > _maxStoredMessages) {
       _messages.removeRange(0, _messages.length - _maxStoredMessages);
     }

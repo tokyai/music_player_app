@@ -51,6 +51,28 @@ void main() {
     expect(fixture.speech.listenCalls, greaterThanOrEqualTo(4));
   });
 
+  test('bounds unusually large messages and request context', () async {
+    final fixture = await _Fixture.create(
+      gatewayResults: [AiChatResult(reply: '回复' * 40000)],
+    );
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    await fixture.controller.sendText('问题' * 40000);
+
+    expect(fixture.controller.messages, hasLength(2));
+    expect(
+      fixture.controller.messages.every(
+        (message) => message.text.length <= 32769,
+      ),
+      isTrue,
+    );
+    expect(
+      fixture.gateway.requests.single.single.text.length,
+      lessThanOrEqualTo(32768),
+    );
+  });
+
   test('uses the configured offline voice model for a new session', () async {
     final fixture = await _Fixture.create();
     addTearDown(fixture.dispose);
