@@ -116,6 +116,30 @@ void main() {
     expect(reloaded.petPosition.x, 0);
     expect(reloaded.petPosition.y, 1);
   });
+
+  test('contains secure storage failures from callback-style saves', () async {
+    final controller = AiConfigController(secretStore: _FailingAiSecretStore());
+    addTearDown(controller.dispose);
+
+    await controller.ready;
+    await expectLater(controller.setPetScale(1.25), completes);
+    await expectLater(
+      controller.setShowAssistantOnAllPages(false),
+      completes,
+    );
+    expect(controller.petScale, 1.25);
+    expect(controller.showAssistantOnAllPages, isFalse);
+  });
+}
+
+class _FailingAiSecretStore implements AiSecretStore {
+  @override
+  Future<String?> read() async => null;
+
+  @override
+  Future<void> write(String value) async {
+    throw StateError('secure storage unavailable');
+  }
 }
 
 AiAssistantConfig _config({

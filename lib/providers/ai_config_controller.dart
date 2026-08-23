@@ -412,25 +412,44 @@ class AiConfigController extends ChangeNotifier {
   }
 
   Future<void> _persist() async {
-    final prefs = await SharedPreferences.getInstance();
-    await _secretStore.write(jsonEncode(_apiKeys));
-    await Future.wait([
-      prefs.setString(
-        _profilesPreferencesKey,
-        jsonEncode(
-          _profiles.map((profile) => profile.toPreferencesJson()).toList(),
+    // Settings callbacks are allowed to return a Future, but Flutter does
+    // not await callback results. A storage/plugin failure must therefore be
+    // contained here instead of becoming an uncaught async error.
+    SharedPreferences prefs;
+    try {
+      prefs = await SharedPreferences.getInstance();
+    } catch (error, stackTrace) {
+      debugPrint('保存 AI 助理偏好失败: $error\n$stackTrace');
+      return;
+    }
+
+    try {
+      await _secretStore.write(jsonEncode(_apiKeys));
+    } catch (error, stackTrace) {
+      debugPrint('保存 AI 助理密钥失败: $error\n$stackTrace');
+    }
+
+    try {
+      await Future.wait([
+        prefs.setString(
+          _profilesPreferencesKey,
+          jsonEncode(
+            _profiles.map((profile) => profile.toPreferencesJson()).toList(),
+          ),
         ),
-      ),
-      prefs.setString(_activeProfilePreferenceKey, _activeProfileId),
-      prefs.setBool(
-        showAssistantOnAllPagesPreferenceKey,
-        _showAssistantOnAllPages,
-      ),
-      prefs.setBool(showPetOnPlayerPagePreferenceKey, _showPetOnPlayerPage),
-      prefs.setDouble(petScalePreferenceKey, _petScale),
-      prefs.setDouble(petPositionXPreferenceKey, _petPosition.x),
-      prefs.setDouble(petPositionYPreferenceKey, _petPosition.y),
-    ]);
+        prefs.setString(_activeProfilePreferenceKey, _activeProfileId),
+        prefs.setBool(
+          showAssistantOnAllPagesPreferenceKey,
+          _showAssistantOnAllPages,
+        ),
+        prefs.setBool(showPetOnPlayerPagePreferenceKey, _showPetOnPlayerPage),
+        prefs.setDouble(petScalePreferenceKey, _petScale),
+        prefs.setDouble(petPositionXPreferenceKey, _petPosition.x),
+        prefs.setDouble(petPositionYPreferenceKey, _petPosition.y),
+      ]);
+    } catch (error, stackTrace) {
+      debugPrint('保存 AI 助理偏好失败: $error\n$stackTrace');
+    }
   }
 
   void _syncActiveConfig() {
