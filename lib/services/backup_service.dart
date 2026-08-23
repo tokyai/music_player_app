@@ -123,10 +123,7 @@ class BackupService {
     required PlayerProvider player,
     AiConfigController? aiConfig,
   }) {
-    final decoded = jsonDecode(favorites.exportJson(apiKey: player.apiKey));
-    if (decoded is! Map) {
-      throw const FormatException('收藏备份生成失败');
-    }
+    final decoded = favorites.exportData(apiKey: player.apiKey);
     decoded['playerSettings'] = player.toBackupJson();
     if (aiConfig != null) {
       decoded['aiAssistant'] = aiConfig.toBackupJson();

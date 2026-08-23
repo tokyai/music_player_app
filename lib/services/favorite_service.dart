@@ -276,18 +276,34 @@ class FavoriteService extends ChangeNotifier {
   ///
   /// 版本 3 将音乐歌曲与 B站收藏分开保存，同时保留歌单元数据和 API Key。
   /// 歌单曲目不写入备份，还原后会按平台重新获取最新曲目。
-  String exportJson({String? apiKey}) {
-    return const JsonEncoder.withIndent('  ').convert({
+  Map<String, dynamic> exportData({String? apiKey}) {
+    final songs = <Map<String, dynamic>>[];
+    final bilibili = <Map<String, dynamic>>[];
+    for (final song in _favorites) {
+      final data = song.toJson();
+      if (song.platform == MusicPlatform.bilibili) {
+        bilibili.add(data);
+      } else {
+        songs.add(data);
+      }
+    }
+    return {
       'format': exportFormat,
       'version': exportVersion,
       'exportedAt': DateTime.now().toUtc().toIso8601String(),
-      'songs': favorites.map((song) => song.toJson()).toList(),
-      'bilibili': bilibiliFavorites.map((song) => song.toJson()).toList(),
+      'songs': songs,
+      'bilibili': bilibili,
       'playlists': _favoritePlaylists
           .map((playlist) => playlist.toJson())
           .toList(),
       'apiKey': apiKey,
-    });
+    };
+  }
+
+  String exportJson({String? apiKey}) {
+    return const JsonEncoder.withIndent(
+      '  ',
+    ).convert(exportData(apiKey: apiKey));
   }
 
   /// 导入库仔音乐备份，也兼容旧版直接导出的歌曲数组。
