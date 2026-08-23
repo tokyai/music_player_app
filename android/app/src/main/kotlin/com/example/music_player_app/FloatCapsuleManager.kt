@@ -230,6 +230,11 @@ object FloatCapsuleManager {
                     view.findViewById<ImageView>(R.id.fc_cover)?.setImageDrawable(null)
                     recycleCoverBitmap()
                 }
+            } catch (_: OutOfMemoryError) {
+                // A state update can decode a new drawable even after the
+                // overlay was created successfully. Remove the overlay so a
+                // low-memory update does not terminate the main thread.
+                hide()
             } catch (_: Exception) {
             }
         }
@@ -246,6 +251,8 @@ object FloatCapsuleManager {
                 view.findViewById<ImageButton>(R.id.fc_play)?.setImageResource(
                     if (isPlaying) R.drawable.ic_pause_white else R.drawable.ic_play_white
                 )
+            } catch (_: OutOfMemoryError) {
+                hide()
             } catch (_: Exception) {
             }
         }
