@@ -588,8 +588,15 @@ class AiAssistantController extends ChangeNotifier {
     _turnGeneration++;
     _cancelSpeechTimers();
     unawaited(_disposeSpeechResources());
-    unawaited(textToSpeech.stop());
-    gateway.close();
+    // Both are teardown-only operations. Keep custom/plugin implementations
+    // from turning a widget disposal into an unhandled async error.
+    unawaited(_stopSpeaking());
+    try {
+      gateway.close();
+    } catch (error, stackTrace) {
+      debugPrint('关闭 AI 会话失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
     super.dispose();
   }
 

@@ -686,18 +686,31 @@ class _SherpaOnnxRecognizer
 
     final cleanup = () async {
       try {
-        await subscription?.cancel();
+        try {
+          await subscription?.cancel();
+        } catch (error, stackTrace) {
+          _logError('audio subscription cancel failed', error, stackTrace);
+        }
         try {
           await capture?.stop();
-        } catch (_) {}
+        } catch (error, stackTrace) {
+          _logError('audio capture stop failed', error, stackTrace);
+        }
         if (finalizeInput && stream != null && recognizer != null) {
-          stream.inputFinished();
-          while (recognizer.isReady(stream)) {
-            recognizer.decode(stream);
+          try {
+            stream.inputFinished();
+            while (recognizer.isReady(stream)) {
+              recognizer.decode(stream);
+            }
+            final text = recognizer.getResult(stream).text.trim();
+            _log('final result: chars=${text.length}');
+            if (text.isNotEmpty) _onResult?.call(text, true);
+          } catch (error, stackTrace) {
+            // Native recognizers may be torn down concurrently with the last
+            // audio callback. Finalization is best-effort and must not leak an
+            // unhandled error from an unawaited cleanup future.
+            _logError('final audio decode failed', error, stackTrace);
           }
-          final text = recognizer.getResult(stream).text.trim();
-          _log('final result: chars=${text.length}');
-          if (text.isNotEmpty) _onResult?.call(text, true);
         }
       } finally {
         try {
@@ -714,7 +727,13 @@ class _SherpaOnnxRecognizer
           'maxPeak=${_maxObservedPeak.toStringAsFixed(4)}',
         );
         unawaited(_logMemory('capture-finished'));
-        if (emitStatus) _onStatus?.call('done');
+        if (emitStatus) {
+          try {
+            _onStatus?.call('done');
+          } catch (error, stackTrace) {
+            _logError('capture completion callback failed', error, stackTrace);
+          }
+        }
       }
     }();
     _cleanupFuture = cleanup;
