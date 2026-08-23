@@ -223,6 +223,9 @@ Future<void> showAiAssistantPanel(BuildContext context) async {
       barrierDismissible: false,
       builder: (_) => Dialog(
         key: const ValueKey('ai-assistant-dialog'),
+        backgroundColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
         insetPadding: const EdgeInsets.all(8),
         clipBehavior: Clip.antiAlias,
         child: ConstrainedBox(
@@ -355,81 +358,112 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     AppColors.syncWithTheme(context);
     final layout = AppLayout.fromContext(context);
     final compact = layout.isCompactLandscape;
+    final landscape = layout.isLandscape;
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _close();
       },
       child: Material(
-        color: AppColors.background,
-        child: SafeArea(
-          top: false,
-          child: Column(
-            children: [
-              _buildHeader(compact),
-              Divider(height: 1, color: AppColors.outline),
-              Expanded(child: _buildMessages(layout)),
-              if (controller.transcript.isNotEmpty)
-                Container(
-                  key: const ValueKey('ai-assistant-live-transcript'),
-                  width: double.infinity,
-                  margin: EdgeInsets.fromLTRB(
-                    compact ? 10 : 16,
-                    4,
-                    compact ? 10 : 16,
-                    4,
-                  ),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppColors.primarySoft,
-                    borderRadius: BorderRadius.circular(AppRadius.control),
-                  ),
-                  child: Text(
-                    controller.transcript,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: AppColors.textPrimary),
-                  ),
-                ),
-              _buildStatus(compact, voiceOnly: layout.isLandscape),
-              _buildComposer(compact, voiceOnly: layout.isLandscape),
+        color: Colors.transparent,
+        child: Container(
+          decoration: BoxDecoration(
+            color: AppColors.background,
+            border: Border.all(color: AppColors.outline),
+            borderRadius: BorderRadius.circular(
+              landscape ? AppRadius.panel : AppRadius.card,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.cardShadow,
+                blurRadius: landscape ? 18 : 8,
+                offset: const Offset(0, 4),
+              ),
             ],
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(
+              landscape ? AppRadius.panel : AppRadius.card,
+            ),
+            child: SafeArea(
+              top: false,
+              child: Column(
+                children: [
+                  _buildHeader(layout),
+                  Divider(height: 1, color: AppColors.outline),
+                  Expanded(child: _buildMessages(layout)),
+                  if (controller.transcript.isNotEmpty)
+                    _buildTranscript(compact),
+                  _buildStatus(compact, voiceOnly: landscape),
+                  _buildComposer(compact, voiceOnly: landscape),
+                ],
+              ),
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildHeader(bool compact) {
+  Widget _buildHeader(AppLayout layout) {
+    final compact = layout.isCompactLandscape;
+    final landscape = layout.isLandscape;
+    final avatarSize = compact ? 46.0 : 58.0;
     return Padding(
-      padding: EdgeInsets.fromLTRB(compact ? 12 : 18, 8, 6, 6),
+      padding: EdgeInsets.fromLTRB(
+        landscape ? (compact ? 12 : 18) : 18,
+        landscape ? (compact ? 6 : 10) : 8,
+        landscape ? (compact ? 8 : 12) : 6,
+        landscape ? (compact ? 6 : 10) : 6,
+      ),
       child: Row(
         children: [
-          Container(
-            width: compact ? 34 : 40,
-            height: compact ? 34 : 40,
-            decoration: BoxDecoration(
-              color: AppColors.primarySoft,
-              borderRadius: BorderRadius.circular(AppRadius.control),
-            ),
-            child: const Icon(
-              Icons.auto_awesome_rounded,
-              color: AppColors.primary,
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              'AI 小助理',
-              style: TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: compact ? 18 : 21,
-                fontWeight: FontWeight.w700,
+          if (landscape)
+            Container(
+              width: avatarSize * 1.12,
+              height: avatarSize,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: AppColors.primarySoft,
+                borderRadius: BorderRadius.circular(AppRadius.control),
+                border: Border.all(
+                  color: AppColors.primary.withValues(alpha: 0.22),
+                ),
+              ),
+              child: IgnorePointer(
+                child: KuzaiPet(
+                  key: const ValueKey('ai-assistant-pet-avatar'),
+                  size: avatarSize,
+                  mode: KuzaiPetMode.idle,
+                  onTap: () {},
+                ),
+              ),
+            )
+          else
+            Container(
+              width: compact ? 34 : 40,
+              height: compact ? 34 : 40,
+              decoration: BoxDecoration(
+                color: AppColors.primarySoft,
+                borderRadius: BorderRadius.circular(AppRadius.control),
+              ),
+              child: const Icon(
+                Icons.auto_awesome_rounded,
+                color: AppColors.primary,
               ),
             ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: landscape
+                ? _buildLandscapeIdentity(compact)
+                : Text(
+                    'AI 小助理',
+                    style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: compact ? 18 : 21,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
           ),
           IconButton(
             key: const ValueKey('ai-assistant-new-session'),
@@ -439,13 +473,105 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
                 : null,
             icon: const Icon(Icons.add_comment_outlined),
           ),
-          IconButton(
+          Container(
             key: const ValueKey('ai-assistant-close'),
-            tooltip: '结束并关闭',
-            onPressed: _close,
-            icon: const Icon(Icons.close_rounded),
+            width: landscape ? (compact ? 58 : 62) : 50,
+            height: landscape ? (compact ? 58 : 62) : 50,
+            decoration: BoxDecoration(
+              color: landscape ? AppColors.primarySoft : Colors.transparent,
+              borderRadius: BorderRadius.circular(AppRadius.control),
+              border: landscape
+                  ? Border.all(color: AppColors.primary.withValues(alpha: 0.25))
+                  : null,
+            ),
+            child: IconButton(
+              tooltip: '结束并关闭',
+              onPressed: _close,
+              constraints: BoxConstraints.tightFor(
+                width: landscape ? (compact ? 58 : 62) : 50,
+                height: landscape ? (compact ? 58 : 62) : 50,
+              ),
+              padding: EdgeInsets.zero,
+              icon: Icon(
+                Icons.close_rounded,
+                size: landscape ? (compact ? 31 : 34) : 30,
+                color: AppColors.textPrimary,
+              ),
+            ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildLandscapeIdentity(bool compact) {
+    final state = controller.state;
+    final statusColor = state == AiSessionState.error
+        ? Colors.redAccent
+        : AppColors.primary;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '库仔 AI 宠物',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: compact ? 18 : 21,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: statusColor.withValues(alpha: AppColors.isDark ? 0.2 : 0.1),
+            borderRadius: BorderRadius.circular(AppRadius.pill),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                state == AiSessionState.error
+                    ? Icons.warning_amber_rounded
+                    : Icons.auto_awesome_rounded,
+                size: compact ? 14 : 16,
+                color: statusColor,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                state == AiSessionState.error ? '需要检查连接' : '陪你听歌聊天',
+                style: TextStyle(
+                  color: statusColor,
+                  fontSize: compact ? 12 : 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTranscript(bool compact) {
+    return Container(
+      key: const ValueKey('ai-assistant-live-transcript'),
+      width: double.infinity,
+      margin: EdgeInsets.fromLTRB(compact ? 10 : 16, 4, compact ? 10 : 16, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.primarySoft,
+        borderRadius: BorderRadius.circular(AppRadius.control),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.18)),
+      ),
+      child: Text(
+        controller.transcript,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(color: AppColors.textPrimary),
       ),
     );
   }
@@ -538,24 +664,81 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     final busy =
         controller.state == AiSessionState.processing ||
         controller.state == AiSessionState.initializing;
+    final microphoneTooltip = controller.state == AiSessionState.speaking
+        ? '打断播报并说话'
+        : controller.isListening
+        ? '暂停聆听'
+        : '继续聆听';
+    if (voiceOnly) {
+      return Padding(
+        padding: EdgeInsets.fromLTRB(
+          compact ? 10 : 16,
+          4,
+          compact ? 10 : 16,
+          compact ? 8 : 14,
+        ),
+        child: SizedBox(
+          key: const ValueKey('ai-assistant-voice-action'),
+          width: double.infinity,
+          height: compact ? 62 : 72,
+          child: Tooltip(
+            message: microphoneTooltip,
+            child: FilledButton.icon(
+              key: const ValueKey('ai-assistant-microphone'),
+              onPressed: busy
+                  ? null
+                  : () => unawaited(controller.toggleListening()),
+              icon: Icon(
+                controller.isListening
+                    ? Icons.mic_rounded
+                    : Icons.mic_off_outlined,
+                size: compact ? 29 : 32,
+              ),
+              label: Text(
+                controller.state == AiSessionState.speaking
+                    ? '打断播报，继续说话'
+                    : controller.isListening
+                    ? '正在聆听 · 点击暂停'
+                    : '点击开始语音对话',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: compact ? 17 : 19,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              style: FilledButton.styleFrom(
+                backgroundColor: controller.isListening
+                    ? AppColors.primary
+                    : AppColors.surfaceSoft,
+                foregroundColor: controller.isListening
+                    ? Colors.white
+                    : AppColors.textPrimary,
+                disabledBackgroundColor: AppColors.surfaceSoft,
+                disabledForegroundColor: AppColors.textSecondary,
+                side: BorderSide(
+                  color: controller.isListening
+                      ? AppColors.primary
+                      : AppColors.outline,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(AppRadius.control),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     final microphone = IconButton.filledTonal(
       key: const ValueKey('ai-assistant-microphone'),
-      tooltip: controller.state == AiSessionState.speaking
-          ? '打断播报并说话'
-          : controller.isListening
-          ? '暂停聆听'
-          : '继续聆听',
+      tooltip: microphoneTooltip,
       onPressed: busy ? null : () => unawaited(controller.toggleListening()),
       icon: Icon(
         controller.isListening ? Icons.mic_rounded : Icons.mic_off_outlined,
       ),
     );
-    if (voiceOnly) {
-      return Padding(
-        padding: EdgeInsets.fromLTRB(8, 4, 8, compact ? 8 : 12),
-        child: Center(child: microphone),
-      );
-    }
     return Padding(
       padding: EdgeInsets.fromLTRB(
         compact ? 8 : 12,

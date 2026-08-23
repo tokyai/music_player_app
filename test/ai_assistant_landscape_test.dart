@@ -215,6 +215,23 @@ void main() {
             findsOneWidget,
           );
           expect(
+            find.byKey(const ValueKey('ai-assistant-pet-avatar')),
+            findsOneWidget,
+          );
+          expect(find.text('库仔 AI 宠物'), findsOneWidget);
+          expect(
+            tester
+                .getSize(
+                  find.byKey(const ValueKey('ai-assistant-voice-action')),
+                )
+                .height,
+            size == const Size(640, 360) ? 62 : 72,
+          );
+          expect(
+            tester.getSize(find.byKey(const ValueKey('ai-assistant-close'))),
+            Size.square(size == const Size(640, 360) ? 58 : 62),
+          );
+          expect(
             find.byKey(const ValueKey('ai-assistant-text-field')),
             findsNothing,
           );
@@ -258,6 +275,42 @@ void main() {
       }, _mockClient);
     },
   );
+
+  testWidgets('AI pet panel keeps a distinct surface in the dark car theme', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      for (final size in const [Size(640, 360), Size(1280, 800)]) {
+        SharedPreferences.setMockInitialValues({});
+        final fixture = await _MainFixture.create();
+        _setViewSize(tester, size);
+        await tester.pumpWidget(fixture.app(themeMode: ThemeMode.dark));
+        await _pumpFrames(tester);
+        await tester.tap(find.byKey(const ValueKey('ai-assistant-fab')));
+        await _pumpFrames(tester);
+
+        final dialog = find.byKey(const ValueKey('ai-assistant-dialog'));
+        expect(dialog, findsOneWidget);
+        expect(find.text('库仔 AI 宠物'), findsOneWidget);
+        expect(AppColors.isDark, isTrue);
+        expect(
+          tester
+              .getSize(find.byKey(const ValueKey('ai-assistant-voice-action')))
+              .height,
+          size == const Size(640, 360) ? 62 : 72,
+        );
+        await tester.tap(find.byKey(const ValueKey('ai-assistant-close')));
+        await _pumpFrames(tester);
+        expect(dialog, findsNothing);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        fixture.dispose();
+      }
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    }, _mockClient);
+  });
 
   testWidgets(
     'successful voice playback closes the dialog in both landscapes',
@@ -867,7 +920,10 @@ class _MainFixture {
     );
   }
 
-  Widget app({Widget home = const MainScreen()}) => MultiProvider(
+  Widget app({
+    Widget home = const MainScreen(),
+    ThemeMode themeMode = ThemeMode.light,
+  }) => MultiProvider(
     providers: [
       ChangeNotifierProvider<PlayerProvider>.value(value: player),
       ChangeNotifierProvider<AiConfigController>.value(value: config),
@@ -879,6 +935,8 @@ class _MainFixture {
     child: Consumer<ThemeController>(
       builder: (context, controller, _) => MaterialApp(
         theme: AppTheme.light(),
+        darkTheme: AppTheme.dark(),
+        themeMode: themeMode,
         builder: (context, child) => MediaQuery(
           data: AppLayout.adaptiveMediaQueryOf(
             context,
