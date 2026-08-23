@@ -107,6 +107,36 @@ void main() {
       expect(restored.playMode, 'repeat');
     },
   );
+
+  test('complete exit flushes the current queue and history once', () async {
+    final snapshot = PlaybackSessionSnapshot(
+      queue: [_song('exit-one', '退出保存一'), _song('exit-two', '退出保存二')],
+      currentIndex: 1,
+      position: const Duration(seconds: 41),
+      isPlaying: false,
+      playMode: 'shuffle',
+    );
+    SharedPreferences.setMockInitialValues({
+      PlaybackStateService.preferenceKey: jsonEncode(snapshot.toJson()),
+    });
+    final player = PlayerProvider();
+    addTearDown(player.dispose);
+
+    await player.prepareForAppExit();
+    await player.prepareForAppExit();
+
+    final restored = await PlaybackStateService.load();
+    expect(restored, isNotNull);
+    expect(restored!.queue.map((song) => song.id), ['exit-one', 'exit-two']);
+    expect(restored.currentIndex, 1);
+    expect(restored.position, const Duration(seconds: 41));
+    expect(restored.playMode, 'shuffle');
+
+    final history = await PlaybackHistoryService.load();
+    expect(history, hasLength(1));
+    expect(history.single.song.id, 'exit-two');
+    expect(history.single.position, const Duration(seconds: 41));
+  });
 }
 
 SongSearchResult _song(String id, String name) => SongSearchResult(

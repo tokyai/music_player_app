@@ -27,6 +27,7 @@ import android.view.KeyEvent
 import androidx.annotation.NonNull
 import androidx.core.content.FileProvider
 import com.ryanheise.audioservice.AudioServiceActivity
+import com.ryanheise.audioservice.AudioService
 import io.flutter.FlutterInjector
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -48,6 +49,7 @@ class MainActivity : AudioServiceActivity() {
         const val AI_MODEL_CHANNEL = "music_player/ai_model"
         const val AI_CAR_AUDIO_CONTROL_CHANNEL = "music_player/ai_car_audio_control"
         const val AI_CAR_AUDIO_STREAM_CHANNEL = "music_player/ai_car_audio_stream"
+        const val APP_LIFECYCLE_CHANNEL = "music_player/app_lifecycle"
         const val ZIPFORMER_MODEL = "streaming-zipformer-zh-14M-2023-02-23"
         const val PARAFORMER_MODEL = "streaming-paraformer-bilingual-zh-en"
         const val PUNCTUATION_MODEL =
@@ -72,6 +74,7 @@ class MainActivity : AudioServiceActivity() {
     private var pendingExportContent: String? = null
     private var foregroundMediaKeyChannel: MethodChannel? = null
     private var floatingCapsuleChannel: MethodChannel? = null
+    private var appLifecycleChannel: MethodChannel? = null
     private var aiTtsChannel: MethodChannel? = null
     private var aiAudioChannel: MethodChannel? = null
     private var aiModelChannel: MethodChannel? = null
@@ -120,6 +123,7 @@ class MainActivity : AudioServiceActivity() {
     private var pendingAiTtsUtteranceId: String? = null
     private var pendingAiTtsSpeakGeneration: Long? = null
     private var foregroundMediaKeysEnabled = false
+    private val completeExitRequested = AtomicBoolean(false)
 
     private val aiAudioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
         if (change == AudioManager.AUDIOFOCUS_LOSS ||
@@ -227,6 +231,18 @@ class MainActivity : AudioServiceActivity() {
                 when (call.method) {
                     "requestFocus" -> result.success(requestAiAudioFocus())
                     "abandonFocus" -> result.success(abandonAiAudioFocus())
+                    else -> result.notImplemented()
+                }
+            }
+        }
+
+        appLifecycleChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            APP_LIFECYCLE_CHANNEL
+        ).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "exit" -> requestCompleteExit(result)
                     else -> result.notImplemented()
                 }
             }
@@ -404,6 +420,8 @@ class MainActivity : AudioServiceActivity() {
         foregroundMediaKeysEnabled = false
         foregroundMediaKeyChannel?.setMethodCallHandler(null)
         foregroundMediaKeyChannel = null
+        appLifecycleChannel?.setMethodCallHandler(null)
+        appLifecycleChannel = null
         floatingCapsuleChannel?.setMethodCallHandler(null)
         floatingCapsuleChannel = null
         stopCarArrayCapture()
@@ -422,6 +440,39 @@ class MainActivity : AudioServiceActivity() {
         releaseAiTts()
         FloatCapsuleManager.clearCallbacks()
         super.onDestroy()
+    }
+
+    private fun requestCompleteExit(result: MethodChannel.Result) {
+        if (!completeExitRequested.compareAndSet(false, true)) {
+            result.success(true)
+            return
+        }
+
+        try {
+            FloatCapsuleManager.hide()
+        } catch (error: Exception) {
+            Log.w("AppExit", "failed to hide floating mini window", error)
+        }
+        try {
+            stopService(Intent(applicationContext, AudioService::class.java))
+        } catch (error: Exception) {
+            Log.w("AppExit", "failed to stop audio service", error)
+        }
+
+        // Return to Dart before destroying the engine. A separate handler is
+        // used because onDestroy clears callbacks owned by the AI audio path.
+        result.success(true)
+        Handler(Looper.getMainLooper()).post {
+            try {
+                finishAndRemoveTask()
+            } catch (error: Exception) {
+                Log.w("AppExit", "failed to remove app task", error)
+                finish()
+            }
+            Handler(Looper.getMainLooper()).postDelayed({
+                Process.killProcess(Process.myPid())
+            }, 200L)
+        }
     }
 
     private fun postIfActivityAlive(

@@ -18,6 +18,7 @@ import 'screens/search_screen.dart';
 import 'screens/playlist_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/favorite_service.dart';
+import 'services/app_exit_service.dart';
 import 'services/floating_capsule_service.dart';
 import 'services/player_media_handler.dart';
 import 'theme/app_layout.dart';
@@ -346,7 +347,13 @@ class _MainScreenState extends State<MainScreen>
                                             : 132)
                                       : 118),
                             selectedIndex: _currentIndex,
-                            onDestinationSelected: _selectScreen,
+                            onDestinationSelected: (index) {
+                              if (index == 4) {
+                                AppExitService.confirmAndExit(context);
+                                return;
+                              }
+                              _selectScreen(index);
+                            },
                             labelType: NavigationRailLabelType.all,
                             groupAlignment: compactRail ? 0 : -0.28,
                             useIndicator: true,
@@ -378,6 +385,7 @@ class _MainScreenState extends State<MainScreen>
                               compact: compactRail,
                               wide: largeUi,
                             ),
+                            scrollable: compactRail,
                             destinations: const [
                               NavigationRailDestination(
                                 icon: Icon(Icons.explore_outlined),
@@ -412,6 +420,13 @@ class _MainScreenState extends State<MainScreen>
                                 icon: Icon(Icons.settings_outlined),
                                 selectedIcon: Icon(Icons.settings),
                                 label: Text('设置'),
+                              ),
+                              NavigationRailDestination(
+                                icon: Icon(
+                                  Icons.power_settings_new_rounded,
+                                  key: ValueKey('landscape-complete-exit'),
+                                ),
+                                label: Text('退出'),
                               ),
                             ],
                           ),

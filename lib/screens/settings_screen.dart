@@ -9,6 +9,7 @@ import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
 import '../providers/theme_controller.dart';
 import '../services/audio_cache_service.dart';
+import '../services/app_exit_service.dart';
 import '../services/favorite_service.dart';
 import '../services/floating_capsule_service.dart';
 import '../services/lan_ai_config_service.dart';
@@ -496,6 +497,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _buildApiCard(),
         _buildAiAssistantCard(),
         _buildAboutCard(),
+        _buildSystemActionsCard(),
       ],
     );
   }
@@ -1857,6 +1859,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
           trailing: Text(
             _versionName.isEmpty ? '—' : '$_versionName ($_versionCode)',
           ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSystemActionsCard() {
+    final colors = Theme.of(context).colorScheme;
+    return _buildCard(
+      children: [
+        _buildSectionHeader(icon: Icons.settings_power_rounded, title: '系统操作'),
+        ListTile(
+          key: const ValueKey('portrait-complete-exit'),
+          leading: Icon(Icons.power_settings_new_rounded, color: colors.error),
+          title: Text(
+            '完全退出',
+            style: TextStyle(color: colors.error, fontWeight: FontWeight.w600),
+          ),
+          subtitle: const Text('保存当前状态并彻底关闭软件'),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: () => AppExitService.confirmAndExit(context),
         ),
       ],
     );

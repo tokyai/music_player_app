@@ -82,13 +82,17 @@ class PlayerProvider extends ChangeNotifier {
   Timer? _historyPersistTimer;
   bool _historyPersistInFlight = false;
   bool _historyPersistAgain = false;
+  Completer<void>? _historyPersistCompletion;
   bool _historyLoaded = false;
   Timer? _playbackStatePersistTimer;
   bool _playbackStatePersistInFlight = false;
   bool _playbackStatePersistAgain = false;
+  Completer<void>? _playbackStatePersistCompletion;
   bool _playbackStateLoaded = false;
   bool _restoredPlaybackPending = false;
   bool _playbackStateInteraction = false;
+  bool _preparingForExit = false;
+  Future<void>? _exitPreparationFuture;
 
   // 音质
   NeteaseLevel _neteaseLevel = NeteaseLevel.jymaster;
@@ -467,7 +471,9 @@ class PlayerProvider extends ChangeNotifier {
           ),
         );
       }
-      if (snapshot.isPlaying) unawaited(_resumeRestoredPlayback());
+      if (snapshot.isPlaying && !_preparingForExit) {
+        unawaited(_resumeRestoredPlayback());
+      }
     } catch (error, stackTrace) {
       debugPrint('恢复播放会话失败: $error');
       debugPrintStack(stackTrace: stackTrace);
@@ -636,7 +642,7 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   void _schedulePlaybackHistoryPersist() {
-    if (_disposed) return;
+    if (_disposed || _preparingForExit) return;
     if (_historyPersistInFlight) {
       _historyPersistAgain = true;
       return;
@@ -654,6 +660,8 @@ class PlayerProvider extends ChangeNotifier {
       return;
     }
     _historyPersistInFlight = true;
+    final completion = Completer<void>();
+    _historyPersistCompletion = completion;
     final snapshot = List<PlaybackHistoryEntry>.of(_playbackHistory);
     try {
       await PlaybackHistoryService.save(snapshot);
@@ -667,6 +675,10 @@ class PlayerProvider extends ChangeNotifier {
       } else {
         _historyPersistAgain = false;
       }
+      if (identical(_historyPersistCompletion, completion)) {
+        _historyPersistCompletion = null;
+      }
+      completion.complete();
     }
   }
 
@@ -706,7 +718,7 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   void _schedulePlaybackStatePersist() {
-    if (!_playbackStateLoaded || _disposed) return;
+    if (!_playbackStateLoaded || _disposed || _preparingForExit) return;
     if (_playbackStatePersistInFlight) {
       _playbackStatePersistAgain = true;
       return;
@@ -719,7 +731,7 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   void _persistPlaybackStateNow() {
-    if (!_playbackStateLoaded || _disposed) return;
+    if (!_playbackStateLoaded || _disposed || _preparingForExit) return;
     _playbackStatePersistTimer?.cancel();
     _playbackStatePersistTimer = null;
     unawaited(_persistPlaybackState());
@@ -732,6 +744,8 @@ class PlayerProvider extends ChangeNotifier {
       return;
     }
     _playbackStatePersistInFlight = true;
+    final completion = Completer<void>();
+    _playbackStatePersistCompletion = completion;
     final snapshot = _playbackStateSnapshot();
     try {
       await PlaybackStateService.save(snapshot);
@@ -746,6 +760,10 @@ class PlayerProvider extends ChangeNotifier {
       } else {
         _playbackStatePersistAgain = false;
       }
+      if (identical(_playbackStatePersistCompletion, completion)) {
+        _playbackStatePersistCompletion = null;
+      }
+      completion.complete();
     }
   }
 
@@ -2129,6 +2147,85 @@ class PlayerProvider extends ChangeNotifier {
     _persistPlaybackStateNow();
   }
 
+  /// Saves the last playable session and releases active playback before the
+  /// Android task is terminated. Repeated exit requests share one operation.
+  Future<void> prepareForAppExit() {
+    return _exitPreparationFuture ??= _prepareForAppExit();
+  }
+
+  Future<void> _prepareForAppExit() async {
+    // Mark shutdown before restoration completes so an auto-resume cannot
+    // start while the final snapshot is being prepared. The queue itself is
+    // still restored and preserved below.
+    _preparingForExit = true;
+    try {
+      await playbackStateReady;
+      _cancelPendingPlaybackRestore();
+      await historyReady;
+    } catch (error, stackTrace) {
+      debugPrint('退出前等待播放器数据失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+    if (_disposed) return;
+
+    _historyPersistTimer?.cancel();
+    _historyPersistTimer = null;
+    _historyPersistAgain = false;
+    _playbackStatePersistTimer?.cancel();
+    _playbackStatePersistTimer = null;
+    _playbackStatePersistAgain = false;
+
+    _recordCurrentHistory(position: _position);
+    final historySnapshot = List<PlaybackHistoryEntry>.of(_playbackHistory);
+    final playbackSnapshot = _playbackStateLoaded
+        ? _playbackStateSnapshot()
+        : null;
+
+    try {
+      await _audioPlayer.stop().timeout(const Duration(seconds: 2));
+    } catch (error, stackTrace) {
+      debugPrint('退出前停止播放器失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+
+    final pendingWrites = <Future<void>>[
+      if (_historyPersistCompletion case final completion?) completion.future,
+      if (_playbackStatePersistCompletion case final completion?)
+        completion.future,
+    ];
+    if (pendingWrites.isNotEmpty) {
+      try {
+        await Future.wait(pendingWrites).timeout(const Duration(seconds: 2));
+      } catch (error, stackTrace) {
+        debugPrint('退出前等待已有数据写入失败: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+    }
+
+    await Future.wait([
+      _saveExitHistory(historySnapshot),
+      if (playbackSnapshot != null) _saveExitPlaybackState(playbackSnapshot),
+    ]);
+  }
+
+  Future<void> _saveExitHistory(List<PlaybackHistoryEntry> snapshot) async {
+    try {
+      await PlaybackHistoryService.save(snapshot);
+    } catch (error, stackTrace) {
+      debugPrint('退出前保存播放历史失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  Future<void> _saveExitPlaybackState(PlaybackSessionSnapshot snapshot) async {
+    try {
+      await PlaybackStateService.save(snapshot);
+    } catch (error, stackTrace) {
+      debugPrint('退出前保存播放会话失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
   Future<void> playNext() async {
     if (_queue.isEmpty) return;
     _cancelPendingPlaybackRestore();
@@ -2291,8 +2388,10 @@ class PlayerProvider extends ChangeNotifier {
     _playbackStatePersistTimer?.cancel();
     _playbackStatePersistTimer = null;
     _playbackStatePersistAgain = false;
-    unawaited(_persistPlaybackHistory());
-    unawaited(_persistPlaybackState());
+    if (!_preparingForExit) {
+      unawaited(_persistPlaybackHistory());
+      unawaited(_persistPlaybackState());
+    }
     _playRequestId++;
     _queueSessionId++;
     final subscriptions = <StreamSubscription?>[
