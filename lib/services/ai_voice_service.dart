@@ -33,6 +33,12 @@ abstract class AiSpeechResourceOwner {
   Future<void> dispose();
 }
 
+/// Releases a recognizer's heavy native model while keeping the wrapper
+/// reusable for the next assistant session.
+abstract class AiSpeechIdleResourceOwner {
+  Future<void> releaseIdleResources();
+}
+
 /// Adapter around the platform recognizer so the permission/focus lifecycle
 /// can be tested without constructing native recognition objects.
 abstract class AiSpeechRecognizer {
@@ -286,7 +292,11 @@ class _CarArrayAudioCapture implements _AiAudioCapture {
 }
 
 class _SherpaOnnxRecognizer
-    implements AiSpeechRecognizer, AiVoiceModelSelector, AiSpeechResourceOwner {
+    implements
+        AiSpeechRecognizer,
+        AiVoiceModelSelector,
+        AiSpeechResourceOwner,
+        AiSpeechIdleResourceOwner {
   static const _sampleRate = 16000;
   static const _modelChannel = MethodChannel('music_player/ai_model');
   static bool _bindingsInitialized = false;
@@ -748,6 +758,25 @@ class _SherpaOnnxRecognizer
     return operation;
   }
 
+  @override
+  Future<void> releaseIdleResources() async {
+    if (_disposed) return;
+    // Invalidate an asset-copy/recognizer build that may still be finishing
+    // before releasing the currently loaded native model.
+    _modelGeneration++;
+    final initializing = _initializing;
+    if (initializing != null) {
+      try {
+        await initializing.timeout(const Duration(seconds: 5));
+      } catch (_) {}
+    }
+    await _finishCapture();
+    _freeRecognizer(_recognizer);
+    _recognizer = null;
+    _loadedVoiceModel = null;
+    _onResult = null;
+  }
+
   Future<void> _disposeInternal() async {
     if (_disposed) return;
     _disposed = true;
@@ -966,7 +995,11 @@ abstract class AiTextToSpeechEngine {
 }
 
 class PlatformAiSpeechEngine
-    implements AiSpeechEngine, AiVoiceModelSelector, AiSpeechResourceOwner {
+    implements
+        AiSpeechEngine,
+        AiVoiceModelSelector,
+        AiSpeechResourceOwner,
+        AiSpeechIdleResourceOwner {
   final AiSpeechRecognizer _speech;
   final AiMicrophonePermission _microphonePermission;
   final AiAudioFocusCoordinator _audioFocus;
@@ -1094,6 +1127,25 @@ class PlatformAiSpeechEngine
     } finally {
       await _releaseFocus();
     }
+  }
+
+  @override
+  Future<void> releaseIdleResources() async {
+    if (_disposed) return;
+    try {
+      await _speech.cancel();
+    } catch (_) {}
+    await _releaseFocus();
+    final speech = _speech;
+    final owner = speech is AiSpeechIdleResourceOwner
+        ? speech as AiSpeechIdleResourceOwner
+        : null;
+    if (owner != null) {
+      try {
+        await owner.releaseIdleResources();
+      } catch (_) {}
+    }
+    _initialized = false;
   }
 
   Future<void> _releaseFocus() async {

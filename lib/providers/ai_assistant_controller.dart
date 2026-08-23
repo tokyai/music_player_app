@@ -220,6 +220,7 @@ class AiAssistantController extends ChangeNotifier {
     _setState(AiSessionState.stopping);
     await _stopRecognition();
     await _stopSpeaking();
+    await _releaseIdleSpeechResources();
     if (restoreMusic &&
         wasActive &&
         _wasPlayingBeforeSession &&
@@ -235,6 +236,18 @@ class AiAssistantController extends ChangeNotifier {
     }
     _resetSpeechBuffer();
     _setState(AiSessionState.idle);
+  }
+
+  Future<void> _releaseIdleSpeechResources() async {
+    final owner = speech is AiSpeechIdleResourceOwner
+        ? speech as AiSpeechIdleResourceOwner
+        : null;
+    if (owner == null) return;
+    try {
+      await owner.releaseIdleResources();
+    } catch (_) {
+      // Releasing the optional native model must not block session shutdown.
+    }
   }
 
   Future<void> _startListening(
