@@ -22,6 +22,13 @@ class PlayerProvider extends ChangeNotifier {
   static const lyricOffsetLimit = Duration(minutes: 1);
   static const _lyricOffsetStepKey = 'lyric_offset_step_ms';
   static const _historyPersistDelay = Duration(seconds: 2);
+  // Keep session-only metadata bounded during long car sessions. Lyrics are
+  // parsed into many Dart objects, while the other maps otherwise grow once
+  // for every song visited in the current process.
+  static const _maxCachedLyrics = 64;
+  static const _maxCachedPlayUrls = 128;
+  static const _maxCachedLyricOffsets = 256;
+  static const _maxBilibiliLyricAttempts = 128;
   static const _bilibiliLyricPlatformOrderKey = 'bilibili_lyric_platform_order';
   static const _defaultBilibiliLyricPlatformOrder = <MusicPlatform>[
     MusicPlatform.qq,
@@ -344,6 +351,34 @@ class PlayerProvider extends ChangeNotifier {
     if (first.length != second.length) return false;
     for (var index = 0; index < first.length; index++) {
       if (first[index] != second[index]) return false;
+    }
+    return true;
+  }
+
+  void _rememberLyric(String key, _ResolvedLyrics value) {
+    _lyricCache.remove(key);
+    _lyricCache[key] = value;
+    while (_lyricCache.length > _maxCachedLyrics) {
+      _lyricCache.remove(_lyricCache.keys.first);
+    }
+  }
+
+  void _rememberPlayUrl(String key) {
+    final now = DateTime.now();
+    _playUrlResolvedAt.removeWhere(
+      (_, resolvedAt) => now.difference(resolvedAt) > _resolvedUrlLifetime,
+    );
+    _playUrlResolvedAt.remove(key);
+    _playUrlResolvedAt[key] = now;
+    while (_playUrlResolvedAt.length > _maxCachedPlayUrls) {
+      _playUrlResolvedAt.remove(_playUrlResolvedAt.keys.first);
+    }
+  }
+
+  bool _rememberBilibiliLyricAttempt(String key) {
+    if (!_bilibiliLyricAutoAttempted.add(key)) return false;
+    while (_bilibiliLyricAutoAttempted.length > _maxBilibiliLyricAttempts) {
+      _bilibiliLyricAutoAttempted.remove(_bilibiliLyricAutoAttempted.first);
     }
     return true;
   }
@@ -900,7 +935,7 @@ class PlayerProvider extends ChangeNotifier {
       _lyrics = resolved.lines;
       _currentLyricIndex = LyricParser.findCurrentIndex(_lyrics, lyricPosition);
       _lyricsLoading = false;
-      _lyricCache[_lyricKey(activeSong)] = resolved;
+      _rememberLyric(_lyricKey(activeSong), resolved);
       _queue[_currentIndex] = activeSong.copyWith(lyric: resolved.rawText);
       notifyListeners();
     } catch (_) {
@@ -1247,7 +1282,7 @@ class PlayerProvider extends ChangeNotifier {
           if (resolvedUrl.isEmpty) {
             throw ApiException('404', '无法获取播放地址，可能是版权限制');
           }
-          _playUrlResolvedAt[itemKey] = DateTime.now();
+          _rememberPlayUrl(itemKey);
           shouldCacheAudio = true;
         }
         playPath = resolvedUrl;
@@ -1511,7 +1546,7 @@ class PlayerProvider extends ChangeNotifier {
     int requestId,
     PlayQueueItem item,
   ) async {
-    if (!_bilibiliLyricAutoAttempted.add(_lyricKey(item))) return;
+    if (!_rememberBilibiliLyricAttempt(_lyricKey(item))) return;
     try {
       final query = lyricSearchQueryFor(item);
       final candidates = await _searchBilibiliLyricCandidates(item, query);
@@ -1555,7 +1590,7 @@ class PlayerProvider extends ChangeNotifier {
     final raw = item.lyric;
     if (raw == null || raw.trim().isEmpty) return null;
     final resolved = _ResolvedLyrics.fromPlainText(raw);
-    if (resolved != null) _lyricCache[_lyricKey(item)] = resolved;
+    if (resolved != null) _rememberLyric(_lyricKey(item), resolved);
     return resolved;
   }
 
@@ -1636,7 +1671,7 @@ class PlayerProvider extends ChangeNotifier {
     _currentLyricIndex = LyricParser.findCurrentIndex(_lyrics, lyricPosition);
     _lyricsLoading = false;
     if (resolved != null) {
-      _lyricCache[_lyricKey(item)] = resolved;
+      _rememberLyric(_lyricKey(item), resolved);
       final current = _queue[_currentIndex];
       _queue[_currentIndex] = current.copyWith(lyric: resolved.rawText);
     }
@@ -1651,7 +1686,7 @@ class PlayerProvider extends ChangeNotifier {
       final detail = await _resolveSongDetail(item);
       if (!_isCurrentRequest(requestId, item)) return;
       if (detail.url.isNotEmpty) {
-        _playUrlResolvedAt[_itemKey(item)] = DateTime.now();
+        _rememberPlayUrl(_itemKey(item));
         final current = _queue[_currentIndex];
         _queue[_currentIndex] = current.copyWith(
           playUrl: detail.url,
@@ -1900,7 +1935,11 @@ class PlayerProvider extends ChangeNotifier {
     if (next == Duration.zero) {
       _lyricOffsets.remove(key);
     } else {
+      _lyricOffsets.remove(key);
       _lyricOffsets[key] = next;
+      while (_lyricOffsets.length > _maxCachedLyricOffsets) {
+        _lyricOffsets.remove(_lyricOffsets.keys.first);
+      }
     }
     _updateLyricIndex();
     notifyListeners();
