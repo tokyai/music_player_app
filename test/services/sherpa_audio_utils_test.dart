@@ -80,6 +80,17 @@ void main() {
 
     expect(samples.single, closeTo(5000 / 32768, 0.000001));
   });
+
+  test('rejects an unexpectedly large PCM batch before allocating buffers', () {
+    final decoder = Pcm16StreamDecoder();
+
+    expect(
+      () => decoder.decode(
+        Uint8List(Pcm16StreamDecoder.maxInputBytes + 1),
+      ),
+      throwsArgumentError,
+    );
+  });
 }
 
 Uint8List _pcm16(List<int> samples) {

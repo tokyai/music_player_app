@@ -3,6 +3,12 @@ import 'dart:typed_data';
 /// Converts a stream of little-endian signed PCM16 bytes into normalized
 /// samples while preserving a trailing byte split across recorder chunks.
 class Pcm16StreamDecoder {
+  /// Keep platform-provided PCM batches bounded before allocating the
+  /// interleaved copy and decoded float buffer below. Native car capture is
+  /// already much smaller; this protects the standard record fallback from a
+  /// malformed or unexpectedly large plugin event.
+  static const maxInputBytes = 256 * 1024;
+
   Uint8List _pendingBytes = Uint8List(0);
 
   Float32List decode(Uint8List bytes, {int channelCount = 1, int? mixDivisor}) {
@@ -19,7 +25,16 @@ class Pcm16StreamDecoder {
     }
     if (bytes.isEmpty && _pendingBytes.isEmpty) return Float32List(0);
 
-    final combined = Uint8List(_pendingBytes.length + bytes.length)
+    final combinedLength = _pendingBytes.length + bytes.length;
+    if (combinedLength > maxInputBytes) {
+      throw ArgumentError.value(
+        bytes.length,
+        'bytes',
+        'PCM batch exceeds $maxInputBytes bytes',
+      );
+    }
+
+    final combined = Uint8List(combinedLength)
       ..setRange(0, _pendingBytes.length, _pendingBytes)
       ..setRange(
         _pendingBytes.length,
