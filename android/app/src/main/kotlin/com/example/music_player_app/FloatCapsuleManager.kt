@@ -36,6 +36,8 @@ object FloatCapsuleManager {
     private var windowManager: WindowManager? = null
     private var capsuleView: View? = null
     private var layoutParams: WindowManager.LayoutParams? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var viewGeneration = 0L
     private var onPlayPauseTap: (() -> Unit)? = null
     private var onCapsuleTap: (() -> Unit)? = null
 
@@ -93,6 +95,7 @@ object FloatCapsuleManager {
         }
         if (windowManager == null) return
 
+        viewGeneration++
         val view = LayoutInflater.from(context).inflate(R.layout.float_capsule, null)
         val titleView = view.findViewById<TextView>(R.id.fc_title)
         val artistView = view.findViewById<TextView>(R.id.fc_artist)
@@ -195,6 +198,7 @@ object FloatCapsuleManager {
         try {
             windowManager?.addView(view, params)
         } catch (_: Exception) {
+            viewGeneration++
             cancelImageLoad()
             capsuleView = null
             layoutParams = null
@@ -204,32 +208,48 @@ object FloatCapsuleManager {
 
     fun update(title: String, artist: String, coverUrl: String?, isPlaying: Boolean) {
         val view = capsuleView ?: return
-        Handler(Looper.getMainLooper()).post {
-            view.findViewById<TextView>(R.id.fc_title)?.text = title
-            view.findViewById<TextView>(R.id.fc_artist)?.text = artist
-            view.findViewById<ImageButton>(R.id.fc_play)?.setImageResource(
-                if (isPlaying) R.drawable.ic_pause_white else R.drawable.ic_play_white
-            )
-            if (!coverUrl.isNullOrEmpty()) {
-                loadImage(coverUrl, view.findViewById(R.id.fc_cover))
-            } else {
-                cancelImageLoad()
-                view.findViewById<ImageView>(R.id.fc_cover)?.setImageDrawable(null)
-                recycleCoverBitmap()
+        val generation = viewGeneration
+        mainHandler.post {
+            if (generation != viewGeneration || capsuleView !== view ||
+                !view.isAttachedToWindow
+            ) return@post
+            try {
+                view.findViewById<TextView>(R.id.fc_title)?.text = title
+                view.findViewById<TextView>(R.id.fc_artist)?.text = artist
+                view.findViewById<ImageButton>(R.id.fc_play)?.setImageResource(
+                    if (isPlaying) R.drawable.ic_pause_white else R.drawable.ic_play_white
+                )
+                if (!coverUrl.isNullOrEmpty()) {
+                    loadImage(coverUrl, view.findViewById(R.id.fc_cover))
+                } else {
+                    cancelImageLoad()
+                    view.findViewById<ImageView>(R.id.fc_cover)?.setImageDrawable(null)
+                    recycleCoverBitmap()
+                }
+            } catch (_: Exception) {
             }
         }
     }
 
     fun updatePlayState(isPlaying: Boolean) {
         val view = capsuleView ?: return
-        Handler(Looper.getMainLooper()).post {
-            view.findViewById<ImageButton>(R.id.fc_play)?.setImageResource(
-                if (isPlaying) R.drawable.ic_pause_white else R.drawable.ic_play_white
-            )
+        val generation = viewGeneration
+        mainHandler.post {
+            if (generation != viewGeneration || capsuleView !== view ||
+                !view.isAttachedToWindow
+            ) return@post
+            try {
+                view.findViewById<ImageButton>(R.id.fc_play)?.setImageResource(
+                    if (isPlaying) R.drawable.ic_pause_white else R.drawable.ic_play_white
+                )
+            } catch (_: Exception) {
+            }
         }
     }
 
     fun hide() {
+        viewGeneration++
+        mainHandler.removeCallbacksAndMessages(null)
         cancelImageLoad()
         val view = capsuleView ?: return
         try {
@@ -257,6 +277,7 @@ object FloatCapsuleManager {
     /** 封面单线程、限流、缩略解码，避免大图或快速切歌压垮车机内存。 */
     private fun loadImage(url: String, imageView: ImageView) {
         val requestId = cancelImageLoad()
+        val generation = viewGeneration
         imageLoadFuture = imageExecutor.submit {
             try {
                 val bytes = downloadImage(url) ?: return@submit
@@ -278,19 +299,27 @@ object FloatCapsuleManager {
                 }
                 val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
                     ?: return@submit
-                Handler(Looper.getMainLooper()).post {
-                    val currentCover = capsuleView?.findViewById<ImageView>(R.id.fc_cover)
-                    if (requestId == imageRequestId.get() &&
-                        currentCover === imageView &&
-                        imageView.isAttachedToWindow
-                    ) {
-                        imageView.setImageBitmap(bitmap)
-                        val previous = coverBitmap
-                        coverBitmap = bitmap
-                        if (previous !== bitmap && previous?.isRecycled == false) {
-                            previous.recycle()
+                mainHandler.post {
+                    if (generation != viewGeneration) {
+                        bitmap.recycle()
+                        return@post
+                    }
+                    try {
+                        val currentCover = capsuleView?.findViewById<ImageView>(R.id.fc_cover)
+                        if (requestId == imageRequestId.get() &&
+                            currentCover === imageView &&
+                            imageView.isAttachedToWindow
+                        ) {
+                            imageView.setImageBitmap(bitmap)
+                            val previous = coverBitmap
+                            coverBitmap = bitmap
+                            if (previous !== bitmap && previous?.isRecycled == false) {
+                                previous.recycle()
+                            }
+                        } else {
+                            bitmap.recycle()
                         }
-                    } else {
+                    } catch (_: Exception) {
                         bitmap.recycle()
                     }
                 }

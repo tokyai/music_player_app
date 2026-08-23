@@ -88,14 +88,34 @@ class MainActivity : AudioServiceActivity() {
     @Volatile private var aiCarAudioStopFlag: AtomicBoolean? = null
     private var aiCarAudioDroppedChunks = 0L
     private val aiModelPreparationLock = Any()
+    /**
+     * Method-channel work can outlive an Activity (especially while an APK is
+     * being recreated for rotation or while Flutter tears down an engine).
+     * Every asynchronous callback is tied to this generation so stale native
+     * work cannot call a detached Dart messenger.
+     */
+    private val lifecycleLock = Any()
+    @Volatile private var activityAlive = false
+    @Volatile private var activityGeneration = 0L
+    private data class PendingAiModelResult(
+        val generation: Long,
+        val result: MethodChannel.Result
+    )
+    private data class PendingAiTtsInitResult(
+        val generation: Long,
+        val result: MethodChannel.Result
+    )
+    private val pendingAiModelResults = mutableListOf<PendingAiModelResult>()
     private var aiAudioFocusRequest: AudioFocusRequest? = null
     private var aiAudioFocusHeld = false
     private var aiTts: TextToSpeech? = null
     private var aiTtsReady = false
     private var aiTtsInitializing = false
-    private val pendingAiTtsInitResults = mutableListOf<MethodChannel.Result>()
+    private var aiTtsInitializingGeneration: Long? = null
+    private val pendingAiTtsInitResults = mutableListOf<PendingAiTtsInitResult>()
     private var pendingAiTtsSpeakResult: MethodChannel.Result? = null
     private var pendingAiTtsUtteranceId: String? = null
+    private var pendingAiTtsSpeakGeneration: Long? = null
     private var foregroundMediaKeysEnabled = false
 
     private val aiAudioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
@@ -116,27 +136,37 @@ class MainActivity : AudioServiceActivity() {
         override fun onStart(utteranceId: String?) = Unit
 
         override fun onDone(utteranceId: String?) {
-            runOnUiThread { finishAiTtsSpeak(utteranceId, true) }
+            postIfActivityAlive { finishAiTtsSpeak(utteranceId, true) }
         }
 
         @Deprecated("Deprecated by Android")
         override fun onError(utteranceId: String?) {
-            runOnUiThread { failAiTtsSpeak(utteranceId, "系统语音播报失败") }
+            postIfActivityAlive {
+                failAiTtsSpeak(utteranceId, "系统语音播报失败")
+            }
         }
 
         override fun onError(utteranceId: String?, errorCode: Int) {
-            runOnUiThread {
+            postIfActivityAlive {
                 failAiTtsSpeak(utteranceId, "系统语音播报失败（$errorCode）")
             }
         }
 
         override fun onStop(utteranceId: String?, interrupted: Boolean) {
-            runOnUiThread { finishAiTtsSpeak(utteranceId, false) }
+            postIfActivityAlive { finishAiTtsSpeak(utteranceId, false) }
         }
     }
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        val staleModelResults = synchronized(lifecycleLock) {
+            activityGeneration++
+            activityAlive = true
+            pendingAiModelResults.toList().also { pendingAiModelResults.clear() }
+        }
+        staleModelResults.forEach {
+            safelyResultError(it.result, "ENGINE_REPLACED", "Flutter 引擎已重新建立")
+        }
         val appContext = applicationContext
         foregroundMediaKeyChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -335,6 +365,18 @@ class MainActivity : AudioServiceActivity() {
     }
 
     override fun onDestroy() {
+        val staleModelResults = synchronized(lifecycleLock) {
+            activityAlive = false
+            activityGeneration++
+            pendingAiModelResults.toList().also { pendingAiModelResults.clear() }
+        }
+        staleModelResults.forEach {
+            safelyResultError(it.result, "ACTIVITY_DESTROYED", "页面已关闭，模型准备已取消")
+        }
+        val staleFileResult = pendingFileResult
+        pendingFileResult = null
+        pendingExportContent = null
+        safelyResultError(staleFileResult, "ACTIVITY_DESTROYED", "页面已关闭，文件操作已取消")
         foregroundMediaKeysEnabled = false
         foregroundMediaKeyChannel?.setMethodCallHandler(null)
         foregroundMediaKeyChannel = null
@@ -356,6 +398,120 @@ class MainActivity : AudioServiceActivity() {
         releaseAiTts()
         FloatCapsuleManager.clearCallbacks()
         super.onDestroy()
+    }
+
+    private fun postIfActivityAlive(
+        expectedGeneration: Long? = null,
+        action: () -> Unit
+    ) {
+        val posted = aiCarAudioHandler.post {
+            if (!activityAlive ||
+                (expectedGeneration != null &&
+                    expectedGeneration != activityGeneration)
+            ) {
+                return@post
+            }
+            try {
+                action()
+            } catch (error: Exception) {
+                Log.w("AiLifecycle", "stale Flutter callback rejected", error)
+            }
+        }
+        if (!posted) {
+            Log.w("AiLifecycle", "main looper rejected native callback")
+        }
+    }
+
+    private fun safelySendCarAudioError(
+        events: EventChannel.EventSink,
+        code: String,
+        message: String?,
+        details: Any?
+    ) {
+        try {
+            events.error(code, message, details)
+        } catch (error: Exception) {
+            Log.w("AiVoice", "audio error delivery failed: $code", error)
+        }
+    }
+
+    private fun safelySendCarAudioSuccess(
+        events: EventChannel.EventSink,
+        value: Any?
+    ): Boolean = try {
+        events.success(value)
+        true
+    } catch (error: Exception) {
+        Log.w("AiVoice", "audio event delivery failed", error)
+        false
+    }
+
+    private fun failCarAudioDelivery(
+        generation: Long,
+        recorder: AudioRecord,
+        events: EventChannel.EventSink
+    ) {
+        synchronized(aiCarAudioQueueLock) {
+            if (aiCarAudioGeneration != generation ||
+                aiCarAudioRecord !== recorder ||
+                aiCarAudioSink !== events
+            ) {
+                return
+            }
+            // A detached messenger cannot ACK another batch. Stop producing
+            // PCM immediately instead of retaining a recorder and audio focus
+            // until a later Activity teardown happens to clean it up.
+            aiCarAudioRunning = false
+            aiCarAudioSink = null
+            aiCarAudioAwaitingAck = false
+            aiCarAudioQueue.clear()
+            aiCarAudioDrainPosted = false
+        }
+        try {
+            if (recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                recorder.stop()
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun safelyResultSuccess(result: MethodChannel.Result?, value: Any?) {
+        if (result == null) return
+        try {
+            result.success(value)
+        } catch (error: Exception) {
+            Log.w("AiLifecycle", "method result delivery failed", error)
+        }
+    }
+
+    private fun safelyResultError(
+        result: MethodChannel.Result?,
+        code: String,
+        message: String?
+    ) {
+        if (result == null) return
+        try {
+            result.error(code, message, null)
+        } catch (error: Exception) {
+            Log.w("AiLifecycle", "method error delivery failed: $code", error)
+        }
+    }
+
+    private fun currentActivityGeneration(): Long? = synchronized(lifecycleLock) {
+        if (activityAlive) activityGeneration else null
+    }
+
+    private fun takePendingAiModelResult(
+        generation: Long,
+        result: MethodChannel.Result
+    ): Boolean = synchronized(lifecycleLock) {
+        if (!activityAlive || activityGeneration != generation) return@synchronized false
+        val index = pendingAiModelResults.indexOfFirst {
+            it.generation == generation && it.result === result
+        }
+        if (index < 0) return@synchronized false
+        pendingAiModelResults.removeAt(index)
+        true
     }
 
     /**
@@ -498,9 +654,14 @@ class MainActivity : AudioServiceActivity() {
     @SuppressLint("MissingPermission")
     private fun startCarArrayCapture(events: EventChannel.EventSink) {
         stopCarArrayCapture()
+        if (!activityAlive) {
+            safelySendCarAudioError(events, "ACTIVITY_DESTROYED", "页面已关闭，录音已取消", null)
+            return
+        }
         val profile = getCarAudioCaptureProfile()
         if (profile["supported"] != true) {
-            events.error(
+            safelySendCarAudioError(
+                events,
                 "CAR_ARRAY_UNAVAILABLE",
                 "当前设备没有可用的四通道车载麦克风阵列",
                 profile
@@ -510,7 +671,7 @@ class MainActivity : AudioServiceActivity() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
         ) {
-            events.error("MIC_PERMISSION_DENIED", "麦克风权限未授予", null)
+            safelySendCarAudioError(events, "MIC_PERMISSION_DENIED", "麦克风权限未授予", null)
             return
         }
 
@@ -533,24 +694,34 @@ class MainActivity : AudioServiceActivity() {
                 internalBufferSize
             )
         } catch (error: Exception) {
-            events.error("CAR_ARRAY_CREATE_FAILED", error.message, profile)
+            safelySendCarAudioError(events, "CAR_ARRAY_CREATE_FAILED", error.message, profile)
             return
         }
         if (recorder.state != AudioRecord.STATE_INITIALIZED) {
             recorder.release()
-            events.error("CAR_ARRAY_INIT_FAILED", "四通道车载麦克风初始化失败", profile)
+            safelySendCarAudioError(
+                events,
+                "CAR_ARRAY_INIT_FAILED",
+                "四通道车载麦克风初始化失败",
+                profile
+            )
             return
         }
         try {
             recorder.startRecording()
         } catch (error: Exception) {
             recorder.release()
-            events.error("CAR_ARRAY_START_FAILED", error.message, profile)
+            safelySendCarAudioError(events, "CAR_ARRAY_START_FAILED", error.message, profile)
             return
         }
         if (recorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
             recorder.release()
-            events.error("CAR_ARRAY_START_FAILED", "四通道车载麦克风未进入录音状态", profile)
+            safelySendCarAudioError(
+                events,
+                "CAR_ARRAY_START_FAILED",
+                "四通道车载麦克风未进入录音状态",
+                profile
+            )
             return
         }
 
@@ -566,7 +737,10 @@ class MainActivity : AudioServiceActivity() {
             aiCarAudioStopFlag = stopRequested
             aiCarAudioGeneration
         }
-        events.success(mapOf("event" to "started"))
+        if (!safelySendCarAudioSuccess(events, mapOf("event" to "started"))) {
+            stopCarArrayCapture()
+            return
+        }
         val captureThread = Thread {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             val buffer = ByteArray(readBytes)
@@ -588,9 +762,14 @@ class MainActivity : AudioServiceActivity() {
                 }
             } catch (error: Exception) {
                 if (aiCarAudioRunning && aiCarAudioRecord === recorder) {
-                    runOnUiThread {
+                    postIfActivityAlive {
                         if (aiCarAudioSink === events) {
-                            events.error("CAR_ARRAY_READ_FAILED", error.message, null)
+                            safelySendCarAudioError(
+                                events,
+                                "CAR_ARRAY_READ_FAILED",
+                                error.message,
+                                null
+                            )
                         }
                     }
                 }
@@ -784,31 +963,7 @@ class MainActivity : AudioServiceActivity() {
                 // A detached Flutter engine can race stream cancellation. Do
                 // not let a stale EventSink exception terminate the process.
                 Log.w("AiVoice", "audio event delivery failed", error)
-                var shouldPost = false
-                synchronized(aiCarAudioQueueLock) {
-                    if (aiCarAudioGeneration == generation &&
-                        aiCarAudioRecord === recorder &&
-                        aiCarAudioSink === events
-                    ) {
-                        aiCarAudioAwaitingAck = false
-                        if (aiCarAudioRunning &&
-                            aiCarAudioQueue.isNotEmpty() &&
-                            !aiCarAudioDrainPosted
-                        ) {
-                            aiCarAudioDrainPosted = true
-                            shouldPost = true
-                        }
-                    }
-                }
-                if (shouldPost) {
-                    scheduleCarAudioDrain(
-                        generation,
-                        recorder,
-                        events,
-                        channelCount,
-                        0L
-                    )
-                }
+                failCarAudioDelivery(generation, recorder, events)
             }
         }
     }
@@ -879,7 +1034,19 @@ class MainActivity : AudioServiceActivity() {
     }
 
     private fun prepareAiModel(modelId: String, result: MethodChannel.Result) {
-        Thread {
+        val generation = currentActivityGeneration()
+        if (generation == null) {
+            safelyResultError(result, "ACTIVITY_DESTROYED", "页面已关闭，模型准备已取消")
+            return
+        }
+        synchronized(lifecycleLock) {
+            if (!activityAlive || activityGeneration != generation) {
+                safelyResultError(result, "ACTIVITY_DESTROYED", "页面已关闭，模型准备已取消")
+                return
+            }
+            pendingAiModelResults.add(PendingAiModelResult(generation, result))
+        }
+        val worker = Thread {
             try {
                 val paths = synchronized(aiModelPreparationLock) {
                     // Rapidly closing and reopening the assistant can leave a
@@ -936,31 +1103,56 @@ class MainActivity : AudioServiceActivity() {
                         File(modelDir, fileName).absolutePath
                     }
                 }
-                runOnUiThread { result.success(paths) }
+                postIfActivityAlive(generation) {
+                    if (takePendingAiModelResult(generation, result)) {
+                        safelyResultSuccess(result, paths)
+                    }
+                }
             } catch (error: Exception) {
-                runOnUiThread {
-                    result.error(
-                        "ai_model_prepare_failed",
-                        error.message ?: "离线语音模型准备失败",
-                        null
-                    )
+                postIfActivityAlive(generation) {
+                    if (takePendingAiModelResult(generation, result)) {
+                        safelyResultError(
+                            result,
+                            "ai_model_prepare_failed",
+                            error.message ?: "离线语音模型准备失败"
+                        )
+                    }
                 }
             }
-        }.start()
+        }.also { it.name = "ai-model-prepare" }
+        try {
+            worker.start()
+        } catch (error: Exception) {
+            if (takePendingAiModelResult(generation, result)) {
+                safelyResultError(
+                    result,
+                    "ai_model_prepare_failed",
+                    error.message ?: "无法启动离线语音模型准备线程"
+                )
+            }
+        }
     }
 
     private fun initializeAiTts(result: MethodChannel.Result) {
-        if (aiTtsReady && aiTts != null) {
-            result.success(true)
+        val generation = currentActivityGeneration()
+        if (generation == null) {
+            safelyResultError(result, "ACTIVITY_DESTROYED", "页面已关闭，语音服务初始化已取消")
             return
         }
-        pendingAiTtsInitResults.add(result)
-        if (aiTtsInitializing) return
+        if (aiTtsReady && aiTts != null) {
+            safelyResultSuccess(result, true)
+            return
+        }
+        pendingAiTtsInitResults.add(PendingAiTtsInitResult(generation, result))
+        if (aiTtsInitializing && aiTtsInitializingGeneration == generation) return
         aiTtsInitializing = true
+        aiTtsInitializingGeneration = generation
         try {
             aiTts = TextToSpeech(applicationContext) { status ->
-                runOnUiThread {
+                postIfActivityAlive(generation) {
+                    if (aiTtsInitializingGeneration != generation) return@postIfActivityAlive
                     aiTtsInitializing = false
+                    aiTtsInitializingGeneration = null
                     aiTtsReady = status == TextToSpeech.SUCCESS && aiTts != null
                     if (aiTtsReady) {
                         // Do not query or replace the default voice here. Some Android 15
@@ -971,45 +1163,59 @@ class MainActivity : AudioServiceActivity() {
                         } catch (_: Exception) {
                         }
                     }
-                    val callbacks = pendingAiTtsInitResults.toList()
-                    pendingAiTtsInitResults.clear()
-                    callbacks.forEach { callback ->
-                        if (aiTtsReady) {
-                            callback.success(true)
-                        } else {
-                            callback.error(
-                                "TTS_INIT_FAILED",
-                                "系统文字转语音服务初始化失败（$status）",
-                                null
-                            )
-                        }
-                    }
+                    completeAiTtsInit(
+                        generation,
+                        aiTtsReady,
+                        "系统文字转语音服务初始化失败（$status）"
+                    )
                 }
             }
         } catch (error: Exception) {
-            aiTtsInitializing = false
-            aiTtsReady = false
-            val callbacks = pendingAiTtsInitResults.toList()
-            pendingAiTtsInitResults.clear()
-            callbacks.forEach { callback ->
-                callback.error(
-                    "TTS_INIT_FAILED",
-                    error.message ?: "系统文字转语音服务初始化失败",
-                    null
+            if (aiTtsInitializingGeneration == generation) {
+                aiTtsInitializing = false
+                aiTtsInitializingGeneration = null
+                aiTtsReady = false
+                completeAiTtsInit(
+                    generation,
+                    false,
+                    error.message ?: "系统文字转语音服务初始化失败"
                 )
             }
         }
     }
 
+    private fun completeAiTtsInit(
+        generation: Long,
+        ready: Boolean,
+        failureMessage: String
+    ) {
+        if (!activityAlive || activityGeneration != generation) return
+        val callbacks = pendingAiTtsInitResults
+            .filter { it.generation == generation }
+        pendingAiTtsInitResults.removeAll { it.generation == generation }
+        callbacks.forEach { callback ->
+            if (ready) {
+                safelyResultSuccess(callback.result, true)
+            } else {
+                safelyResultError(callback.result, "TTS_INIT_FAILED", failureMessage)
+            }
+        }
+    }
+
     private fun speakAiText(text: String?, result: MethodChannel.Result) {
+        val generation = currentActivityGeneration()
+        if (generation == null) {
+            safelyResultError(result, "ACTIVITY_DESTROYED", "页面已关闭，语音播报已取消")
+            return
+        }
         val normalized = text?.trim().orEmpty()
         val engine = aiTts
         if (!aiTtsReady || engine == null) {
-            result.error("TTS_NOT_READY", "系统文字转语音服务尚未就绪", null)
+            safelyResultError(result, "TTS_NOT_READY", "系统文字转语音服务尚未就绪")
             return
         }
         if (normalized.isEmpty()) {
-            result.success(false)
+            safelyResultSuccess(result, false)
             return
         }
         try {
@@ -1018,6 +1224,7 @@ class MainActivity : AudioServiceActivity() {
             val utteranceId = UUID.randomUUID().toString()
             pendingAiTtsUtteranceId = utteranceId
             pendingAiTtsSpeakResult = result
+            pendingAiTtsSpeakGeneration = generation
             val status = engine.speak(
                 normalized,
                 TextToSpeech.QUEUE_FLUSH,
@@ -1041,31 +1248,45 @@ class MainActivity : AudioServiceActivity() {
         } catch (_: Exception) {
         }
         finishAiTtsSpeak(pendingAiTtsUtteranceId, false)
-        result.success(null)
+        safelyResultSuccess(result, null)
     }
 
     private fun finishAiTtsSpeak(utteranceId: String?, completed: Boolean) {
         if (utteranceId == null || utteranceId != pendingAiTtsUtteranceId) return
+        val generation = pendingAiTtsSpeakGeneration
+        if (generation == null || !activityAlive || generation != activityGeneration) return
         val callback = pendingAiTtsSpeakResult
         pendingAiTtsSpeakResult = null
         pendingAiTtsUtteranceId = null
-        callback?.success(completed)
+        pendingAiTtsSpeakGeneration = null
+        safelyResultSuccess(callback, completed)
     }
 
     private fun failAiTtsSpeak(utteranceId: String?, message: String) {
         if (utteranceId == null || utteranceId != pendingAiTtsUtteranceId) return
+        val generation = pendingAiTtsSpeakGeneration
+        if (generation == null || !activityAlive || generation != activityGeneration) return
         val callback = pendingAiTtsSpeakResult
         pendingAiTtsSpeakResult = null
         pendingAiTtsUtteranceId = null
-        callback?.error("TTS_SPEAK_FAILED", message, null)
+        pendingAiTtsSpeakGeneration = null
+        safelyResultError(callback, "TTS_SPEAK_FAILED", message)
     }
 
     private fun releaseAiTts() {
+        val initCallbacks = pendingAiTtsInitResults.toList()
         pendingAiTtsInitResults.clear()
+        val speakCallback = pendingAiTtsSpeakResult
         pendingAiTtsSpeakResult = null
         pendingAiTtsUtteranceId = null
+        pendingAiTtsSpeakGeneration = null
         aiTtsReady = false
         aiTtsInitializing = false
+        aiTtsInitializingGeneration = null
+        initCallbacks.forEach {
+            safelyResultError(it.result, "ACTIVITY_DESTROYED", "页面已关闭，语音服务初始化已取消")
+        }
+        safelyResultError(speakCallback, "ACTIVITY_DESTROYED", "页面已关闭，语音播报已取消")
         try {
             aiTts?.stop()
             aiTts?.shutdown()
@@ -1075,7 +1296,7 @@ class MainActivity : AudioServiceActivity() {
     }
 
     private fun invokeCapsuleCallback(method: String) {
-        runOnUiThread {
+        postIfActivityAlive {
             try {
                 floatingCapsuleChannel?.invokeMethod(method, null)
             } catch (_: Exception) {
@@ -1085,7 +1306,7 @@ class MainActivity : AudioServiceActivity() {
 
     private fun openFavoriteBackup(result: MethodChannel.Result) {
         if (pendingFileResult != null) {
-            result.error("BUSY", "已有文件操作正在进行", null)
+            safelyResultError(result, "BUSY", "已有文件操作正在进行")
             return
         }
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -1097,7 +1318,7 @@ class MainActivity : AudioServiceActivity() {
             startActivityForResult(intent, REQUEST_IMPORT_FAVORITES)
         } catch (_: Exception) {
             pendingFileResult = null
-            result.error("UNSUPPORTED", "系统没有可用的文件选择器", null)
+            safelyResultError(result, "UNSUPPORTED", "系统没有可用的文件选择器")
         }
     }
 
@@ -1108,7 +1329,7 @@ class MainActivity : AudioServiceActivity() {
             null
         }
         if (uri == null || (uri.scheme != "http" && uri.scheme != "https")) {
-            result.error("BAD_VIDEO_URL", "MV 播放地址无效", null)
+            safelyResultError(result, "BAD_VIDEO_URL", "MV 播放地址无效")
             return
         }
 
@@ -1116,16 +1337,21 @@ class MainActivity : AudioServiceActivity() {
             setDataAndType(uri, "video/*")
         }
         val browserIntent = Intent(Intent.ACTION_VIEW, uri)
-        runOnUiThread {
+        val generation = currentActivityGeneration()
+        if (generation == null) {
+            safelyResultError(result, "ACTIVITY_DESTROYED", "页面已关闭，MV 打开已取消")
+            return
+        }
+        postIfActivityAlive(generation) {
             try {
                 startActivity(videoIntent)
-                result.success(true)
+                safelyResultSuccess(result, true)
             } catch (_: Exception) {
                 try {
                     startActivity(browserIntent)
-                    result.success(true)
+                    safelyResultSuccess(result, true)
                 } catch (_: Exception) {
-                    result.success(false)
+                    safelyResultSuccess(result, false)
                 }
             }
         }
@@ -1137,11 +1363,11 @@ class MainActivity : AudioServiceActivity() {
         result: MethodChannel.Result
     ) {
         if (pendingFileResult != null) {
-            result.error("BUSY", "已有文件操作正在进行", null)
+            safelyResultError(result, "BUSY", "已有文件操作正在进行")
             return
         }
         if (content.isNullOrEmpty()) {
-            result.error("EMPTY_BACKUP", "收藏备份内容为空", null)
+            safelyResultError(result, "EMPTY_BACKUP", "收藏备份内容为空")
             return
         }
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
@@ -1156,7 +1382,7 @@ class MainActivity : AudioServiceActivity() {
         } catch (_: Exception) {
             pendingFileResult = null
             pendingExportContent = null
-            result.error("UNSUPPORTED", "系统没有可用的文件选择器", null)
+            safelyResultError(result, "UNSUPPORTED", "系统没有可用的文件选择器")
         }
     }
 
@@ -1174,14 +1400,14 @@ class MainActivity : AudioServiceActivity() {
         val uri = data?.data
         if (resultCode != Activity.RESULT_OK || uri == null) {
             pendingExportContent = null
-            callback.success(null)
+            safelyResultSuccess(callback, null)
             return
         }
 
         try {
             if (requestCode == REQUEST_IMPORT_FAVORITES) {
                 val content = readUtf8WithLimit(uri)
-                callback.success(content)
+                safelyResultSuccess(callback, content)
             } else {
                 val content = pendingExportContent
                     ?: throw IllegalStateException("收藏备份内容已失效")
@@ -1189,12 +1415,12 @@ class MainActivity : AudioServiceActivity() {
                     ?.bufferedWriter(Charsets.UTF_8)
                     ?.use { it.write(content) }
                     ?: throw IllegalStateException("无法写入所选文件")
-                callback.success(true)
+                safelyResultSuccess(callback, true)
             }
         } catch (_: OutOfMemoryError) {
-            callback.error("FILE_TOO_LARGE", "文件过大，无法安全读取", null)
+            safelyResultError(callback, "FILE_TOO_LARGE", "文件过大，无法安全读取")
         } catch (error: Exception) {
-            callback.error("FILE_ERROR", error.message ?: "文件操作失败", null)
+            safelyResultError(callback, "FILE_ERROR", error.message ?: "文件操作失败")
         } finally {
             pendingExportContent = null
         }
@@ -1225,24 +1451,24 @@ class MainActivity : AudioServiceActivity() {
         result: MethodChannel.Result
     ) {
         if (path.isNullOrEmpty()) {
-            result.error("BAD_PATH", "APK 路径为空", null)
+            safelyResultError(result, "BAD_PATH", "APK 路径为空")
             return
         }
         if (expectedVersionCode == null || expectedVersionCode <= 0) {
-            result.error("BAD_VERSION", "目标版本号无效", null)
+            safelyResultError(result, "BAD_VERSION", "目标版本号无效")
             return
         }
 
         val file = File(path)
         if (!file.isFile) {
-            result.error("FILE_NOT_FOUND", "APK 文件不存在", null)
+            safelyResultError(result, "FILE_NOT_FOUND", "APK 文件不存在")
             return
         }
 
         try {
             val archiveInfo = getArchivePackageInfo(file)
             if (archiveInfo == null || archiveInfo.packageName != packageName) {
-                result.error("PACKAGE_MISMATCH", "安装包不是本应用的更新", null)
+                safelyResultError(result, "PACKAGE_MISMATCH", "安装包不是本应用的更新")
                 return
             }
 
@@ -1250,11 +1476,11 @@ class MainActivity : AudioServiceActivity() {
             val archiveVersion = getLongVersionCode(archiveInfo)
             val installedVersion = getLongVersionCode(installedInfo)
             if (archiveVersion != expectedVersionCode || archiveVersion <= installedVersion) {
-                result.error("VERSION_MISMATCH", "安装包版本号不匹配", null)
+                safelyResultError(result, "VERSION_MISMATCH", "安装包版本号不匹配")
                 return
             }
             if (!hasSameSigners(installedInfo, archiveInfo)) {
-                result.error("SIGNATURE_MISMATCH", "安装包签名校验失败", null)
+                safelyResultError(result, "SIGNATURE_MISMATCH", "安装包签名校验失败")
                 return
             }
 
@@ -1268,16 +1494,21 @@ class MainActivity : AudioServiceActivity() {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            runOnUiThread {
+            val generation = currentActivityGeneration()
+            if (generation == null) {
+                safelyResultError(result, "ACTIVITY_DESTROYED", "页面已关闭，安装已取消")
+                return
+            }
+            postIfActivityAlive(generation) {
                 try {
                     startActivity(intent)
-                    result.success(null)
+                    safelyResultSuccess(result, null)
                 } catch (_: Exception) {
-                    result.error("NO_INSTALLER", "未找到可用的安装程序", null)
+                    safelyResultError(result, "NO_INSTALLER", "未找到可用的安装程序")
                 }
             }
         } catch (e: Exception) {
-            result.error("INSTALL_FAIL", e.message ?: "安装失败", null)
+            safelyResultError(result, "INSTALL_FAIL", e.message ?: "安装失败")
         }
     }
 
