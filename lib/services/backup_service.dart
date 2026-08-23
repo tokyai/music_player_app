@@ -62,15 +62,12 @@ class BackupRestoreContents {
 /// FavoriteService 只负责收藏数据本身，播放器 API Key 由这里统一编排，
 /// 因此文件、WebDAV 和局域网三种入口都会得到完全一致的行为。
 class BackupService {
+  static const maxBackupBytes = 5 * 1024 * 1024;
+
   const BackupService._();
 
   static BackupRestoreContents inspect(String raw) {
-    final dynamic decoded;
-    try {
-      decoded = jsonDecode(raw);
-    } on FormatException {
-      throw const FormatException('备份文件不是有效的 JSON');
-    }
+    final decoded = _decodeJson(raw);
 
     if (decoded is List) {
       return BackupRestoreContents(
@@ -199,6 +196,27 @@ class BackupService {
   }
 
   static dynamic _decodeJson(String raw) {
+    var byteLength = 0;
+    for (var index = 0; index < raw.length; index++) {
+      final codeUnit = raw.codeUnitAt(index);
+      if (codeUnit <= 0x7f) {
+        byteLength += 1;
+      } else if (codeUnit <= 0x7ff) {
+        byteLength += 2;
+      } else if (codeUnit >= 0xd800 &&
+          codeUnit <= 0xdbff &&
+          index + 1 < raw.length &&
+          raw.codeUnitAt(index + 1) >= 0xdc00 &&
+          raw.codeUnitAt(index + 1) <= 0xdfff) {
+        byteLength += 4;
+        index++;
+      } else {
+        byteLength += 3;
+      }
+      if (byteLength > maxBackupBytes) {
+        throw const FormatException('备份文件不能超过 5 MB');
+      }
+    }
     try {
       return jsonDecode(raw);
     } on FormatException {

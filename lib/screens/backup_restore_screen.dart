@@ -182,6 +182,14 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
             autofocus: true,
             minLines: 6,
             maxLines: 12,
+            maxLength: BackupService.maxBackupBytes,
+            maxLengthEnforcement: MaxLengthEnforcement.enforced,
+            buildCounter: (
+              _, {
+              required currentLength,
+              required isFocused,
+              maxLength,
+            }) => null,
             decoration: const InputDecoration(hintText: 'JSON 内容'),
           ),
         ),

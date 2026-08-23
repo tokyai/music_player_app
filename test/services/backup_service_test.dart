@@ -319,6 +319,14 @@ void main() {
     expect(result.bilibiliAdded, 0);
     expect(result.playlistsAdded, 0);
   });
+
+  test('rejects oversized backup text before JSON decoding', () {
+    final oversized = 'x' * (BackupService.maxBackupBytes + 1);
+    expect(
+      () => BackupService.inspect(oversized),
+      throwsA(isA<FormatException>()),
+    );
+  });
 }
 
 SongSearchResult _song(MusicPlatform platform, String id, String name) {
