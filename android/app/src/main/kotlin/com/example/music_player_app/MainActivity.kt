@@ -1241,6 +1241,14 @@ class MainActivity : AudioServiceActivity() {
         }.also { it.name = "ai-model-prepare" }
         try {
             worker.start()
+        } catch (_: OutOfMemoryError) {
+            if (takePendingAiModelResult(generation, result)) {
+                safelyResultError(
+                    result,
+                    "ai_model_prepare_oom",
+                    "车机内存不足，无法启动离线语音模型准备线程"
+                )
+            }
         } catch (error: Exception) {
             if (takePendingAiModelResult(generation, result)) {
                 safelyResultError(
