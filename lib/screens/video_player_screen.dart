@@ -312,17 +312,52 @@ class _MpvPlaybackController extends _MvPlaybackController {
       ),
     );
     _subscriptions.addAll([
-      _player.stream.playing.listen((_) => _changed()),
-      _player.stream.position.listen((_) => _changed()),
-      _player.stream.duration.listen((_) => _changed()),
-      _player.stream.buffering.listen((_) => _changed()),
-      _player.stream.width.listen((_) => _changed()),
-      _player.stream.height.listen((_) => _changed()),
-      _player.stream.error.listen((message) {
-        if (message.trim().isEmpty || _closed) return;
-        _error = message;
-        _changed();
-      }),
+      _player.stream.playing.listen(
+        (_) => _changed(),
+        onError: (Object error, StackTrace stackTrace) {
+          _handleStreamError('playing', error, stackTrace);
+        },
+      ),
+      _player.stream.position.listen(
+        (_) => _changed(),
+        onError: (Object error, StackTrace stackTrace) {
+          _handleStreamError('position', error, stackTrace);
+        },
+      ),
+      _player.stream.duration.listen(
+        (_) => _changed(),
+        onError: (Object error, StackTrace stackTrace) {
+          _handleStreamError('duration', error, stackTrace);
+        },
+      ),
+      _player.stream.buffering.listen(
+        (_) => _changed(),
+        onError: (Object error, StackTrace stackTrace) {
+          _handleStreamError('buffering', error, stackTrace);
+        },
+      ),
+      _player.stream.width.listen(
+        (_) => _changed(),
+        onError: (Object error, StackTrace stackTrace) {
+          _handleStreamError('width', error, stackTrace);
+        },
+      ),
+      _player.stream.height.listen(
+        (_) => _changed(),
+        onError: (Object error, StackTrace stackTrace) {
+          _handleStreamError('height', error, stackTrace);
+        },
+      ),
+      _player.stream.error.listen(
+        (message) {
+          if (message.trim().isEmpty || _closed) return;
+          _error = message;
+          _changed();
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          _handleStreamError('error', error, stackTrace);
+        },
+      ),
     ]);
   }
 
@@ -356,6 +391,18 @@ class _MpvPlaybackController extends _MvPlaybackController {
 
   void _changed() {
     if (!_closed) notifyListeners();
+  }
+
+  void _handleStreamError(
+    String streamName,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    if (_closed) return;
+    _error = 'MPV $streamName 状态异常：$error';
+    debugPrint('MPV $streamName 状态流异常: $error');
+    debugPrintStack(stackTrace: stackTrace);
+    _changed();
   }
 
   @override
