@@ -81,128 +81,127 @@ object FloatCapsuleManager {
         // recreation; retaining an old binary messenger can crash on tap.
         onPlayPauseTap = onPlayPause
         onCapsuleTap = onTap
-        if (capsuleView != null) {
-            update(title, artist, coverUrl, isPlaying)
-            return
-        }
-        if (!hasPermission(context)) return
-        if (windowManager == null) {
-            windowManager = try {
-                context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
-            } catch (_: Exception) {
-                null
+        try {
+            if (capsuleView != null) {
+                update(title, artist, coverUrl, isPlaying)
+                return
             }
-        }
-        if (windowManager == null) return
-
-        viewGeneration++
-        val view = LayoutInflater.from(context).inflate(R.layout.float_capsule, null)
-        val titleView = view.findViewById<TextView>(R.id.fc_title)
-        val artistView = view.findViewById<TextView>(R.id.fc_artist)
-        val coverView = view.findViewById<ImageView>(R.id.fc_cover)
-        val playBtn = view.findViewById<ImageButton>(R.id.fc_play)
-
-        titleView.text = title
-        artistView.text = artist
-        playBtn.setImageResource(if (isPlaying) R.drawable.ic_pause_white else R.drawable.ic_play_white)
-        if (!coverUrl.isNullOrEmpty()) {
-            loadImage(coverUrl, coverView)
-        }
-
-        playBtn.setOnClickListener {
-            try {
-                onPlayPauseTap?.invoke()
-            } catch (_: Exception) {
-            }
-        }
-
-        view.setOnClickListener {
-            try {
-                onCapsuleTap?.invoke()
-            } catch (_: Exception) {
-            }
-            val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
-                ?.apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+            if (!hasPermission(context)) return
+            if (windowManager == null) {
+                windowManager = try {
+                    context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+                } catch (_: Exception) {
+                    null
                 }
-            if (launch != null) {
+            }
+            if (windowManager == null) return
+
+            viewGeneration++
+            val view = LayoutInflater.from(context).inflate(R.layout.float_capsule, null)
+            val titleView = view.findViewById<TextView>(R.id.fc_title)
+            val artistView = view.findViewById<TextView>(R.id.fc_artist)
+            val coverView = view.findViewById<ImageView>(R.id.fc_cover)
+            val playBtn = view.findViewById<ImageButton>(R.id.fc_play)
+
+            titleView.text = title
+            artistView.text = artist
+            playBtn.setImageResource(if (isPlaying) R.drawable.ic_pause_white else R.drawable.ic_play_white)
+            if (!coverUrl.isNullOrEmpty()) {
+                loadImage(coverUrl, coverView)
+            }
+
+            playBtn.setOnClickListener {
                 try {
-                    context.startActivity(launch)
+                    onPlayPauseTap?.invoke()
                 } catch (_: Exception) {
                 }
             }
-        }
 
-        view.setOnTouchListener { v, event ->
-            val params = layoutParams
-            if (params == null) return@setOnTouchListener false
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    initialX = params.x.toFloat()
-                    initialY = params.y.toFloat()
-                    initialTouchX = event.rawX
-                    initialTouchY = event.rawY
-                    isDragging = false
-                    true
+            view.setOnClickListener {
+                try {
+                    onCapsuleTap?.invoke()
+                } catch (_: Exception) {
                 }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = event.rawX - initialTouchX
-                    val dy = event.rawY - initialTouchY
-                    if (!isDragging && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) isDragging = true
-                    if (isDragging) {
-                        params.x = (initialX + dx).toInt()
-                        params.y = (initialY + dy).toInt()
-                        try {
-                            windowManager?.updateViewLayout(v, params)
-                        } catch (_: Exception) {
-                            isDragging = false
-                        }
+                val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                    ?.apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
                     }
-                    true
-                }
-                MotionEvent.ACTION_UP -> {
-                    if (!isDragging) {
-                        v.performClick()
+                if (launch != null) {
+                    try {
+                        context.startActivity(launch)
+                    } catch (_: Exception) {
                     }
-                    isDragging = false
-                    true
                 }
-                MotionEvent.ACTION_CANCEL -> {
-                    isDragging = false
-                    true
-                }
-                else -> false
             }
-        }
 
-        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        } else {
-            @Suppress("DEPRECATION")
-            WindowManager.LayoutParams.TYPE_PHONE
-        }
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        )
-        params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        params.y = 100
-        params.x = 0
+            view.setOnTouchListener { v, event ->
+                val params = layoutParams
+                if (params == null) return@setOnTouchListener false
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        initialX = params.x.toFloat()
+                        initialY = params.y.toFloat()
+                        initialTouchX = event.rawX
+                        initialTouchY = event.rawY
+                        isDragging = false
+                        true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = event.rawX - initialTouchX
+                        val dy = event.rawY - initialTouchY
+                        if (!isDragging && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) isDragging = true
+                        if (isDragging) {
+                            params.x = (initialX + dx).toInt()
+                            params.y = (initialY + dy).toInt()
+                            try {
+                                windowManager?.updateViewLayout(v, params)
+                            } catch (_: Exception) {
+                                isDragging = false
+                            }
+                        }
+                        true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        if (!isDragging) {
+                            v.performClick()
+                        }
+                        isDragging = false
+                        true
+                    }
+                    MotionEvent.ACTION_CANCEL -> {
+                        isDragging = false
+                        true
+                    }
+                    else -> false
+                }
+            }
 
-        layoutParams = params
-        capsuleView = view
-        try {
+            val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE
+            }
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                type,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT
+            )
+            params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            params.y = 100
+            params.x = 0
+
+            layoutParams = params
+            capsuleView = view
             windowManager?.addView(view, params)
         } catch (_: Exception) {
-            viewGeneration++
-            cancelImageLoad()
-            capsuleView = null
-            layoutParams = null
-            clearCallbacks()
+            // Layout inflation and window-manager operations can fail on OEM
+            // overlays after permission revocation or an Activity recreation.
+            // Keep the failure recoverable instead of crashing the main thread.
+            hide()
         }
     }
 
