@@ -49,6 +49,12 @@ class _AiAssistantFloatingButtonState extends State<AiAssistantFloatingButton> {
     );
     try {
       await showAiAssistantPanel(context);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('打开 AI 助理失败：$error')));
+      }
     } finally {
       _opening = false;
     }
@@ -132,8 +138,12 @@ class _AiAssistantPetOverlayState extends State<AiAssistantPetOverlay> {
                   child: GestureDetector(
                     key: const ValueKey('ai-assistant-pet-drag'),
                     behavior: HitTestBehavior.translucent,
-                    onPanStart: (_) => setState(() => _dragOffset = current),
+                    onPanStart: (_) {
+                      if (!mounted) return;
+                      setState(() => _dragOffset = current);
+                    },
                     onPanUpdate: (details) {
+                      if (!mounted) return;
                       setState(() {
                         _dragOffset = _clampOffset(
                           (_dragOffset ?? current) + details.delta,
@@ -143,17 +153,11 @@ class _AiAssistantPetOverlayState extends State<AiAssistantPetOverlay> {
                       });
                     },
                     onPanEnd: (_) {
+                      if (!mounted) return;
                       final offset = _dragOffset ?? current;
                       setState(() => _dragOffset = null);
                       if (config == null) return;
-                      unawaited(
-                        config.setPetPosition(
-                          AiPetPosition(
-                            x: maxX <= 0 ? 0 : offset.dx / maxX,
-                            y: maxY <= 0 ? 0 : offset.dy / maxY,
-                          ),
-                        ),
-                      );
+                      unawaited(_savePetPosition(config, offset, maxX, maxY));
                     },
                     child: AiAssistantFloatingButton(size: petSize),
                   ),
@@ -170,6 +174,25 @@ class _AiAssistantPetOverlayState extends State<AiAssistantPetOverlay> {
     value.dx.clamp(0.0, maxX).toDouble(),
     value.dy.clamp(0.0, maxY).toDouble(),
   );
+
+  Future<void> _savePetPosition(
+    AiConfigController config,
+    Offset offset,
+    double maxX,
+    double maxY,
+  ) async {
+    try {
+      await config.setPetPosition(
+        AiPetPosition(
+          x: maxX <= 0 ? 0 : offset.dx / maxX,
+          y: maxY <= 0 ? 0 : offset.dy / maxY,
+        ),
+      );
+    } catch (_) {
+      // Position persistence is best effort; a storage failure must not take
+      // down the page after the drag gesture has already completed.
+    }
+  }
 }
 
 Future<void> showAiAssistantPanel(BuildContext context) async {
@@ -293,15 +316,34 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     if (_closing) return;
     _closing = true;
     final assistant = controller;
-    Navigator.of(context).pop();
-    unawaited(assistant.stopSession());
+    if (mounted) {
+      final navigator = Navigator.of(context);
+      if (navigator.canPop()) navigator.pop();
+    }
+    unawaited(_stopAssistant(assistant));
+  }
+
+  Future<void> _stopAssistant(AiAssistantController assistant) async {
+    try {
+      await assistant.stopSession();
+    } catch (_) {
+      // Closing the panel must remain best effort even if audio cleanup fails.
+    }
   }
 
   Future<void> _send() async {
+    if (!mounted || _closing) return;
     final text = _inputController.text.trim();
     if (text.isEmpty) return;
     _inputController.clear();
-    await controller.sendText(text);
+    try {
+      await controller.sendText(text);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('发送消息失败：$error')));
+    }
   }
 
   @override

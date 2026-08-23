@@ -169,12 +169,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     if (confirmed != true) return;
 
-    await AudioCacheService.clearCache();
-    await _loadCacheInfo();
-    if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('缓存已清除')));
+    try {
+      await AudioCacheService.clearCache();
+      await _loadCacheInfo();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('缓存已清除')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('清除缓存失败：$error')));
+    }
   }
 
   Future<void> _showApiKeyQrInput(PlayerProvider player) async {
@@ -195,13 +202,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
 
     final saveFuture = _receiveAndSaveApiKey(session, player);
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) =>
-          _ApiKeyQrDialog(session: session, saveFuture: saveFuture),
-    );
-    await session.stop();
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) =>
+            _ApiKeyQrDialog(session: session, saveFuture: saveFuture),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('扫码输入已中止：$error')));
+      }
+    } finally {
+      try {
+        await session.stop();
+      } catch (_) {}
+    }
     if (mounted) FocusManager.instance.primaryFocus?.unfocus();
   }
 
@@ -227,7 +245,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _selectAiProfile(AiAssistantProfile profile) async {
-    await _aiConfigController.selectProfile(profile.id);
+    try {
+      await _aiConfigController.selectProfile(profile.id);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('切换模型配置失败：$error')));
+    }
   }
 
   Future<String?> _askProfileName({String initial = ''}) async {
@@ -264,15 +289,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _createAiProfile() async {
     final name = await _askProfileName();
     if (name == null) return;
-    final current = _aiConfigController.config;
-    final profile = await _aiConfigController.createProfile(
-      name: name,
-      config: current.copyWith(model: ''),
-    );
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已新增模型配置“${profile.name}”，请点击编辑填写完整参数')),
+    try {
+      final current = _aiConfigController.config;
+      final profile = await _aiConfigController.createProfile(
+        name: name,
+        config: current.copyWith(model: ''),
       );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已新增模型配置“${profile.name}”，请点击编辑填写完整参数')),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('新增模型配置失败：$error')));
     }
   }
 
@@ -341,13 +373,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     final saveFuture = _receiveAndSaveAiConfig(session, profileId);
     final statusFuture = saveFuture.then((config) => config != null);
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) =>
-          _AiConfigQrDialog(session: session, saveFuture: statusFuture),
-    );
-    await session.stop();
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) =>
+            _AiConfigQrDialog(session: session, saveFuture: statusFuture),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('扫码配置已中止：$error')));
+      }
+    } finally {
+      try {
+        await session.stop();
+      } catch (_) {}
+    }
     if (mounted) FocusManager.instance.primaryFocus?.unfocus();
     return saveFuture;
   }
@@ -386,42 +429,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   /// 系统悬浮胶囊开关
   Future<void> _toggleFloatingCapsule(bool value) async {
-    if (value) {
-      final hasPerm = await FloatingCapsuleService.hasPermission();
-      if (!hasPerm) {
-        FloatingCapsuleService.openPermissionSettings();
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('请在系统设置中开启「悬浮窗」权限，返回后重新打开开关'),
-              duration: Duration(seconds: 3),
-            ),
+    try {
+      if (value) {
+        final hasPerm = await FloatingCapsuleService.hasPermission();
+        if (!hasPerm) {
+          FloatingCapsuleService.openPermissionSettings();
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('请在系统设置中开启「悬浮窗」权限，返回后重新打开开关'),
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
+          return;
+        }
+      } else {
+        FloatingCapsuleService.hide();
+      }
+      if (!mounted) return;
+      FloatingCapsuleService.setEnabled(value);
+      if (value) {
+        final player = context.read<PlayerProvider>();
+        final song = player.currentSong;
+        if (song != null) {
+          await FloatingCapsuleService.show(
+            title: song.name,
+            artist: song.artist,
+            coverUrl: song.coverUrl,
+            isPlaying: player.isPlaying,
           );
         }
-        return;
       }
-    } else {
-      FloatingCapsuleService.hide();
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('floating_capsule_enabled', value);
+      } catch (_) {}
+      if (mounted) setState(() {});
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('悬浮胶囊设置失败：$error')));
     }
-    if (!mounted) return;
-    FloatingCapsuleService.setEnabled(value);
-    if (value) {
-      final player = context.read<PlayerProvider>();
-      final song = player.currentSong;
-      if (song != null) {
-        await FloatingCapsuleService.show(
-          title: song.name,
-          artist: song.artist,
-          coverUrl: song.coverUrl,
-          isPlaying: player.isPlaying,
-        );
-      }
-    }
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('floating_capsule_enabled', value);
-    } catch (_) {}
-    if (mounted) setState(() {});
   }
 
   @override
@@ -950,7 +1000,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       },
     );
-    if (selected != null) await player.setLyricOffsetStep(selected);
+    if (selected == null) return;
+    try {
+      await player.setLyricOffsetStep(selected);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('保存歌词时延失败：$error')));
+    }
   }
 
   String _formatLyricOffsetStep(Duration step) {
@@ -1041,7 +1099,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       },
     );
     if (selected != null) {
-      await player.setBilibiliLyricPlatformOrder(selected);
+      try {
+        await player.setBilibiliLyricPlatformOrder(selected);
+      } catch (error) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('保存歌词平台顺序失败：$error')));
+      }
     }
   }
 
@@ -1408,15 +1473,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _openBilibiliLogin(PlayerProvider player) async {
-    final loggedIn = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const BilibiliLoginDialog(),
-    );
-    if (loggedIn != true || !mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('B站账号登录成功')));
+    try {
+      final loggedIn = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const BilibiliLoginDialog(),
+      );
+      if (loggedIn != true || !mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('B站账号登录成功')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('B站登录失败：$error')));
+    }
   }
 
   Future<void> _logoutBilibili(PlayerProvider player) async {
@@ -1438,11 +1510,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     if (confirmed != true) return;
-    await player.logoutBilibili();
-    if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('已退出 B站账号')));
+    try {
+      await player.logoutBilibili();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已退出 B站账号')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('退出 B站失败：$error')));
+    }
   }
 
   Widget _buildApiCard({bool compact = false}) {
@@ -1500,14 +1579,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     onPressed: () async {
                       final player = context.read<PlayerProvider>();
                       final messenger = ScaffoldMessenger.of(context);
-                      await player.setApiKey(_apiKeyController.text.trim());
-                      if (!mounted) return;
-                      messenger.showSnackBar(
-                        const SnackBar(
-                          content: Text('API Key 已保存'),
-                          duration: Duration(seconds: 1),
-                        ),
-                      );
+                      try {
+                        await player.setApiKey(_apiKeyController.text.trim());
+                        if (!mounted) return;
+                        messenger.showSnackBar(
+                          const SnackBar(
+                            content: Text('API Key 已保存'),
+                            duration: Duration(seconds: 1),
+                          ),
+                        );
+                      } catch (error) {
+                        if (!mounted) return;
+                        messenger.showSnackBar(
+                          SnackBar(content: Text('API Key 保存失败：$error')),
+                        );
+                      }
                     },
                     icon: const Icon(Icons.save),
                     label: const Text('保存'),
@@ -1866,9 +1952,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             value: level.value,
             groupValue: player.neteaseLevel.value,
             title: Text(level.label),
-            onChanged: (v) {
-              player.setNeteaseLevel(level);
-              Navigator.pop(ctx);
+            onChanged: (v) async {
+              if (v == null) return;
+              try {
+                await player.setNeteaseLevel(level);
+                if (ctx.mounted) Navigator.pop(ctx);
+              } catch (error) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text('保存网易云音质失败：$error')));
+              }
             },
           );
         }).toList(),
@@ -1886,9 +1980,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             value: level.value,
             groupValue: player.commonLevel.value,
             title: Text(level.label),
-            onChanged: (v) {
-              player.setCommonLevel(level);
-              Navigator.pop(ctx);
+            onChanged: (v) async {
+              if (v == null) return;
+              try {
+                await player.setCommonLevel(level);
+                if (ctx.mounted) Navigator.pop(ctx);
+              } catch (error) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text('保存 QQ/酷狗音质失败：$error')));
+              }
             },
           );
         }).toList(),
@@ -1921,9 +2023,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             onChanged: (selected) async {
               if (selected == null) return;
-              await player.setPlaybackSource(platform, selected);
-              if (!dialogContext.mounted) return;
-              Navigator.pop(dialogContext);
+              try {
+                await player.setPlaybackSource(platform, selected);
+                if (!dialogContext.mounted) return;
+                Navigator.pop(dialogContext);
+              } catch (error) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('保存${platform.label}音源失败：$error')),
+                );
+              }
             },
           );
         }).toList(),
@@ -1951,9 +2060,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: Text(description),
             onChanged: (selected) async {
               if (selected == null) return;
-              await player.setVideoPlayerMode(selected);
-              if (!dialogContext.mounted) return;
-              Navigator.pop(dialogContext);
+              try {
+                await player.setVideoPlayerMode(selected);
+                if (!dialogContext.mounted) return;
+                Navigator.pop(dialogContext);
+              } catch (error) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text('保存视频播放器设置失败：$error')));
+              }
             },
           );
         }).toList(),
