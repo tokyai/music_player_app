@@ -92,6 +92,7 @@ class _LyricSearchDialogState extends State<_LyricSearchDialog> {
   }
 
   Future<void> _search() async {
+    if (!mounted) return;
     final query = _queryController.text.trim();
     if (query.isEmpty) {
       setState(() {
@@ -702,6 +703,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     unawaited(_loadLyricDisplaySettings());
     unawaited(_loadLandscapeSplitRatio());
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
       _updateColor(context.read<PlayerProvider>().currentSong);
     });
   }
@@ -876,6 +878,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   // 仅在歌曲切换时提取一次封面主色（防抖），避免每次重建都跑图像处理
   void _updateColor(PlayQueueItem? song) {
+    if (!mounted) return;
     // Hero 和页面淡入尚未结束时只绘制纯色背景；封面解码、调色板
     // 提取与全屏模糊都错峰到转场完成后。
     if (!_routeTransitionComplete || song == null) return;
@@ -901,7 +904,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _scrollToLyric(PlayerProvider player) {
-    if (!_lyricsAutoScroll) return;
+    if (!mounted || !_lyricsAutoScroll) return;
     final index = player.currentLyricIndex;
     final song = player.currentSong;
     final songKey = _lyricTargetKey(song);
