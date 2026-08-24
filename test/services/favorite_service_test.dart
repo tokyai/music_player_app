@@ -70,6 +70,31 @@ void main() {
   });
 
   test(
+    'addMany keeps existing favorites and persists a deduplicated batch',
+    () async {
+      final existing = _song(MusicPlatform.qq, 'existing', 'Existing');
+      final added = _song(MusicPlatform.netease, 'added', 'Added');
+      final service = FavoriteService();
+      await service.toggle(existing);
+
+      final result = await service.addMany([existing, added, added]);
+
+      expect(result.added, 1);
+      expect(result.skipped, 2);
+      expect(result.total, 3);
+      expect(service.isFavorite(existing.platform, existing.id), isTrue);
+      expect(service.isFavorite(added.platform, added.id), isTrue);
+
+      final restored = FavoriteService();
+      await restored.load();
+      expect(restored.favorites.map(FavoriteService.keyOf), [
+        FavoriteService.keyOf(added),
+        FavoriteService.keyOf(existing),
+      ]);
+    },
+  );
+
+  test(
     'replace import overwrites existing favorites and persists them',
     () async {
       final service = FavoriteService();

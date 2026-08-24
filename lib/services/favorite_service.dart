@@ -34,6 +34,18 @@ class FavoriteImportResult {
   });
 }
 
+class FavoriteAddResult {
+  final int added;
+  final int skipped;
+  final int total;
+
+  const FavoriteAddResult({
+    required this.added,
+    required this.skipped,
+    required this.total,
+  });
+}
+
 /// 收藏管理（本地持久化，SharedPreferences 存 JSON）。
 class FavoriteService extends ChangeNotifier {
   static const String _prefsKey = 'favorites';
@@ -150,6 +162,41 @@ class FavoriteService extends ChangeNotifier {
     notifyListeners();
     await _save();
     return true;
+  }
+
+  /// Adds songs without removing entries that are already favorites.
+  /// The complete batch is deduplicated and persisted in one write.
+  Future<FavoriteAddResult> addMany(Iterable<SongSearchResult> songs) async {
+    await load();
+    final batch = songs.toList(growable: false);
+    if (_disposed || batch.isEmpty) {
+      return FavoriteAddResult(
+        added: 0,
+        skipped: batch.length,
+        total: batch.length,
+      );
+    }
+
+    final existing = _favorites.map(keyOf).toSet();
+    final additions = <SongSearchResult>[];
+    var skipped = 0;
+    for (final song in batch) {
+      if (existing.add(keyOf(song))) {
+        additions.add(song);
+      } else {
+        skipped++;
+      }
+    }
+    if (additions.isNotEmpty) {
+      _favorites.insertAll(0, additions);
+      notifyListeners();
+      await _save();
+    }
+    return FavoriteAddResult(
+      added: additions.length,
+      skipped: skipped,
+      total: batch.length,
+    );
   }
 
   /// 切换歌单收藏状态，返回操作后是否已收藏。

@@ -15,10 +15,12 @@ import '../providers/theme_controller.dart';
 import '../providers/user_controller.dart';
 import '../services/audio_cache_service.dart';
 import '../services/app_exit_service.dart';
+import '../services/batch_favorite_import_service.dart';
 import '../services/favorite_service.dart';
 import '../services/floating_capsule_service.dart';
 import '../services/lan_ai_config_service.dart';
 import '../services/lan_api_key_service.dart';
+import '../services/lan_favorite_import_service.dart';
 import '../services/user_data_scope.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
@@ -60,6 +62,9 @@ class _SettingsScreenState extends State<SettingsScreen>
   bool _leftForFloatingPermission = false;
   bool _changingFloatingCapsule = false;
   bool _savingVoiceSettings = false;
+  bool _batchFavoriteImportInProgress = false;
+  int _batchFavoriteImportGeneration = 0;
+  LanFavoriteImportSession? _activeFavoriteImportSession;
 
   @override
   void initState() {
@@ -320,6 +325,111 @@ class _SettingsScreenState extends State<SettingsScreen>
     return true;
   }
 
+  Future<void> _showBatchFavoriteImport() async {
+    if (_batchFavoriteImportInProgress || !mounted) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    final generation = ++_batchFavoriteImportGeneration;
+    setState(() => _batchFavoriteImportInProgress = true);
+
+    LanFavoriteImportSession? session;
+    Future<BatchFavoriteImportResult?>? importFuture;
+    try {
+      session = await LanFavoriteImportService.start();
+      if (!mounted || generation != _batchFavoriteImportGeneration) return;
+      _activeFavoriteImportSession = session;
+      final receivedFuture = session.receivedSongNames;
+      importFuture = _receiveAndAddFavoriteSongs(
+        session,
+        context.read<PlayerProvider>(),
+        context.read<FavoriteService>(),
+        generation,
+      );
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _FavoriteImportQrDialog(
+          session: session!,
+          receivedFuture: receivedFuture,
+          importFuture: importFuture!,
+        ),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('批量收藏失败：$error')));
+      }
+    } finally {
+      if (identical(_activeFavoriteImportSession, session)) {
+        _activeFavoriteImportSession = null;
+      }
+      try {
+        await session?.stop();
+      } catch (error, stackTrace) {
+        debugPrint('关闭批量收藏局域网服务失败: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+      if (importFuture != null) {
+        try {
+          await importFuture;
+        } catch (error) {
+          if (mounted) {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('匹配收藏歌曲失败：$error')));
+          }
+        }
+      }
+      if (mounted && generation == _batchFavoriteImportGeneration) {
+        setState(() => _batchFavoriteImportInProgress = false);
+      }
+    }
+  }
+
+  Future<BatchFavoriteImportResult?> _receiveAndAddFavoriteSongs(
+    LanFavoriteImportSession session,
+    PlayerProvider player,
+    FavoriteService favorites,
+    int generation,
+  ) async {
+    final names = await session.receivedSongNames;
+    if (names == null ||
+        !mounted ||
+        generation != _batchFavoriteImportGeneration) {
+      return null;
+    }
+    final result = await BatchFavoriteImportService.import(
+      api: player.api,
+      favorites: favorites,
+      songNames: names,
+      isCancelled: () =>
+          !mounted || generation != _batchFavoriteImportGeneration,
+    );
+    if (!mounted || result.cancelled) return result;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(_favoriteImportMessage(result)),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+    return result;
+  }
+
+  String _favoriteImportMessage(BatchFavoriteImportResult result) {
+    final parts = <String>['新增 ${result.added} 首'];
+    if (result.alreadyFavorite > 0) {
+      parts.add('${result.alreadyFavorite} 首已收藏');
+    }
+    if (result.notFound.isNotEmpty) {
+      final preview = result.notFound.take(3).join('、');
+      final remaining = result.notFound.length - 3;
+      parts.add(
+        '未找到 $preview${remaining > 0 ? ' 等 ${result.notFound.length} 首' : ''}',
+      );
+    }
+    return parts.join('，');
+  }
+
   Future<void> _selectAiProfile(AiAssistantProfile profile) async {
     try {
       await _aiConfigController.selectProfile(profile.id);
@@ -491,6 +601,10 @@ class _SettingsScreenState extends State<SettingsScreen>
 
   @override
   void dispose() {
+    _batchFavoriteImportGeneration++;
+    final activeFavoriteImport = _activeFavoriteImportSession;
+    _activeFavoriteImportSession = null;
+    if (activeFavoriteImport != null) unawaited(activeFavoriteImport.stop());
     WidgetsBinding.instance.removeObserver(this);
     _apiKeyController.dispose();
     _aiConfigController.removeListener(_syncPetScaleDraft);
@@ -1656,6 +1770,23 @@ class _SettingsScreenState extends State<SettingsScreen>
           ),
         ),
         const Divider(height: 1),
+        ListTile(
+          key: const ValueKey('batch-favorite-import'),
+          dense: compact,
+          leading: const Icon(Icons.playlist_add_rounded),
+          title: const Text('批量加入收藏歌曲'),
+          subtitle: const Text('手机扫码输入歌名，使用“、”分隔'),
+          trailing: _batchFavoriteImportInProgress
+              ? const SizedBox.square(
+                  dimension: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2.5),
+                )
+              : const Icon(Icons.qr_code_rounded),
+          onTap: _batchFavoriteImportInProgress
+              ? null
+              : () => unawaited(_showBatchFavoriteImport()),
+        ),
+        const Divider(height: 1),
         Consumer<PlayerProvider>(
           builder: (context, player, _) => ListTile(
             dense: compact,
@@ -2518,6 +2649,207 @@ class _SettingsScreenState extends State<SettingsScreen>
           ),
         ],
       ),
+    );
+  }
+}
+
+class _FavoriteImportQrDialog extends StatelessWidget {
+  final LanFavoriteImportSession session;
+  final Future<List<String>?> receivedFuture;
+  final Future<BatchFavoriteImportResult?> importFuture;
+
+  const _FavoriteImportQrDialog({
+    required this.session,
+    required this.receivedFuture,
+    required this.importFuture,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final layout = AppLayout.fromContext(context);
+    final compact = layout.isCompactLandscape;
+    final qrSize = compact ? 146.0 : 205.0;
+    final qrCode = Container(
+      padding: const EdgeInsets.all(10),
+      color: Colors.white,
+      child: QrImageView(
+        key: const ValueKey('favorite-import-qr-code'),
+        data: session.url,
+        version: QrVersions.auto,
+        size: qrSize,
+        backgroundColor: Colors.white,
+      ),
+    );
+    final details = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          '批量加入收藏歌曲',
+          style: TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: layout.sectionTitleSize,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 10),
+        _buildStatus(),
+        const SizedBox(height: 10),
+        Text(
+          '手机与车机需连接同一个 Wi-Fi。歌曲之间使用“、”连接，一次最多 30 首。',
+          style: TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: layout.secondarySize,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            key: const ValueKey('favorite-import-qr-close'),
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.close_rounded),
+            label: const Text('关闭'),
+          ),
+        ),
+      ],
+    );
+
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 620),
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: EdgeInsets.all(compact ? 12 : 20),
+            child: MediaQuery.orientationOf(context) == Orientation.landscape
+                ? Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      qrCode,
+                      SizedBox(width: compact ? 12 : 20),
+                      Flexible(child: details),
+                    ],
+                  )
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [qrCode, const SizedBox(height: 16), details],
+                  ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatus() {
+    return FutureBuilder<List<String>?>(
+      future: receivedFuture,
+      builder: (context, received) {
+        if (received.hasError) {
+          return const _FavoriteImportQrStatus(
+            icon: Icons.error_outline_rounded,
+            message: '接收失败，请关闭后重试',
+            color: Colors.redAccent,
+          );
+        }
+        if (received.connectionState != ConnectionState.done) {
+          return const _FavoriteImportQrStatus(
+            icon: Icons.phone_android_rounded,
+            message: '等待手机扫码并提交歌曲列表',
+            color: AppColors.primary,
+          );
+        }
+        final names = received.data;
+        if (names == null) {
+          return _FavoriteImportQrStatus(
+            icon: Icons.timer_off_outlined,
+            message: '本次批量收藏已结束',
+            color: AppColors.textHint,
+          );
+        }
+        return FutureBuilder<BatchFavoriteImportResult?>(
+          future: importFuture,
+          builder: (context, imported) {
+            if (imported.hasError) {
+              return const _FavoriteImportQrStatus(
+                icon: Icons.error_outline_rounded,
+                message: '匹配收藏歌曲失败，请关闭后重试',
+                color: Colors.redAccent,
+              );
+            }
+            if (imported.connectionState != ConnectionState.done) {
+              return _FavoriteImportQrStatus(
+                icon: Icons.sync_rounded,
+                message: '已收到 ${names.length} 首，正在匹配并加入收藏',
+                color: AppColors.primary,
+                showProgress: true,
+              );
+            }
+            final result = imported.data;
+            if (result == null || result.cancelled) {
+              return _FavoriteImportQrStatus(
+                icon: Icons.timer_off_outlined,
+                message: '本次批量收藏已结束',
+                color: AppColors.textHint,
+              );
+            }
+            return _FavoriteImportQrStatus(
+              icon: Icons.check_circle_outline_rounded,
+              message: _resultMessage(result),
+              color: AppColors.primary,
+            );
+          },
+        );
+      },
+    );
+  }
+
+  String _resultMessage(BatchFavoriteImportResult result) {
+    final parts = <String>['已完成：新增 ${result.added} 首'];
+    if (result.alreadyFavorite > 0) {
+      parts.add('${result.alreadyFavorite} 首已收藏');
+    }
+    if (result.notFound.isNotEmpty) {
+      parts.add('${result.notFound.length} 首未找到');
+    }
+    return parts.join('，');
+  }
+}
+
+class _FavoriteImportQrStatus extends StatelessWidget {
+  final IconData icon;
+  final String message;
+  final Color color;
+  final bool showProgress;
+
+  const _FavoriteImportQrStatus({
+    required this.icon,
+    required this.message,
+    required this.color,
+    this.showProgress = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        if (showProgress)
+          SizedBox.square(
+            dimension: 22,
+            child: CircularProgressIndicator(strokeWidth: 2.5, color: color),
+          )
+        else
+          Icon(icon, color: color, size: 22),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            message,
+            key: const ValueKey('favorite-import-qr-status'),
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: AppColors.textPrimary),
+          ),
+        ),
+      ],
     );
   }
 }

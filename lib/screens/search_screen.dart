@@ -3,9 +3,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/song.dart';
+import '../providers/ai_assistant_controller.dart';
+import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
 import '../providers/search_session.dart';
 import '../services/favorite_service.dart';
+import '../services/voice_input_session.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
@@ -40,6 +43,8 @@ class _SearchScreenState extends State<SearchScreen>
   late TabController _tabController;
   late final SearchSession _session;
   late String _observedSessionKeyword;
+  VoiceInputSession? _activeVoiceInputSession;
+  bool _voiceInputOpen = false;
 
   @override
   void initState() {
@@ -59,6 +64,9 @@ class _SearchScreenState extends State<SearchScreen>
 
   @override
   void dispose() {
+    final activeVoiceInput = _activeVoiceInputSession;
+    _activeVoiceInputSession = null;
+    if (activeVoiceInput != null) unawaited(activeVoiceInput.close());
     _session.removeListener(_handleSessionChanged);
     _tabController.removeListener(_handleTabChanged);
     _controller.dispose();
@@ -79,6 +87,61 @@ class _SearchScreenState extends State<SearchScreen>
       );
     }
     await _session.search(context.read<PlayerProvider>().api, normalized);
+  }
+
+  Future<void> _showVoiceInput() async {
+    if (_voiceInputOpen || !mounted) return;
+    final assistant = Provider.of<AiAssistantController?>(
+      context,
+      listen: false,
+    );
+    final config = Provider.of<AiConfigController?>(context, listen: false);
+    if (assistant == null || config == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前语音输入服务不可用')));
+      return;
+    }
+    if (assistant.isActive) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请先结束当前 AI 助理对话')));
+      return;
+    }
+
+    setState(() => _voiceInputOpen = true);
+    _searchFocusNode.unfocus();
+    VoiceInputSession? voiceSession;
+    String? candidate;
+    try {
+      await config.ready;
+      if (!mounted) return;
+      voiceSession = VoiceInputSession(
+        speech: assistant.speech,
+        voiceModel: config.voiceModel,
+      );
+      _activeVoiceInputSession = voiceSession;
+      candidate = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) =>
+            _SearchVoiceInputDialog(session: voiceSession!),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('语音输入失败：$error')));
+      }
+    } finally {
+      if (identical(_activeVoiceInputSession, voiceSession)) {
+        _activeVoiceInputSession = null;
+      }
+      await voiceSession?.close();
+      if (mounted) setState(() => _voiceInputOpen = false);
+    }
+    if (!mounted || candidate == null || candidate.trim().isEmpty) return;
+    await _search(candidate);
   }
 
   Future<Iterable<_SearchSuggestion>> _buildSearchSuggestions(
@@ -345,52 +408,78 @@ class _SearchScreenState extends State<SearchScreen>
     final layout = AppLayout.fromContext(context);
     return Padding(
       padding: padding ?? const EdgeInsets.fromLTRB(20, 8, 20, 8),
-      child: RawAutocomplete<_SearchSuggestion>(
-        textEditingController: _controller,
-        focusNode: _searchFocusNode,
-        displayStringForOption: (option) => option.keyword,
-        optionsBuilder: _buildSearchSuggestions,
-        onSelected: (option) => unawaited(_search(option.keyword)),
-        optionsViewOpenDirection: OptionsViewOpenDirection.mostSpace,
-        optionsViewBuilder: _buildSuggestionOptions,
-        fieldViewBuilder: (context, textController, focusNode, _) {
-          return RemoteTextFieldTraversal(
-            controller: textController,
-            child: TextField(
-              key: const ValueKey('search-field'),
-              controller: textController,
-              focusNode: focusNode,
-              decoration: InputDecoration(
-                hintText: '搜索歌曲、歌手...',
-                prefixIcon: Icon(Icons.search, color: AppColors.textSecondary),
-                suffixIcon: textController.text.isNotEmpty
-                    ? IconButton(
-                        tooltip: '清空输入',
-                        icon: Icon(
-                          Icons.clear,
-                          size: layout.isCompactLandscape ? 24 : 28,
-                          color: AppColors.textSecondary,
-                        ),
-                        onPressed: _clearSearch,
-                      )
-                    : null,
-                hintStyle: TextStyle(
-                  color: AppColors.textHint,
-                  fontSize: layout.bodySize,
-                ),
-              ),
-              style: TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: layout.bodySize,
-                height: 1.2,
-              ),
-              textInputAction: TextInputAction.search,
-              onSubmitted: (value) => unawaited(_search(value)),
-              onChanged: _handleQueryChanged,
-              onTapOutside: (_) => focusNode.unfocus(),
+      child: Row(
+        children: [
+          Expanded(
+            child: RawAutocomplete<_SearchSuggestion>(
+              textEditingController: _controller,
+              focusNode: _searchFocusNode,
+              displayStringForOption: (option) => option.keyword,
+              optionsBuilder: _buildSearchSuggestions,
+              onSelected: (option) => unawaited(_search(option.keyword)),
+              optionsViewOpenDirection: OptionsViewOpenDirection.mostSpace,
+              optionsViewBuilder: _buildSuggestionOptions,
+              fieldViewBuilder: (context, textController, focusNode, _) {
+                return RemoteTextFieldTraversal(
+                  controller: textController,
+                  child: TextField(
+                    key: const ValueKey('search-field'),
+                    controller: textController,
+                    focusNode: focusNode,
+                    decoration: InputDecoration(
+                      hintText: '搜索歌曲、歌手...',
+                      prefixIcon: Icon(
+                        Icons.search,
+                        color: AppColors.textSecondary,
+                      ),
+                      suffixIcon: textController.text.isNotEmpty
+                          ? IconButton(
+                              tooltip: '清空输入',
+                              icon: Icon(
+                                Icons.clear,
+                                size: layout.isCompactLandscape ? 24 : 28,
+                                color: AppColors.textSecondary,
+                              ),
+                              onPressed: _clearSearch,
+                            )
+                          : null,
+                      hintStyle: TextStyle(
+                        color: AppColors.textHint,
+                        fontSize: layout.bodySize,
+                      ),
+                    ),
+                    style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: layout.bodySize,
+                      height: 1.2,
+                    ),
+                    textInputAction: TextInputAction.search,
+                    onSubmitted: (value) => unawaited(_search(value)),
+                    onChanged: _handleQueryChanged,
+                    onTapOutside: (_) => focusNode.unfocus(),
+                  ),
+                );
+              },
             ),
-          );
-        },
+          ),
+          SizedBox(width: layout.isCompactLandscape ? 6 : 10),
+          SizedBox.square(
+            dimension: layout.isCompactLandscape ? 48 : 56,
+            child: IconButton.filledTonal(
+              key: const ValueKey('search-voice-input'),
+              tooltip: '语音输入',
+              onPressed: _voiceInputOpen
+                  ? null
+                  : () => unawaited(_showVoiceInput()),
+              icon: Icon(
+                _voiceInputOpen
+                    ? Icons.hourglass_top_rounded
+                    : Icons.mic_rounded,
+                size: layout.isCompactLandscape ? 24 : 28,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1261,6 +1350,316 @@ class _SearchScreenState extends State<SearchScreen>
           ),
         ),
       ],
+    );
+  }
+}
+
+class _SearchVoiceInputDialog extends StatefulWidget {
+  final VoiceInputSession session;
+
+  const _SearchVoiceInputDialog({required this.session});
+
+  @override
+  State<_SearchVoiceInputDialog> createState() =>
+      _SearchVoiceInputDialogState();
+}
+
+class _SearchVoiceInputDialogState extends State<_SearchVoiceInputDialog> {
+  late final TextEditingController _candidateController;
+  bool _preparing = true;
+  bool _listening = false;
+  bool _manuallyEdited = false;
+  bool _closing = false;
+  bool _startPending = false;
+  int _operationGeneration = 0;
+  String _status = '正在准备语音服务…';
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _candidateController = TextEditingController();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_startListening(clearCandidate: false));
+    });
+  }
+
+  @override
+  void dispose() {
+    _candidateController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _startListening({bool clearCandidate = true}) async {
+    if (_closing || _startPending) return;
+    final operation = ++_operationGeneration;
+    _startPending = true;
+    FocusManager.instance.primaryFocus?.unfocus();
+    if (clearCandidate) _candidateController.clear();
+    _manuallyEdited = false;
+    setState(() {
+      _preparing = true;
+      _listening = false;
+      _error = null;
+      _status = '正在准备语音服务…';
+    });
+
+    try {
+      final started = await widget.session.start(
+        onResult: _handleResult,
+        onError: _handleError,
+        onStatus: _handleStatus,
+      );
+      if (!mounted || _closing || operation != _operationGeneration) return;
+      setState(() {
+        _preparing = false;
+        _listening = started && widget.session.isListening;
+        if (!started && _error == null && !_manuallyEdited) {
+          _error = '语音输入未能启动，请重试';
+          _status = '语音输入不可用';
+        }
+      });
+    } finally {
+      _startPending = false;
+    }
+  }
+
+  void _handleResult(String text, bool isFinal) {
+    if (!mounted || _closing || _manuallyEdited) return;
+    final candidate = text.trim();
+    if (candidate.isEmpty) return;
+    _candidateController.value = TextEditingValue(
+      text: candidate,
+      selection: TextSelection.collapsed(offset: candidate.length),
+    );
+    setState(() {
+      _status = isFinal ? '已识别' : '正在识别…';
+      if (isFinal) _listening = false;
+    });
+    if (isFinal) unawaited(_stopListening());
+  }
+
+  void _handleError(String message) {
+    if (!mounted || _closing) return;
+    setState(() {
+      _preparing = false;
+      _listening = false;
+      _error = _cleanSpeechMessage(message);
+      _status = '语音输入失败';
+    });
+  }
+
+  void _handleStatus(String status) {
+    if (!mounted || _closing) return;
+    if (status == 'listening') {
+      setState(() {
+        _preparing = false;
+        _listening = true;
+        _status = '正在听…';
+      });
+    } else if (status == 'done' || status == 'notListening') {
+      setState(() {
+        _preparing = false;
+        _listening = false;
+        if (_error == null) {
+          _status = _candidateController.text.trim().isEmpty ? '未识别到内容' : '已识别';
+        }
+      });
+    }
+  }
+
+  Future<void> _stopListening() async {
+    if (_closing) return;
+    _operationGeneration++;
+    await widget.session.stop();
+    if (!mounted || _closing) return;
+    setState(() {
+      _preparing = false;
+      _listening = false;
+      if (_error == null) {
+        _status = _candidateController.text.trim().isEmpty ? '未识别到内容' : '已识别';
+      }
+    });
+  }
+
+  Future<void> _beginManualEditing() async {
+    if (_closing || _manuallyEdited) return;
+    _operationGeneration++;
+    _manuallyEdited = true;
+    if (_preparing || _listening) await widget.session.cancel();
+    if (!mounted || _closing) return;
+    setState(() {
+      _preparing = false;
+      _listening = false;
+      _error = null;
+      _status = '可编辑';
+    });
+  }
+
+  void _handleCandidateChanged(String _) {
+    if (_closing) return;
+    _manuallyEdited = true;
+    setState(() {});
+  }
+
+  Future<void> _confirm() async {
+    if (_closing || _candidateController.text.trim().isEmpty) return;
+    final candidate = _candidateController.text.trim();
+    _operationGeneration++;
+    setState(() {
+      _closing = true;
+      _preparing = true;
+      _listening = false;
+      _status = '正在结束语音输入…';
+    });
+    await widget.session.close();
+    if (!mounted) return;
+    Navigator.pop(context, candidate.isEmpty ? null : candidate);
+  }
+
+  Future<void> _cancelDialog() async {
+    if (_closing) return;
+    _operationGeneration++;
+    setState(() {
+      _closing = true;
+      _preparing = true;
+      _listening = false;
+      _status = '正在结束语音输入…';
+    });
+    await widget.session.close();
+    if (mounted) Navigator.pop(context);
+  }
+
+  String _cleanSpeechMessage(String message) {
+    return message
+        .replaceFirst(RegExp(r'^(speech_not_supported|error_audio):\s*'), '')
+        .trim();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final layout = AppLayout.fromContext(context);
+    final compact = layout.isCompactLandscape;
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) unawaited(_cancelDialog());
+      },
+      child: AlertDialog(
+        key: const ValueKey('search-voice-dialog'),
+        insetPadding: EdgeInsets.symmetric(
+          horizontal: compact ? 12 : 24,
+          vertical: compact ? 8 : 24,
+        ),
+        titlePadding: EdgeInsets.fromLTRB(
+          compact ? 16 : 24,
+          compact ? 12 : 20,
+          compact ? 16 : 24,
+          compact ? 4 : 8,
+        ),
+        contentPadding: EdgeInsets.fromLTRB(
+          compact ? 16 : 24,
+          compact ? 4 : 8,
+          compact ? 16 : 24,
+          compact ? 4 : 8,
+        ),
+        actionsPadding: EdgeInsets.fromLTRB(
+          compact ? 12 : 16,
+          compact ? 2 : 8,
+          compact ? 12 : 16,
+          compact ? 8 : 12,
+        ),
+        title: const Row(
+          children: [
+            Icon(Icons.mic_rounded),
+            SizedBox(width: 10),
+            Expanded(child: Text('语音搜索')),
+          ],
+        ),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 500),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  key: const ValueKey('search-voice-candidate'),
+                  controller: _candidateController,
+                  minLines: 1,
+                  maxLines: compact ? 2 : 3,
+                  maxLength: 120,
+                  enabled: !_closing,
+                  decoration: const InputDecoration(labelText: '搜索内容'),
+                  textInputAction: TextInputAction.search,
+                  onTap: () => unawaited(_beginManualEditing()),
+                  onChanged: _handleCandidateChanged,
+                  onSubmitted: (_) => unawaited(_confirm()),
+                ),
+                SizedBox(height: compact ? 2 : 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _error ?? _status,
+                        key: const ValueKey('search-voice-status'),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: _error == null
+                              ? AppColors.textSecondary
+                              : Theme.of(context).colorScheme.error,
+                          fontSize: layout.secondarySize,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    SizedBox.square(
+                      dimension: compact ? 42 : 48,
+                      child: _preparing
+                          ? const Padding(
+                              padding: EdgeInsets.all(10),
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.5,
+                              ),
+                            )
+                          : IconButton.filledTonal(
+                              key: const ValueKey('search-voice-retry'),
+                              tooltip: _listening ? '停止识别' : '重新识别',
+                              onPressed: _closing
+                                  ? null
+                                  : _listening
+                                  ? () => unawaited(_stopListening())
+                                  : () => unawaited(_startListening()),
+                              icon: Icon(
+                                _listening
+                                    ? Icons.stop_rounded
+                                    : Icons.mic_rounded,
+                              ),
+                            ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            key: const ValueKey('search-voice-cancel'),
+            onPressed: _closing ? null : () => unawaited(_cancelDialog()),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            key: const ValueKey('search-voice-confirm'),
+            onPressed: _closing || _candidateController.text.trim().isEmpty
+                ? null
+                : () => unawaited(_confirm()),
+            icon: const Icon(Icons.search_rounded),
+            label: const Text('搜索'),
+          ),
+        ],
+      ),
     );
   }
 }
