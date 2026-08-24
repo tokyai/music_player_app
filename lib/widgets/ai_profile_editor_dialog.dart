@@ -38,7 +38,6 @@ class _AiProfileEditorDialogState extends State<AiProfileEditorDialog> {
   late AiRequestProtocol _protocol;
   late AiReasoningEffort _reasoning;
   late AiWebSearchMode _webSearch;
-  late AiVoiceModelKind _voiceModel;
 
   bool _obscureKey = true;
   bool _saving = false;
@@ -59,7 +58,6 @@ class _AiProfileEditorDialogState extends State<AiProfileEditorDialog> {
     _protocol = config.protocol;
     _reasoning = config.reasoningEffort;
     _webSearch = config.webSearchMode;
-    _voiceModel = config.voiceModel;
   }
 
   @override
@@ -79,7 +77,6 @@ class _AiProfileEditorDialogState extends State<AiProfileEditorDialog> {
     model: _modelController.text.trim(),
     reasoningEffort: _reasoning,
     webSearchMode: _webSearch,
-    voiceModel: _voiceModel,
   );
 
   void _markChanged({bool clearModels = false}) {
@@ -97,7 +94,6 @@ class _AiProfileEditorDialogState extends State<AiProfileEditorDialog> {
     _protocol = config.protocol;
     _reasoning = config.reasoningEffort;
     _webSearch = config.webSearchMode;
-    _voiceModel = config.voiceModel;
     _urlController.text = config.baseUrl;
     _apiKeyController.text = config.apiKey;
     _modelController.text = config.model;
@@ -465,25 +461,6 @@ class _AiProfileEditorDialogState extends State<AiProfileEditorDialog> {
           const SizedBox(height: 4),
           Text(_modelsError!, style: const TextStyle(color: Colors.orange)),
         ],
-        const SizedBox(height: 10),
-        DropdownButtonFormField<AiVoiceModelKind>(
-          key: ValueKey('ai-voice-model-${_voiceModel.value}'),
-          initialValue: _voiceModel,
-          isExpanded: true,
-          decoration: const InputDecoration(
-            labelText: '语音输入引擎',
-            helperText: '保存后下次打开 AI 助手生效',
-          ),
-          items: AiVoiceModelKind.values
-              .map(
-                (model) =>
-                    DropdownMenuItem(value: model, child: Text(model.label)),
-              )
-              .toList(),
-          onChanged: (model) {
-            if (model != null) setState(() => _voiceModel = model);
-          },
-        ),
         const SizedBox(height: 10),
         DropdownButtonFormField<AiReasoningEffort>(
           key: ValueKey('ai-reasoning-${_reasoning.value}'),

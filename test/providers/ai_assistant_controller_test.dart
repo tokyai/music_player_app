@@ -90,14 +90,29 @@ void main() {
   test('uses the configured voice engine for a new session', () async {
     final fixture = await _Fixture.create();
     addTearDown(fixture.dispose);
-    await fixture.config.save(
-      fixture.config.config.copyWith(voiceModel: AiVoiceModelKind.doubaoIme),
-    );
+    await fixture.config.setVoiceModel(AiVoiceModelKind.doubaoIme);
 
     await fixture.controller.startSession();
 
     expect(fixture.speech.voiceModel, AiVoiceModelKind.doubaoIme);
   });
+
+  test(
+    'preloads and releases the global offline voice model while idle',
+    () async {
+      final fixture = await _Fixture.create();
+      addTearDown(fixture.dispose);
+
+      fixture.controller.configureVoicePreloading(enabled: true);
+      expect(await fixture.controller.preloadVoiceModel(), isTrue);
+      expect(fixture.speech.retainIdleModel, isTrue);
+      expect(fixture.speech.preloadCalls, 1);
+      expect(fixture.controller.isActive, isFalse);
+
+      await fixture.controller.releasePreloadedVoiceModel();
+      expect(fixture.speech.releasePreloadedCalls, 1);
+    },
+  );
 
   test('waits for continued speech and sends combined text once', () async {
     String? punctuationInput;
@@ -431,16 +446,35 @@ class _TestGateway implements AiChatGateway {
   void close() => closed = true;
 }
 
-class _TestSpeech implements AiSpeechEngine, AiVoiceModelSelector {
+class _TestSpeech
+    implements AiSpeechEngine, AiVoiceModelSelector, AiSpeechModelWarmup {
   AiSpeechResultCallback? _resultCallback;
   void Function(String)? _errorCallback;
   void Function(String)? _statusCallback;
   bool listening = false;
   int listenCalls = 0;
+  int preloadCalls = 0;
+  int releasePreloadedCalls = 0;
+  bool retainIdleModel = false;
   AiVoiceModelKind? voiceModel;
 
   @override
   void setVoiceModel(AiVoiceModelKind model) => voiceModel = model;
+
+  @override
+  void setRetainIdleModel(bool retain) => retainIdleModel = retain;
+
+  @override
+  Future<bool> preloadModel(AiVoiceModelKind model) async {
+    preloadCalls++;
+    voiceModel = model;
+    return true;
+  }
+
+  @override
+  Future<void> releasePreloadedModel() async {
+    releasePreloadedCalls++;
+  }
 
   @override
   Future<bool> initialize({

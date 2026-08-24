@@ -128,6 +128,66 @@ void main() {
   });
 
   test(
+    'preloads Zipformer without permission and retains it while idle',
+    () async {
+      final permission = _FakeMicrophonePermission(granted: false);
+      final recognizer = _FakeRecognizer();
+      final engine = PlatformAiSpeechEngine(
+        speech: recognizer,
+        microphonePermission: permission,
+        audioFocus: _FakeAudioFocus(),
+      );
+      engine.setRetainIdleModel(true);
+
+      expect(
+        await engine.preloadModel(AiVoiceModelKind.zipformerChinese),
+        isTrue,
+      );
+      expect(permission.calls, 0);
+      expect(recognizer.initializeCalls, 1);
+
+      await engine.releaseIdleResources();
+      expect(recognizer.releaseIdleCalls, 0);
+
+      await engine.releasePreloadedModel();
+      expect(recognizer.releaseIdleCalls, 1);
+    },
+  );
+
+  test('retries normal initialization after a failed preload', () async {
+    final permission = _FakeMicrophonePermission(granted: true);
+    final recognizer = _FailFirstRecognizer();
+    final engine = PlatformAiSpeechEngine(
+      speech: recognizer,
+      microphonePermission: permission,
+      audioFocus: _FakeAudioFocus(),
+    );
+
+    expect(
+      await engine.preloadModel(AiVoiceModelKind.zipformerChinese),
+      isFalse,
+    );
+    expect(permission.calls, 0);
+
+    expect(await engine.initialize(onError: (_) {}, onStatus: (_) {}), isTrue);
+    expect(permission.calls, 1);
+    expect(recognizer.initializeCalls, 2);
+  });
+
+  test('does not preload system or online voice engines', () async {
+    final recognizer = _FakeRecognizer();
+    final engine = PlatformAiSpeechEngine(
+      speech: recognizer,
+      microphonePermission: _FakeMicrophonePermission(granted: true),
+      audioFocus: _FakeAudioFocus(),
+    );
+
+    expect(await engine.preloadModel(AiVoiceModelKind.systemSpeech), isFalse);
+    expect(await engine.preloadModel(AiVoiceModelKind.doubaoIme), isFalse);
+    expect(recognizer.initializeCalls, 0);
+  });
+
+  test(
     'routes all three voice engine choices and disposes replaced engines',
     () async {
       final zipformer = _FakeRecognizer();
@@ -157,6 +217,31 @@ void main() {
       await router.dispose();
       await router.dispose();
       expect(doubao.disposeCalls, 1);
+    },
+  );
+
+  test(
+    'retries the selected engine after an in-flight preload changes',
+    () async {
+      final zipformer = _DelayedRecognizer();
+      final system = _FakeRecognizer();
+      final router = AiSpeechRecognizerRouter(
+        zipformerFactory: () => zipformer,
+        systemFactory: () => system,
+        doubaoFactory: _FakeRecognizer.new,
+      );
+      router.setVoiceModel(AiVoiceModelKind.zipformerChinese);
+      final preload = router.initialize(onError: (_) {}, onStatus: (_) {});
+      await zipformer.started.future;
+
+      router.setVoiceModel(AiVoiceModelKind.systemSpeech);
+      final selected = router.initialize(onError: (_) {}, onStatus: (_) {});
+      zipformer.finish.complete(true);
+
+      expect(await preload, isFalse);
+      expect(await selected, isTrue);
+      expect(zipformer.disposeCalls, 1);
+      expect(system.initializeCalls, 1);
     },
   );
 
@@ -285,13 +370,18 @@ class _FakeAudioFocus implements AiAudioFocusCoordinator {
 }
 
 class _FakeRecognizer
-    implements AiSpeechRecognizer, AiVoiceModelSelector, AiSpeechResourceOwner {
+    implements
+        AiSpeechRecognizer,
+        AiVoiceModelSelector,
+        AiSpeechResourceOwner,
+        AiSpeechIdleResourceOwner {
   void Function(String)? _onError;
   void Function(String)? _onStatus;
   int initializeCalls = 0;
   int listenCalls = 0;
   int cancelCalls = 0;
   int disposeCalls = 0;
+  int releaseIdleCalls = 0;
   AiVoiceModelKind? voiceModel;
 
   @override
@@ -326,10 +416,41 @@ class _FakeRecognizer
     disposeCalls++;
   }
 
+  @override
+  Future<void> releaseIdleResources() async {
+    releaseIdleCalls++;
+  }
+
   void emitStatus(String status) => _onStatus?.call(status);
 
   // Keep the error callback reachable for future platform error coverage.
   void emitError(String error) => _onError?.call(error);
+}
+
+class _DelayedRecognizer extends _FakeRecognizer {
+  final Completer<void> started = Completer<void>();
+  final Completer<bool> finish = Completer<bool>();
+
+  @override
+  Future<bool> initialize({
+    required void Function(String message) onError,
+    required void Function(String status) onStatus,
+  }) async {
+    initializeCalls++;
+    if (!started.isCompleted) started.complete();
+    return finish.future;
+  }
+}
+
+class _FailFirstRecognizer extends _FakeRecognizer {
+  @override
+  Future<bool> initialize({
+    required void Function(String message) onError,
+    required void Function(String status) onStatus,
+  }) async {
+    initializeCalls++;
+    return initializeCalls > 1;
+  }
 }
 
 class _FakeDoubaoGateway implements DoubaoImeAsrGateway {

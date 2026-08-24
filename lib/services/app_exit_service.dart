@@ -56,11 +56,13 @@ class AppExitService {
           false;
       if (!confirmed) return;
 
-      await _runCleanupStep(
-        '停止 AI 助手',
-        () => assistant?.stopSession(restoreMusic: false) ?? Future.value(),
-        const Duration(seconds: 2),
-      );
+      await _runCleanupStep('停止 AI 助手', () async {
+        try {
+          await assistant?.stopSession(restoreMusic: false);
+        } finally {
+          await assistant?.releasePreloadedVoiceModel();
+        }
+      }, const Duration(seconds: 2));
       await _runCleanupStep(
         '保存并停止播放器',
         player.prepareForAppExit,

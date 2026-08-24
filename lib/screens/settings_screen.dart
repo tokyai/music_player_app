@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/ai_assistant.dart';
 import '../models/app_user.dart';
 import '../models/song.dart';
+import '../providers/ai_assistant_controller.dart';
 import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
 import '../providers/theme_controller.dart';
@@ -58,6 +59,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   bool _waitingForFloatingPermission = false;
   bool _leftForFloatingPermission = false;
   bool _changingFloatingCapsule = false;
+  bool _savingVoiceSettings = false;
 
   @override
   void initState() {
@@ -101,6 +103,47 @@ class _SettingsScreenState extends State<SettingsScreen>
     final scale = _aiConfigController.petScale;
     if ((_petScaleDraft - scale).abs() < 0.001) return;
     setState(() => _petScaleDraft = scale);
+  }
+
+  Future<void> _setGlobalVoiceModel(AiVoiceModelKind model) async {
+    if (_savingVoiceSettings || model == _aiConfigController.voiceModel) return;
+    setState(() => _savingVoiceSettings = true);
+    try {
+      await _aiConfigController.setVoiceModel(model);
+      if (model != AiVoiceModelKind.zipformerChinese && mounted) {
+        final assistant = Provider.of<AiAssistantController?>(
+          context,
+          listen: false,
+        );
+        await assistant?.releasePreloadedVoiceModel();
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('语音引擎保存失败：$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _savingVoiceSettings = false);
+    }
+  }
+
+  Future<void> _setVoiceLoadMode(AiVoiceLoadMode mode) async {
+    if (_savingVoiceSettings || mode == _aiConfigController.voiceLoadMode) {
+      return;
+    }
+    setState(() => _savingVoiceSettings = true);
+    try {
+      await _aiConfigController.setVoiceLoadMode(mode);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('语音加载方式保存失败：$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _savingVoiceSettings = false);
+    }
   }
 
   Future<void> _loadVersion() async {
@@ -434,13 +477,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   ) async {
     final received = await session.receivedConfig;
     if (received == null) return null;
-    final existing = _aiConfigController.profiles
-        .where((profile) => profile.id == profileId)
-        .firstOrNull;
-    final config = existing == null
-        ? received
-        : received.copyWith(voiceModel: existing.config.voiceModel);
-    await _aiConfigController.updateProfile(profileId, config: config);
+    await _aiConfigController.updateProfile(profileId, config: received);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -449,7 +486,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         ),
       );
     }
-    return config;
+    return received;
   }
 
   @override
@@ -603,6 +640,10 @@ class _SettingsScreenState extends State<SettingsScreen>
         _buildPlaybackCard(),
         _buildBilibiliAccountCard(),
         _buildApiCard(),
+        AnimatedBuilder(
+          animation: _aiConfigController,
+          builder: (context, _) => _buildGlobalVoiceSettingsCard(),
+        ),
         _buildAiAssistantCard(),
         _buildAboutCard(),
         _buildSystemActionsCard(),
@@ -660,6 +701,11 @@ class _SettingsScreenState extends State<SettingsScreen>
                         children: [
                           _buildBilibiliAccountCard(compact: compact),
                           _buildApiCard(compact: compact),
+                          AnimatedBuilder(
+                            animation: _aiConfigController,
+                            builder: (context, _) =>
+                                _buildGlobalVoiceSettingsCard(compact: compact),
+                          ),
                           _buildAiAssistantCard(compact: compact),
                           _buildAboutCard(compact: compact),
                         ],
@@ -1969,6 +2015,100 @@ class _SettingsScreenState extends State<SettingsScreen>
             ),
         ],
       ),
+    );
+  }
+
+  Widget _buildGlobalVoiceSettingsCard({bool compact = false}) {
+    final layout = AppLayout.fromContext(context);
+    final voiceModel = _aiConfigController.voiceModel;
+    final loadMode = _aiConfigController.voiceLoadMode;
+    final supportsPreload = voiceModel == AiVoiceModelKind.zipformerChinese;
+    return _buildCard(
+      compact: compact,
+      children: [
+        _buildSectionHeader(icon: Icons.mic_none_rounded, title: '全局语音设置'),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              DropdownButtonFormField<AiVoiceModelKind>(
+                key: ValueKey('global-voice-engine-${voiceModel.value}'),
+                initialValue: voiceModel,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: '语音输入引擎',
+                  helperText: '对所有 AI 模型配置生效',
+                ),
+                items: AiVoiceModelKind.values
+                    .map(
+                      (model) => DropdownMenuItem(
+                        value: model,
+                        child: Text(
+                          model.label,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: _savingVoiceSettings
+                    ? null
+                    : (model) {
+                        if (model != null) {
+                          unawaited(_setGlobalVoiceModel(model));
+                        }
+                      },
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Zipformer 加载方式',
+                style: TextStyle(
+                  color: supportsPreload
+                      ? AppColors.textPrimary
+                      : AppColors.textHint,
+                  fontSize: layout.secondarySize,
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: SegmentedButton<AiVoiceLoadMode>(
+                  key: const ValueKey('global-voice-load-mode'),
+                  segments: AiVoiceLoadMode.values
+                      .map(
+                        (mode) => ButtonSegment<AiVoiceLoadMode>(
+                          value: mode,
+                          label: Text(
+                            mode.label,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  selected: {loadMode},
+                  showSelectedIcon: false,
+                  expandedInsets: EdgeInsets.zero,
+                  onSelectionChanged: !supportsPreload || _savingVoiceSettings
+                      ? null
+                      : (selection) {
+                          if (selection.isNotEmpty) {
+                            unawaited(_setVoiceLoadMode(selection.first));
+                          }
+                        },
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                supportsPreload ? '加载方式将在下次完整启动应用时生效' : '车机系统语音和豆包语音保持使用时初始化',
+                style: TextStyle(
+                  color: AppColors.textHint,
+                  fontSize: layout.secondarySize,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 

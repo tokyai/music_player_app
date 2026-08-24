@@ -674,6 +674,38 @@ void main() {
           isFalse,
         );
 
+        var globalVoiceEngine = find.byKey(
+          ValueKey(
+            'global-voice-engine-${AiVoiceModelKind.zipformerChinese.value}',
+          ),
+        );
+        await tester.scrollUntilVisible(
+          globalVoiceEngine,
+          160,
+          scrollable: systemScroll,
+        );
+        expect(globalVoiceEngine.hitTestable(), findsOneWidget);
+        await tester.tap(globalVoiceEngine);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text(AiVoiceModelKind.doubaoIme.label).last);
+        await tester.pumpAndSettle();
+        expect(config.voiceModel, AiVoiceModelKind.doubaoIme);
+
+        globalVoiceEngine = find.byKey(
+          ValueKey('global-voice-engine-${AiVoiceModelKind.doubaoIme.value}'),
+        );
+        await tester.tap(globalVoiceEngine);
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.text(AiVoiceModelKind.zipformerChinese.label).last,
+        );
+        await tester.pumpAndSettle();
+        final loadMode = find.byKey(const ValueKey('global-voice-load-mode'));
+        expect(loadMode.hitTestable(), findsOneWidget);
+        await tester.tap(find.text(AiVoiceLoadMode.startupPreload.label));
+        await tester.pumpAndSettle();
+        expect(config.voiceLoadMode, AiVoiceLoadMode.startupPreload);
+
         final originalProfileId = config.activeProfileId;
         final profileAdd = find.byKey(const ValueKey('ai-profile-add'));
         await tester.scrollUntilVisible(
@@ -762,24 +794,13 @@ void main() {
           'https://example.test/v1',
         );
 
-        final voiceModel = find.byKey(
-          ValueKey('ai-voice-model-${AiVoiceModelKind.zipformerChinese.value}'),
-        );
-        await tester.scrollUntilVisible(
-          voiceModel,
-          160,
-          scrollable: editorScroll,
-        );
-        expect(voiceModel.hitTestable(), findsOneWidget);
-        await tester.tap(voiceModel);
-        await tester.pumpAndSettle();
-        await tester.tap(find.text(AiVoiceModelKind.doubaoIme.label).last);
-        await tester.pumpAndSettle();
         expect(
           find.byKey(
-            ValueKey('ai-voice-model-${AiVoiceModelKind.doubaoIme.value}'),
+            ValueKey(
+              'ai-voice-model-${AiVoiceModelKind.zipformerChinese.value}',
+            ),
           ),
-          findsOneWidget,
+          findsNothing,
         );
 
         for (final key in const [
@@ -800,7 +821,6 @@ void main() {
         await tester.scrollUntilVisible(save, 160, scrollable: editorScroll);
         await tester.tap(save);
         await tester.pumpAndSettle();
-        expect(config.config.voiceModel, AiVoiceModelKind.doubaoIme);
         expect(config.config.model, 'car-test-model');
         expect(config.activeProfile?.name, '车机备用模型');
 

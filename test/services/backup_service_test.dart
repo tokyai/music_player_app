@@ -77,7 +77,7 @@ void main() {
   );
 
   test(
-    'backup round-trips all AI profiles, relays, keys and pet settings',
+    'backup round-trips AI profiles but excludes device voice settings',
     () async {
       final player = PlayerProvider();
       addTearDown(player.dispose);
@@ -96,9 +96,10 @@ void main() {
           model: 'mimo-test',
           reasoningEffort: AiReasoningEffort.high,
           webSearchMode: AiWebSearchMode.always,
-          voiceModel: AiVoiceModelKind.doubaoIme,
         ),
       );
+      await source.setVoiceModel(AiVoiceModelKind.doubaoIme);
+      await source.setVoiceLoadMode(AiVoiceLoadMode.startupPreload);
       final primaryId = source.activeProfileId;
       await source.renameProfile(primaryId, '主力模型');
       final backupProfile = await source.createProfile(
@@ -128,10 +129,9 @@ void main() {
       expect(exported['apiKey'], 'music-secret');
       final exportedAi = exported['aiAssistant'] as Map<String, dynamic>;
       expect(exportedAi['config'], containsPair('apiKey', 'ai-secret'));
-      expect(
-        exportedAi['config'],
-        containsPair('voiceModel', AiVoiceModelKind.doubaoIme.value),
-      );
+      expect(exportedAi['config'], isNot(contains('voiceModel')));
+      expect(raw, isNot(contains(AiVoiceModelKind.doubaoIme.value)));
+      expect(raw, isNot(contains(AiVoiceLoadMode.startupPreload.value)));
       expect(exportedAi['activeProfileId'], primaryId);
       final profiles = exportedAi['profiles'] as List<dynamic>;
       expect(profiles, hasLength(2));
@@ -142,6 +142,8 @@ void main() {
         containsAll(['ai-secret', 'backup-secret']),
       );
 
+      await source.setVoiceModel(AiVoiceModelKind.systemSpeech);
+      await source.setVoiceLoadMode(AiVoiceLoadMode.onDemand);
       final restored = AiConfigController(secretStore: MemoryAiSecretStore());
       addTearDown(restored.dispose);
       await restored.ready;
@@ -159,7 +161,8 @@ void main() {
       expect(restored.config.model, 'mimo-test');
       expect(restored.config.reasoningEffort, AiReasoningEffort.high);
       expect(restored.config.webSearchMode, AiWebSearchMode.always);
-      expect(restored.config.voiceModel, AiVoiceModelKind.doubaoIme);
+      expect(restored.voiceModel, AiVoiceModelKind.systemSpeech);
+      expect(restored.voiceLoadMode, AiVoiceLoadMode.onDemand);
       expect(restored.profiles.map((profile) => profile.name), [
         '主力模型',
         '备用中转站',
@@ -184,6 +187,8 @@ void main() {
     final aiConfig = AiConfigController(secretStore: MemoryAiSecretStore());
     addTearDown(aiConfig.dispose);
     await aiConfig.ready;
+    await aiConfig.setVoiceModel(AiVoiceModelKind.systemSpeech);
+    await aiConfig.setVoiceLoadMode(AiVoiceLoadMode.startupPreload);
 
     final result = await BackupService.importJson(
       raw: jsonEncode({
@@ -198,6 +203,8 @@ void main() {
             'baseUrl': 'https://legacy.example/v1',
             'model': 'legacy-model',
             'apiKey': 'legacy-ai-key',
+            'voiceModel': AiVoiceModelKind.doubaoIme.value,
+            'voiceLoadMode': AiVoiceLoadMode.onDemand.value,
           },
         },
       }),
@@ -213,6 +220,8 @@ void main() {
     expect(aiConfig.config.baseUrl, 'https://legacy.example/v1');
     expect(aiConfig.config.model, 'legacy-model');
     expect(aiConfig.config.apiKey, 'legacy-ai-key');
+    expect(aiConfig.voiceModel, AiVoiceModelKind.systemSpeech);
+    expect(aiConfig.voiceLoadMode, AiVoiceLoadMode.startupPreload);
   });
 
   test('backup round-trips playback sources and player preferences', () async {

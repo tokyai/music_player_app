@@ -61,6 +61,8 @@ class AiConfigController extends ChangeNotifier {
   static const petScalePreferenceKey = 'ai_assistant_pet_scale';
   static const petPositionXPreferenceKey = 'ai_assistant_pet_position_x';
   static const petPositionYPreferenceKey = 'ai_assistant_pet_position_y';
+  static const voiceModelPreferenceKey = 'ai_voice_model_global_v1';
+  static const voiceLoadModePreferenceKey = 'ai_voice_load_mode_global_v1';
 
   static const minPetScale = 0.65;
   static const maxPetScale = 2.0;
@@ -75,6 +77,8 @@ class AiConfigController extends ChangeNotifier {
   bool _showPetOnPlayerPage = true;
   double _petScale = 1;
   AiPetPosition _petPosition = AiPetPosition.centered;
+  AiVoiceModelKind _voiceModel = AiVoiceModelKind.zipformerChinese;
+  AiVoiceLoadMode _voiceLoadMode = AiVoiceLoadMode.onDemand;
   bool _disposed = false;
 
   AiConfigController({
@@ -100,6 +104,8 @@ class AiConfigController extends ChangeNotifier {
   bool get showPetOnPlayerPage => _showPetOnPlayerPage;
   double get petScale => _petScale;
   AiPetPosition get petPosition => _petPosition;
+  AiVoiceModelKind get voiceModel => _voiceModel;
+  AiVoiceLoadMode get voiceLoadMode => _voiceLoadMode;
 
   /// Serializes all AI settings for an explicit user-created backup.
   ///
@@ -367,6 +373,24 @@ class AiConfigController extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
+  Future<void> setVoiceModel(AiVoiceModelKind model) async {
+    await ready;
+    if (_disposed || _voiceModel == model) return;
+    await _persistGlobalVoiceSetting(voiceModel: model);
+    if (_disposed) return;
+    _voiceModel = model;
+    notifyListeners();
+  }
+
+  Future<void> setVoiceLoadMode(AiVoiceLoadMode mode) async {
+    await ready;
+    if (_disposed || _voiceLoadMode == mode) return;
+    await _persistGlobalVoiceSetting(loadMode: mode);
+    if (_disposed) return;
+    _voiceLoadMode = mode;
+    notifyListeners();
+  }
+
   Future<void> resetPetPosition() => setPetPosition(AiPetPosition.centered);
 
   Future<void> _load() async {
@@ -376,6 +400,11 @@ class AiConfigController extends ChangeNotifier {
         _secretStore.read(),
       ]);
       final prefs = results[0] as SharedPreferences;
+      final persistedVoiceModel = prefs.getString(voiceModelPreferenceKey);
+      final legacyVoiceModels = <String, AiVoiceModelKind>{};
+      _voiceLoadMode = AiVoiceLoadMode.fromValue(
+        prefs.getString(voiceLoadModePreferenceKey),
+      );
       _apiKeys.addAll(_decodeSecretMap(results[1] as String?));
       _showAssistantOnAllPages =
           prefs.getBool(
@@ -411,9 +440,8 @@ class AiConfigController extends ChangeNotifier {
         if (decoded is List) {
           for (final raw in decoded) {
             if (raw is! Map) continue;
-            final parsed = AiAssistantProfile.fromJson(
-              Map<String, dynamic>.from(raw),
-            );
+            final profileMap = Map<String, dynamic>.from(raw);
+            final parsed = AiAssistantProfile.fromJson(profileMap);
             if (parsed.id.trim().isEmpty ||
                 _profiles.any((profile) => profile.id == parsed.id)) {
               continue;
@@ -424,6 +452,16 @@ class AiConfigController extends ChangeNotifier {
             );
             _profiles.add(profile);
             _apiKeys[profile.id] = key;
+            final rawConfig = profileMap['config'];
+            final configMap = rawConfig is Map
+                ? Map<String, dynamic>.from(rawConfig)
+                : profileMap;
+            final legacyVoice = configMap['voiceModel'];
+            if (legacyVoice != null) {
+              legacyVoiceModels[profile.id] = AiVoiceModelKind.fromValue(
+                legacyVoice.toString(),
+              );
+            }
           }
         }
       }
@@ -435,13 +473,24 @@ class AiConfigController extends ChangeNotifier {
         if (legacyRaw != null) {
           final decoded = jsonDecode(legacyRaw);
           if (decoded is Map) {
+            final legacyMap = Map<String, dynamic>.from(decoded);
             final legacy = AiAssistantProfile.fromJson(
-              Map<String, dynamic>.from(decoded),
+              legacyMap,
               apiKey:
                   _apiKeys[_legacyProfileId] ?? _apiKeys['__legacy__'] ?? '',
             ).copyWith(id: _legacyProfileId, name: '默认配置');
             _profiles.add(legacy);
             _apiKeys[_legacyProfileId] = legacy.config.apiKey;
+            final rawConfig = legacyMap['config'];
+            final configMap = rawConfig is Map
+                ? Map<String, dynamic>.from(rawConfig)
+                : legacyMap;
+            final legacyVoice = configMap['voiceModel'];
+            if (legacyVoice != null) {
+              legacyVoiceModels[_legacyProfileId] = AiVoiceModelKind.fromValue(
+                legacyVoice.toString(),
+              );
+            }
           }
         }
       }
@@ -462,6 +511,17 @@ class AiConfigController extends ChangeNotifier {
       _activeProfileId = _profiles.any((profile) => profile.id == requested)
           ? requested!
           : _profiles.first.id;
+      _voiceModel = persistedVoiceModel == null
+          ? legacyVoiceModels[_activeProfileId] ??
+                AiVoiceModelKind.zipformerChinese
+          : AiVoiceModelKind.fromValue(persistedVoiceModel);
+      if (persistedVoiceModel == null) {
+        try {
+          await prefs.setString(voiceModelPreferenceKey, _voiceModel.value);
+        } catch (error, stackTrace) {
+          debugPrint('迁移全局语音引擎失败: $error\n$stackTrace');
+        }
+      }
       _syncActiveConfig();
     } catch (error) {
       debugPrint('读取 AI 助理配置失败: $error');
@@ -488,6 +548,22 @@ class AiConfigController extends ChangeNotifier {
       _syncActiveConfig();
     }
     if (!_disposed) notifyListeners();
+  }
+
+  Future<void> _persistGlobalVoiceSetting({
+    AiVoiceModelKind? voiceModel,
+    AiVoiceLoadMode? loadMode,
+  }) async {
+    if (_disposed) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (_disposed) return;
+    final saved = voiceModel != null
+        ? await prefs.setString(voiceModelPreferenceKey, voiceModel.value)
+        : await prefs.setString(
+            voiceLoadModePreferenceKey,
+            (loadMode ?? _voiceLoadMode).value,
+          );
+    if (!saved) throw StateError('保存全局语音设置失败');
   }
 
   Future<void> _persist() async {

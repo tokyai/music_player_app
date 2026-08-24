@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:music_player_app/models/ai_assistant.dart';
 import 'package:music_player_app/providers/ai_config_controller.dart';
+import 'package:music_player_app/services/user_data_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -44,29 +45,89 @@ void main() {
     expect(controller.config.baseUrl, 'https://legacy.example/v1');
     expect(controller.config.apiKey, 'legacy-secret');
     expect(controller.config.model, 'legacy-model');
-    expect(controller.config.voiceModel, AiVoiceModelKind.zipformerChinese);
+    expect(controller.voiceModel, AiVoiceModelKind.zipformerChinese);
+    final preferences = await SharedPreferences.getInstance();
+    expect(
+      preferences.getString(AiConfigController.voiceModelPreferenceKey),
+      AiVoiceModelKind.zipformerChinese.value,
+    );
   });
 
-  test('persists each current voice engine per AI profile', () async {
+  test(
+    'migrates the active profile voice engine to the global setting',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'ai_assistant_profiles_v1': jsonEncode([
+          {
+            'id': 'first',
+            'name': '第一个',
+            'config': {
+              'baseUrl': 'https://first.example/v1',
+              'model': 'first',
+              'voiceModel': AiVoiceModelKind.systemSpeech.value,
+            },
+          },
+          {
+            'id': 'active',
+            'name': '当前',
+            'config': {
+              'baseUrl': 'https://active.example/v1',
+              'model': 'active',
+              'voiceModel': AiVoiceModelKind.doubaoIme.value,
+            },
+          },
+        ]),
+        'ai_assistant_active_profile_v1': 'active',
+      });
+      final controller = AiConfigController(secretStore: MemoryAiSecretStore());
+      addTearDown(controller.dispose);
+
+      await controller.ready;
+
+      expect(controller.activeProfileId, 'active');
+      expect(controller.voiceModel, AiVoiceModelKind.doubaoIme);
+      expect(
+        (await SharedPreferences.getInstance()).getString(
+          AiConfigController.voiceModelPreferenceKey,
+        ),
+        AiVoiceModelKind.doubaoIme.value,
+      );
+    },
+  );
+
+  test('persists voice settings globally outside AI profiles', () async {
     final controller = AiConfigController(secretStore: MemoryAiSecretStore());
-    addTearDown(controller.dispose);
     await controller.ready;
 
-    for (final engine in AiVoiceModelKind.values) {
-      final profile = await controller.createProfile(
-        name: engine.value,
-        config: _config(
-          url: 'https://voice.example/v1',
-          key: 'voice-key',
-          model: 'voice-model',
-        ).copyWith(voiceModel: engine),
-      );
-      expect(profile.config.voiceModel, engine);
-    }
+    await controller.setVoiceModel(AiVoiceModelKind.doubaoIme);
+    await controller.setVoiceLoadMode(AiVoiceLoadMode.startupPreload);
+    await controller.createProfile(
+      name: '备用模型',
+      config: _config(
+        url: 'https://voice.example/v1',
+        key: 'voice-key',
+        model: 'voice-model',
+      ),
+    );
+    controller.dispose();
 
+    final reloaded = AiConfigController(
+      dataScope: const UserDataScope('another-user'),
+      secretStore: MemoryAiSecretStore(),
+    );
+    addTearDown(reloaded.dispose);
+    await reloaded.ready;
+
+    expect(reloaded.voiceModel, AiVoiceModelKind.doubaoIme);
+    expect(reloaded.voiceLoadMode, AiVoiceLoadMode.startupPreload);
+    final preferences = await SharedPreferences.getInstance();
     expect(
-      controller.profiles.skip(1).map((profile) => profile.config.voiceModel),
-      AiVoiceModelKind.values,
+      preferences.getString('ai_assistant_profiles_v1'),
+      isNot(contains('voiceModel')),
+    );
+    expect(
+      preferences.getString(AiConfigController.voiceModelPreferenceKey),
+      AiVoiceModelKind.doubaoIme.value,
     );
   });
 

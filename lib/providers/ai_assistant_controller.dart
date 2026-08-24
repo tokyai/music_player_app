@@ -91,6 +91,43 @@ class AiAssistantController extends ChangeNotifier {
   String? get error => _error;
   List<AiConversationMessage> get messages => List.unmodifiable(_messages);
 
+  void configureVoicePreloading({required bool enabled}) {
+    if (_disposed) return;
+    final warmup = speech is AiSpeechModelWarmup
+        ? speech as AiSpeechModelWarmup
+        : null;
+    warmup?.setRetainIdleModel(enabled);
+  }
+
+  Future<bool> preloadVoiceModel() async {
+    await configController.ready;
+    if (_disposed ||
+        configController.voiceModel != AiVoiceModelKind.zipformerChinese) {
+      return false;
+    }
+    final warmup = speech is AiSpeechModelWarmup
+        ? speech as AiSpeechModelWarmup
+        : null;
+    if (warmup == null) return false;
+    return warmup.preloadModel(configController.voiceModel);
+  }
+
+  Future<void> releasePreloadedVoiceModel() async {
+    if (_disposed || _active) return;
+    final warmup = speech is AiSpeechModelWarmup
+        ? speech as AiSpeechModelWarmup
+        : null;
+    if (warmup == null) return;
+    try {
+      await warmup.releasePreloadedModel();
+    } catch (error, stackTrace) {
+      // Low-memory and shutdown cleanup must remain best effort, but keep the
+      // native release failure diagnosable from device logs.
+      debugPrint('释放预加载语音模型失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
   String get statusLabel => switch (_state) {
     AiSessionState.idle => '点击麦克风开始对话',
     AiSessionState.initializing => '正在准备语音服务…',
@@ -134,7 +171,7 @@ class AiAssistantController extends ChangeNotifier {
       final modelSelector = speech;
       if (modelSelector is AiVoiceModelSelector) {
         (modelSelector as AiVoiceModelSelector).setVoiceModel(
-          configController.config.voiceModel,
+          configController.voiceModel,
         );
       }
       speechReady = await speech.initialize(

@@ -93,7 +93,7 @@ enum AiWebSearchMode {
   );
 }
 
-/// Speech input engines selectable for each AI assistant profile.
+/// Speech input engines shared by every AI assistant profile on this device.
 enum AiVoiceModelKind {
   zipformerChinese(
     label: 'Zipformer Small CTC 中文 INT8（离线）',
@@ -120,6 +120,21 @@ enum AiVoiceModelKind {
   }
 }
 
+enum AiVoiceLoadMode {
+  onDemand(label: '打开助手时加载', value: 'on-demand'),
+  startupPreload(label: '启动后预加载', value: 'startup-preload');
+
+  const AiVoiceLoadMode({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  static AiVoiceLoadMode fromValue(String? value) => values.firstWhere(
+    (item) => item.value == value,
+    orElse: () => AiVoiceLoadMode.onDemand,
+  );
+}
+
 class AiAssistantConfig {
   final AiProviderKind provider;
   final AiRequestProtocol protocol;
@@ -128,7 +143,6 @@ class AiAssistantConfig {
   final String model;
   final AiReasoningEffort reasoningEffort;
   final AiWebSearchMode webSearchMode;
-  final AiVoiceModelKind voiceModel;
 
   const AiAssistantConfig({
     required this.provider,
@@ -138,7 +152,6 @@ class AiAssistantConfig {
     required this.model,
     required this.reasoningEffort,
     required this.webSearchMode,
-    this.voiceModel = AiVoiceModelKind.zipformerChinese,
   });
 
   factory AiAssistantConfig.defaults() => AiAssistantConfig(
@@ -149,7 +162,6 @@ class AiAssistantConfig {
     model: '',
     reasoningEffort: AiReasoningEffort.platformDefault,
     webSearchMode: AiWebSearchMode.automatic,
-    voiceModel: AiVoiceModelKind.zipformerChinese,
   );
 
   bool get isComplete =>
@@ -165,7 +177,6 @@ class AiAssistantConfig {
     String? model,
     AiReasoningEffort? reasoningEffort,
     AiWebSearchMode? webSearchMode,
-    AiVoiceModelKind? voiceModel,
   }) => AiAssistantConfig(
     provider: provider ?? this.provider,
     protocol: protocol ?? this.protocol,
@@ -174,7 +185,6 @@ class AiAssistantConfig {
     model: model ?? this.model,
     reasoningEffort: reasoningEffort ?? this.reasoningEffort,
     webSearchMode: webSearchMode ?? this.webSearchMode,
-    voiceModel: voiceModel ?? this.voiceModel,
   );
 
   Map<String, dynamic> toPreferencesJson() => {
@@ -184,7 +194,6 @@ class AiAssistantConfig {
     'model': model.trim(),
     'reasoningEffort': reasoningEffort.value,
     'webSearchMode': webSearchMode.value,
-    'voiceModel': voiceModel.value,
   };
 
   factory AiAssistantConfig.fromJson(
@@ -206,7 +215,6 @@ class AiAssistantConfig {
       webSearchMode: AiWebSearchMode.fromValue(
         json['webSearchMode']?.toString(),
       ),
-      voiceModel: AiVoiceModelKind.fromValue(json['voiceModel']?.toString()),
     );
   }
 

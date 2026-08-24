@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
+import 'models/ai_assistant.dart';
 import 'providers/ai_assistant_controller.dart';
 import 'providers/ai_config_controller.dart';
 import 'providers/player_provider.dart';
@@ -159,6 +160,8 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
     with WidgetsBindingObserver {
   late _UserSession _session;
   GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+  AiVoiceLoadMode? _runtimeVoiceLoadMode;
+  int _voicePreloadGeneration = 0;
 
   @override
   void initState() {
@@ -176,12 +179,43 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
         _navigatorKey.currentState?.push(PlayerScreen.route(context));
       }
     };
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_configureVoicePreloading(_session));
+    });
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(_syncFloatingCapsuleOnResume());
+    }
+  }
+
+  @override
+  void didHaveMemoryPressure() {
+    unawaited(_session.aiAssistant.releasePreloadedVoiceModel());
+  }
+
+  Future<void> _configureVoicePreloading(_UserSession session) async {
+    final generation = ++_voicePreloadGeneration;
+    try {
+      await session.aiConfig.ready;
+      if (!mounted ||
+          !identical(session, _session) ||
+          generation != _voicePreloadGeneration) {
+        return;
+      }
+      _runtimeVoiceLoadMode ??= session.aiConfig.voiceLoadMode;
+      final enabled = _runtimeVoiceLoadMode == AiVoiceLoadMode.startupPreload;
+      session.aiAssistant.configureVoicePreloading(enabled: enabled);
+      if (!enabled ||
+          session.aiConfig.voiceModel != AiVoiceModelKind.zipformerChinese) {
+        return;
+      }
+      await session.aiAssistant.preloadVoiceModel();
+    } catch (error, stackTrace) {
+      debugPrint('启动预加载语音模型失败，将在打开助手时重试: $error');
+      debugPrintStack(stackTrace: stackTrace);
     }
   }
 
@@ -208,6 +242,7 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
     try {
       await target.ready;
       await _session.aiAssistant.stopSession(restoreMusic: false);
+      await _session.aiAssistant.releasePreloadedVoiceModel();
       await _session.player.prepareForUserSwitch();
       previousPrepared = true;
       if (!mounted) throw StateError('应用正在关闭，无法切换用户');
@@ -223,7 +258,10 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
         // may still hold controllers from the previous user session.
         _navigatorKey = GlobalKey<NavigatorState>();
       });
-      WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        previous.dispose();
+        unawaited(_configureVoicePreloading(target));
+      });
       try {
         widget.bindSystemPlayer(target.player);
         await FloatingCapsuleService.hide();
@@ -246,6 +284,7 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
 
   @override
   void dispose() {
+    _voicePreloadGeneration++;
     WidgetsBinding.instance.removeObserver(this);
     widget.users.detachSessionSwitcher();
     FloatingCapsuleService.onPlayPauseTap = null;

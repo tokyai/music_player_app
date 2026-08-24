@@ -30,6 +30,14 @@ abstract class AiVoiceModelSelector {
   void setVoiceModel(AiVoiceModelKind model);
 }
 
+/// Optional control surface for keeping the bundled offline recognizer warm.
+/// Preloading never requests microphone permission or audio focus.
+abstract class AiSpeechModelWarmup {
+  void setRetainIdleModel(bool retain);
+  Future<bool> preloadModel(AiVoiceModelKind model);
+  Future<void> releasePreloadedModel();
+}
+
 /// Optional lifecycle hook for recognizers that own native resources.
 /// Lightweight test/fallback recognizers do not need to implement it.
 abstract class AiSpeechResourceOwner {
@@ -115,6 +123,9 @@ class AiSpeechRecognizerRouter
   AiVoiceModelKind? _activeModel;
   AiSpeechRecognizer? _active;
   Future<bool>? _initializing;
+  AiVoiceModelKind? _initializingModel;
+  void Function(String message)? _onError;
+  void Function(String status)? _onStatus;
   Future<void>? _disposeOperation;
   bool _disposed = false;
 
@@ -138,13 +149,26 @@ class AiSpeechRecognizerRouter
     required void Function(String status) onStatus,
   }) {
     if (_disposed) return Future<bool>.value(false);
+    _onError = onError;
+    _onStatus = onStatus;
     final pending = _initializing;
-    if (pending != null) return pending;
+    if (pending != null) {
+      if (_initializingModel == _selectedModel) return pending;
+      return pending.then((_) {
+        if (_disposed) return false;
+        return initialize(onError: onError, onStatus: onStatus);
+      });
+    }
+    final requestedModel = _selectedModel;
     late final Future<bool> operation;
     operation = _initializeInternal(onError: onError, onStatus: onStatus)
         .whenComplete(() {
-          if (identical(_initializing, operation)) _initializing = null;
+          if (identical(_initializing, operation)) {
+            _initializing = null;
+            _initializingModel = null;
+          }
         });
+    _initializingModel = requestedModel;
     _initializing = operation;
     return operation;
   }
@@ -165,7 +189,18 @@ class AiSpeechRecognizerRouter
       _activeModel = requestedModel;
     }
     final active = _active!;
-    final ready = await active.initialize(onError: onError, onStatus: onStatus);
+    final ready = await active.initialize(
+      onError: (message) {
+        if (!_disposed && requestedModel == _selectedModel) {
+          _onError?.call(message);
+        }
+      },
+      onStatus: (status) {
+        if (!_disposed && requestedModel == _selectedModel) {
+          _onStatus?.call(status);
+        }
+      },
+    );
     if (_disposed ||
         requestedModel != _selectedModel ||
         !identical(active, _active)) {
@@ -252,6 +287,8 @@ class AiSpeechRecognizerRouter
       } catch (_) {}
     }
     await _disposeActive();
+    _onError = null;
+    _onStatus = null;
   }
 }
 
@@ -1660,6 +1697,7 @@ class PlatformAiSpeechEngine
     implements
         AiSpeechEngine,
         AiVoiceModelSelector,
+        AiSpeechModelWarmup,
         AiSpeechResourceOwner,
         AiSpeechIdleResourceOwner {
   final AiSpeechRecognizer _speech;
@@ -1667,6 +1705,8 @@ class PlatformAiSpeechEngine
   final AiAudioFocusCoordinator _audioFocus;
   bool _initialized = false;
   bool _focusHeld = false;
+  bool _retainIdleModel = false;
+  AiVoiceModelKind _voiceModel = AiVoiceModelKind.zipformerChinese;
   bool _disposed = false;
   Future<void> _focusReleaseFuture = Future<void>.value();
   Future<bool>? _initializeOperation;
@@ -1684,11 +1724,63 @@ class PlatformAiSpeechEngine
   @override
   void setVoiceModel(AiVoiceModelKind model) {
     if (_disposed) return;
+    _voiceModel = model;
     _initialized = false;
     final speech = _speech;
     if (speech is AiVoiceModelSelector) {
       (speech as AiVoiceModelSelector).setVoiceModel(model);
     }
+  }
+
+  @override
+  void setRetainIdleModel(bool retain) {
+    if (_disposed) return;
+    _retainIdleModel = retain;
+  }
+
+  @override
+  Future<bool> preloadModel(AiVoiceModelKind model) async {
+    final isAndroid =
+        !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+    if (_disposed || !isAndroid || model != AiVoiceModelKind.zipformerChinese) {
+      return false;
+    }
+    setVoiceModel(model);
+    try {
+      return await _speech.initialize(
+        onError: (message) => debugPrint('[AiVoice] preload failed: $message'),
+        onStatus: (_) {},
+      );
+    } catch (error, stackTrace) {
+      debugPrint('[AiVoice] preload failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      return false;
+    }
+  }
+
+  @override
+  Future<void> releasePreloadedModel() async {
+    if (_disposed) return;
+    try {
+      await _speech.cancel();
+    } catch (error, stackTrace) {
+      debugPrint('[AiVoice] cancel before preload release failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+    await _releaseFocus();
+    final speech = _speech;
+    final owner = speech is AiSpeechIdleResourceOwner
+        ? speech as AiSpeechIdleResourceOwner
+        : null;
+    if (owner != null) {
+      try {
+        await owner.releaseIdleResources();
+      } catch (error, stackTrace) {
+        debugPrint('[AiVoice] preload release failed: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+    }
+    _initialized = false;
   }
 
   @override
@@ -1803,7 +1895,9 @@ class PlatformAiSpeechEngine
     final owner = speech is AiSpeechIdleResourceOwner
         ? speech as AiSpeechIdleResourceOwner
         : null;
-    if (owner != null) {
+    final keepOfflineModel =
+        _retainIdleModel && _voiceModel == AiVoiceModelKind.zipformerChinese;
+    if (owner != null && !keepOfflineModel) {
       try {
         await owner.releaseIdleResources();
       } catch (_) {}
