@@ -87,18 +87,16 @@ void main() {
     expect(fixture.controller.transcript.length, lessThanOrEqualTo(32768));
   });
 
-  test('uses the configured offline voice model for a new session', () async {
+  test('uses the configured voice engine for a new session', () async {
     final fixture = await _Fixture.create();
     addTearDown(fixture.dispose);
     await fixture.config.save(
-      fixture.config.config.copyWith(
-        voiceModel: AiVoiceModelKind.paraformerBilingual,
-      ),
+      fixture.config.config.copyWith(voiceModel: AiVoiceModelKind.doubaoIme),
     );
 
     await fixture.controller.startSession();
 
-    expect(fixture.speech.voiceModel, AiVoiceModelKind.paraformerBilingual);
+    expect(fixture.speech.voiceModel, AiVoiceModelKind.doubaoIme);
   });
 
   test('waits for continued speech and sends combined text once', () async {

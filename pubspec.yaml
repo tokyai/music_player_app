@@ -15,6 +15,7 @@ dependencies:
   http: ^1.2.2
   dio: ^5.7.0
   crypto: ^3.0.6
+  protobuf: ^6.0.0
 
   # 音频播放
   just_audio: ^0.9.39
@@ -30,7 +31,7 @@ dependencies:
   # Android 13+ 通知权限请求
   permission_handler: ^11.3.1
   speech_to_text: ^7.4.0
-  # Android 车机离线流式识别：Zipformer/Paraformer + 原始 PCM 麦克风输入。
+  # Android 车机离线流式识别：Zipformer CTC + 原始 PCM 麦克风输入。
   sherpa_onnx: 1.13.6
   record: 6.1.2
   flutter_secure_storage: ^11.0.0
@@ -61,7 +62,6 @@ flutter:
   uses-material-design: true
   assets:
     - assets/images/
-    - assets/models/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23/
-    - assets/models/sherpa-onnx-streaming-paraformer-bilingual-zh-en/
+    - assets/models/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01/
     - assets/models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8/
     - assets/models/sherpa-onnx-homophone-replacer-zh/

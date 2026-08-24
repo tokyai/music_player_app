@@ -8,9 +8,12 @@ import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 import 'package:speech_to_text/speech_to_text.dart';
 
 import '../models/ai_assistant.dart';
+import 'doubao_ime_asr_client.dart';
 import 'sherpa_audio_utils.dart';
 
 typedef AiSpeechResultCallback = void Function(String text, bool isFinal);
+
+const _aiSpeechSampleRate = 16000;
 
 abstract class AiSpeechEngine {
   Future<bool> initialize({
@@ -92,10 +95,167 @@ class _SpeechToTextRecognizer implements AiSpeechRecognizer {
 
 AiSpeechRecognizer _defaultSpeechRecognizer() {
   final isAndroid = !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
-  return isAndroid ? _SherpaOnnxRecognizer() : _SpeechToTextRecognizer();
+  return isAndroid ? AiSpeechRecognizerRouter() : _SpeechToTextRecognizer();
 }
 
-abstract class _AiAudioCapture {
+typedef AiSpeechRecognizerFactory = AiSpeechRecognizer Function();
+
+/// Keeps the persisted engine choice independent from the AI provider/model.
+class AiSpeechRecognizerRouter
+    implements
+        AiSpeechRecognizer,
+        AiVoiceModelSelector,
+        AiSpeechResourceOwner,
+        AiSpeechIdleResourceOwner {
+  final AiSpeechRecognizerFactory _zipformerFactory;
+  final AiSpeechRecognizerFactory _systemFactory;
+  final AiSpeechRecognizerFactory _doubaoFactory;
+
+  AiVoiceModelKind _selectedModel = AiVoiceModelKind.zipformerChinese;
+  AiVoiceModelKind? _activeModel;
+  AiSpeechRecognizer? _active;
+  Future<bool>? _initializing;
+  Future<void>? _disposeOperation;
+  bool _disposed = false;
+
+  AiSpeechRecognizerRouter({
+    AiSpeechRecognizerFactory? zipformerFactory,
+    AiSpeechRecognizerFactory? systemFactory,
+    AiSpeechRecognizerFactory? doubaoFactory,
+  }) : _zipformerFactory = zipformerFactory ?? _SherpaOnnxRecognizer.new,
+       _systemFactory = systemFactory ?? _SpeechToTextRecognizer.new,
+       _doubaoFactory = doubaoFactory ?? DoubaoImeSpeechRecognizer.new;
+
+  @override
+  void setVoiceModel(AiVoiceModelKind model) {
+    if (_disposed) return;
+    _selectedModel = model;
+  }
+
+  @override
+  Future<bool> initialize({
+    required void Function(String message) onError,
+    required void Function(String status) onStatus,
+  }) {
+    if (_disposed) return Future<bool>.value(false);
+    final pending = _initializing;
+    if (pending != null) return pending;
+    late final Future<bool> operation;
+    operation = _initializeInternal(onError: onError, onStatus: onStatus)
+        .whenComplete(() {
+          if (identical(_initializing, operation)) _initializing = null;
+        });
+    _initializing = operation;
+    return operation;
+  }
+
+  Future<bool> _initializeInternal({
+    required void Function(String message) onError,
+    required void Function(String status) onStatus,
+  }) async {
+    final requestedModel = _selectedModel;
+    if (_activeModel != requestedModel || _active == null) {
+      await _disposeActive();
+      if (_disposed || requestedModel != _selectedModel) return false;
+      _active = switch (requestedModel) {
+        AiVoiceModelKind.zipformerChinese => _zipformerFactory(),
+        AiVoiceModelKind.systemSpeech => _systemFactory(),
+        AiVoiceModelKind.doubaoIme => _doubaoFactory(),
+      };
+      _activeModel = requestedModel;
+    }
+    final active = _active!;
+    final ready = await active.initialize(onError: onError, onStatus: onStatus);
+    if (_disposed ||
+        requestedModel != _selectedModel ||
+        !identical(active, _active)) {
+      if (identical(active, _active)) await _disposeActive();
+      return false;
+    }
+    return ready;
+  }
+
+  @override
+  Future<void> listen(AiSpeechResultCallback onResult) async {
+    if (_disposed) throw StateError('语音识别路由已释放');
+    final active = _active;
+    if (active == null || _activeModel != _selectedModel) {
+      throw StateError('语音输入引擎尚未初始化');
+    }
+    await active.listen(onResult);
+  }
+
+  @override
+  Future<void> stop() async {
+    await _active?.stop();
+  }
+
+  @override
+  Future<void> cancel() async {
+    await _active?.cancel();
+  }
+
+  @override
+  Future<void> releaseIdleResources() async {
+    if (_disposed) return;
+    final active = _active;
+    try {
+      await active?.cancel();
+    } catch (_) {}
+    final idleOwner = active is AiSpeechIdleResourceOwner
+        ? active as AiSpeechIdleResourceOwner
+        : null;
+    if (idleOwner != null) {
+      try {
+        await idleOwner.releaseIdleResources();
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _disposeActive() async {
+    final active = _active;
+    _active = null;
+    _activeModel = null;
+    if (active == null) return;
+    try {
+      await active.cancel();
+    } catch (_) {}
+    final resourceOwner = active is AiSpeechResourceOwner
+        ? active as AiSpeechResourceOwner
+        : null;
+    if (resourceOwner != null) {
+      try {
+        await resourceOwner.dispose();
+      } catch (_) {}
+    }
+  }
+
+  @override
+  Future<void> dispose() {
+    final pending = _disposeOperation;
+    if (pending != null) return pending;
+    late final Future<void> operation;
+    operation = _disposeInternal().whenComplete(() {
+      if (identical(_disposeOperation, operation)) _disposeOperation = null;
+    });
+    _disposeOperation = operation;
+    return operation;
+  }
+
+  Future<void> _disposeInternal() async {
+    if (_disposed) return;
+    _disposed = true;
+    final initializing = _initializing;
+    if (initializing != null) {
+      try {
+        await initializing.timeout(const Duration(seconds: 5));
+      } catch (_) {}
+    }
+    await _disposeActive();
+  }
+}
+
+abstract class AiAudioCapture {
   Stream<Uint8List> get audioStream;
   int get channelCount;
   int get mixDivisor;
@@ -105,7 +265,7 @@ abstract class _AiAudioCapture {
   Future<void> dispose();
 }
 
-class _RecordAudioCapture implements _AiAudioCapture {
+class _RecordAudioCapture implements AiAudioCapture {
   _RecordAudioCapture({
     required AudioRecorder recorder,
     required this.audioStream,
@@ -138,7 +298,7 @@ class _RecordAudioCapture implements _AiAudioCapture {
   Future<void> dispose() => _recorder.dispose();
 }
 
-class _CarArrayAudioCapture implements _AiAudioCapture {
+class _CarArrayAudioCapture implements AiAudioCapture {
   static const _controlChannel = MethodChannel(
     'music_player/ai_car_audio_control',
   );
@@ -291,20 +451,97 @@ class _CarArrayAudioCapture implements _AiAudioCapture {
   }
 }
 
+Future<AiAudioCapture> _startAiAudioCapture({
+  required void Function(String message) log,
+  required void Function(String context, Object error, StackTrace stackTrace)
+  logError,
+}) async {
+  try {
+    final carCapture = await _CarArrayAudioCapture.tryStart();
+    if (carCapture != null) {
+      log('capture source ready: ${carCapture.description}');
+      return carCapture;
+    }
+  } on MissingPluginException {
+    log('car-array capture channel unavailable; using standard microphone');
+  } catch (error, stackTrace) {
+    logError(
+      'car-array capture failed; using standard microphone',
+      error,
+      stackTrace,
+    );
+  }
+
+  Object? firstError;
+  for (final profile in const [
+    (source: AndroidAudioSource.mic, channelCount: 2),
+    (source: AndroidAudioSource.mic, channelCount: 1),
+    (source: AndroidAudioSource.voiceRecognition, channelCount: 1),
+    (source: AndroidAudioSource.defaultSource, channelCount: 1),
+  ]) {
+    final recorder = AudioRecorder();
+    try {
+      log(
+        'opening capture source: ${profile.source.name} '
+        'channels=${profile.channelCount}',
+      );
+      final stream = await recorder.startStream(
+        RecordConfig(
+          encoder: AudioEncoder.pcm16bits,
+          sampleRate: _aiSpeechSampleRate,
+          numChannels: profile.channelCount,
+          // PlatformAiAudioFocusCoordinator is the single focus owner.
+          // record's default focus request would preempt it and cancel us.
+          audioInterruption: AudioInterruptionMode.none,
+          // Let AudioRecord choose a hardware-safe buffer for Flyme stereo.
+          streamBufferSize: profile.channelCount == 1 ? 3200 : null,
+          androidConfig: AndroidRecordConfig(
+            audioSource: profile.source,
+            manageBluetooth: true,
+          ),
+        ),
+      );
+      final description =
+          'standard(source=${profile.source.name}, '
+          'channels=${profile.channelCount})';
+      log('capture source ready: $description');
+      return _RecordAudioCapture(
+        recorder: recorder,
+        audioStream: stream,
+        description: description,
+        channelCount: profile.channelCount,
+        mixDivisor: profile.channelCount,
+      );
+    } catch (error, stackTrace) {
+      logError(
+        'capture source failed: ${profile.source.name} '
+        'channels=${profile.channelCount}',
+        error,
+        stackTrace,
+      );
+      firstError ??= error;
+      try {
+        await recorder.dispose();
+      } catch (_) {}
+    }
+  }
+  throw StateError('无法打开车机麦克风：$firstError');
+}
+
 class _SherpaOnnxRecognizer
     implements
         AiSpeechRecognizer,
         AiVoiceModelSelector,
         AiSpeechResourceOwner,
         AiSpeechIdleResourceOwner {
-  static const _sampleRate = 16000;
+  static const _sampleRate = _aiSpeechSampleRate;
   static const _modelChannel = MethodChannel('music_player/ai_model');
   static const _homophoneModelId = 'homophone-replacer-zh';
   static bool _bindingsInitialized = false;
 
   sherpa.OnlineRecognizer? _recognizer;
   sherpa.OnlineStream? _stream;
-  _AiAudioCapture? _capture;
+  AiAudioCapture? _capture;
   StreamSubscription<Uint8List>? _audioSubscription;
   final Pcm16StreamDecoder _pcmDecoder = Pcm16StreamDecoder();
   void Function(String message)? _onError;
@@ -394,39 +631,22 @@ class _SherpaOnnxRecognizer
       final paths = rawPaths?.map(
         (key, value) => MapEntry(key.toString(), value.toString()),
       );
-      final encoder = paths?['encoder'];
-      final decoder = paths?['decoder'];
+      final modelPath = paths?['model'];
       final tokens = paths?['tokens'];
-      if (encoder == null || decoder == null || tokens == null) {
+      if (modelPath == null || tokens == null) {
         throw StateError('离线语音模型路径不完整');
       }
       if (!_bindingsInitialized) {
         sherpa.initBindings();
         _bindingsInitialized = true;
       }
-      final model = switch (requestedModel) {
-        AiVoiceModelKind.zipformerChinese => sherpa.OnlineModelConfig(
-          transducer: sherpa.OnlineTransducerModelConfig(
-            encoder: encoder,
-            decoder: decoder,
-            joiner: paths?['joiner'] ?? (throw StateError('Zipformer 连接器路径缺失')),
-          ),
-          tokens: tokens,
-          numThreads: 2,
-          provider: 'cpu',
-          debug: false,
-        ),
-        AiVoiceModelKind.paraformerBilingual => sherpa.OnlineModelConfig(
-          paraformer: sherpa.OnlineParaformerModelConfig(
-            encoder: encoder,
-            decoder: decoder,
-          ),
-          tokens: tokens,
-          numThreads: 2,
-          provider: 'cpu',
-          debug: false,
-        ),
-      };
+      final model = sherpa.OnlineModelConfig(
+        zipformer2Ctc: sherpa.OnlineZipformer2CtcModelConfig(model: modelPath),
+        tokens: tokens,
+        numThreads: 2,
+        provider: 'cpu',
+        debug: false,
+      );
       final homophoneConfig = await _prepareHomophoneConfig();
       if (!_canContinueModelInitialization(requestedModel, requestGeneration)) {
         return false;
@@ -517,7 +737,10 @@ class _SherpaOnnxRecognizer
     final stream = recognizer.createStream();
     _stream = stream;
     try {
-      final capture = await _startCapture();
+      final capture = await _startAiAudioCapture(
+        log: _log,
+        logError: _logError,
+      );
       if (generation != _generation) {
         await capture.cancel();
         await capture.dispose();
@@ -555,79 +778,6 @@ class _SherpaOnnxRecognizer
       _onResult = null;
       rethrow;
     }
-  }
-
-  Future<_AiAudioCapture> _startCapture() async {
-    try {
-      final carCapture = await _CarArrayAudioCapture.tryStart();
-      if (carCapture != null) {
-        _log('capture source ready: ${carCapture.description}');
-        return carCapture;
-      }
-    } on MissingPluginException {
-      _log('car-array capture channel unavailable; using standard microphone');
-    } catch (error, stackTrace) {
-      _logError(
-        'car-array capture failed; using standard microphone',
-        error,
-        stackTrace,
-      );
-    }
-
-    Object? firstError;
-    for (final profile in const [
-      (source: AndroidAudioSource.mic, channelCount: 2),
-      (source: AndroidAudioSource.mic, channelCount: 1),
-      (source: AndroidAudioSource.voiceRecognition, channelCount: 1),
-      (source: AndroidAudioSource.defaultSource, channelCount: 1),
-    ]) {
-      final recorder = AudioRecorder();
-      try {
-        _log(
-          'opening capture source: ${profile.source.name} '
-          'channels=${profile.channelCount}',
-        );
-        final stream = await recorder.startStream(
-          RecordConfig(
-            encoder: AudioEncoder.pcm16bits,
-            sampleRate: _sampleRate,
-            numChannels: profile.channelCount,
-            // PlatformAiAudioFocusCoordinator is the single focus owner.
-            // record's default focus request would preempt it and cancel us.
-            audioInterruption: AudioInterruptionMode.none,
-            // Let AudioRecord choose a hardware-safe buffer for Flyme stereo.
-            streamBufferSize: profile.channelCount == 1 ? 3200 : null,
-            androidConfig: AndroidRecordConfig(
-              audioSource: profile.source,
-              manageBluetooth: true,
-            ),
-          ),
-        );
-        final description =
-            'standard(source=${profile.source.name}, '
-            'channels=${profile.channelCount})';
-        _log('capture source ready: $description');
-        return _RecordAudioCapture(
-          recorder: recorder,
-          audioStream: stream,
-          description: description,
-          channelCount: profile.channelCount,
-          mixDivisor: profile.channelCount,
-        );
-      } catch (error, stackTrace) {
-        _logError(
-          'capture source failed: ${profile.source.name} '
-          'channels=${profile.channelCount}',
-          error,
-          stackTrace,
-        );
-        firstError ??= error;
-        try {
-          await recorder.dispose();
-        } catch (_) {}
-      }
-    }
-    throw StateError('无法打开车机麦克风：$firstError');
   }
 
   void _processAudio(int generation, Uint8List bytes) {
@@ -912,6 +1062,470 @@ class _SherpaOnnxRecognizer
   }
 }
 
+typedef AiAudioCaptureStarter = Future<AiAudioCapture> Function();
+
+class DoubaoImeSpeechRecognizer
+    implements
+        AiSpeechRecognizer,
+        AiSpeechResourceOwner,
+        AiSpeechIdleResourceOwner {
+  static const _frameDurationMilliseconds = 20;
+  static const _frameBytes =
+      _aiSpeechSampleRate * _frameDurationMilliseconds ~/ 1000 * 2;
+  static const _maxAudioFrames = 60 * 1000 ~/ _frameDurationMilliseconds;
+
+  final DoubaoImeAsrGateway _client;
+  final AiAudioCaptureStarter? _captureStarter;
+  final Pcm16MonoStreamConverter _pcmConverter = Pcm16MonoStreamConverter();
+  final Pcm16FrameBuffer _frameBuffer = Pcm16FrameBuffer(
+    frameBytes: _frameBytes,
+  );
+
+  AiAudioCapture? _capture;
+  StreamSubscription<Uint8List>? _audioSubscription;
+  DoubaoImeAsrConnection? _session;
+  Future<void>? _responseTask;
+  Future<void> _cleanupFuture = Future<void>.value();
+  Future<bool>? _initializing;
+  Future<void>? _disposeOperation;
+  void Function(String message)? _onError;
+  void Function(String status)? _onStatus;
+  AiSpeechResultCallback? _onResult;
+  int _captureChannelCount = 1;
+  int _captureMixDivisor = 1;
+  int _frameIndex = 0;
+  int _startedAtMilliseconds = 0;
+  int _generation = 0;
+  bool _listening = false;
+  bool _finishing = false;
+  bool _retryingCredentials = false;
+  bool _credentialRetryUsed = false;
+  bool _disposed = false;
+
+  DoubaoImeSpeechRecognizer({
+    DoubaoImeAsrGateway? client,
+    AiAudioCaptureStarter? captureStarter,
+  }) : _client = client ?? DoubaoImeAsrClient(),
+       _captureStarter = captureStarter;
+
+  @override
+  Future<bool> initialize({
+    required void Function(String message) onError,
+    required void Function(String status) onStatus,
+  }) {
+    final pending = _initializing;
+    if (pending != null) return pending;
+    late final Future<bool> operation;
+    operation = _initializeInternal(onError: onError, onStatus: onStatus)
+        .whenComplete(() {
+          if (identical(_initializing, operation)) _initializing = null;
+        });
+    _initializing = operation;
+    return operation;
+  }
+
+  Future<bool> _initializeInternal({
+    required void Function(String message) onError,
+    required void Function(String status) onStatus,
+  }) async {
+    if (_disposed) {
+      _emitError(onError, 'speech_not_supported: 豆包语音服务已释放');
+      return false;
+    }
+    _onError = onError;
+    _onStatus = onStatus;
+    try {
+      await _client.prepare().timeout(const Duration(seconds: 30));
+      return !_disposed;
+    } catch (error, stackTrace) {
+      _logError('initialization failed', error, stackTrace);
+      if (!_disposed) {
+        _emitError(onError, 'speech_not_supported: 豆包语音初始化失败：$error');
+      }
+      return false;
+    }
+  }
+
+  @override
+  Future<void> listen(AiSpeechResultCallback onResult) async {
+    if (_disposed) throw StateError('豆包语音服务已释放');
+    await _cleanupFuture;
+    if (_disposed || _listening || _finishing) return;
+
+    final generation = ++_generation;
+    _resetAudioState();
+    _credentialRetryUsed = false;
+    _onResult = onResult;
+    DoubaoImeAsrConnection? session;
+    AiAudioCapture? capture;
+    try {
+      session = await _client.openSession();
+      if (!_isCurrent(generation)) {
+        await session.close();
+        return;
+      }
+      capture =
+          await (_captureStarter?.call() ??
+              _startAiAudioCapture(log: _log, logError: _logError));
+      if (!_isCurrent(generation)) {
+        await capture.cancel();
+        await capture.dispose();
+        await session.close();
+        return;
+      }
+
+      _session = session;
+      _capture = capture;
+      _captureChannelCount = capture.channelCount;
+      _captureMixDivisor = capture.mixDivisor;
+      _listening = true;
+      _responseTask = _readResponses(generation);
+      _audioSubscription = capture.audioStream.listen(
+        (bytes) => _processAudio(generation, bytes),
+        onError: (Object error, StackTrace stackTrace) {
+          _handleCaptureError(generation, error);
+        },
+        onDone: () => _handleCaptureDone(generation),
+        cancelOnError: false,
+      );
+      _log('capture listening: generation=$generation ${capture.description}');
+      _emitStatus('listening');
+    } catch (error, stackTrace) {
+      _logError('capture startup failed', error, stackTrace);
+      try {
+        await capture?.cancel();
+      } catch (_) {}
+      try {
+        await capture?.dispose();
+      } catch (_) {}
+      try {
+        await session?.close();
+      } catch (_) {}
+      if (_isCurrent(generation)) {
+        _onResult = null;
+        _resetAudioState();
+      }
+      rethrow;
+    }
+  }
+
+  bool _isCurrent(int generation) => !_disposed && generation == _generation;
+
+  void _processAudio(int generation, Uint8List bytes) {
+    if (!_isCurrent(generation) ||
+        !_listening ||
+        _finishing ||
+        _retryingCredentials) {
+      return;
+    }
+    try {
+      final mono = _pcmConverter.convert(
+        bytes,
+        channelCount: _captureChannelCount,
+        mixDivisor: _captureMixDivisor,
+      );
+      _frameBuffer.add(mono, _sendAudioFrame);
+    } catch (error, stackTrace) {
+      _logError('audio processing failed', error, stackTrace);
+      _handleCaptureError(generation, error);
+    }
+  }
+
+  void _sendAudioFrame(Uint8List frame) {
+    final session = _session;
+    if (session == null || _retryingCredentials) return;
+    if (_frameIndex >= _maxAudioFrames) {
+      throw StateError('豆包语音单次聆听超过 60 秒');
+    }
+    session.sendAudio(
+      frame,
+      frameState: _frameIndex == 0
+          ? DoubaoImeAudioFrameState.first
+          : DoubaoImeAudioFrameState.middle,
+      timestampMilliseconds:
+          _startedAtMilliseconds + _frameIndex * _frameDurationMilliseconds,
+    );
+    _frameIndex++;
+    if (_frameIndex == 1 || _frameIndex % 250 == 0) {
+      _log('audio sent: frames=$_frameIndex');
+    }
+  }
+
+  Future<void> _readResponses(int generation) async {
+    try {
+      while (_isCurrent(generation) && _listening && !_finishing) {
+        final session = _session;
+        if (session == null) return;
+        final response = await session.nextResponse();
+        if (!_isCurrent(generation) ||
+            !_listening ||
+            _finishing ||
+            !identical(session, _session)) {
+          return;
+        }
+        if (response == null) {
+          await _finishCapture(fromResponseLoop: true, emitStatus: true);
+          return;
+        }
+        switch (response.kind) {
+          case DoubaoImeAsrResponseKind.interim:
+            if (response.text.trim().isNotEmpty) {
+              _emitResult(response.text.trim(), false);
+            }
+            break;
+          case DoubaoImeAsrResponseKind.finalResult:
+            if (response.text.trim().isNotEmpty) {
+              _emitResult(response.text.trim(), true);
+            }
+            await _finishCapture(
+              finalizeInput: true,
+              fromResponseLoop: true,
+              emitStatus: true,
+            );
+            return;
+          case DoubaoImeAsrResponseKind.sessionFinished:
+            await _finishCapture(fromResponseLoop: true, emitStatus: true);
+            return;
+          case DoubaoImeAsrResponseKind.error:
+            if (!_credentialRetryUsed &&
+                isDoubaoImeCredentialRoutingError(response.error)) {
+              _credentialRetryUsed = true;
+              if (await _replaceRejectedSession(generation, session)) {
+                continue;
+              }
+              return;
+            }
+            _emitError(null, 'error_network: 豆包语音识别失败：${response.error}');
+            await _finishCapture(fromResponseLoop: true);
+            return;
+          case DoubaoImeAsrResponseKind.taskStarted:
+          case DoubaoImeAsrResponseKind.sessionStarted:
+          case DoubaoImeAsrResponseKind.vadStarted:
+          case DoubaoImeAsrResponseKind.heartbeat:
+          case DoubaoImeAsrResponseKind.unknown:
+            break;
+        }
+      }
+    } catch (error, stackTrace) {
+      if (!_isCurrent(generation) || _finishing) return;
+      _logError('response stream failed', error, stackTrace);
+      _emitError(null, 'error_network: 豆包语音连接异常：$error');
+      await _finishCapture(fromResponseLoop: true);
+    }
+  }
+
+  Future<bool> _replaceRejectedSession(
+    int generation,
+    DoubaoImeAsrConnection rejected,
+  ) async {
+    if (!_isCurrent(generation) || !identical(rejected, _session)) {
+      return false;
+    }
+    _retryingCredentials = true;
+    _session = null;
+    try {
+      await rejected.close();
+      await _client.resetCredentials();
+      if (!_isCurrent(generation) || _finishing) return false;
+      final replacement = await _client.openSession();
+      if (!_isCurrent(generation) || _finishing) {
+        await replacement.close();
+        return false;
+      }
+      _session = replacement;
+      _resetAudioState();
+      _log('reconnected with fresh credentials');
+      return true;
+    } finally {
+      _retryingCredentials = false;
+    }
+  }
+
+  void _handleCaptureDone(int generation) {
+    if (!_isCurrent(generation) || _finishing) return;
+    unawaited(_finishCapture(finalizeInput: true, emitStatus: true));
+  }
+
+  void _handleCaptureError(int generation, Object error) {
+    if (!_isCurrent(generation) || _finishing) return;
+    _emitError(null, 'error_audio: 麦克风音频流异常：$error');
+    unawaited(_finishCapture());
+  }
+
+  @override
+  Future<void> stop() => _finishCapture(finalizeInput: true, emitStatus: true);
+
+  @override
+  Future<void> cancel() => _finishCapture();
+
+  Future<void> _finishCapture({
+    bool finalizeInput = false,
+    bool emitStatus = false,
+    bool fromResponseLoop = false,
+  }) async {
+    if (_finishing) {
+      if (!fromResponseLoop) await _cleanupFuture;
+      return;
+    }
+    if (!_listening &&
+        _audioSubscription == null &&
+        _capture == null &&
+        _session == null) {
+      return;
+    }
+    _finishing = true;
+    _listening = false;
+    _retryingCredentials = false;
+    _generation++;
+    final subscription = _audioSubscription;
+    final capture = _capture;
+    final session = _session;
+    final responseTask = _responseTask;
+    _audioSubscription = null;
+    _capture = null;
+    _session = null;
+    _responseTask = null;
+
+    final cleanup = () async {
+      try {
+        try {
+          await subscription?.cancel();
+        } catch (error, stackTrace) {
+          _logError('audio subscription cancel failed', error, stackTrace);
+        }
+        try {
+          if (finalizeInput) {
+            await capture?.stop();
+          } else {
+            await capture?.cancel();
+          }
+        } catch (error, stackTrace) {
+          _logError('audio capture stop failed', error, stackTrace);
+        }
+        if (finalizeInput && session != null) {
+          try {
+            _sendTerminalFrame(session);
+            session.finish();
+          } catch (error, stackTrace) {
+            _logError('final audio send failed', error, stackTrace);
+          }
+        }
+        try {
+          await session?.close();
+        } catch (_) {}
+        if (!fromResponseLoop && responseTask != null) {
+          try {
+            await responseTask.timeout(const Duration(seconds: 2));
+          } catch (_) {}
+        }
+      } finally {
+        try {
+          await capture?.dispose();
+        } catch (_) {}
+        _onResult = null;
+        _resetAudioState();
+        _finishing = false;
+        if (emitStatus) _emitStatus('done');
+      }
+    }();
+    _cleanupFuture = cleanup;
+    await cleanup;
+  }
+
+  void _sendTerminalFrame(DoubaoImeAsrConnection session) {
+    final pending = _frameBuffer.takePaddedFrame();
+    if (pending.isEmpty && _frameIndex == 0) return;
+    session.sendAudio(
+      pending.isEmpty ? Uint8List(_frameBytes) : pending,
+      frameState: DoubaoImeAudioFrameState.last,
+      timestampMilliseconds:
+          _startedAtMilliseconds + _frameIndex * _frameDurationMilliseconds,
+    );
+    _frameIndex++;
+  }
+
+  void _resetAudioState() {
+    _pcmConverter.reset();
+    _frameBuffer.reset();
+    _frameIndex = 0;
+    _startedAtMilliseconds = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  @override
+  Future<void> releaseIdleResources() async {
+    if (_disposed) return;
+    await _finishCapture();
+  }
+
+  @override
+  Future<void> dispose() {
+    final pending = _disposeOperation;
+    if (pending != null) return pending;
+    late final Future<void> operation;
+    operation = _disposeInternal().whenComplete(() {
+      if (identical(_disposeOperation, operation)) _disposeOperation = null;
+    });
+    _disposeOperation = operation;
+    return operation;
+  }
+
+  Future<void> _disposeInternal() async {
+    if (_disposed) return;
+    _disposed = true;
+    _generation++;
+    await _finishCapture();
+    final initializing = _initializing;
+    if (initializing != null) {
+      try {
+        await initializing.timeout(const Duration(seconds: 5));
+      } catch (_) {}
+    }
+    try {
+      await _client.dispose();
+    } catch (_) {}
+    _onResult = null;
+    _onError = null;
+    _onStatus = null;
+  }
+
+  void _emitResult(String text, bool isFinal) {
+    final callback = _onResult;
+    if (callback == null || _disposed) return;
+    try {
+      callback(text, isFinal);
+    } catch (error, stackTrace) {
+      _logError('result callback failed', error, stackTrace);
+    }
+  }
+
+  void _emitError(void Function(String message)? callback, String message) {
+    final target = callback ?? _onError;
+    if (target == null || _disposed) return;
+    try {
+      target(message);
+    } catch (error, stackTrace) {
+      _logError('error callback failed', error, stackTrace);
+    }
+  }
+
+  void _emitStatus(String status) {
+    final callback = _onStatus;
+    if (callback == null || _disposed) return;
+    try {
+      callback(status);
+    } catch (error, stackTrace) {
+      _logError('status callback failed', error, stackTrace);
+    }
+  }
+
+  void _log(String message) => debugPrint('[DoubaoImeAsr] $message');
+
+  void _logError(String context, Object error, StackTrace stackTrace) {
+    _log('$context: $error');
+    debugPrintStack(label: '[DoubaoImeAsr] $context', stackTrace: stackTrace);
+  }
+}
+
 @visibleForTesting
 sherpa.HomophoneReplacerConfig aiHomophoneConfigFromPaths(
   Map<String, String>? paths,
@@ -1070,6 +1684,7 @@ class PlatformAiSpeechEngine
   @override
   void setVoiceModel(AiVoiceModelKind model) {
     if (_disposed) return;
+    _initialized = false;
     final speech = _speech;
     if (speech is AiVoiceModelSelector) {
       (speech as AiVoiceModelSelector).setVoiceModel(model);

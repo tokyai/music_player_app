@@ -463,7 +463,7 @@ class _AiProfileEditorDialogState extends State<AiProfileEditorDialog> {
         ],
         if (_modelsError != null) ...[
           const SizedBox(height: 4),
-          Text(_modelsError!, style: TextStyle(color: Colors.orange)),
+          Text(_modelsError!, style: const TextStyle(color: Colors.orange)),
         ],
         const SizedBox(height: 10),
         DropdownButtonFormField<AiVoiceModelKind>(
@@ -471,8 +471,8 @@ class _AiProfileEditorDialogState extends State<AiProfileEditorDialog> {
           initialValue: _voiceModel,
           isExpanded: true,
           decoration: const InputDecoration(
-            labelText: '车机离线语音模型',
-            helperText: '只加载当前选择的模型；保存后下次打开 AI 助手生效',
+            labelText: '语音输入引擎',
+            helperText: '保存后下次打开 AI 助手生效',
           ),
           items: AiVoiceModelKind.values
               .map(

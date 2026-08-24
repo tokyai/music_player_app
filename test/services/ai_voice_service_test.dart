@@ -1,5 +1,9 @@
+import 'dart:async';
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:music_player_app/models/ai_assistant.dart';
+import 'package:music_player_app/services/doubao_ime_asr_client.dart';
 import 'package:music_player_app/services/ai_voice_service.dart';
 
 void main() {
@@ -110,7 +114,7 @@ void main() {
     expect(errors.single, contains('error_audio_focus_lost'));
   });
 
-  test('forwards the selected offline model to the recognizer', () {
+  test('forwards the selected voice engine to the recognizer', () {
     final recognizer = _FakeRecognizer();
     final engine = PlatformAiSpeechEngine(
       speech: recognizer,
@@ -118,10 +122,43 @@ void main() {
       audioFocus: _FakeAudioFocus(),
     );
 
-    engine.setVoiceModel(AiVoiceModelKind.paraformerBilingual);
+    engine.setVoiceModel(AiVoiceModelKind.doubaoIme);
 
-    expect(recognizer.voiceModel, AiVoiceModelKind.paraformerBilingual);
+    expect(recognizer.voiceModel, AiVoiceModelKind.doubaoIme);
   });
+
+  test(
+    'routes all three voice engine choices and disposes replaced engines',
+    () async {
+      final zipformer = _FakeRecognizer();
+      final system = _FakeRecognizer();
+      final doubao = _FakeRecognizer();
+      final router = AiSpeechRecognizerRouter(
+        zipformerFactory: () => zipformer,
+        systemFactory: () => system,
+        doubaoFactory: () => doubao,
+      );
+
+      for (final entry in [
+        (AiVoiceModelKind.zipformerChinese, zipformer),
+        (AiVoiceModelKind.systemSpeech, system),
+        (AiVoiceModelKind.doubaoIme, doubao),
+      ]) {
+        router.setVoiceModel(entry.$1);
+        expect(
+          await router.initialize(onError: (_) {}, onStatus: (_) {}),
+          isTrue,
+        );
+        expect(entry.$2.initializeCalls, 1);
+      }
+
+      expect(zipformer.disposeCalls, 1);
+      expect(system.disposeCalls, 1);
+      await router.dispose();
+      await router.dispose();
+      expect(doubao.disposeCalls, 1);
+    },
+  );
 
   test('contains recognizer callbacks that throw', () async {
     final recognizer = _FakeRecognizer();
@@ -138,6 +175,74 @@ void main() {
 
     expect(() => recognizer.emitError('native error'), returnsNormally);
     expect(() => recognizer.emitStatus('done'), returnsNormally);
+  });
+
+  test(
+    'replaces rejected Doubao credentials once and keeps recognizing',
+    () async {
+      final gateway = _FakeDoubaoGateway(rejectFirstSession: true);
+      final capture = _FakeAudioCapture();
+      final recognizer = DoubaoImeSpeechRecognizer(
+        client: gateway,
+        captureStarter: () async => capture,
+      );
+      final results = <(String, bool)>[];
+      final errors = <String>[];
+      final done = Completer<void>();
+
+      expect(
+        await recognizer.initialize(
+          onError: errors.add,
+          onStatus: (status) {
+            if (status == 'done' && !done.isCompleted) done.complete();
+          },
+        ),
+        isTrue,
+      );
+      await recognizer.listen((text, isFinal) {
+        results.add((text, isFinal));
+      });
+      capture.emit(Uint8List(640));
+      await gateway.secondSessionOpened.future.timeout(
+        const Duration(seconds: 2),
+      );
+      capture.emit(Uint8List(640));
+      await done.future.timeout(const Duration(seconds: 2));
+
+      expect(gateway.resetCalls, 1);
+      expect(gateway.openSessionCalls, 2);
+      expect(results, [('豆包识别成功', true)]);
+      expect(errors, isEmpty);
+      expect(capture.stopCalls, 1);
+      expect(capture.disposeCalls, 1);
+      expect(
+        gateway.connections.every((connection) => connection.closeCalls == 1),
+        isTrue,
+      );
+
+      await recognizer.dispose();
+      await recognizer.dispose();
+      expect(gateway.disposeCalls, 1);
+    },
+  );
+
+  test('contains repeated Doubao cancel and dispose operations', () async {
+    final gateway = _FakeDoubaoGateway();
+    final capture = _FakeAudioCapture();
+    final recognizer = DoubaoImeSpeechRecognizer(
+      client: gateway,
+      captureStarter: () async => capture,
+    );
+    await recognizer.initialize(onError: (_) {}, onStatus: (_) {});
+    await recognizer.listen((_, _) {});
+
+    await Future.wait([recognizer.cancel(), recognizer.cancel()]);
+    expect(capture.cancelCalls, 1);
+    expect(capture.disposeCalls, 1);
+    expect(gateway.connections.single.closeCalls, 1);
+
+    await Future.wait([recognizer.dispose(), recognizer.dispose()]);
+    expect(gateway.disposeCalls, 1);
   });
 }
 
@@ -179,12 +284,14 @@ class _FakeAudioFocus implements AiAudioFocusCoordinator {
   void emitFocusLost() => _onFocusLost?.call();
 }
 
-class _FakeRecognizer implements AiSpeechRecognizer, AiVoiceModelSelector {
+class _FakeRecognizer
+    implements AiSpeechRecognizer, AiVoiceModelSelector, AiSpeechResourceOwner {
   void Function(String)? _onError;
   void Function(String)? _onStatus;
   int initializeCalls = 0;
   int listenCalls = 0;
   int cancelCalls = 0;
+  int disposeCalls = 0;
   AiVoiceModelKind? voiceModel;
 
   @override
@@ -214,8 +321,155 @@ class _FakeRecognizer implements AiSpeechRecognizer, AiVoiceModelSelector {
     cancelCalls++;
   }
 
+  @override
+  Future<void> dispose() async {
+    disposeCalls++;
+  }
+
   void emitStatus(String status) => _onStatus?.call(status);
 
   // Keep the error callback reachable for future platform error coverage.
   void emitError(String error) => _onError?.call(error);
+}
+
+class _FakeDoubaoGateway implements DoubaoImeAsrGateway {
+  final bool rejectFirstSession;
+  final List<_FakeDoubaoConnection> connections = [];
+  final Completer<void> secondSessionOpened = Completer<void>();
+  int openSessionCalls = 0;
+  int resetCalls = 0;
+  int disposeCalls = 0;
+
+  _FakeDoubaoGateway({this.rejectFirstSession = false});
+
+  @override
+  Future<void> prepare() async {}
+
+  @override
+  Future<DoubaoImeAsrConnection> openSession() async {
+    openSessionCalls++;
+    final shouldReject = rejectFirstSession && openSessionCalls == 1;
+    final connection = _FakeDoubaoConnection(
+      responseAfterFirstFrame: shouldReject
+          ? const DoubaoImeAsrResponse(
+              kind: DoubaoImeAsrResponseKind.error,
+              error: 'service discovery failure',
+            )
+          : rejectFirstSession
+          ? const DoubaoImeAsrResponse(
+              kind: DoubaoImeAsrResponseKind.finalResult,
+              text: '豆包识别成功',
+            )
+          : null,
+    );
+    connections.add(connection);
+    if (openSessionCalls == 2 && !secondSessionOpened.isCompleted) {
+      secondSessionOpened.complete();
+    }
+    return connection;
+  }
+
+  @override
+  Future<void> resetCredentials() async {
+    resetCalls++;
+  }
+
+  @override
+  Future<void> dispose() async {
+    disposeCalls++;
+    for (final connection in connections) {
+      await connection.close();
+    }
+  }
+}
+
+class _FakeDoubaoConnection implements DoubaoImeAsrConnection {
+  final DoubaoImeAsrResponse? responseAfterFirstFrame;
+  final StreamController<DoubaoImeAsrResponse?> _responses =
+      StreamController<DoubaoImeAsrResponse?>();
+  late final StreamIterator<DoubaoImeAsrResponse?> _iterator =
+      StreamIterator<DoubaoImeAsrResponse?>(_responses.stream);
+  bool _responseSent = false;
+  bool _closed = false;
+  int closeCalls = 0;
+
+  _FakeDoubaoConnection({this.responseAfterFirstFrame});
+
+  @override
+  void sendAudio(
+    Uint8List bytes, {
+    required DoubaoImeAudioFrameState frameState,
+    required int timestampMilliseconds,
+  }) {
+    final response = responseAfterFirstFrame;
+    if (_closed || _responseSent || response == null) return;
+    _responseSent = true;
+    _responses.add(response);
+  }
+
+  @override
+  void finish() {}
+
+  @override
+  Future<DoubaoImeAsrResponse?> nextResponse() async {
+    if (_closed) return null;
+    return await _iterator.moveNext() ? _iterator.current : null;
+  }
+
+  @override
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    closeCalls++;
+    await _iterator.cancel();
+    await _responses.close();
+  }
+}
+
+class _FakeAudioCapture implements AiAudioCapture {
+  final StreamController<Uint8List> _audio = StreamController<Uint8List>();
+  bool _closed = false;
+  int stopCalls = 0;
+  int cancelCalls = 0;
+  int disposeCalls = 0;
+
+  @override
+  Stream<Uint8List> get audioStream => _audio.stream;
+
+  @override
+  int get channelCount => 1;
+
+  @override
+  int get mixDivisor => 1;
+
+  @override
+  String get description => 'fake';
+
+  void emit(Uint8List bytes) {
+    if (!_closed) _audio.add(bytes);
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+    await _close();
+  }
+
+  @override
+  Future<void> cancel() async {
+    cancelCalls++;
+    await _close();
+  }
+
+  @override
+  Future<void> dispose() async {
+    disposeCalls++;
+    await _close();
+  }
+
+  Future<void> _close() async {
+    if (_closed) return;
+    _closed = true;
+    await _audio.close();
+  }
 }

@@ -93,26 +93,31 @@ enum AiWebSearchMode {
   );
 }
 
-/// Offline Android speech-recognition models bundled with the app.
+/// Speech input engines selectable for each AI assistant profile.
 enum AiVoiceModelKind {
   zipformerChinese(
-    label: 'Zipformer 中文（轻量）',
-    value: 'streaming-zipformer-zh-14M-2023-02-23',
+    label: 'Zipformer Small CTC 中文 INT8（离线）',
+    value: 'streaming-zipformer-small-ctc-zh-int8-2025-04-01',
   ),
-  paraformerBilingual(
-    label: 'Paraformer 中英双语（高精度）',
-    value: 'streaming-paraformer-bilingual-zh-en',
-  );
+  systemSpeech(label: '车机自带语音功能', value: 'system-speech-recognizer'),
+  doubaoIme(label: '豆包输入法语音引擎（在线）', value: 'doubao-ime-asr');
 
   const AiVoiceModelKind({required this.label, required this.value});
 
   final String label;
   final String value;
 
-  static AiVoiceModelKind fromValue(String? value) => values.firstWhere(
-    (item) => item.value == value,
-    orElse: () => AiVoiceModelKind.zipformerChinese,
-  );
+  static AiVoiceModelKind fromValue(String? value) {
+    // Both removed offline models migrate to the single bundled CTC model.
+    if (value == 'streaming-zipformer-zh-14M-2023-02-23' ||
+        value == 'streaming-paraformer-bilingual-zh-en') {
+      return AiVoiceModelKind.zipformerChinese;
+    }
+    return values.firstWhere(
+      (item) => item.value == value,
+      orElse: () => AiVoiceModelKind.zipformerChinese,
+    );
+  }
 }
 
 class AiAssistantConfig {

@@ -773,15 +773,11 @@ void main() {
         expect(voiceModel.hitTestable(), findsOneWidget);
         await tester.tap(voiceModel);
         await tester.pumpAndSettle();
-        await tester.tap(
-          find.text(AiVoiceModelKind.paraformerBilingual.label).last,
-        );
+        await tester.tap(find.text(AiVoiceModelKind.doubaoIme.label).last);
         await tester.pumpAndSettle();
         expect(
           find.byKey(
-            ValueKey(
-              'ai-voice-model-${AiVoiceModelKind.paraformerBilingual.value}',
-            ),
+            ValueKey('ai-voice-model-${AiVoiceModelKind.doubaoIme.value}'),
           ),
           findsOneWidget,
         );
@@ -804,7 +800,7 @@ void main() {
         await tester.scrollUntilVisible(save, 160, scrollable: editorScroll);
         await tester.tap(save);
         await tester.pumpAndSettle();
-        expect(config.config.voiceModel, AiVoiceModelKind.paraformerBilingual);
+        expect(config.config.voiceModel, AiVoiceModelKind.doubaoIme);
         expect(config.config.model, 'car-test-model');
         expect(config.activeProfile?.name, '车机备用模型');
 

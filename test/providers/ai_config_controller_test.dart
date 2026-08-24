@@ -10,6 +10,17 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
+  test('migrates both removed offline model identifiers to Zipformer CTC', () {
+    expect(
+      AiVoiceModelKind.fromValue('streaming-zipformer-zh-14M-2023-02-23'),
+      AiVoiceModelKind.zipformerChinese,
+    );
+    expect(
+      AiVoiceModelKind.fromValue('streaming-paraformer-bilingual-zh-en'),
+      AiVoiceModelKind.zipformerChinese,
+    );
+  });
+
   test('migrates the legacy single config and plain secure key', () async {
     SharedPreferences.setMockInitialValues({
       'ai_assistant_config_v1': jsonEncode({
@@ -19,7 +30,7 @@ void main() {
         'model': 'legacy-model',
         'reasoningEffort': 'high',
         'webSearchMode': 'always',
-        'voiceModel': AiVoiceModelKind.paraformerBilingual.value,
+        'voiceModel': 'streaming-paraformer-bilingual-zh-en',
       }),
     });
     final secrets = MemoryAiSecretStore('legacy-secret');
@@ -33,7 +44,30 @@ void main() {
     expect(controller.config.baseUrl, 'https://legacy.example/v1');
     expect(controller.config.apiKey, 'legacy-secret');
     expect(controller.config.model, 'legacy-model');
-    expect(controller.config.voiceModel, AiVoiceModelKind.paraformerBilingual);
+    expect(controller.config.voiceModel, AiVoiceModelKind.zipformerChinese);
+  });
+
+  test('persists each current voice engine per AI profile', () async {
+    final controller = AiConfigController(secretStore: MemoryAiSecretStore());
+    addTearDown(controller.dispose);
+    await controller.ready;
+
+    for (final engine in AiVoiceModelKind.values) {
+      final profile = await controller.createProfile(
+        name: engine.value,
+        config: _config(
+          url: 'https://voice.example/v1',
+          key: 'voice-key',
+          model: 'voice-model',
+        ).copyWith(voiceModel: engine),
+      );
+      expect(profile.config.voiceModel, engine);
+    }
+
+    expect(
+      controller.profiles.skip(1).map((profile) => profile.config.voiceModel),
+      AiVoiceModelKind.values,
+    );
   });
 
   test('creates, selects, updates, deletes and reloads profiles', () async {
@@ -159,10 +193,7 @@ void main() {
 
     await controller.ready;
     await expectLater(controller.setPetScale(1.25), completes);
-    await expectLater(
-      controller.setShowAssistantOnAllPages(false),
-      completes,
-    );
+    await expectLater(controller.setShowAssistantOnAllPages(false), completes);
     expect(controller.petScale, 1.25);
     expect(controller.showAssistantOnAllPages, isFalse);
   });

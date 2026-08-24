@@ -96,7 +96,7 @@ void main() {
           model: 'mimo-test',
           reasoningEffort: AiReasoningEffort.high,
           webSearchMode: AiWebSearchMode.always,
-          voiceModel: AiVoiceModelKind.paraformerBilingual,
+          voiceModel: AiVoiceModelKind.doubaoIme,
         ),
       );
       final primaryId = source.activeProfileId;
@@ -130,7 +130,7 @@ void main() {
       expect(exportedAi['config'], containsPair('apiKey', 'ai-secret'));
       expect(
         exportedAi['config'],
-        containsPair('voiceModel', AiVoiceModelKind.paraformerBilingual.value),
+        containsPair('voiceModel', AiVoiceModelKind.doubaoIme.value),
       );
       expect(exportedAi['activeProfileId'], primaryId);
       final profiles = exportedAi['profiles'] as List<dynamic>;
@@ -159,7 +159,7 @@ void main() {
       expect(restored.config.model, 'mimo-test');
       expect(restored.config.reasoningEffort, AiReasoningEffort.high);
       expect(restored.config.webSearchMode, AiWebSearchMode.always);
-      expect(restored.config.voiceModel, AiVoiceModelKind.paraformerBilingual);
+      expect(restored.config.voiceModel, AiVoiceModelKind.doubaoIme);
       expect(restored.profiles.map((profile) => profile.name), [
         '主力模型',
         '备用中转站',

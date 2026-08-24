@@ -50,8 +50,8 @@ class MainActivity : AudioServiceActivity() {
         const val AI_CAR_AUDIO_CONTROL_CHANNEL = "music_player/ai_car_audio_control"
         const val AI_CAR_AUDIO_STREAM_CHANNEL = "music_player/ai_car_audio_stream"
         const val APP_LIFECYCLE_CHANNEL = "music_player/app_lifecycle"
-        const val ZIPFORMER_MODEL = "streaming-zipformer-zh-14M-2023-02-23"
-        const val PARAFORMER_MODEL = "streaming-paraformer-bilingual-zh-en"
+        const val ZIPFORMER_MODEL =
+            "streaming-zipformer-small-ctc-zh-int8-2025-04-01"
         const val PUNCTUATION_MODEL =
             "punct-ct-transformer-zh-en-vocab272727-2024-04-12-int8"
         const val HOMOPHONE_REPLACER = "homophone-replacer-zh"
@@ -1214,14 +1214,7 @@ class MainActivity : AudioServiceActivity() {
                     // recognizer is opening it.
                     val modelFiles = when (modelId) {
                         ZIPFORMER_MODEL -> linkedMapOf(
-                            "encoder" to "encoder-epoch-99-avg-1.int8.onnx",
-                            "decoder" to "decoder-epoch-99-avg-1.onnx",
-                            "joiner" to "joiner-epoch-99-avg-1.int8.onnx",
-                            "tokens" to "tokens.txt"
-                        )
-                        PARAFORMER_MODEL -> linkedMapOf(
-                            "encoder" to "encoder.int8.onnx",
-                            "decoder" to "decoder.int8.onnx",
+                            "model" to "model.int8.onnx",
                             "tokens" to "tokens.txt"
                         )
                         PUNCTUATION_MODEL -> linkedMapOf(
@@ -1234,7 +1227,7 @@ class MainActivity : AudioServiceActivity() {
                         else -> throw IllegalArgumentException("不支持的离线语音模型：$modelId")
                     }
                     val modelVersion = when (modelId) {
-                        ZIPFORMER_MODEL -> "$modelId-mixed-precision-v2"
+                        ZIPFORMER_MODEL -> "$modelId-int8-v1"
                         PUNCTUATION_MODEL -> "$modelId-v1"
                         HOMOPHONE_REPLACER -> "$modelId-v1"
                         else -> "$modelId-int8-v1"
