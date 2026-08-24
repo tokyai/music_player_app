@@ -247,6 +247,7 @@ class AiConfigController extends ChangeNotifier {
     AiAssistantConfig? config,
   }) async {
     await ready;
+    if (_disposed) throw StateError('AI 助手配置已释放');
     final profile = AiAssistantProfile(
       id: _newProfileId(),
       name: name.trim().isEmpty ? '新模型配置' : name.trim(),
@@ -263,6 +264,7 @@ class AiConfigController extends ChangeNotifier {
 
   Future<void> selectProfile(String id) async {
     await ready;
+    if (_disposed) return;
     if (!_profiles.any((profile) => profile.id == id) ||
         _activeProfileId == id) {
       return;
@@ -279,6 +281,7 @@ class AiConfigController extends ChangeNotifier {
     AiAssistantConfig? config,
   }) async {
     await ready;
+    if (_disposed) return;
     final index = _profiles.indexWhere((profile) => profile.id == id);
     if (index < 0) throw StateError('模型配置不存在');
     final old = _profiles[index];
@@ -298,6 +301,7 @@ class AiConfigController extends ChangeNotifier {
 
   Future<void> deleteProfile(String id) async {
     await ready;
+    if (_disposed) return;
     if (_profiles.length <= 1) {
       throw StateError('至少保留一个模型配置');
     }
@@ -317,6 +321,7 @@ class AiConfigController extends ChangeNotifier {
   /// Backwards-compatible save operation used by existing callers.
   Future<void> save(AiAssistantConfig config) async {
     await ready;
+    if (_disposed) return;
     if (_profiles.isEmpty) {
       await createProfile(config: config);
       return;
@@ -486,7 +491,7 @@ class AiConfigController extends ChangeNotifier {
   }
 
   Future<void> _persist() async {
-    if (dataScope.isDeleted) return;
+    if (_disposed || dataScope.isDeleted) return;
     // Settings callbacks are allowed to return a Future, but Flutter does
     // not await callback results. A storage/plugin failure must therefore be
     // contained here instead of becoming an uncaught async error.

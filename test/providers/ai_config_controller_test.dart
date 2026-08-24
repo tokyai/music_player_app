@@ -117,6 +117,42 @@ void main() {
     expect(reloaded.petPosition.y, 1);
   });
 
+  test('disposed controller cannot mutate or persist profiles', () async {
+    final secrets = MemoryAiSecretStore();
+    final controller = AiConfigController(secretStore: secrets);
+    await controller.ready;
+    final profileId = controller.activeProfileId;
+    final originalProfile = controller.activeProfile;
+    controller.dispose();
+
+    await expectLater(
+      controller.createProfile(name: '不应创建'),
+      throwsA(isA<StateError>()),
+    );
+    await controller.updateProfile(
+      profileId,
+      name: '不应修改',
+      config: _config(
+        url: 'https://disposed.example/v1',
+        key: 'disposed-key',
+        model: 'disposed-model',
+      ),
+    );
+    await controller.deleteProfile(profileId);
+    await controller.save(
+      _config(
+        url: 'https://disposed.example/v1',
+        key: 'disposed-key',
+        model: 'disposed-model',
+      ),
+    );
+
+    expect(controller.profiles, [originalProfile]);
+    expect(secrets.value, isNull);
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString('ai_assistant_profiles_v1'), isNull);
+  });
+
   test('contains secure storage failures from callback-style saves', () async {
     final controller = AiConfigController(secretStore: _FailingAiSecretStore());
     addTearDown(controller.dispose);

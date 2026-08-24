@@ -31,7 +31,6 @@ import 'widgets/mini_player.dart';
 import 'widgets/ai_assistant_overlay.dart';
 import 'widgets/remote_focusable.dart';
 
-final _navigatorKey = GlobalKey<NavigatorState>();
 const _foregroundMediaKeyChannel = MethodChannel(
   'music_player/foreground_media_keys',
 );
@@ -159,6 +158,7 @@ class MusicPlayerApp extends StatefulWidget {
 class _MusicPlayerAppState extends State<MusicPlayerApp>
     with WidgetsBindingObserver {
   late _UserSession _session;
+  GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
 
   @override
   void initState() {
@@ -217,10 +217,14 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
         return;
       }
       final previous = _session;
-      setState(() => _session = target);
+      setState(() {
+        _session = target;
+        // A new navigator disposes the cached home route and every page that
+        // may still hold controllers from the previous user session.
+        _navigatorKey = GlobalKey<NavigatorState>();
+      });
       WidgetsBinding.instance.addPostFrameCallback((_) => previous.dispose());
       try {
-        _navigatorKey.currentState?.popUntil((route) => route.isFirst);
         widget.bindSystemPlayer(target.player);
         await FloatingCapsuleService.hide();
         await FloatingCapsuleService.restoreEnabled(scope: target.scope);
