@@ -181,13 +181,9 @@ class _SettingsScreenState extends State<SettingsScreen>
     try {
       final prefs = await SharedPreferences.getInstance();
       final family = LyricFontFamilyPreset.fromValue(
-        prefs.getString(
-          _dataScope.preferenceKey(LyricStylePreferences.fontFamilyKey),
-        ),
+        prefs.getString(LyricStylePreferences.fontFamilyKey),
       );
-      final rawWeight = prefs.get(
-        _dataScope.preferenceKey(LyricStylePreferences.fontWeightKey),
-      );
+      final rawWeight = prefs.get(LyricStylePreferences.fontWeightKey);
       final weight = LyricFontWeightPreset.fromValue(
         rawWeight is num ? rawWeight.toInt() : null,
       );
@@ -207,10 +203,7 @@ class _SettingsScreenState extends State<SettingsScreen>
     try {
       final prefs = await SharedPreferences.getInstance();
       if (_dataScope.isDeleted) return;
-      await prefs.setString(
-        _dataScope.preferenceKey(LyricStylePreferences.fontFamilyKey),
-        family.value,
-      );
+      await prefs.setString(LyricStylePreferences.fontFamilyKey, family.value);
     } catch (_) {}
   }
 
@@ -222,10 +215,7 @@ class _SettingsScreenState extends State<SettingsScreen>
     try {
       final prefs = await SharedPreferences.getInstance();
       if (_dataScope.isDeleted) return;
-      await prefs.setInt(
-        _dataScope.preferenceKey(LyricStylePreferences.fontWeightKey),
-        weight.value,
-      );
+      await prefs.setInt(LyricStylePreferences.fontWeightKey, weight.value);
     } catch (_) {}
   }
 

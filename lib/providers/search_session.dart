@@ -61,6 +61,58 @@ class SearchSession extends ChangeNotifier {
   int get navigationId => _navigationId;
   List<String> get searchHistory => List.unmodifiable(_searchHistory);
 
+  Map<String, dynamic> toBackupJson() => {
+    'version': 1,
+    'items': List<String>.of(_searchHistory),
+  };
+
+  static List<String> decodeBackupJson(Map<String, dynamic> json) {
+    final raw = json['items'];
+    if (raw is! List || raw.any((item) => item is! String)) {
+      throw const FormatException('备份文件中的搜索历史格式错误');
+    }
+    final result = <String>[];
+    final seen = <String>{};
+    for (final item in raw) {
+      final value = (item as String).trim();
+      if (value.isEmpty) continue;
+      final normalized = value.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+      if (seen.add(normalized)) {
+        result.add(value);
+        if (result.length >= _maxHistoryItems) break;
+      }
+    }
+    return result;
+  }
+
+  Future<void> restoreBackupJson(
+    Map<String, dynamic> json, {
+    required bool replace,
+  }) async {
+    await historyReady;
+    if (_disposed) return;
+    final incoming = decodeBackupJson(json);
+    final merged = <String>[];
+    final seen = <String>{};
+    void add(String value) {
+      final normalized = _normalize(value);
+      if (value.isNotEmpty && seen.add(normalized)) merged.add(value);
+    }
+
+    if (!replace) {
+      for (final value in _searchHistory) add(value);
+    }
+    for (final value in incoming) add(value);
+    if (merged.length > _maxHistoryItems) {
+      merged.removeRange(_maxHistoryItems, merged.length);
+    }
+    _searchHistory
+      ..clear()
+      ..addAll(merged);
+    _notify();
+    await _saveSearchHistory();
+  }
+
   List<SongSearchResult> songsFor(MusicPlatform platform) =>
       _results[platform] ?? const [];
 

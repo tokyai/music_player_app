@@ -36,18 +36,28 @@ class _BackupRestoreOptionsDialogState
     BackupRestoreSection.songs: '收藏歌曲',
     BackupRestoreSection.bilibili: 'B站收藏',
     BackupRestoreSection.playlists: '收藏歌单',
+    BackupRestoreSection.searchHistory: '搜索历史',
+    BackupRestoreSection.appearance: '外观',
+    BackupRestoreSection.lyricDisplay: '歌词显示',
+    BackupRestoreSection.playerSettings: '播放与音质',
+    BackupRestoreSection.bilibiliAccount: 'B站账号',
     BackupRestoreSection.apiKey: '音乐 API Key',
+    BackupRestoreSection.globalVoice: '全局语音设置',
     BackupRestoreSection.aiAssistant: 'AI 助手配置（模型、中转站、Key、宠物）',
-    BackupRestoreSection.playerSettings: '播放器设置（音质、音源等）',
   };
 
   static const _icons = <BackupRestoreSection, IconData>{
     BackupRestoreSection.songs: Icons.music_note_rounded,
     BackupRestoreSection.bilibili: Icons.video_library_outlined,
     BackupRestoreSection.playlists: Icons.queue_music_rounded,
-    BackupRestoreSection.apiKey: Icons.key_outlined,
-    BackupRestoreSection.aiAssistant: Icons.smart_toy_outlined,
+    BackupRestoreSection.searchHistory: Icons.history_rounded,
+    BackupRestoreSection.appearance: Icons.palette_outlined,
+    BackupRestoreSection.lyricDisplay: Icons.lyrics_outlined,
     BackupRestoreSection.playerSettings: Icons.tune_rounded,
+    BackupRestoreSection.bilibiliAccount: Icons.account_circle_outlined,
+    BackupRestoreSection.apiKey: Icons.key_outlined,
+    BackupRestoreSection.globalVoice: Icons.mic_none_rounded,
+    BackupRestoreSection.aiAssistant: Icons.smart_toy_outlined,
   };
 
   void _close(FavoriteImportMode mode) {

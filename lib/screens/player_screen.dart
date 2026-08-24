@@ -12,6 +12,7 @@ import '../providers/search_session.dart';
 import '../services/api_service.dart';
 import '../services/bilibili_service.dart';
 import '../services/favorite_service.dart';
+import '../services/global_settings_service.dart';
 import '../services/user_data_scope.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
@@ -668,8 +669,6 @@ class _KaraokeProgressText extends StatelessWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
-  static const _landscapeSplitRatioPreferenceKey =
-      'player_landscape_split_ratio';
   static const _lyricFontSizes = <double>[32, 36, 42, 48, 54, 60];
   static const _minimumLyricLineSpacing = 20.0;
   static const _maximumLyricLineSpacing = 160.0;
@@ -749,13 +748,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Future<void> _loadLyricDisplaySettings() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final rawValue = prefs.get(
-        _dataScope.preferenceKey(LyricStylePreferences.fontSizeKey),
-      );
+      final rawValue = prefs.get(LyricStylePreferences.fontSizeKey);
       final rawSize = rawValue is num ? rawValue.toDouble() : null;
-      final rawSpacingValue = prefs.get(
-        _dataScope.preferenceKey(LyricStylePreferences.lineSpacingKey),
-      );
+      final rawSpacingValue = prefs.get(LyricStylePreferences.lineSpacingKey);
       final savedSpacing = rawSpacingValue is num
           ? rawSpacingValue.toDouble().clamp(
               _minimumLyricLineSpacing,
@@ -763,13 +758,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
             )
           : null;
       final savedFontFamily = LyricFontFamilyPreset.fromValue(
-        prefs.getString(
-          _dataScope.preferenceKey(LyricStylePreferences.fontFamilyKey),
-        ),
+        prefs.getString(LyricStylePreferences.fontFamilyKey),
       );
-      final rawFontWeight = prefs.get(
-        _dataScope.preferenceKey(LyricStylePreferences.fontWeightKey),
-      );
+      final rawFontWeight = prefs.get(LyricStylePreferences.fontWeightKey);
       final savedFontWeight = LyricFontWeightPreset.fromValue(
         rawFontWeight is num ? rawFontWeight.toInt() : null,
       );
@@ -820,10 +811,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       if (_dataScope.isDeleted) return;
-      await prefs.setDouble(
-        _dataScope.preferenceKey(LyricStylePreferences.fontSizeKey),
-        size,
-      );
+      await prefs.setDouble(LyricStylePreferences.fontSizeKey, size);
     } catch (_) {}
   }
 
@@ -852,10 +840,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       if (_dataScope.isDeleted) return;
-      await prefs.setDouble(
-        _dataScope.preferenceKey(LyricStylePreferences.lineSpacingKey),
-        spacing,
-      );
+      await prefs.setDouble(LyricStylePreferences.lineSpacingKey, spacing);
     } catch (_) {}
   }
 
@@ -863,7 +848,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       final saved = prefs.getDouble(
-        _dataScope.preferenceKey(_landscapeSplitRatioPreferenceKey),
+        GlobalSettingsService.landscapeSplitRatioKey,
       );
       if (!mounted ||
           _landscapeSplitChangedByUser ||
@@ -886,7 +871,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       final prefs = await SharedPreferences.getInstance();
       if (_dataScope.isDeleted) return;
       await prefs.setDouble(
-        _dataScope.preferenceKey(_landscapeSplitRatioPreferenceKey),
+        GlobalSettingsService.landscapeSplitRatioKey,
         _landscapeLeftRatio,
       );
     } catch (_) {}

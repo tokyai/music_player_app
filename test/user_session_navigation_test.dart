@@ -99,6 +99,12 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
 
       final initialMainState = tester.state(find.byType(MainScreen));
+      final initialAiConfig = tester
+          .element(find.byType(MainScreen))
+          .read<AiConfigController>();
+      await initialAiConfig.ready;
+      await initialAiConfig.setShowAssistantOnAllPages(true);
+      await initialAiConfig.setPetScale(1);
       await _selectDestination(tester, '设置');
       final initialSettingsState = tester.state(find.byType(SettingsScreen));
 
@@ -154,9 +160,10 @@ void main() {
       );
       final settingsContext = tester.element(find.byType(SettingsScreen));
       final aiConfig = settingsContext.read<AiConfigController>();
-      expect(aiConfig.dataScope.userId, second.id);
-      expect(aiConfig.showAssistantOnAllPages, isFalse);
-      expect(aiConfig.petScale, 0.75);
+      expect(identical(aiConfig, initialAiConfig), isTrue);
+      expect(aiConfig.dataScope.isDefault, isTrue);
+      expect(aiConfig.showAssistantOnAllPages, isTrue);
+      expect(aiConfig.petScale, 1);
 
       final systemScroll = size.width > size.height
           ? find
@@ -181,7 +188,7 @@ void main() {
       );
       expect(
         tester.widget<TextField>(apiKeyField).controller?.text,
-        'second-user-key',
+        'default-user-key',
       );
 
       final allPagesToggle = find.byKey(const ValueKey('ai-all-pages-toggle'));
@@ -191,16 +198,16 @@ void main() {
         scrollable: systemScroll,
       );
       var toggle = tester.widget<SwitchListTile>(allPagesToggle);
-      expect(toggle.value, isFalse);
-      toggle.onChanged?.call(true);
-      await tester.pump(const Duration(milliseconds: 100));
-      expect(aiConfig.showAssistantOnAllPages, isTrue);
-      toggle = tester.widget<SwitchListTile>(allPagesToggle);
       expect(toggle.value, isTrue);
+      toggle.onChanged?.call(false);
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(aiConfig.showAssistantOnAllPages, isFalse);
+      toggle = tester.widget<SwitchListTile>(allPagesToggle);
+      expect(toggle.value, isFalse);
 
       final petScaleSlider = find.byKey(const ValueKey('ai-pet-scale-slider'));
       final slider = tester.widget<Slider>(petScaleSlider);
-      expect(slider.value, 0.75);
+      expect(slider.value, 1);
       slider.onChanged?.call(1.5);
       slider.onChangeEnd?.call(1.5);
       await tester.pump(const Duration(milliseconds: 100));

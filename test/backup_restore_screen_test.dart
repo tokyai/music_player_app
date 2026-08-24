@@ -70,7 +70,12 @@ void main() {
       songs: true,
       bilibili: true,
       playlists: true,
+      searchHistory: true,
+      appearance: true,
+      lyricDisplay: true,
+      bilibiliAccount: true,
       apiKey: true,
+      globalVoice: true,
       aiAssistant: true,
       playerSettings: true,
     );

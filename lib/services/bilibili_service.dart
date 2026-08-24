@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/song.dart';
 import 'bounded_http_response.dart';
+import 'global_settings_service.dart';
 import 'user_data_scope.dart';
 
 class BilibiliUser {
@@ -134,6 +135,37 @@ class BilibiliService extends ChangeNotifier {
   bool get hasCookie => _cookie?.isNotEmpty == true;
   bool get accountLoading => _accountLoading;
   BilibiliUser? get user => _user;
+  String? get cookie => _cookie;
+
+  Map<String, dynamic> toBackupJson() => {
+    'version': 1,
+    'cookie': _cookie ?? '',
+  };
+
+  static void validateBackupJson(Map<String, dynamic> json) {
+    final value = json['cookie'];
+    if (value is! String || value.length > 256 * 1024) {
+      throw const FormatException('备份文件中的 B 站账号数据格式错误');
+    }
+  }
+
+  Future<void> restoreBackupJson(Map<String, dynamic> json) async {
+    await ready;
+    if (_disposed) return;
+    validateBackupJson(json);
+    final value = (json['cookie'] as String).trim();
+    _cookie = value.isEmpty ? null : value;
+    _user = null;
+    _mixinKey = null;
+    _mixinKeyExpiresAt = null;
+    final preferences = await SharedPreferences.getInstance();
+    final saved = value.isEmpty
+        ? await preferences.remove(_cookiePreferenceKey)
+        : await preferences.setString(_cookiePreferenceKey, value);
+    if (!saved) throw StateError('保存 B 站账号设置失败');
+    if (hasCookie) await refreshAccount();
+    if (!_disposed) notifyListeners();
+  }
 
   Map<String, String> get playbackHeaders =>
       _playbackHeaders(referer: 'https://www.bilibili.com/');
@@ -153,10 +185,9 @@ class BilibiliService extends ChangeNotifier {
 
   Future<void> _loadSession() async {
     try {
+      await GlobalSettingsService.migrateLegacyScopedSettings(dataScope);
       final preferences = await SharedPreferences.getInstance();
-      _cookie = preferences.getString(
-        dataScope.preferenceKey(_cookiePreferenceKey),
-      );
+      _cookie = preferences.getString(_cookiePreferenceKey);
     } catch (error) {
       _cookie = null;
       debugPrint('读取 B 站会话失败: $error');
@@ -277,10 +308,7 @@ class BilibiliService extends ChangeNotifier {
         .join('; ');
     final preferences = await SharedPreferences.getInstance();
     if (_disposed || dataScope.isDeleted) return;
-    await preferences.setString(
-      dataScope.preferenceKey(_cookiePreferenceKey),
-      _cookie!,
-    );
+    await preferences.setString(_cookiePreferenceKey, _cookie!);
     if (_disposed) return;
     await refreshAccount();
   }
@@ -302,7 +330,7 @@ class BilibiliService extends ChangeNotifier {
     try {
       final preferences = await SharedPreferences.getInstance();
       if (dataScope.isDeleted) return;
-      await preferences.remove(dataScope.preferenceKey(_cookiePreferenceKey));
+      await preferences.remove(_cookiePreferenceKey);
     } catch (error) {
       debugPrint('清除 B 站会话失败: $error');
     }

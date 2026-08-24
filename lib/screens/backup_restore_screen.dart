@@ -7,11 +7,15 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
+import '../providers/search_session.dart';
+import '../providers/theme_controller.dart';
 import '../services/backup_service.dart';
 import '../services/favorite_file_service.dart';
 import '../services/favorite_service.dart';
+import '../services/global_settings_service.dart';
 import '../services/lan_backup_service.dart';
 import '../services/webdav_backup_service.dart';
+import '../services/user_data_scope.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
@@ -74,31 +78,51 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     }
   }
 
-  String _backupJson() {
-    final favorites = context.read<FavoriteService>();
-    final player = context.read<PlayerProvider>();
-    return BackupService.exportJson(
-      favorites: favorites,
-      player: player,
-      aiConfig: context.read<AiConfigController?>(),
-    );
-  }
-
-  Future<void> _prepareExport() async {
+  Future<String> _prepareExport() async {
     final favorites = context.read<FavoriteService>();
     final player = context.read<PlayerProvider>();
     final aiConfig = context.read<AiConfigController?>();
+    final theme = context.read<ThemeController?>();
+    final search = context.read<SearchSession?>();
+    final operationScope = player.dataScope;
     await Future.wait([
       favorites.load(),
       player.settingsReady,
       if (aiConfig != null) aiConfig.ready,
+      if (theme != null) theme.ready,
+      if (search != null) search.historyReady,
     ]);
+    if (!mounted ||
+        !identical(context.read<PlayerProvider>(), player) ||
+        player.dataScope != operationScope) {
+      throw StateError('用户已切换，请重试备份操作');
+    }
+    final lyricDisplay = operationScope.isDefault
+        ? await GlobalSettingsService.exportLyricDisplay()
+        : null;
+    if (!mounted ||
+        !identical(context.read<PlayerProvider>(), player) ||
+        player.dataScope != operationScope) {
+      throw StateError('用户已切换，请重试备份操作');
+    }
+    return BackupService.exportJson(
+      favorites: favorites,
+      player: player,
+      aiConfig: aiConfig,
+      theme: theme,
+      search: search,
+      lyricDisplay: lyricDisplay,
+    );
   }
 
-  Future<BackupRestoreSelection?> _chooseRestoreOptions(String raw) async {
+  Future<BackupRestoreSelection?> _chooseRestoreOptions(
+    String raw, {
+    required UserDataScope scope,
+  }) async {
     try {
       final contents = BackupService.inspect(raw);
-      return await showBackupRestoreSelectionDialog(context, contents);
+      final scoped = contents.forScope(scope);
+      return await showBackupRestoreSelectionDialog(context, scoped);
     } on FormatException catch (error) {
       _showStatus(error.message, error: true);
       return null;
@@ -108,10 +132,29 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     }
   }
 
-  Future<void> _restoreRaw(String raw, {String source = '备份'}) async {
+  Future<void> _restoreRaw(
+    String raw, {
+    String source = '备份',
+    FavoriteService? operationFavorites,
+    PlayerProvider? operationPlayer,
+    AiConfigController? operationAiConfig,
+    ThemeController? operationTheme,
+    SearchSession? operationSearch,
+  }) async {
     if (!mounted || raw.trim().isEmpty) return;
-    final selection = await _chooseRestoreOptions(raw);
-    if (selection == null || !mounted) return;
+    final favorites = operationFavorites ?? context.read<FavoriteService>();
+    final player = operationPlayer ?? context.read<PlayerProvider>();
+    final aiConfig = operationAiConfig ?? context.read<AiConfigController?>();
+    final theme = operationTheme ?? context.read<ThemeController?>();
+    final search = operationSearch ?? context.read<SearchSession?>();
+    final operationScope = player.dataScope;
+    final selection = await _chooseRestoreOptions(raw, scope: operationScope);
+    if (selection == null ||
+        !mounted ||
+        player.dataScope != operationScope ||
+        !identical(context.read<PlayerProvider>(), player)) {
+      return;
+    }
     setState(() {
       _busy = true;
       _status = '正在从$source恢复...';
@@ -120,9 +163,11 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     try {
       final result = await BackupService.importJson(
         raw: raw,
-        favorites: context.read<FavoriteService>(),
-        player: context.read<PlayerProvider>(),
-        aiConfig: context.read<AiConfigController?>(),
+        favorites: favorites,
+        player: player,
+        aiConfig: aiConfig,
+        theme: theme,
+        search: search,
         mode: selection.mode,
         sections: selection.sections,
       );
@@ -164,8 +209,13 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       parts.add('歌单 ${result.playlistsAdded} 个');
     }
     if (result.apiKeyRestored) parts.add('音乐 API Key');
+    if (result.appearanceRestored) parts.add('外观');
+    if (result.lyricDisplayRestored) parts.add('歌词显示');
+    if (result.bilibiliAccountRestored) parts.add('B站账号');
+    if (result.globalVoiceRestored) parts.add('全局语音设置');
     if (result.aiConfigRestored) parts.add('AI 助手配置');
     if (result.playerSettingsRestored) parts.add('播放器设置');
+    if (result.searchHistoryRestored) parts.add('搜索历史');
     final skipped =
         result.songsSkipped + result.bilibiliSkipped + result.playlistsSkipped;
     final target = result.restoredToDefaultUser ? '默认用户：' : '';
@@ -216,9 +266,9 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       _status = null;
     });
     try {
-      await _prepareExport();
+      final exportJson = await _prepareExport();
       if (!mounted) return;
-      final result = await FavoriteFileService.exportBackup(_backupJson());
+      final result = await FavoriteFileService.exportBackup(exportJson);
       if (!mounted) return;
       setState(() {
         _busy = false;
@@ -246,9 +296,9 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       _status = null;
     });
     try {
-      await _prepareExport();
+      final exportJson = await _prepareExport();
       if (!mounted) return;
-      await Clipboard.setData(ClipboardData(text: _backupJson()));
+      await Clipboard.setData(ClipboardData(text: exportJson));
       if (mounted) _showStatus('备份 JSON 已复制');
     } catch (error) {
       if (mounted) _showStatus('复制失败：$error', error: true);
@@ -355,9 +405,9 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       return;
     }
     try {
-      await _prepareExport();
+      final exportJson = await _prepareExport();
       if (!mounted) return;
-      await service.upload(_backupJson());
+      await service.upload(exportJson);
       _showStatus('备份已上传到 WebDAV');
     } on WebDavException catch (error) {
       _showStatus(error.message, error: true);
@@ -405,9 +455,17 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       _statusError = false;
     });
     try {
-      await _prepareExport();
+      final exportJson = await _prepareExport();
       if (!mounted) return;
-      final session = await LanBackupService.start(exportBackup: _backupJson);
+      final operationFavorites = context.read<FavoriteService>();
+      final operationPlayer = context.read<PlayerProvider>();
+      final operationAiConfig = context.read<AiConfigController?>();
+      final operationTheme = context.read<ThemeController?>();
+      final operationSearch = context.read<SearchSession?>();
+      final operationScope = operationPlayer.dataScope;
+      final session = await LanBackupService.start(
+        exportBackup: () => exportJson,
+      );
       if (!mounted) {
         await session.stop();
         return;
@@ -417,7 +475,17 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         _busy = false;
         _status = '手机打开下方地址并输入 PIN，即可下载或上传备份';
       });
-      unawaited(_watchLanRestore(session));
+      unawaited(
+        _watchLanRestore(
+          session,
+          operationScope,
+          operationFavorites,
+          operationPlayer,
+          operationAiConfig,
+          operationTheme,
+          operationSearch,
+        ),
+      );
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -428,12 +496,29 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     }
   }
 
-  Future<void> _watchLanRestore(LanBackupSession session) async {
+  Future<void> _watchLanRestore(
+    LanBackupSession session,
+    UserDataScope operationScope,
+    FavoriteService operationFavorites,
+    PlayerProvider operationPlayer,
+    AiConfigController? operationAiConfig,
+    ThemeController? operationTheme,
+    SearchSession? operationSearch,
+  ) async {
     try {
       final raw = await session.restored;
       if (raw == null || raw.isEmpty) return;
       if (!mounted || !identical(_lanSession, session)) return;
-      await _restoreRaw(raw, source: '手机');
+      if (operationPlayer.dataScope != operationScope) return;
+      await _restoreRaw(
+        raw,
+        source: '手机',
+        operationFavorites: operationFavorites,
+        operationPlayer: operationPlayer,
+        operationAiConfig: operationAiConfig,
+        operationTheme: operationTheme,
+        operationSearch: operationSearch,
+      );
       if (!mounted || !identical(_lanSession, session)) return;
       await _stopLanTransfer();
     } catch (_) {}

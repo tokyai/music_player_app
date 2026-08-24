@@ -1,10 +1,12 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/ai_assistant.dart';
+import '../services/global_settings_service.dart';
 import '../services/user_data_scope.dart';
 
 abstract class AiSecretStore {
@@ -17,21 +19,40 @@ class SecureAiSecretStore implements AiSecretStore {
   static const _storage = FlutterSecureStorage();
 
   final UserDataScope dataScope;
+  final UserDataScope? _legacyScope;
 
-  const SecureAiSecretStore({this.dataScope = UserDataScope.defaultScope});
+  SecureAiSecretStore({UserDataScope? dataScope})
+    : dataScope = UserDataScope.defaultScope,
+      _legacyScope = dataScope != null && !dataScope.isDefault
+          ? dataScope
+          : null;
 
   @override
   Future<String?> read() async {
-    if (dataScope.isDeleted) return null;
-    return _storage.read(key: dataScope.secureStorageKey(_key));
+    try {
+      final current = await _storage.read(key: _key);
+      if (current != null || _legacyScope == null) return current;
+      final legacy = await _storage.read(
+        key: _legacyScope.secureStorageKey(_key),
+      );
+      if (legacy != null) {
+        try {
+          await _storage.write(key: _key, value: legacy);
+        } catch (_) {}
+      }
+      return legacy;
+    } on MissingPluginException {
+      return null;
+    }
   }
 
   @override
   Future<void> write(String value) async {
-    if (dataScope.isDeleted) return;
-    final key = dataScope.secureStorageKey(_key);
-    await _storage.write(key: key, value: value);
-    if (dataScope.isDeleted) await _storage.delete(key: key);
+    try {
+      await _storage.write(key: _key, value: value);
+    } on MissingPluginException {
+      // Secure storage is optional on test/desktop targets.
+    }
   }
 }
 
@@ -69,6 +90,7 @@ class AiConfigController extends ChangeNotifier {
 
   final AiSecretStore _secretStore;
   final UserDataScope dataScope;
+  final UserDataScope? _legacyScope;
   final List<AiAssistantProfile> _profiles = [];
   final Map<String, String> _apiKeys = {};
   AiAssistantConfig _config = AiAssistantConfig.defaults();
@@ -81,10 +103,12 @@ class AiConfigController extends ChangeNotifier {
   AiVoiceLoadMode _voiceLoadMode = AiVoiceLoadMode.onDemand;
   bool _disposed = false;
 
-  AiConfigController({
-    AiSecretStore? secretStore,
-    this.dataScope = UserDataScope.defaultScope,
-  }) : _secretStore = secretStore ?? SecureAiSecretStore(dataScope: dataScope) {
+  AiConfigController({AiSecretStore? secretStore, UserDataScope? dataScope})
+    : dataScope = UserDataScope.defaultScope,
+      _legacyScope = dataScope != null && !dataScope.isDefault
+          ? dataScope
+          : null,
+      _secretStore = secretStore ?? SecureAiSecretStore(dataScope: dataScope) {
     ready = _load();
   }
 
@@ -127,6 +151,42 @@ class AiConfigController extends ChangeNotifier {
     'petScale': _petScale,
     'petPosition': _petPosition.toJson(),
   };
+
+  Map<String, dynamic> toVoiceBackupJson() => {
+    'version': 1,
+    'model': _voiceModel.value,
+    'loadMode': _voiceLoadMode.value,
+  };
+
+  void validateVoiceBackupJson(Map<String, dynamic> json) {
+    final model = json['model'];
+    final loadMode = json['loadMode'];
+    if (model is! String ||
+        !AiVoiceModelKind.values.any((item) => item.value == model)) {
+      throw const FormatException('备份文件中的语音模型无效');
+    }
+    if (loadMode is! String ||
+        !AiVoiceLoadMode.values.any((item) => item.value == loadMode)) {
+      throw const FormatException('备份文件中的语音加载方式无效');
+    }
+  }
+
+  Future<void> restoreVoiceBackupJson(Map<String, dynamic> json) async {
+    await ready;
+    if (_disposed) return;
+    validateVoiceBackupJson(json);
+    final model = AiVoiceModelKind.fromValue(json['model'] as String);
+    final loadMode = AiVoiceLoadMode.fromValue(json['loadMode'] as String);
+    final prefs = await SharedPreferences.getInstance();
+    final saved = await Future.wait([
+      prefs.setString(voiceModelPreferenceKey, model.value),
+      prefs.setString(voiceLoadModePreferenceKey, loadMode.value),
+    ]);
+    if (saved.any((value) => !value)) throw StateError('保存全局语音设置失败');
+    _voiceModel = model;
+    _voiceLoadMode = loadMode;
+    if (!_disposed) notifyListeners();
+  }
 
   /// Validates a portable AI configuration before another backup section is
   /// changed. Restore callers use this as a preflight for all-or-nothing input
@@ -395,6 +455,9 @@ class AiConfigController extends ChangeNotifier {
 
   Future<void> _load() async {
     try {
+      await GlobalSettingsService.migrateLegacyScopedSettings(
+        _legacyScope ?? UserDataScope.defaultScope,
+      );
       final results = await Future.wait<dynamic>([
         SharedPreferences.getInstance(),
         _secretStore.read(),
@@ -407,34 +470,18 @@ class AiConfigController extends ChangeNotifier {
       );
       _apiKeys.addAll(_decodeSecretMap(results[1] as String?));
       _showAssistantOnAllPages =
-          prefs.getBool(
-            dataScope.preferenceKey(showAssistantOnAllPagesPreferenceKey),
-          ) ??
-          true;
+          prefs.getBool(showAssistantOnAllPagesPreferenceKey) ?? true;
       _showPetOnPlayerPage =
-          prefs.getBool(
-            dataScope.preferenceKey(showPetOnPlayerPagePreferenceKey),
-          ) ??
-          true;
+          prefs.getBool(showPetOnPlayerPagePreferenceKey) ?? true;
       _petScale = _normalizePetScale(
-        prefs.getDouble(dataScope.preferenceKey(petScalePreferenceKey)) ?? 1,
+        prefs.getDouble(petScalePreferenceKey) ?? 1,
       );
       _petPosition = AiPetPosition(
-        x:
-            prefs.getDouble(
-              dataScope.preferenceKey(petPositionXPreferenceKey),
-            ) ??
-            1,
-        y:
-            prefs.getDouble(
-              dataScope.preferenceKey(petPositionYPreferenceKey),
-            ) ??
-            0,
+        x: prefs.getDouble(petPositionXPreferenceKey) ?? 1,
+        y: prefs.getDouble(petPositionYPreferenceKey) ?? 0,
       ).normalized();
 
-      final profilesRaw = prefs.getString(
-        dataScope.preferenceKey(_profilesPreferencesKey),
-      );
+      final profilesRaw = prefs.getString(_profilesPreferencesKey);
       if (profilesRaw != null) {
         final decoded = jsonDecode(profilesRaw);
         if (decoded is List) {
@@ -467,9 +514,7 @@ class AiConfigController extends ChangeNotifier {
       }
 
       if (_profiles.isEmpty) {
-        final legacyRaw = prefs.getString(
-          dataScope.preferenceKey(_legacyPreferencesKey),
-        );
+        final legacyRaw = prefs.getString(_legacyPreferencesKey);
         if (legacyRaw != null) {
           final decoded = jsonDecode(legacyRaw);
           if (decoded is Map) {
@@ -505,9 +550,7 @@ class AiConfigController extends ChangeNotifier {
         _profiles.add(profile);
         _apiKeys[profile.id] = profile.config.apiKey;
       }
-      final requested = prefs.getString(
-        dataScope.preferenceKey(_activeProfilePreferenceKey),
-      );
+      final requested = prefs.getString(_activeProfilePreferenceKey);
       _activeProfileId = _profiles.any((profile) => profile.id == requested)
           ? requested!
           : _profiles.first.id;
@@ -567,20 +610,18 @@ class AiConfigController extends ChangeNotifier {
   }
 
   Future<void> _persist() async {
-    if (_disposed || dataScope.isDeleted) return;
+    if (_disposed) return;
     // Settings callbacks are allowed to return a Future, but Flutter does
     // not await callback results. A storage/plugin failure must therefore be
     // contained here instead of becoming an uncaught async error.
     SharedPreferences prefs;
     try {
       prefs = await SharedPreferences.getInstance();
-      if (dataScope.isDeleted) return;
     } catch (error, stackTrace) {
       debugPrint('保存 AI 助理偏好失败: $error\n$stackTrace');
       return;
     }
 
-    if (dataScope.isDeleted) return;
     try {
       await _secretStore.write(jsonEncode(_apiKeys));
     } catch (error, stackTrace) {
@@ -590,35 +631,20 @@ class AiConfigController extends ChangeNotifier {
     try {
       await Future.wait([
         prefs.setString(
-          dataScope.preferenceKey(_profilesPreferencesKey),
+          _profilesPreferencesKey,
           jsonEncode(
             _profiles.map((profile) => profile.toPreferencesJson()).toList(),
           ),
         ),
-        prefs.setString(
-          dataScope.preferenceKey(_activeProfilePreferenceKey),
-          _activeProfileId,
-        ),
+        prefs.setString(_activeProfilePreferenceKey, _activeProfileId),
         prefs.setBool(
-          dataScope.preferenceKey(showAssistantOnAllPagesPreferenceKey),
+          showAssistantOnAllPagesPreferenceKey,
           _showAssistantOnAllPages,
         ),
-        prefs.setBool(
-          dataScope.preferenceKey(showPetOnPlayerPagePreferenceKey),
-          _showPetOnPlayerPage,
-        ),
-        prefs.setDouble(
-          dataScope.preferenceKey(petScalePreferenceKey),
-          _petScale,
-        ),
-        prefs.setDouble(
-          dataScope.preferenceKey(petPositionXPreferenceKey),
-          _petPosition.x,
-        ),
-        prefs.setDouble(
-          dataScope.preferenceKey(petPositionYPreferenceKey),
-          _petPosition.y,
-        ),
+        prefs.setBool(showPetOnPlayerPagePreferenceKey, _showPetOnPlayerPage),
+        prefs.setDouble(petScalePreferenceKey, _petScale),
+        prefs.setDouble(petPositionXPreferenceKey, _petPosition.x),
+        prefs.setDouble(petPositionYPreferenceKey, _petPosition.y),
       ]);
     } catch (error, stackTrace) {
       debugPrint('保存 AI 助理偏好失败: $error\n$stackTrace');

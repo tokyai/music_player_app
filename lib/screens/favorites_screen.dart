@@ -7,9 +7,12 @@ import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
+import '../providers/search_session.dart';
+import '../providers/theme_controller.dart';
 import '../services/backup_service.dart';
 import '../services/favorite_file_service.dart';
 import '../services/favorite_service.dart';
+import '../services/global_settings_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
@@ -1620,17 +1623,30 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     final messenger = ScaffoldMessenger.of(context);
     try {
       final aiConfig = context.read<AiConfigController?>();
+      final theme = context.read<ThemeController?>();
+      final search = context.read<SearchSession?>();
       await Future.wait([
         favorites.load(),
         player.settingsReady,
         if (aiConfig != null) aiConfig.ready,
+        if (theme != null) theme.ready,
+        if (search != null) search.historyReady,
       ]);
       if (!mounted) return;
+      final lyricDisplay = player.dataScope.isDefault
+          ? await GlobalSettingsService.exportLyricDisplay()
+          : null;
+      if (!mounted || !identical(context.read<PlayerProvider>(), player)) {
+        return;
+      }
       final result = await FavoriteFileService.exportBackup(
         BackupService.exportJson(
           favorites: favorites,
           player: player,
           aiConfig: aiConfig,
+          theme: theme,
+          search: search,
+          lyricDisplay: lyricDisplay,
         ),
       );
       if (!mounted || result == FavoriteExportResult.cancelled) return;
@@ -1673,10 +1689,20 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     }
     if (raw == null || raw.trim().isEmpty || !mounted) return;
 
+    final operationFavorites = context.read<FavoriteService>();
+    final operationPlayer = context.read<PlayerProvider>();
+    final operationAiConfig = context.read<AiConfigController?>();
+    final operationTheme = context.read<ThemeController?>();
+    final operationSearch = context.read<SearchSession?>();
+    final operationScope = operationPlayer.dataScope;
+
     BackupRestoreSelection? selection;
     try {
       final contents = BackupService.inspect(raw);
-      selection = await showBackupRestoreSelectionDialog(context, contents);
+      selection = await showBackupRestoreSelectionDialog(
+        context,
+        contents.forScope(operationScope),
+      );
     } on FormatException catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -1690,13 +1716,19 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       ).showSnackBar(SnackBar(content: Text('检查备份失败：$error')));
       return;
     }
-    if (selection == null || !mounted) return;
+    if (selection == null ||
+        !mounted ||
+        !identical(context.read<PlayerProvider>(), operationPlayer)) {
+      return;
+    }
     try {
       final result = await BackupService.importJson(
         raw: raw,
-        favorites: context.read<FavoriteService>(),
-        player: context.read<PlayerProvider>(),
-        aiConfig: context.read<AiConfigController?>(),
+        favorites: operationFavorites,
+        player: operationPlayer,
+        aiConfig: operationAiConfig,
+        theme: operationTheme,
+        search: operationSearch,
         mode: selection.mode,
         sections: selection.sections,
       );

@@ -233,7 +233,9 @@ void main() {
       }
       final service = AiAssistantService(
         client: MockClient((_) async {
-          return _jsonResponse({'output': [nested]});
+          return _jsonResponse({
+            'output': [nested],
+          });
         }),
       );
       addTearDown(service.close);

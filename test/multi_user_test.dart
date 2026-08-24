@@ -77,160 +77,176 @@ void main() {
     },
   );
 
-  test('favorites history settings and AI profiles stay isolated', () async {
-    const scopeA = UserDataScope('isolation-a');
-    const scopeB = UserDataScope('isolation-b');
-    final favoritesA = FavoriteService(dataScope: scopeA);
-    final favoritesB = FavoriteService(dataScope: scopeB);
-    final themeA = ThemeController(dataScope: scopeA);
-    final themeB = ThemeController(dataScope: scopeB);
-    final secretA = MemoryAiSecretStore();
-    final secretB = MemoryAiSecretStore();
-    final aiA = AiConfigController(dataScope: scopeA, secretStore: secretA);
-    final aiB = AiConfigController(dataScope: scopeB, secretStore: secretB);
-    addTearDown(() {
-      favoritesA.dispose();
-      favoritesB.dispose();
-      themeA.dispose();
-      themeB.dispose();
-      aiA.dispose();
-      aiB.dispose();
-    });
-    await Future.wait([
-      favoritesA.load(),
-      favoritesB.load(),
-      themeA.ready,
-      themeB.ready,
-      aiA.ready,
-      aiB.ready,
-    ]);
+  test(
+    'user data stays isolated while appearance and AI settings are global',
+    () async {
+      const scopeA = UserDataScope('isolation-a');
+      const scopeB = UserDataScope('isolation-b');
+      final favoritesA = FavoriteService(dataScope: scopeA);
+      final favoritesB = FavoriteService(dataScope: scopeB);
+      final theme = ThemeController();
+      final secret = MemoryAiSecretStore();
+      final ai = AiConfigController(secretStore: secret);
+      addTearDown(() {
+        favoritesA.dispose();
+        favoritesB.dispose();
+        theme.dispose();
+        ai.dispose();
+      });
+      await Future.wait([
+        favoritesA.load(),
+        favoritesB.load(),
+        theme.ready,
+        ai.ready,
+      ]);
 
-    await favoritesA.toggle(_song('only-a', '只属于A'));
-    await PlaybackHistoryService.save([
-      PlaybackHistoryEntry(
-        song: _song('history-a', 'A的历史'),
-        position: const Duration(seconds: 12),
-        playedAt: DateTime(2026, 8, 23),
-      ),
-    ], scope: scopeA);
-    await themeA.setMode(ThemeMode.dark);
-    await aiA.updateProfile(
-      aiA.activeProfileId,
-      config: AiAssistantConfig.defaults().copyWith(
-        baseUrl: 'https://a.example/v1',
-        apiKey: 'test-key-a',
-        model: 'model-a',
-      ),
-    );
+      await favoritesA.toggle(_song('only-a', '只属于A'));
+      await PlaybackHistoryService.save([
+        PlaybackHistoryEntry(
+          song: _song('history-a', 'A的历史'),
+          position: const Duration(seconds: 12),
+          playedAt: DateTime(2026, 8, 23),
+        ),
+      ], scope: scopeA);
+      await theme.setMode(ThemeMode.dark);
+      await ai.updateProfile(
+        ai.activeProfileId,
+        config: AiAssistantConfig.defaults().copyWith(
+          baseUrl: 'https://a.example/v1',
+          apiKey: 'test-key-a',
+          model: 'model-a',
+        ),
+      );
 
-    expect(favoritesA.allFavorites.single.id, 'only-a');
-    expect(favoritesB.allFavorites, isEmpty);
-    expect(
-      (await PlaybackHistoryService.load(scope: scopeA)).single.song.id,
-      'history-a',
-    );
-    expect(await PlaybackHistoryService.load(scope: scopeB), isEmpty);
-    expect(themeA.mode, ThemeMode.dark);
-    expect(themeB.mode, ThemeMode.system);
-    expect(aiA.config.apiKey, 'test-key-a');
-    expect(aiB.config.apiKey, isEmpty);
-  });
+      expect(favoritesA.allFavorites.single.id, 'only-a');
+      expect(favoritesB.allFavorites, isEmpty);
+      expect(
+        (await PlaybackHistoryService.load(scope: scopeA)).single.song.id,
+        'history-a',
+      );
+      expect(await PlaybackHistoryService.load(scope: scopeB), isEmpty);
+      expect(theme.mode, ThemeMode.dark);
+      expect(ai.config.apiKey, 'test-key-a');
 
-  test('search queue and service configuration stay isolated', () async {
-    const scopeA = UserDataScope('settings-a');
-    const scopeB = UserDataScope('settings-b');
-    SharedPreferences.setMockInitialValues({
-      scopeA.preferenceKey('search_history'): ['只属于A'],
-      scopeB.preferenceKey('search_history'): ['只属于B'],
-    });
-    final searchA = SearchSession(dataScope: scopeA);
-    final searchB = SearchSession(dataScope: scopeB);
-    final playerA = PlayerProvider(
-      dataScope: scopeA,
-      activateRestoredSession: false,
-    );
-    final playerB = PlayerProvider(
-      dataScope: scopeB,
-      activateRestoredSession: false,
-    );
-    addTearDown(() {
-      searchA.dispose();
-      searchB.dispose();
-      playerA.dispose();
-      playerB.dispose();
-    });
-    await Future.wait([
-      searchA.historyReady,
-      searchB.historyReady,
-      playerA.settingsReady,
-      playerB.settingsReady,
-    ]);
+      // A newly created session reads the same global settings regardless of
+      // which user owns its isolated music data.
+      final themeForB = ThemeController(dataScope: scopeB);
+      final aiForB = AiConfigController(dataScope: scopeB, secretStore: secret);
+      addTearDown(() {
+        themeForB.dispose();
+        aiForB.dispose();
+      });
+      await Future.wait([themeForB.ready, aiForB.ready]);
+      expect(themeForB.mode, ThemeMode.dark);
+      expect(aiForB.config.apiKey, 'test-key-a');
+    },
+  );
 
-    await playerA.setApiKey('music-key-a');
-    await playerB.setApiKey('music-key-b');
-    await playerA.setCommonLevel(CommonLevel.master);
-    await playerB.setCommonLevel(CommonLevel.flac);
-    await PlaybackStateService.save(
-      PlaybackSessionSnapshot(
-        queue: [_song('queue-a', 'A的队列')],
-        currentIndex: 0,
-        position: const Duration(seconds: 23),
-        isPlaying: true,
-        playMode: 'shuffle',
-      ),
-      scope: scopeA,
-    );
-    await PlaybackStateService.save(
-      PlaybackSessionSnapshot(
-        queue: [_song('queue-b', 'B的队列')],
-        currentIndex: 0,
-        position: const Duration(seconds: 7),
-        isPlaying: false,
-        playMode: 'repeat',
-      ),
-      scope: scopeB,
-    );
-    await const WebDavConfig(
-      url: 'https://a.example/dav',
-      username: 'a',
-      password: 'password-a',
-      certificateSha256: '',
-      dataScope: scopeA,
-    ).save();
-    await const WebDavConfig(
-      url: 'https://b.example/dav',
-      username: 'b',
-      password: 'password-b',
-      certificateSha256: '',
-      dataScope: scopeB,
-    ).save();
-    await FloatingCapsuleService.persistEnabled(true, scope: scopeA);
-    await FloatingCapsuleService.persistEnabled(false, scope: scopeB);
+  test(
+    'search and playback state stay isolated while global player settings are shared',
+    () async {
+      const scopeA = UserDataScope('settings-a');
+      const scopeB = UserDataScope('settings-b');
+      SharedPreferences.setMockInitialValues({
+        scopeA.preferenceKey('search_history'): ['只属于A'],
+        scopeB.preferenceKey('search_history'): ['只属于B'],
+      });
+      final searchA = SearchSession(dataScope: scopeA);
+      final searchB = SearchSession(dataScope: scopeB);
+      final playerA = PlayerProvider(
+        dataScope: scopeA,
+        activateRestoredSession: false,
+      );
+      final playerB = PlayerProvider(
+        dataScope: scopeB,
+        activateRestoredSession: false,
+      );
+      addTearDown(() {
+        searchA.dispose();
+        searchB.dispose();
+        playerA.dispose();
+        playerB.dispose();
+      });
+      await Future.wait([
+        searchA.historyReady,
+        searchB.historyReady,
+        playerA.settingsReady,
+        playerB.settingsReady,
+      ]);
 
-    expect(searchA.searchHistory, ['只属于A']);
-    expect(searchB.searchHistory, ['只属于B']);
-    expect(playerA.apiKey, 'music-key-a');
-    expect(playerB.apiKey, 'music-key-b');
-    expect(playerA.commonLevel, CommonLevel.master);
-    expect(playerB.commonLevel, CommonLevel.flac);
-    final queueA = await PlaybackStateService.load(scope: scopeA);
-    final queueB = await PlaybackStateService.load(scope: scopeB);
-    expect(queueA!.queue.single.id, 'queue-a');
-    expect(queueA.playMode, 'shuffle');
-    expect(queueB!.queue.single.id, 'queue-b');
-    expect(queueB.playMode, 'repeat');
-    expect((await WebDavConfig.load(dataScope: scopeA)).username, 'a');
-    expect((await WebDavConfig.load(dataScope: scopeB)).username, 'b');
-    final prefs = await SharedPreferences.getInstance();
-    expect(
-      prefs.getBool(scopeA.preferenceKey(FloatingCapsuleService.preferenceKey)),
-      isTrue,
-    );
-    expect(
-      prefs.getBool(scopeB.preferenceKey(FloatingCapsuleService.preferenceKey)),
-      isFalse,
-    );
-  });
+      await playerA.setApiKey('music-key-a');
+      await playerB.setApiKey('music-key-b');
+      await playerA.setCommonLevel(CommonLevel.master);
+      await playerB.setCommonLevel(CommonLevel.flac);
+      await PlaybackStateService.save(
+        PlaybackSessionSnapshot(
+          queue: [_song('queue-a', 'A的队列')],
+          currentIndex: 0,
+          position: const Duration(seconds: 23),
+          isPlaying: true,
+          playMode: 'shuffle',
+        ),
+        scope: scopeA,
+      );
+      await PlaybackStateService.save(
+        PlaybackSessionSnapshot(
+          queue: [_song('queue-b', 'B的队列')],
+          currentIndex: 0,
+          position: const Duration(seconds: 7),
+          isPlaying: false,
+          playMode: 'repeat',
+        ),
+        scope: scopeB,
+      );
+      await const WebDavConfig(
+        url: 'https://a.example/dav',
+        username: 'a',
+        password: 'password-a',
+        certificateSha256: '',
+        dataScope: scopeA,
+      ).save();
+      await const WebDavConfig(
+        url: 'https://b.example/dav',
+        username: 'b',
+        password: 'password-b',
+        certificateSha256: '',
+        dataScope: scopeB,
+      ).save();
+      await FloatingCapsuleService.persistEnabled(true, scope: scopeA);
+      await FloatingCapsuleService.persistEnabled(false, scope: scopeB);
+
+      expect(searchA.searchHistory, ['只属于A']);
+      expect(searchB.searchHistory, ['只属于B']);
+      expect(playerA.apiKey, 'music-key-a');
+      expect(playerB.apiKey, 'music-key-b');
+      expect(playerA.commonLevel, CommonLevel.master);
+      expect(playerB.commonLevel, CommonLevel.flac);
+      final reloadedPlayer = PlayerProvider(
+        dataScope: UserDataScope('settings-reloaded'),
+        activateRestoredSession: false,
+      );
+      addTearDown(reloadedPlayer.dispose);
+      await reloadedPlayer.settingsReady;
+      expect(reloadedPlayer.apiKey, 'music-key-b');
+      expect(reloadedPlayer.commonLevel, CommonLevel.flac);
+      final queueA = await PlaybackStateService.load(scope: scopeA);
+      final queueB = await PlaybackStateService.load(scope: scopeB);
+      expect(queueA!.queue.single.id, 'queue-a');
+      expect(queueA.playMode, 'shuffle');
+      expect(queueB!.queue.single.id, 'queue-b');
+      expect(queueB.playMode, 'repeat');
+      expect((await WebDavConfig.load(dataScope: scopeA)).username, 'a');
+      expect((await WebDavConfig.load(dataScope: scopeB)).username, 'b');
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getBool(FloatingCapsuleService.preferenceKey), isFalse);
+      expect(
+        prefs.getBool(
+          scopeA.preferenceKey(FloatingCapsuleService.preferenceKey),
+        ),
+        isNull,
+      );
+    },
+  );
 
   test('deleting a user clears scoped data and blocks stale writes', () async {
     const secureStorageChannel = MethodChannel(
@@ -511,47 +527,53 @@ void main() {
     },
   );
 
-  test('version 3 backup restores to default instead of active user', () async {
-    const activeScope = UserDataScope('backup-active-user');
-    final activeFavorites = FavoriteService(dataScope: activeScope);
-    final activePlayer = PlayerProvider(
-      dataScope: activeScope,
-      activateRestoredSession: false,
-    );
-    addTearDown(() {
-      activeFavorites.dispose();
-      activePlayer.dispose();
-    });
-    await Future.wait([activeFavorites.load(), activePlayer.settingsReady]);
-    await activePlayer.setApiKey('active-key');
+  test(
+    'legacy backup restores user data to the current user without global sections',
+    () async {
+      const activeScope = UserDataScope('backup-active-user');
+      final activeFavorites = FavoriteService(dataScope: activeScope);
+      final activePlayer = PlayerProvider(
+        dataScope: activeScope,
+        activateRestoredSession: false,
+      );
+      addTearDown(() {
+        activeFavorites.dispose();
+        activePlayer.dispose();
+      });
+      await Future.wait([activeFavorites.load(), activePlayer.settingsReady]);
+      await activePlayer.setApiKey('active-key');
 
-    final result = await BackupService.importJson(
-      raw: jsonEncode({
-        'format': FavoriteService.exportFormat,
-        'version': 3,
-        'songs': [_song('legacy-default', '还原到默认').toJson()],
-        'bilibili': <dynamic>[],
-        'playlists': <dynamic>[],
-        'apiKey': 'legacy-default-key',
-      }),
-      favorites: activeFavorites,
-      player: activePlayer,
-      sections: const [BackupRestoreSection.songs, BackupRestoreSection.apiKey],
-    );
+      final result = await BackupService.importJson(
+        raw: jsonEncode({
+          'format': FavoriteService.exportFormat,
+          'version': 3,
+          'songs': [_song('legacy-default', '还原到默认').toJson()],
+          'bilibili': <dynamic>[],
+          'playlists': <dynamic>[],
+          'apiKey': 'legacy-default-key',
+        }),
+        favorites: activeFavorites,
+        player: activePlayer,
+        sections: const [
+          BackupRestoreSection.songs,
+          BackupRestoreSection.apiKey,
+        ],
+      );
 
-    expect(result.restoredToDefaultUser, isTrue);
-    expect(activeFavorites.allFavorites, isEmpty);
-    expect(activePlayer.apiKey, 'active-key');
-    final defaultFavorites = FavoriteService();
-    final defaultPlayer = PlayerProvider(activateRestoredSession: false);
-    addTearDown(() {
-      defaultFavorites.dispose();
-      defaultPlayer.dispose();
-    });
-    await Future.wait([defaultFavorites.load(), defaultPlayer.settingsReady]);
-    expect(defaultFavorites.allFavorites.single.id, 'legacy-default');
-    expect(defaultPlayer.apiKey, 'legacy-default-key');
-  });
+      expect(result.restoredToDefaultUser, isFalse);
+      expect(activeFavorites.allFavorites.single.id, 'legacy-default');
+      expect(activePlayer.apiKey, 'active-key');
+      final defaultFavorites = FavoriteService();
+      final defaultPlayer = PlayerProvider(activateRestoredSession: false);
+      addTearDown(() {
+        defaultFavorites.dispose();
+        defaultPlayer.dispose();
+      });
+      await Future.wait([defaultFavorites.load(), defaultPlayer.settingsReady]);
+      expect(defaultFavorites.allFavorites, isEmpty);
+      expect(defaultPlayer.apiKey, 'active-key');
+    },
+  );
 
   test('version 4 backup restores only to the active user', () async {
     const activeScope = UserDataScope('backup-v4-user');
@@ -637,9 +659,15 @@ void main() {
     var mainContext = tester.element(find.byType(MainScreen));
     expect(mainContext.read<PlayerProvider>().dataScope.isDefault, isTrue);
     expect(mainContext.read<FavoriteService>().dataScope.isDefault, isTrue);
+    final sharedTheme = mainContext.read<ThemeController>();
+    final sharedAiConfig = mainContext.read<AiConfigController>();
 
     await users.switchUser(second.id);
-    await tester.pumpAndSettle();
+    // The discover page starts a network refresh on every new session. It is
+    // intentionally not settled here because a real car may keep that
+    // spinner active while the network is unavailable.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
 
     mainContext = tester.element(find.byType(MainScreen));
     final switchedPlayer = mainContext.read<PlayerProvider>();
@@ -648,8 +676,10 @@ void main() {
     expect(switchedPlayer.dataScope.userId, second.id);
     expect(mainContext.read<FavoriteService>().dataScope.userId, second.id);
     expect(mainContext.read<SearchSession>().dataScope.userId, second.id);
-    expect(mainContext.read<ThemeController>().dataScope.userId, second.id);
-    expect(mainContext.read<AiConfigController>().dataScope.userId, second.id);
+    expect(mainContext.read<ThemeController>(), same(sharedTheme));
+    expect(mainContext.read<ThemeController>().dataScope.isDefault, isTrue);
+    expect(mainContext.read<AiConfigController>(), same(sharedAiConfig));
+    expect(mainContext.read<AiConfigController>().dataScope.isDefault, isTrue);
     expect(systemPlayer, same(switchedPlayer));
     expect(tester.takeException(), isNull);
 

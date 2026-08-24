@@ -1,12 +1,17 @@
 import 'dart:convert';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:music_player_app/models/ai_assistant.dart';
 import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/providers/ai_config_controller.dart';
 import 'package:music_player_app/providers/player_provider.dart';
+import 'package:music_player_app/providers/search_session.dart';
+import 'package:music_player_app/providers/theme_controller.dart';
 import 'package:music_player_app/services/backup_service.dart';
 import 'package:music_player_app/services/favorite_service.dart';
+import 'package:music_player_app/services/global_settings_service.dart';
+import 'package:music_player_app/services/user_data_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -76,109 +81,104 @@ void main() {
     },
   );
 
-  test(
-    'backup round-trips AI profiles but excludes device voice settings',
-    () async {
-      final player = PlayerProvider();
-      addTearDown(player.dispose);
-      await player.settingsReady;
-      await player.setApiKey('music-secret');
-      final favorites = FavoriteService();
-      final source = AiConfigController(secretStore: MemoryAiSecretStore());
-      addTearDown(source.dispose);
-      await source.ready;
-      await source.save(
-        const AiAssistantConfig(
-          provider: AiProviderKind.mimo,
-          protocol: AiRequestProtocol.openAiChatCompletions,
-          baseUrl: 'https://example.test/v1',
-          apiKey: 'ai-secret',
-          model: 'mimo-test',
-          reasoningEffort: AiReasoningEffort.high,
-          webSearchMode: AiWebSearchMode.always,
-        ),
-      );
-      await source.setVoiceModel(AiVoiceModelKind.doubaoIme);
-      await source.setVoiceLoadMode(AiVoiceLoadMode.startupPreload);
-      final primaryId = source.activeProfileId;
-      await source.renameProfile(primaryId, '主力模型');
-      final backupProfile = await source.createProfile(
-        name: '备用中转站',
-        config: const AiAssistantConfig(
-          provider: AiProviderKind.custom,
-          protocol: AiRequestProtocol.openAiChatCompletions,
-          baseUrl: 'https://backup.example/v1',
-          apiKey: 'backup-secret',
-          model: 'backup-model',
-          reasoningEffort: AiReasoningEffort.medium,
-          webSearchMode: AiWebSearchMode.disabled,
-        ),
-      );
-      await source.selectProfile(primaryId);
-      await source.setShowAssistantOnAllPages(false);
-      await source.setShowPetOnPlayerPage(false);
-      await source.setPetScale(1.6);
-      await source.setPetPosition(const AiPetPosition(x: 0.25, y: 0.75));
+  test('backup round-trips AI profiles and global voice settings', () async {
+    final player = PlayerProvider();
+    addTearDown(player.dispose);
+    await player.settingsReady;
+    await player.setApiKey('music-secret');
+    final favorites = FavoriteService();
+    final source = AiConfigController(secretStore: MemoryAiSecretStore());
+    addTearDown(source.dispose);
+    await source.ready;
+    await source.save(
+      const AiAssistantConfig(
+        provider: AiProviderKind.mimo,
+        protocol: AiRequestProtocol.openAiChatCompletions,
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'ai-secret',
+        model: 'mimo-test',
+        reasoningEffort: AiReasoningEffort.high,
+        webSearchMode: AiWebSearchMode.always,
+      ),
+    );
+    await source.setVoiceModel(AiVoiceModelKind.doubaoIme);
+    await source.setVoiceLoadMode(AiVoiceLoadMode.startupPreload);
+    final primaryId = source.activeProfileId;
+    await source.renameProfile(primaryId, '主力模型');
+    final backupProfile = await source.createProfile(
+      name: '备用中转站',
+      config: const AiAssistantConfig(
+        provider: AiProviderKind.custom,
+        protocol: AiRequestProtocol.openAiChatCompletions,
+        baseUrl: 'https://backup.example/v1',
+        apiKey: 'backup-secret',
+        model: 'backup-model',
+        reasoningEffort: AiReasoningEffort.medium,
+        webSearchMode: AiWebSearchMode.disabled,
+      ),
+    );
+    await source.selectProfile(primaryId);
+    await source.setShowAssistantOnAllPages(false);
+    await source.setShowPetOnPlayerPage(false);
+    await source.setPetScale(1.6);
+    await source.setPetPosition(const AiPetPosition(x: 0.25, y: 0.75));
 
-      final raw = BackupService.exportJson(
-        favorites: favorites,
-        player: player,
-        aiConfig: source,
-      );
-      final exported = jsonDecode(raw) as Map<String, dynamic>;
-      expect(exported['apiKey'], 'music-secret');
-      final exportedAi = exported['aiAssistant'] as Map<String, dynamic>;
-      expect(exportedAi['config'], containsPair('apiKey', 'ai-secret'));
-      expect(exportedAi['config'], isNot(contains('voiceModel')));
-      expect(raw, isNot(contains(AiVoiceModelKind.doubaoIme.value)));
-      expect(raw, isNot(contains(AiVoiceLoadMode.startupPreload.value)));
-      expect(exportedAi['activeProfileId'], primaryId);
-      final profiles = exportedAi['profiles'] as List<dynamic>;
-      expect(profiles, hasLength(2));
-      expect(
-        profiles
-            .map((item) => (item as Map<String, dynamic>)['config'])
-            .map((item) => (item as Map<String, dynamic>)['apiKey']),
-        containsAll(['ai-secret', 'backup-secret']),
-      );
+    final raw = BackupService.exportJson(
+      favorites: favorites,
+      player: player,
+      aiConfig: source,
+    );
+    final exported = jsonDecode(raw) as Map<String, dynamic>;
+    expect(exported['apiKey'], 'music-secret');
+    final exportedAi = exported['aiAssistant'] as Map<String, dynamic>;
+    expect(exportedAi['config'], containsPair('apiKey', 'ai-secret'));
+    expect(exportedAi['config'], isNot(contains('voiceModel')));
+    final exportedVoice = exported['globalVoice'] as Map<String, dynamic>;
+    expect(exportedVoice['model'], AiVoiceModelKind.doubaoIme.value);
+    expect(exportedVoice['loadMode'], AiVoiceLoadMode.startupPreload.value);
+    expect(exportedAi['activeProfileId'], primaryId);
+    final profiles = exportedAi['profiles'] as List<dynamic>;
+    expect(profiles, hasLength(2));
+    expect(
+      profiles
+          .map((item) => (item as Map<String, dynamic>)['config'])
+          .map((item) => (item as Map<String, dynamic>)['apiKey']),
+      containsAll(['ai-secret', 'backup-secret']),
+    );
 
-      await source.setVoiceModel(AiVoiceModelKind.systemSpeech);
-      await source.setVoiceLoadMode(AiVoiceLoadMode.onDemand);
-      final restored = AiConfigController(secretStore: MemoryAiSecretStore());
-      addTearDown(restored.dispose);
-      await restored.ready;
-      final result = await BackupService.importJson(
-        raw: raw,
-        favorites: FavoriteService(),
-        player: player,
-        aiConfig: restored,
-        mode: FavoriteImportMode.replace,
-      );
+    await source.setVoiceModel(AiVoiceModelKind.systemSpeech);
+    await source.setVoiceLoadMode(AiVoiceLoadMode.onDemand);
+    final restored = AiConfigController(secretStore: MemoryAiSecretStore());
+    addTearDown(restored.dispose);
+    await restored.ready;
+    final result = await BackupService.importJson(
+      raw: raw,
+      favorites: FavoriteService(),
+      player: player,
+      aiConfig: restored,
+      mode: FavoriteImportMode.replace,
+    );
 
-      expect(result.aiConfigRestored, isTrue);
-      expect(restored.config.provider, AiProviderKind.mimo);
-      expect(restored.config.apiKey, 'ai-secret');
-      expect(restored.config.model, 'mimo-test');
-      expect(restored.config.reasoningEffort, AiReasoningEffort.high);
-      expect(restored.config.webSearchMode, AiWebSearchMode.always);
-      expect(restored.voiceModel, AiVoiceModelKind.systemSpeech);
-      expect(restored.voiceLoadMode, AiVoiceLoadMode.onDemand);
-      expect(restored.profiles.map((profile) => profile.name), [
-        '主力模型',
-        '备用中转站',
-      ]);
-      expect(restored.activeProfileId, primaryId);
-      await restored.selectProfile(backupProfile.id);
-      expect(restored.config.baseUrl, 'https://backup.example/v1');
-      expect(restored.config.apiKey, 'backup-secret');
-      expect(restored.config.model, 'backup-model');
-      expect(restored.showAssistantOnAllPages, isFalse);
-      expect(restored.showPetOnPlayerPage, isFalse);
-      expect(restored.petScale, closeTo(1.6, 0.001));
-      expect(restored.petPosition.x, closeTo(0.25, 0.001));
-      expect(restored.petPosition.y, closeTo(0.75, 0.001));
-    },
-  );
+    expect(result.aiConfigRestored, isTrue);
+    expect(restored.config.provider, AiProviderKind.mimo);
+    expect(restored.config.apiKey, 'ai-secret');
+    expect(restored.config.model, 'mimo-test');
+    expect(restored.config.reasoningEffort, AiReasoningEffort.high);
+    expect(restored.config.webSearchMode, AiWebSearchMode.always);
+    expect(restored.voiceModel, AiVoiceModelKind.doubaoIme);
+    expect(restored.voiceLoadMode, AiVoiceLoadMode.startupPreload);
+    expect(restored.profiles.map((profile) => profile.name), ['主力模型', '备用中转站']);
+    expect(restored.activeProfileId, primaryId);
+    await restored.selectProfile(backupProfile.id);
+    expect(restored.config.baseUrl, 'https://backup.example/v1');
+    expect(restored.config.apiKey, 'backup-secret');
+    expect(restored.config.model, 'backup-model');
+    expect(restored.showAssistantOnAllPages, isFalse);
+    expect(restored.showPetOnPlayerPage, isFalse);
+    expect(restored.petScale, closeTo(1.6, 0.001));
+    expect(restored.petPosition.x, closeTo(0.25, 0.001));
+    expect(restored.petPosition.y, closeTo(0.75, 0.001));
+  });
 
   test('restores an API key from a legacy single AI config backup', () async {
     final player = PlayerProvider();
@@ -295,6 +295,98 @@ void main() {
     expect(restored.videoPlayerMode, VideoPlayerMode.mpv);
   });
 
+  test(
+    'default backup contains global settings while a user backup does not',
+    () async {
+      final defaultFavorites = FavoriteService();
+      final defaultPlayer = PlayerProvider();
+      final defaultSearch = SearchSession();
+      final theme = ThemeController();
+      final ai = AiConfigController(secretStore: MemoryAiSecretStore());
+      addTearDown(() {
+        defaultFavorites.dispose();
+        defaultPlayer.dispose();
+        defaultSearch.dispose();
+        theme.dispose();
+        ai.dispose();
+      });
+      await Future.wait([
+        defaultFavorites.load(),
+        defaultPlayer.settingsReady,
+        defaultSearch.historyReady,
+        theme.ready,
+        ai.ready,
+      ]);
+      await defaultFavorites.toggle(
+        _song(MusicPlatform.qq, 'default-song', '默认歌曲'),
+      );
+      await defaultPlayer.setApiKey('global-music-key');
+      await defaultSearch.restoreBackupJson(const {
+        'version': 1,
+        'items': ['默认搜索'],
+      }, replace: true);
+      await theme.setMode(ThemeMode.dark);
+      await ai.setVoiceModel(AiVoiceModelKind.doubaoIme);
+      final raw = BackupService.exportJson(
+        favorites: defaultFavorites,
+        player: defaultPlayer,
+        aiConfig: ai,
+        theme: theme,
+        search: defaultSearch,
+        lyricDisplay: const {
+          'version': 1,
+          'fontSize': 48,
+          'lineSpacing': 52,
+          'fontFamily': 'heiti',
+          'fontWeight': 700,
+          'landscapeSplitRatio': 0.5,
+        },
+      );
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      expect(
+        BackupService.inspect(raw).availableSections,
+        containsAll(BackupRestoreSection.values),
+      );
+      expect(decoded['backupScope'], 'global_and_default_user');
+      expect(decoded['lyricDisplay'], isA<Map>());
+      expect(decoded['globalVoice'], isA<Map>());
+
+      const userScope = UserDataScope('backup-user-only');
+      final userFavorites = FavoriteService(dataScope: userScope);
+      final userPlayer = PlayerProvider(
+        dataScope: userScope,
+        activateRestoredSession: false,
+      );
+      final userSearch = SearchSession(dataScope: userScope);
+      addTearDown(() {
+        userFavorites.dispose();
+        userPlayer.dispose();
+        userSearch.dispose();
+      });
+      await Future.wait([
+        userFavorites.load(),
+        userPlayer.settingsReady,
+        userSearch.historyReady,
+      ]);
+      final userRaw = BackupService.exportJson(
+        favorites: userFavorites,
+        player: userPlayer,
+        aiConfig: ai,
+        theme: theme,
+        search: userSearch,
+      );
+      final userDecoded = jsonDecode(userRaw) as Map<String, dynamic>;
+      expect(userDecoded['backupScope'], 'user');
+      expect(userDecoded.containsKey('apiKey'), isFalse);
+      expect(userDecoded.containsKey('appearance'), isFalse);
+      expect(userDecoded.containsKey('lyricDisplay'), isFalse);
+      expect(userDecoded.containsKey('playerSettings'), isFalse);
+      expect(userDecoded.containsKey('bilibiliAccount'), isFalse);
+      expect(userDecoded.containsKey('globalVoice'), isFalse);
+      expect(userDecoded.containsKey('aiAssistant'), isFalse);
+    },
+  );
+
   test('partial restore changes only the selected sections', () async {
     final oldSong = _song(MusicPlatform.qq, 'old-song', '旧歌曲');
     final oldVideo = _song(MusicPlatform.bilibili, 'old-video', '旧视频');
@@ -329,6 +421,25 @@ void main() {
       'aiAssistant': <String, dynamic>{'config': <String, dynamic>{}},
       'playerSettings': <String, dynamic>{
         'neteaseLevel': NeteaseLevel.lossless.value,
+      },
+      'searchHistory': <String, dynamic>{
+        'version': 1,
+        'items': ['新搜索'],
+      },
+      'appearance': <String, dynamic>{'mode': 'dark', 'fontScale': 1.0},
+      'lyricDisplay': <String, dynamic>{
+        'version': 1,
+        'fontSize': 42,
+        'lineSpacing': 44,
+        'fontFamily': 'system',
+        'fontWeight': 500,
+        'landscapeSplitRatio': 0.42,
+      },
+      'bilibiliAccount': <String, dynamic>{'version': 1, 'cookie': ''},
+      'globalVoice': <String, dynamic>{
+        'version': 1,
+        'model': AiVoiceModelKind.zipformerChinese.value,
+        'loadMode': AiVoiceLoadMode.onDemand.value,
       },
     });
     final contents = BackupService.inspect(raw);

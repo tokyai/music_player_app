@@ -449,6 +449,21 @@ class AudioCacheService {
     });
     _contexts.remove(scope.userId);
   }
+
+  /// Drops only the in-memory index for a user. Cached audio files remain on
+  /// disk and will be indexed lazily if that user returns later.
+  static Future<void> releaseMemoryContext(UserDataScope scope) async {
+    final context = _contexts[scope.userId];
+    if (context == null) return;
+    try {
+      await context.operationTail;
+    } catch (_) {}
+    if (identical(_contexts[scope.userId], context)) {
+      context.cacheDir = null;
+      context.index = null;
+      _contexts.remove(scope.userId);
+    }
+  }
 }
 
 class _AudioCacheContext {

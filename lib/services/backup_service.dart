@@ -3,7 +3,11 @@ import 'dart:convert';
 import '../models/song.dart';
 import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
+import '../providers/search_session.dart';
+import '../providers/theme_controller.dart';
+import '../services/bilibili_service.dart';
 import '../services/favorite_service.dart';
+import '../services/global_settings_service.dart';
 import '../services/user_data_scope.dart';
 
 /// A user-selectable portion of an exported backup.
@@ -11,9 +15,14 @@ enum BackupRestoreSection {
   songs,
   bilibili,
   playlists,
-  apiKey,
-  aiAssistant,
+  searchHistory,
+  appearance,
+  lyricDisplay,
   playerSettings,
+  bilibiliAccount,
+  apiKey,
+  globalVoice,
+  aiAssistant,
 }
 
 /// The import mode and the portions the user wants to restore.
@@ -32,7 +41,12 @@ class BackupRestoreContents {
   final bool songs;
   final bool bilibili;
   final bool playlists;
+  final bool searchHistory;
+  final bool appearance;
+  final bool lyricDisplay;
+  final bool bilibiliAccount;
   final bool apiKey;
+  final bool globalVoice;
   final bool aiAssistant;
   final bool playerSettings;
 
@@ -40,22 +54,42 @@ class BackupRestoreContents {
     required this.songs,
     required this.bilibili,
     required this.playlists,
-    required this.apiKey,
-    required this.aiAssistant,
-    required this.playerSettings,
+    this.searchHistory = false,
+    this.appearance = false,
+    this.lyricDisplay = false,
+    this.bilibiliAccount = false,
+    this.apiKey = false,
+    this.globalVoice = false,
+    this.aiAssistant = false,
+    this.playerSettings = false,
   });
 
   bool contains(BackupRestoreSection section) => switch (section) {
     BackupRestoreSection.songs => songs,
     BackupRestoreSection.bilibili => bilibili,
     BackupRestoreSection.playlists => playlists,
-    BackupRestoreSection.apiKey => apiKey,
-    BackupRestoreSection.aiAssistant => aiAssistant,
+    BackupRestoreSection.searchHistory => searchHistory,
+    BackupRestoreSection.appearance => appearance,
+    BackupRestoreSection.lyricDisplay => lyricDisplay,
     BackupRestoreSection.playerSettings => playerSettings,
+    BackupRestoreSection.bilibiliAccount => bilibiliAccount,
+    BackupRestoreSection.apiKey => apiKey,
+    BackupRestoreSection.globalVoice => globalVoice,
+    BackupRestoreSection.aiAssistant => aiAssistant,
   };
 
   Set<BackupRestoreSection> get availableSections =>
       BackupRestoreSection.values.where(contains).toSet();
+
+  BackupRestoreContents forScope(UserDataScope scope) {
+    if (scope.isDefault) return this;
+    return BackupRestoreContents(
+      songs: songs,
+      bilibili: bilibili,
+      playlists: playlists,
+      searchHistory: searchHistory,
+    );
+  }
 }
 
 /// 收藏数据与播放器设置之间的备份协调层。
@@ -75,9 +109,6 @@ class BackupService {
         songs: true,
         bilibili: _containsBilibili(decoded),
         playlists: false,
-        apiKey: false,
-        aiAssistant: false,
-        playerSettings: false,
       );
     }
     if (decoded is! Map) {
@@ -105,6 +136,26 @@ class BackupService {
         rawApiKey is! String) {
       throw const FormatException('备份文件中的 API Key 格式错误');
     }
+    final rawSearchHistory = decoded['searchHistory'];
+    if (rawSearchHistory != null && rawSearchHistory is! Map) {
+      throw const FormatException('备份文件中的搜索历史格式错误');
+    }
+    final rawAppearance = decoded['appearance'];
+    if (rawAppearance != null && rawAppearance is! Map) {
+      throw const FormatException('备份文件中的外观设置格式错误');
+    }
+    final rawLyricDisplay = decoded['lyricDisplay'];
+    if (rawLyricDisplay != null && rawLyricDisplay is! Map) {
+      throw const FormatException('备份文件中的歌词显示设置格式错误');
+    }
+    final rawBilibiliAccount = decoded['bilibiliAccount'];
+    if (rawBilibiliAccount != null && rawBilibiliAccount is! Map) {
+      throw const FormatException('备份文件中的 B 站账号数据格式错误');
+    }
+    final rawVoice = decoded['globalVoice'];
+    if (rawVoice != null && rawVoice is! Map) {
+      throw const FormatException('备份文件中的全局语音设置格式错误');
+    }
     // The payload has already been decoded and validated above. Reuse this
     // tree instead of decoding the complete backup once per optional section.
     final aiAssistant = _readAiBackupValue(decoded);
@@ -113,7 +164,12 @@ class BackupService {
       songs: true,
       bilibili: bilibili is List ? true : _containsBilibili(songs),
       playlists: playlists is List,
+      searchHistory: rawSearchHistory is Map,
+      appearance: rawAppearance is Map,
+      lyricDisplay: rawLyricDisplay is Map,
+      bilibiliAccount: rawBilibiliAccount is Map,
       apiKey: decoded.containsKey('apiKey'),
+      globalVoice: rawVoice is Map,
       aiAssistant: aiAssistant != null,
       playerSettings: playerSettings != null,
     );
@@ -123,11 +179,31 @@ class BackupService {
     required FavoriteService favorites,
     required PlayerProvider player,
     AiConfigController? aiConfig,
+    ThemeController? theme,
+    SearchSession? search,
+    Map<String, dynamic>? lyricDisplay,
   }) {
-    final decoded = favorites.exportData(apiKey: player.apiKey);
-    decoded['playerSettings'] = player.toBackupJson();
-    if (aiConfig != null) {
-      decoded['aiAssistant'] = aiConfig.toBackupJson();
+    _assertMatchingScopes(favorites, player, search);
+    final isDefault = player.dataScope.isDefault;
+    final decoded = favorites.exportData(
+      apiKey: isDefault ? player.apiKey : null,
+    );
+    decoded['backupScope'] = isDefault ? 'global_and_default_user' : 'user';
+    decoded['sourceUserId'] = player.dataScope.userId;
+    if (search != null) decoded['searchHistory'] = search.toBackupJson();
+    if (isDefault) {
+      if (theme != null) decoded['appearance'] = theme.toBackupJson();
+      decoded['lyricDisplay'] = Map<String, dynamic>.from(
+        lyricDisplay ?? GlobalSettingsService.defaultLyricDisplay(),
+      );
+      if (aiConfig != null) {
+        decoded['aiAssistant'] = aiConfig.toBackupJson();
+        decoded['globalVoice'] = aiConfig.toVoiceBackupJson();
+      }
+      decoded['playerSettings'] = player.toBackupJson();
+      decoded['bilibiliAccount'] = player.bilibiliAccountToBackupJson();
+    } else {
+      decoded.remove('apiKey');
     }
     return const JsonEncoder.withIndent('  ').convert(decoded);
   }
@@ -137,51 +213,32 @@ class BackupService {
     required FavoriteService favorites,
     required PlayerProvider player,
     AiConfigController? aiConfig,
+    ThemeController? theme,
+    SearchSession? search,
     FavoriteImportMode mode = FavoriteImportMode.merge,
     Iterable<BackupRestoreSection>? sections,
   }) async {
     final decoded = _decodeJson(raw);
-    final selectedSections = sections == null
+    _assertMatchingScopes(favorites, player, search);
+    final requestedSections = sections == null
         ? BackupRestoreSection.values.toSet()
         : sections.toSet();
-    if (_isLegacyBackup(decoded) && !player.dataScope.isDefault) {
-      const scope = UserDataScope.defaultScope;
-      final defaultFavorites = FavoriteService(dataScope: scope);
-      final defaultPlayer = PlayerProvider(
-        dataScope: scope,
-        activateRestoredSession: false,
-      );
-      final defaultAiConfig = aiConfig == null
-          ? null
-          : AiConfigController(dataScope: scope);
-      try {
-        await Future.wait<void>([
-          defaultFavorites.load(),
-          defaultPlayer.settingsReady,
-          defaultPlayer.historyReady,
-          defaultPlayer.playbackStateReady,
-          if (defaultAiConfig != null) defaultAiConfig.ready,
-        ]);
-        final result = await _importDecoded(
-          decoded: decoded,
-          favorites: defaultFavorites,
-          player: defaultPlayer,
-          aiConfig: defaultAiConfig,
-          mode: mode,
-          selectedSections: selectedSections,
-        );
-        return result.copyWith(restoredToDefaultUser: true);
-      } finally {
-        defaultAiConfig?.dispose();
-        defaultFavorites.dispose();
-        defaultPlayer.dispose();
-      }
-    }
+    const userSections = {
+      BackupRestoreSection.songs,
+      BackupRestoreSection.bilibili,
+      BackupRestoreSection.playlists,
+      BackupRestoreSection.searchHistory,
+    };
+    final selectedSections = player.dataScope.isDefault
+        ? requestedSections
+        : requestedSections.intersection(userSections);
     return _importDecoded(
       decoded: decoded,
       favorites: favorites,
       player: player,
       aiConfig: aiConfig,
+      theme: theme,
+      search: search,
       mode: mode,
       selectedSections: selectedSections,
     );
@@ -192,6 +249,8 @@ class BackupService {
     required FavoriteService favorites,
     required PlayerProvider player,
     required AiConfigController? aiConfig,
+    required ThemeController? theme,
+    required SearchSession? search,
     required FavoriteImportMode mode,
     required Set<BackupRestoreSection> selectedSections,
   }) async {
@@ -202,11 +261,47 @@ class BackupService {
         selectedSections.contains(BackupRestoreSection.playerSettings)
         ? _readPlayerBackupValue(decoded)
         : null;
+    final appearanceBackup =
+        selectedSections.contains(BackupRestoreSection.appearance)
+        ? _readMapBackupValue(decoded, 'appearance', '外观设置')
+        : null;
+    final lyricBackup =
+        selectedSections.contains(BackupRestoreSection.lyricDisplay)
+        ? _readMapBackupValue(decoded, 'lyricDisplay', '歌词显示设置')
+        : null;
+    final bilibiliAccountBackup =
+        selectedSections.contains(BackupRestoreSection.bilibiliAccount)
+        ? _readMapBackupValue(decoded, 'bilibiliAccount', 'B 站账号数据')
+        : null;
+    final voiceBackup =
+        selectedSections.contains(BackupRestoreSection.globalVoice)
+        ? _readMapBackupValue(decoded, 'globalVoice', '全局语音设置')
+        : null;
+    final searchBackup =
+        selectedSections.contains(BackupRestoreSection.searchHistory)
+        ? _readMapBackupValue(decoded, 'searchHistory', '搜索历史')
+        : null;
     // Validate portable AI credentials before FavoriteService writes any
     // selected collection. A malformed key must not leave a half-restored
     // backup with new favorites but old settings.
     if (aiBackup != null && aiConfig != null) {
       await aiConfig.validateBackupJson(aiBackup);
+    }
+    if (appearanceBackup != null && theme != null) {
+      await theme.ready;
+      _validateAppearanceBackup(appearanceBackup);
+    }
+    if (lyricBackup != null) {
+      GlobalSettingsService.validateLyricDisplay(lyricBackup);
+    }
+    if (bilibiliAccountBackup != null) {
+      BilibiliService.validateBackupJson(bilibiliAccountBackup);
+    }
+    if (voiceBackup != null && aiConfig != null) {
+      aiConfig.validateVoiceBackupJson(voiceBackup);
+    }
+    if (searchBackup != null) {
+      SearchSession.decodeBackupJson(searchBackup);
     }
     final result = await favorites.importDecoded(
       decoded,
@@ -237,6 +332,34 @@ class BackupService {
       await player.restoreBackupJson(playerBackup);
       playerSettingsRestored = true;
     }
+    var appearanceRestored = false;
+    if (appearanceBackup != null && theme != null) {
+      await theme.restoreBackupJson(appearanceBackup);
+      appearanceRestored = true;
+    }
+    var lyricDisplayRestored = false;
+    if (lyricBackup != null) {
+      await GlobalSettingsService.restoreLyricDisplay(lyricBackup);
+      lyricDisplayRestored = true;
+    }
+    var bilibiliAccountRestored = false;
+    if (bilibiliAccountBackup != null) {
+      await player.restoreBilibiliAccountBackupJson(bilibiliAccountBackup);
+      bilibiliAccountRestored = true;
+    }
+    var globalVoiceRestored = false;
+    if (voiceBackup != null && aiConfig != null) {
+      await aiConfig.restoreVoiceBackupJson(voiceBackup);
+      globalVoiceRestored = true;
+    }
+    var searchHistoryRestored = false;
+    if (searchBackup != null && search != null) {
+      await search.restoreBackupJson(
+        searchBackup,
+        replace: mode == FavoriteImportMode.replace,
+      );
+      searchHistoryRestored = true;
+    }
     return BackupRestoreResult(
       songsAdded: result.added,
       songsSkipped: result.skipped,
@@ -249,6 +372,11 @@ class BackupService {
       apiKeyRestored: apiKeyRestored,
       aiConfigRestored: aiConfigRestored,
       playerSettingsRestored: playerSettingsRestored,
+      appearanceRestored: appearanceRestored,
+      lyricDisplayRestored: lyricDisplayRestored,
+      bilibiliAccountRestored: bilibiliAccountRestored,
+      globalVoiceRestored: globalVoiceRestored,
+      searchHistoryRestored: searchHistoryRestored,
     );
   }
 
@@ -281,14 +409,6 @@ class BackupService {
     }
   }
 
-  static bool _isLegacyBackup(dynamic decoded) {
-    if (decoded is List) return true;
-    if (decoded is! Map) return false;
-    final version = decoded['version'];
-    if (version is num) return version.toInt() <= 3;
-    return decoded['userDataVersion'] != 1;
-  }
-
   static Map<String, dynamic>? _readAiBackupValue(dynamic decoded) {
     if (decoded is! Map || !decoded.containsKey('aiAssistant')) return null;
     final value = decoded['aiAssistant'];
@@ -305,6 +425,41 @@ class BackupService {
       throw const FormatException('备份文件中的播放器设置格式错误');
     }
     return Map<String, dynamic>.from(value);
+  }
+
+  static Map<String, dynamic>? _readMapBackupValue(
+    dynamic decoded,
+    String key,
+    String label,
+  ) {
+    if (decoded is! Map || !decoded.containsKey(key)) return null;
+    final value = decoded[key];
+    if (value is! Map) throw FormatException('备份文件中的$label格式错误');
+    return Map<String, dynamic>.from(value);
+  }
+
+  static void _validateAppearanceBackup(Map<String, dynamic> json) {
+    final mode = json['mode'];
+    final scale = json['fontScale'];
+    if (mode is! String ||
+        !const {'system', 'light', 'dark'}.contains(mode) ||
+        scale is! num ||
+        !scale.isFinite ||
+        scale < 0.5 ||
+        scale > 1.5) {
+      throw const FormatException('备份文件中的外观设置无效');
+    }
+  }
+
+  static void _assertMatchingScopes(
+    FavoriteService favorites,
+    PlayerProvider player,
+    SearchSession? search,
+  ) {
+    if (favorites.dataScope != player.dataScope ||
+        search != null && search.dataScope != player.dataScope) {
+      throw StateError('备份数据作用域不一致，已拒绝操作');
+    }
   }
 
   static bool _containsBilibili(List<dynamic> entries) {
@@ -327,6 +482,11 @@ class BackupRestoreResult {
   final bool apiKeyRestored;
   final bool aiConfigRestored;
   final bool playerSettingsRestored;
+  final bool appearanceRestored;
+  final bool lyricDisplayRestored;
+  final bool bilibiliAccountRestored;
+  final bool globalVoiceRestored;
+  final bool searchHistoryRestored;
   final bool restoredToDefaultUser;
 
   const BackupRestoreResult({
@@ -341,6 +501,11 @@ class BackupRestoreResult {
     required this.apiKeyRestored,
     this.aiConfigRestored = false,
     this.playerSettingsRestored = false,
+    this.appearanceRestored = false,
+    this.lyricDisplayRestored = false,
+    this.bilibiliAccountRestored = false,
+    this.globalVoiceRestored = false,
+    this.searchHistoryRestored = false,
     this.restoredToDefaultUser = false,
   });
 
@@ -357,6 +522,11 @@ class BackupRestoreResult {
       apiKeyRestored: apiKeyRestored,
       aiConfigRestored: aiConfigRestored,
       playerSettingsRestored: playerSettingsRestored,
+      appearanceRestored: appearanceRestored,
+      lyricDisplayRestored: lyricDisplayRestored,
+      bilibiliAccountRestored: bilibiliAccountRestored,
+      globalVoiceRestored: globalVoiceRestored,
+      searchHistoryRestored: searchHistoryRestored,
       restoredToDefaultUser:
           restoredToDefaultUser ?? this.restoredToDefaultUser,
     );

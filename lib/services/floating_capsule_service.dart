@@ -34,13 +34,12 @@ class FloatingCapsuleService {
     try {
       final prefs = await SharedPreferences.getInstance();
       final value =
-          prefs.getBool(scope.preferenceKey(preferenceKey)) ??
-          prefs.getBool(scope.preferenceKey(legacyPreferenceKey)) ??
+          prefs.getBool(preferenceKey) ??
+          prefs.getBool(legacyPreferenceKey) ??
           false;
       _enabled = value;
-      final scopedKey = scope.preferenceKey(preferenceKey);
-      if (!prefs.containsKey(scopedKey)) {
-        await prefs.setBool(scopedKey, value);
+      if (!prefs.containsKey(preferenceKey)) {
+        await prefs.setBool(preferenceKey, value);
       }
       return value;
     } catch (_) {
@@ -58,8 +57,7 @@ class FloatingCapsuleService {
     if (scope.isDeleted) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      if (scope.isDeleted) return;
-      await prefs.setBool(scope.preferenceKey(preferenceKey), value);
+      await prefs.setBool(preferenceKey, value);
     } catch (_) {}
   }
 

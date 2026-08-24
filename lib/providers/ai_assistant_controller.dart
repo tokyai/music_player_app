@@ -68,6 +68,7 @@ class AiAssistantController extends ChangeNotifier {
   bool _startedMusic = false;
   ({MusicPlatform platform, String id})? _songBeforeSession;
   bool _disposed = false;
+  Future<void>? _resourceDisposeFuture;
 
   AiAssistantController({
     required this.player,
@@ -696,22 +697,48 @@ class AiAssistantController extends ChangeNotifier {
 
   @override
   void dispose() {
+    unawaited(disposeResources());
+  }
+
+  /// Completes after microphone, punctuation and native recognizer resources
+  /// have been released. User switching awaits this to avoid overlapping the
+  /// next session's model with the previous one.
+  Future<void> disposeResources() {
+    final existing = _resourceDisposeFuture;
+    if (existing != null) return existing;
     _disposed = true;
     _active = false;
     _generation++;
     _turnGeneration++;
     _cancelSpeechTimers();
-    unawaited(_disposeSpeechResources());
-    // Both are teardown-only operations. Keep custom/plugin implementations
-    // from turning a widget disposal into an unhandled async error.
-    unawaited(_stopSpeaking());
+    // The controller is no longer observable as soon as teardown starts.
+    // Native microphone/model cleanup below may finish asynchronously.
+    super.dispose();
+    _resourceDisposeFuture = _finishResourceDispose();
+    return _resourceDisposeFuture!;
+  }
+
+  Future<void> _finishResourceDispose() async {
+    try {
+      await _disposeSpeechResources();
+    } catch (error, stackTrace) {
+      debugPrint('释放 AI 语音资源失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+    try {
+      await _stopSpeaking();
+    } catch (error, stackTrace) {
+      debugPrint('停止 AI 播报失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
     try {
       gateway.close();
     } catch (error, stackTrace) {
       debugPrint('关闭 AI 会话失败: $error');
       debugPrintStack(stackTrace: stackTrace);
     }
-    super.dispose();
+    _messages.clear();
+    _resetSpeechBuffer();
   }
 
   Future<void> _disposeSpeechResources() async {

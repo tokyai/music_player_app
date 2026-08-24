@@ -21,7 +21,9 @@ import 'screens/playlist_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/favorite_service.dart';
 import 'services/app_exit_service.dart';
+import 'services/audio_cache_service.dart';
 import 'services/floating_capsule_service.dart';
+import 'services/global_settings_service.dart';
 import 'services/player_media_handler.dart';
 import 'services/user_data_scope.dart';
 import 'theme/app_layout.dart';
@@ -58,6 +60,7 @@ void main() async {
   FloatingCapsuleService.init();
   final users = UserController();
   await users.ready;
+  await GlobalSettingsService.migrateLegacyScopedSettings(users.activeScope);
   await FloatingCapsuleService.restoreEnabled(scope: users.activeScope);
   final player = PlayerProvider(dataScope: users.activeScope);
   try {
@@ -146,11 +149,15 @@ class MusicPlayerApp extends StatefulWidget {
     required this.player,
     required this.users,
     required this.bindSystemPlayer,
+    this.sharedAiConfig,
+    this.sharedTheme,
   });
 
   final PlayerProvider player;
   final UserController users;
   final void Function(PlayerProvider player) bindSystemPlayer;
+  final AiConfigController? sharedAiConfig;
+  final ThemeController? sharedTheme;
 
   @override
   State<MusicPlayerApp> createState() => _MusicPlayerAppState();
@@ -159,6 +166,10 @@ class MusicPlayerApp extends StatefulWidget {
 class _MusicPlayerAppState extends State<MusicPlayerApp>
     with WidgetsBindingObserver {
   late _UserSession _session;
+  late final AiConfigController _sharedAiConfig;
+  late final ThemeController _sharedTheme;
+  late final bool _ownsSharedAiConfig;
+  late final bool _ownsSharedTheme;
   GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   AiVoiceLoadMode? _runtimeVoiceLoadMode;
   int _voicePreloadGeneration = 0;
@@ -167,9 +178,15 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _ownsSharedAiConfig = widget.sharedAiConfig == null;
+    _ownsSharedTheme = widget.sharedTheme == null;
+    _sharedAiConfig = widget.sharedAiConfig ?? AiConfigController();
+    _sharedTheme = widget.sharedTheme ?? ThemeController();
     _session = _UserSession(
       scope: widget.users.activeScope,
       player: widget.player,
+      sharedAiConfig: _sharedAiConfig,
+      sharedTheme: _sharedTheme,
     );
     widget.users.attachSessionSwitcher(_switchUserSession);
     FloatingCapsuleService.onPlayPauseTap = () => _session.player.playPause();
@@ -234,39 +251,51 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
 
   Future<void> _switchUserSession(String userId) async {
     if (userId == _session.scope.userId) return;
-    final target = _UserSession(
-      scope: UserDataScope(userId),
-      activateRestoredSession: false,
-    );
+    final previous = _session;
     var previousPrepared = false;
+    _UserSession? target;
     try {
-      await target.ready;
-      await _session.aiAssistant.stopSession(restoreMusic: false);
-      await _session.aiAssistant.releasePreloadedVoiceModel();
-      await _session.player.prepareForUserSwitch();
+      await previous.aiAssistant.stopSession(restoreMusic: false);
+      await previous.aiAssistant.releasePreloadedVoiceModel();
+      await previous.player.prepareForUserSwitch();
       previousPrepared = true;
+      // Construct the target only after the old model/player has been stopped.
+      // The short overlap is limited to lightweight Dart/plugin wrappers; the
+      // large voice model has already been released above.
+      target = _UserSession(
+        scope: UserDataScope(userId),
+        sharedAiConfig: _sharedAiConfig,
+        sharedTheme: _sharedTheme,
+        activateRestoredSession: false,
+      );
+      unawaited(
+        target.ready.catchError((error, stackTrace) {
+          debugPrint('加载目标用户数据失败: $error');
+          debugPrintStack(stackTrace: stackTrace);
+        }),
+      );
       if (!mounted) throw StateError('应用正在关闭，无法切换用户');
       await widget.users.activatePreparedUser(userId);
+      // Mark the old session disposed without waiting on a potentially slow
+      // native platform-channel teardown. Its release future continues in the
+      // background and drops the old cache index when complete.
+      previous.disposeResources(waitForNative: false);
       if (!mounted) {
-        target.dispose();
+        await target.disposeResources(waitForNative: false);
         return;
       }
-      final previous = _session;
       setState(() {
-        _session = target;
+        _session = target!;
         // A new navigator disposes the cached home route and every page that
         // may still hold controllers from the previous user session.
         _navigatorKey = GlobalKey<NavigatorState>();
       });
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        previous.dispose();
-        unawaited(_configureVoicePreloading(target));
-      });
+      unawaited(_configureVoicePreloading(target));
       try {
         widget.bindSystemPlayer(target.player);
         await FloatingCapsuleService.hide();
         await FloatingCapsuleService.restoreEnabled(scope: target.scope);
-        await target.player.activateRestoredSession();
+        unawaited(_activateTargetSession(target));
       } catch (error, stackTrace) {
         // The user/session commit is already complete. Optional platform
         // integrations must not roll the UI back to providers being disposed.
@@ -275,9 +304,11 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
       }
     } catch (error) {
       if (previousPrepared && _session.scope.userId != userId) {
-        await _session.player.cancelPreparedUserSwitch();
+        await previous.player.cancelPreparedUserSwitch();
       }
-      if (!identical(_session, target)) target.dispose();
+      if (target != null && !identical(_session, target)) {
+        await target.disposeResources(waitForNative: false);
+      }
       rethrow;
     }
   }
@@ -289,9 +320,30 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
     widget.users.detachSessionSwitcher();
     FloatingCapsuleService.onPlayPauseTap = null;
     FloatingCapsuleService.onCapsuleTap = null;
-    _session.dispose();
+    unawaited(_disposeSessionAndSharedControllers());
     widget.users.dispose();
     super.dispose();
+  }
+
+  Future<void> _activateTargetSession(_UserSession target) async {
+    try {
+      await target.ready;
+      if (!mounted || !identical(target, _session)) return;
+      await target.player.activateRestoredSession();
+    } catch (error, stackTrace) {
+      debugPrint('恢复目标用户播放状态失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  Future<void> _disposeSessionAndSharedControllers() async {
+    await _session.disposeResources(waitForNative: false);
+    if (_ownsSharedAiConfig) {
+      _sharedAiConfig.dispose();
+    }
+    if (_ownsSharedTheme) {
+      _sharedTheme.dispose();
+    }
   }
 
   @override
@@ -360,10 +412,11 @@ class _UserSession {
   late final SearchSession search;
   late final ThemeController theme;
   late final FavoriteService favorites;
-  bool _disposed = false;
 
   _UserSession({
     required this.scope,
+    required AiConfigController sharedAiConfig,
+    required ThemeController sharedTheme,
     PlayerProvider? player,
     bool activateRestoredSession = true,
   }) : player =
@@ -372,36 +425,56 @@ class _UserSession {
              dataScope: scope,
              activateRestoredSession: activateRestoredSession,
            ) {
-    aiConfig = AiConfigController(dataScope: scope);
+    aiConfig = sharedAiConfig;
     aiAssistant = AiAssistantController(
       player: this.player,
-      configController: aiConfig,
+      configController: sharedAiConfig,
     );
     search = SearchSession(dataScope: scope);
-    theme = ThemeController(dataScope: scope);
+    theme = sharedTheme;
     favorites = FavoriteService(dataScope: scope);
     ready = Future.wait<void>([
       this.player.settingsReady,
       this.player.historyReady,
       this.player.playbackStateReady,
-      aiConfig.ready,
+      sharedAiConfig.ready,
       search.historyReady,
-      theme.ready,
+      sharedTheme.ready,
       favorites.load(),
     ]);
   }
 
   late final Future<void> ready;
+  Future<void>? _resourceReleaseFuture;
 
-  void dispose() {
-    if (_disposed) return;
-    _disposed = true;
-    aiAssistant.dispose();
-    aiConfig.dispose();
+  Future<void> disposeResources({bool waitForNative = true}) {
+    final existing = _resourceReleaseFuture;
+    if (existing != null) {
+      return waitForNative ? existing : Future<void>.value();
+    }
+    final release = _releaseResources();
+    _resourceReleaseFuture = release;
     search.dispose();
-    theme.dispose();
     favorites.dispose();
-    player.dispose();
+    if (!waitForNative) unawaited(release);
+    return waitForNative ? release : Future<void>.value();
+  }
+
+  Future<void> _releaseResources() async {
+    try {
+      await Future.wait([
+        aiAssistant.disposeResources(),
+        player.disposeResources(),
+      ]);
+    } catch (error, stackTrace) {
+      // Each provider performs best-effort cleanup internally. Keep one
+      // unexpected failure from preventing the other user's cache context
+      // from being released.
+      debugPrint('释放用户会话资源失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    } finally {
+      await AudioCacheService.releaseMemoryContext(scope);
+    }
   }
 }
 
