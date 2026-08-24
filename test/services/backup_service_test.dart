@@ -10,7 +10,6 @@ import 'package:music_player_app/providers/search_session.dart';
 import 'package:music_player_app/providers/theme_controller.dart';
 import 'package:music_player_app/services/backup_service.dart';
 import 'package:music_player_app/services/favorite_service.dart';
-import 'package:music_player_app/services/global_settings_service.dart';
 import 'package:music_player_app/services/user_data_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 

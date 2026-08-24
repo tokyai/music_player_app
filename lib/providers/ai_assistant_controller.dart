@@ -697,7 +697,16 @@ class AiAssistantController extends ChangeNotifier {
 
   @override
   void dispose() {
-    unawaited(disposeResources());
+    if (_resourceDisposeFuture != null) return;
+    _disposed = true;
+    _active = false;
+    _generation++;
+    _turnGeneration++;
+    _cancelSpeechTimers();
+    // Stop exposing listeners synchronously. Microphone/model teardown keeps
+    // running through the future returned by disposeResources().
+    super.dispose();
+    _resourceDisposeFuture = _finishResourceDispose();
   }
 
   /// Completes after microphone, punctuation and native recognizer resources
@@ -706,15 +715,7 @@ class AiAssistantController extends ChangeNotifier {
   Future<void> disposeResources() {
     final existing = _resourceDisposeFuture;
     if (existing != null) return existing;
-    _disposed = true;
-    _active = false;
-    _generation++;
-    _turnGeneration++;
-    _cancelSpeechTimers();
-    // The controller is no longer observable as soon as teardown starts.
-    // Native microphone/model cleanup below may finish asynchronously.
-    super.dispose();
-    _resourceDisposeFuture = _finishResourceDispose();
+    dispose();
     return _resourceDisposeFuture!;
   }
 

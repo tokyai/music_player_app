@@ -100,9 +100,13 @@ class SearchSession extends ChangeNotifier {
     }
 
     if (!replace) {
-      for (final value in _searchHistory) add(value);
+      for (final value in _searchHistory) {
+        add(value);
+      }
     }
-    for (final value in incoming) add(value);
+    for (final value in incoming) {
+      add(value);
+    }
     if (merged.length > _maxHistoryItems) {
       merged.removeRange(_maxHistoryItems, merged.length);
     }

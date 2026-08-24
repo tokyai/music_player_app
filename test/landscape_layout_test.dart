@@ -242,7 +242,9 @@ void main() {
         await tester.tap(find.text('保留结果'));
         await tester.pumpAndSettle();
         expect(find.byType(MiniPlayer), findsOneWidget);
-        await tester.tap(find.byType(MiniPlayer));
+        await tester.tap(
+          find.byKey(const ValueKey('mini-player-qq:preserved-song')),
+        );
         await tester.pumpAndSettle();
         expect(find.byType(PlayerScreen), findsOneWidget);
 
@@ -3159,6 +3161,16 @@ class _ControllablePlayer extends PlayerProvider {
   @override
   Future<void> playSingle(SongSearchResult result) async {
     _currentSong = PlayQueueItem.fromSearchResult(result);
+    notifyListeners();
+  }
+
+  @override
+  Future<void> playFromSearchResults(
+    List<SongSearchResult> results,
+    int index,
+  ) async {
+    if (index < 0 || index >= results.length) return;
+    _currentSong = PlayQueueItem.fromSearchResult(results[index]);
     notifyListeners();
   }
 

@@ -2469,15 +2469,7 @@ class PlayerProvider extends ChangeNotifier {
 
   @override
   void dispose() {
-    unawaited(disposeResources());
-  }
-
-  /// Releases the native audio player and waits for every stream subscription
-  /// to finish cancelling. This is awaited during profile switches so two
-  /// players do not retain decoders and buffers at the same time.
-  Future<void> disposeResources() {
-    final existing = _resourceDisposeFuture;
-    if (existing != null) return existing;
+    if (_resourceDisposeFuture != null) return;
     // Mark the provider first so a final audio position event cannot schedule
     // another history persistence timer while the subscriptions are stopping.
     _disposed = true;
@@ -2506,6 +2498,15 @@ class PlayerProvider extends ChangeNotifier {
     // continue asynchronously without retaining the old widget tree.
     super.dispose();
     _resourceDisposeFuture = _disposeAudioResources(subscriptions);
+  }
+
+  /// Releases the native audio player and waits for every stream subscription
+  /// to finish cancelling. This is awaited during profile switches so two
+  /// players do not retain decoders and buffers at the same time.
+  Future<void> disposeResources() {
+    final existing = _resourceDisposeFuture;
+    if (existing != null) return existing;
+    dispose();
     return _resourceDisposeFuture!;
   }
 
