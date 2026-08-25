@@ -262,52 +262,101 @@ void main() {
     expect(() => recognizer.emitStatus('done'), returnsNormally);
   });
 
+  test('recovers a post-handshake Doubao routing rejection', () async {
+    final gateway = _FakeDoubaoGateway(
+      rejectFirstAudioSession: true,
+      finalResultOnAudio: '恢复后的识别结果',
+    );
+    final capture = _FakeAudioCapture();
+    final recognizer = DoubaoImeSpeechRecognizer(
+      client: gateway,
+      captureStarter: () async => capture,
+    );
+    final results = <(String, bool)>[];
+    final done = Completer<void>();
+
+    addTearDown(recognizer.dispose);
+    expect(
+      await recognizer.initialize(
+        onError: (_) {},
+        onStatus: (status) {
+          if (status == 'done' && !done.isCompleted) done.complete();
+        },
+      ),
+      isTrue,
+    );
+    await recognizer.listen((text, isFinal) {
+      results.add((text, isFinal));
+    });
+    capture.emit(Uint8List(640));
+    await Future<void>.delayed(Duration.zero);
+    capture.emit(Uint8List(640));
+    await recognizer.stop();
+    await done.future.timeout(const Duration(seconds: 2));
+
+    expect(gateway.openSessionCalls, 2);
+    expect(results, [('恢复后的识别结果', true)]);
+  });
+
   test(
-    'replaces rejected Doubao credentials once and keeps recognizing',
+    'stop wins while Doubao routing recovery is opening a replacement',
     () async {
-      final gateway = _FakeDoubaoGateway(rejectFirstSession: true);
+      final gateway = _RecoveryRaceDoubaoGateway();
       final capture = _FakeAudioCapture();
       final recognizer = DoubaoImeSpeechRecognizer(
         client: gateway,
         captureStarter: () async => capture,
       );
-      final results = <(String, bool)>[];
-      final errors = <String>[];
       final done = Completer<void>();
 
-      expect(
-        await recognizer.initialize(
-          onError: errors.add,
-          onStatus: (status) {
-            if (status == 'done' && !done.isCompleted) done.complete();
-          },
-        ),
-        isTrue,
+      addTearDown(recognizer.dispose);
+      await recognizer.initialize(
+        onError: (_) {},
+        onStatus: (status) {
+          if (status == 'done' && !done.isCompleted) done.complete();
+        },
       );
-      await recognizer.listen((text, isFinal) {
-        results.add((text, isFinal));
-      });
+      await recognizer.listen((_, _) {});
       capture.emit(Uint8List(640));
-      await gateway.secondSessionOpened.future.timeout(
+      await gateway.replacementStarted.future.timeout(
         const Duration(seconds: 2),
       );
-      capture.emit(Uint8List(640));
+
+      final stopping = recognizer.stop();
+      final replacement = _FakeDoubaoConnection();
+      gateway.replacementResult.complete(replacement);
+
+      await stopping.timeout(const Duration(seconds: 2));
       await done.future.timeout(const Duration(seconds: 2));
 
-      expect(gateway.resetCalls, 1);
       expect(gateway.openSessionCalls, 2);
-      expect(results, [('豆包识别成功', true)]);
-      expect(errors, isEmpty);
-      expect(capture.stopCalls, 1);
-      expect(capture.disposeCalls, 1);
-      expect(
-        gateway.connections.every((connection) => connection.closeCalls == 1),
-        isTrue,
-      );
+      expect(gateway.connections.single.closeCalls, 1);
+      expect(replacement.closeCalls, 1);
+    },
+  );
 
-      await recognizer.dispose();
-      await recognizer.dispose();
-      expect(gateway.disposeCalls, 1);
+  test(
+    'cancelling while Doubao session opens closes the late session',
+    () async {
+      final gateway = _DelayedDoubaoGateway();
+      final recognizer = DoubaoImeSpeechRecognizer(
+        client: gateway,
+        captureStarter: () async => _FakeAudioCapture(),
+      );
+      addTearDown(recognizer.dispose);
+      await recognizer.initialize(onError: (_) {}, onStatus: (_) {});
+
+      final listening = recognizer.listen((_, _) {});
+      await gateway.openStarted.future.timeout(const Duration(seconds: 2));
+      final cancelling = recognizer.cancel();
+      final connection = _FakeDoubaoConnection();
+      gateway.openResult.complete(connection);
+      await Future.wait([
+        listening,
+        cancelling,
+      ]).timeout(const Duration(seconds: 5));
+
+      expect(connection.closeCalls, 1);
     },
   );
 
@@ -329,6 +378,81 @@ void main() {
     await Future.wait([recognizer.dispose(), recognizer.dispose()]);
     expect(gateway.disposeCalls, 1);
   });
+
+  test(
+    'finishes a Doubao session after the provider emits an endpoint final',
+    () async {
+      final gateway = _FakeDoubaoGateway(
+        finalResultOnAudio: '端点初步结果',
+        finalResultOnFinish: '端点后的三遍修正结果',
+      );
+      final capture = _FakeAudioCapture();
+      final recognizer = DoubaoImeSpeechRecognizer(
+        client: gateway,
+        captureStarter: () async => capture,
+      );
+      final results = <(String, bool)>[];
+      final done = Completer<void>();
+
+      addTearDown(recognizer.dispose);
+      expect(
+        await recognizer.initialize(
+          onError: (_) {},
+          onStatus: (status) {
+            if (status == 'done' && !done.isCompleted) done.complete();
+          },
+        ),
+        isTrue,
+      );
+      await recognizer.listen((text, isFinal) {
+        results.add((text, isFinal));
+      });
+      capture.emit(Uint8List(640));
+
+      await done.future.timeout(const Duration(seconds: 2));
+
+      expect(results, [('端点后的三遍修正结果', true)]);
+      expect(capture.stopCalls, 1);
+      expect(capture.disposeCalls, 1);
+      expect(gateway.connections.single.finishCalls, 1);
+      expect(gateway.connections.single.closeCalls, 1);
+    },
+  );
+
+  test(
+    'emits a pending final when the provider closes before SessionFinished',
+    () async {
+      final gateway = _FakeDoubaoGateway(
+        finalResultOnAudio: '端点结果',
+        finishWithoutSessionFinished: true,
+      );
+      final capture = _FakeAudioCapture();
+      final recognizer = DoubaoImeSpeechRecognizer(
+        client: gateway,
+        captureStarter: () async => capture,
+      );
+      final results = <(String, bool)>[];
+      final done = Completer<void>();
+
+      addTearDown(recognizer.dispose);
+      await recognizer.initialize(
+        onError: (_) {},
+        onStatus: (status) {
+          if (status == 'done' && !done.isCompleted) done.complete();
+        },
+      );
+      await recognizer.listen((text, isFinal) {
+        results.add((text, isFinal));
+      });
+      capture.emit(Uint8List(640));
+
+      await done.future.timeout(const Duration(seconds: 2));
+
+      expect(results, [('端点结果', true)]);
+      expect(gateway.connections.single.finishCalls, 1);
+      expect(gateway.connections.single.closeCalls, 1);
+    },
+  );
 }
 
 class _FakeMicrophonePermission implements AiMicrophonePermission {
@@ -454,14 +578,22 @@ class _FailFirstRecognizer extends _FakeRecognizer {
 }
 
 class _FakeDoubaoGateway implements DoubaoImeAsrGateway {
-  final bool rejectFirstSession;
+  final bool rejectFirstAudioSession;
+  final String? finalResultOnAudio;
+  final String? finalResultOnFinish;
+  final bool finishWithoutSessionFinished;
   final List<_FakeDoubaoConnection> connections = [];
-  final Completer<void> secondSessionOpened = Completer<void>();
   int openSessionCalls = 0;
   int resetCalls = 0;
+  int refreshCalls = 0;
   int disposeCalls = 0;
 
-  _FakeDoubaoGateway({this.rejectFirstSession = false});
+  _FakeDoubaoGateway({
+    this.rejectFirstAudioSession = false,
+    this.finalResultOnAudio,
+    this.finalResultOnFinish,
+    this.finishWithoutSessionFinished = false,
+  });
 
   @override
   Future<void> prepare() async {}
@@ -469,30 +601,38 @@ class _FakeDoubaoGateway implements DoubaoImeAsrGateway {
   @override
   Future<DoubaoImeAsrConnection> openSession() async {
     openSessionCalls++;
-    final shouldReject = rejectFirstSession && openSessionCalls == 1;
     final connection = _FakeDoubaoConnection(
-      responseAfterFirstFrame: shouldReject
+      responseAfterFirstFrame: rejectFirstAudioSession && openSessionCalls == 1
           ? const DoubaoImeAsrResponse(
               kind: DoubaoImeAsrResponseKind.error,
               error: 'service discovery failure',
             )
-          : rejectFirstSession
-          ? const DoubaoImeAsrResponse(
+          : finalResultOnAudio != null
+          ? DoubaoImeAsrResponse(
               kind: DoubaoImeAsrResponseKind.finalResult,
-              text: '豆包识别成功',
+              text: finalResultOnAudio!,
             )
           : null,
+      responseOnFinish: finalResultOnFinish == null
+          ? null
+          : DoubaoImeAsrResponse(
+              kind: DoubaoImeAsrResponseKind.finalResult,
+              text: finalResultOnFinish!,
+            ),
+      finishWithoutSessionFinished: finishWithoutSessionFinished,
     );
     connections.add(connection);
-    if (openSessionCalls == 2 && !secondSessionOpened.isCompleted) {
-      secondSessionOpened.complete();
-    }
     return connection;
   }
 
   @override
   Future<void> resetCredentials() async {
     resetCalls++;
+  }
+
+  @override
+  Future<void> refreshToken() async {
+    refreshCalls++;
   }
 
   @override
@@ -504,17 +644,89 @@ class _FakeDoubaoGateway implements DoubaoImeAsrGateway {
   }
 }
 
+class _DelayedDoubaoGateway implements DoubaoImeAsrGateway {
+  final Completer<void> openStarted = Completer<void>();
+  final Completer<DoubaoImeAsrConnection> openResult =
+      Completer<DoubaoImeAsrConnection>();
+
+  @override
+  Future<void> prepare() async {}
+
+  @override
+  Future<DoubaoImeAsrConnection> openSession() {
+    if (!openStarted.isCompleted) openStarted.complete();
+    return openResult.future;
+  }
+
+  @override
+  Future<void> refreshToken() async {}
+
+  @override
+  Future<void> resetCredentials() async {}
+
+  @override
+  Future<void> dispose() async {}
+}
+
+class _RecoveryRaceDoubaoGateway implements DoubaoImeAsrGateway {
+  final Completer<void> replacementStarted = Completer<void>();
+  final Completer<DoubaoImeAsrConnection> replacementResult =
+      Completer<DoubaoImeAsrConnection>();
+  final List<_FakeDoubaoConnection> connections = [];
+  int openSessionCalls = 0;
+
+  @override
+  Future<void> prepare() async {}
+
+  @override
+  Future<DoubaoImeAsrConnection> openSession() {
+    openSessionCalls++;
+    if (openSessionCalls == 1) {
+      final connection = _FakeDoubaoConnection(
+        responseAfterFirstFrame: const DoubaoImeAsrResponse(
+          kind: DoubaoImeAsrResponseKind.error,
+          error: 'service discovery failure',
+        ),
+      );
+      connections.add(connection);
+      return Future<DoubaoImeAsrConnection>.value(connection);
+    }
+    if (!replacementStarted.isCompleted) replacementStarted.complete();
+    return replacementResult.future;
+  }
+
+  @override
+  Future<void> refreshToken() async {}
+
+  @override
+  Future<void> resetCredentials() async {}
+
+  @override
+  Future<void> dispose() async {
+    for (final connection in connections) {
+      await connection.close();
+    }
+  }
+}
+
 class _FakeDoubaoConnection implements DoubaoImeAsrConnection {
   final DoubaoImeAsrResponse? responseAfterFirstFrame;
+  final DoubaoImeAsrResponse? responseOnFinish;
+  final bool finishWithoutSessionFinished;
   final StreamController<DoubaoImeAsrResponse?> _responses =
-      StreamController<DoubaoImeAsrResponse?>();
-  late final StreamIterator<DoubaoImeAsrResponse?> _iterator =
-      StreamIterator<DoubaoImeAsrResponse?>(_responses.stream);
+      StreamController<DoubaoImeAsrResponse?>.broadcast();
+  StreamIterator<DoubaoImeAsrResponse?>? _iterator;
+  bool _iteratorStarted = false;
   bool _responseSent = false;
   bool _closed = false;
   int closeCalls = 0;
+  int finishCalls = 0;
 
-  _FakeDoubaoConnection({this.responseAfterFirstFrame});
+  _FakeDoubaoConnection({
+    this.responseAfterFirstFrame,
+    this.responseOnFinish,
+    this.finishWithoutSessionFinished = false,
+  });
 
   @override
   void sendAudio(
@@ -529,12 +741,32 @@ class _FakeDoubaoConnection implements DoubaoImeAsrConnection {
   }
 
   @override
-  void finish() {}
+  void finish() {
+    if (_closed) return;
+    finishCalls++;
+    final response = responseOnFinish ?? responseAfterFirstFrame;
+    if (response != null) {
+      _responses.add(response);
+    }
+    if (!finishWithoutSessionFinished) {
+      _responses.add(
+        const DoubaoImeAsrResponse(
+          kind: DoubaoImeAsrResponseKind.sessionFinished,
+        ),
+      );
+    } else {
+      _responses.add(null);
+    }
+  }
 
   @override
   Future<DoubaoImeAsrResponse?> nextResponse() async {
     if (_closed) return null;
-    return await _iterator.moveNext() ? _iterator.current : null;
+    _iteratorStarted = true;
+    final iterator = _iterator ??= StreamIterator<DoubaoImeAsrResponse?>(
+      _responses.stream,
+    );
+    return await iterator.moveNext() ? iterator.current : null;
   }
 
   @override
@@ -542,7 +774,15 @@ class _FakeDoubaoConnection implements DoubaoImeAsrConnection {
     if (_closed) return;
     _closed = true;
     closeCalls++;
-    await _iterator.cancel();
+    if (!_iteratorStarted) {
+      await _responses.close();
+      return;
+    }
+    // Wake a pending nextResponse() before cancelling the iterator. Closing
+    // the controller first waits for the iterator to cancel, while cancelling
+    // first waits for a response, which can deadlock this in-memory fake.
+    if (!_responses.isClosed) _responses.add(null);
+    await _iterator?.cancel();
     await _responses.close();
   }
 }

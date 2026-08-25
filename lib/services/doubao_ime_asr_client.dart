@@ -197,6 +197,7 @@ abstract interface class DoubaoImeAsrConnection {
 abstract interface class DoubaoImeAsrGateway {
   Future<void> prepare();
   Future<DoubaoImeAsrConnection> openSession();
+  Future<void> refreshToken();
   Future<void> resetCredentials();
   Future<void> dispose();
 }
@@ -260,6 +261,7 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
 
   DoubaoImeCredentials? _credentials;
   Future<DoubaoImeCredentials>? _credentialOperation;
+  Future<void>? _refreshOperation;
   DateTime? _tokenRefreshedAt;
   bool _disposed = false;
 
@@ -283,6 +285,33 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
   @override
   Future<DoubaoImeAsrSession> openSession({
     String appName = 'com.android.chrome',
+  }) async {
+    try {
+      return await _openSessionOnce(appName: appName);
+    } catch (error) {
+      if (!isDoubaoImeCredentialRoutingError(error.toString())) rethrow;
+    }
+
+    // A routing rejection can be caused by an expired token. Refresh the
+    // existing device first; only if the provider still rejects it do we
+    // discard the device identity and register a new one. This mirrors the
+    // reference implementation and avoids needless anonymous registrations.
+    try {
+      await refreshToken();
+    } catch (_) {
+      await resetCredentials();
+    }
+    try {
+      return await _openSessionOnce(appName: appName);
+    } catch (error) {
+      if (!isDoubaoImeCredentialRoutingError(error.toString())) rethrow;
+      await resetCredentials();
+    }
+    return _openSessionOnce(appName: appName);
+  }
+
+  Future<DoubaoImeAsrSession> _openSessionOnce({
+    required String appName,
   }) async {
     _checkNotDisposed();
     final credentials = await _ensureCredentials(refreshToken: true);
@@ -327,23 +356,12 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
           serviceName: 'ASR',
           methodName: 'StartSession',
           requestId: requestId,
-          payload: jsonEncode({
-            'audio_info': {
-              'channel': 1,
-              'format': 'speech_pcm',
-              'sample_rate': 16000,
-            },
-            'enable_punctuation': true,
-            'enable_speech_rejection': false,
-            'extra': {
-              'app_name': appName,
-              'cell_compress_rate': 8,
-              'did': credentials.deviceId,
-              'enable_asr_threepass': true,
-              'enable_asr_twopass': true,
-              'input_mode': 'tool',
-            },
-          }),
+          payload: jsonEncode(
+            _buildStartSessionPayload(
+              deviceId: credentials.deviceId,
+              appName: appName,
+            ),
+          ),
         ).writeToBuffer(),
       );
       final started = await _nextStartupResponse(iterator);
@@ -373,6 +391,52 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
       rethrow;
     }
   }
+
+  // The provider accepts the short session payload during the handshake but
+  // routes audio to a worker only when the IME's full two/three-pass options
+  // are present. Keep this in one place so protocol changes do not get split
+  // between the client and recognizer layers.
+  Map<String, Object?> _buildStartSessionPayload({
+    required String deviceId,
+    required String appName,
+  }) => {
+    'audio_info': {'channel': 1, 'format': 'speech_pcm', 'sample_rate': 16000},
+    'enable_punctuation': true,
+    'enable_speech_rejection': false,
+    'extra': {
+      'app_name': appName,
+      'app_version': '1.3.11',
+      'cell_compress_rate': 8,
+      'device_brand': 'xiaomi',
+      'device_model': 'Redmi Note 7',
+      'did': deviceId,
+      'disable_user_words': false,
+      'enable_asr_threepass': true,
+      'enable_asr_twopass': true,
+      'enable_print_chinese': false,
+      'end_smooth_window_ms': 800,
+      'finish_wait_offline_time': 1000,
+      'input_mode': 'tool',
+      'join_user_experience_improve_program': false,
+      'max_wait_switch_offline_time': 1000,
+      'network_change': {
+        'switch_network_ping_timeout': 2000,
+        'switch_network_quality_threshold': 4,
+        'switch_network_rtt_threshold': 273,
+      },
+      'offline_wait_online_interval_time': 5000,
+      'offline_wait_online_time': 5000,
+      'os': 'Android',
+      'os_version': '9',
+      'remove_space_between_han_eng': false,
+      'remove_space_between_han_num': false,
+      'retry_server_code': [40100000, 40100004, 50000104, 50700000],
+      's2a_send_commands': ['帮我发送'],
+      's2a_send_enable': false,
+      'strong_ddc': false,
+      'use_twopass_retry': true,
+    },
+  };
 
   Future<DoubaoImeAsrResponse> _nextStartupResponse(
     StreamIterator<Object?> iterator,
@@ -456,8 +520,62 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
   }
 
   @override
+  Future<void> refreshToken() {
+    final pending = _refreshOperation;
+    if (pending != null) return pending;
+    late final Future<void> operation;
+    operation = _refreshTokenInternal().whenComplete(() {
+      if (identical(_refreshOperation, operation)) _refreshOperation = null;
+    });
+    _refreshOperation = operation;
+    return operation;
+  }
+
+  Future<void> _refreshTokenInternal() async {
+    _checkNotDisposed();
+    final pending = _credentialOperation;
+    if (pending != null) {
+      try {
+        await pending;
+      } catch (_) {}
+    }
+    _checkNotDisposed();
+    DoubaoImeCredentials? current = _credentials;
+    if (current == null) {
+      try {
+        current = await _credentialStore.read().timeout(
+          const Duration(seconds: 5),
+        );
+      } catch (_) {
+        current = null;
+      }
+    }
+    if (current == null) {
+      await _ensureCredentials(refreshToken: true);
+      return;
+    }
+    final token = await _requestToken(current);
+    final refreshed = current.copyWith(token: token);
+    _credentials = refreshed;
+    _tokenRefreshedAt = DateTime.now();
+    try {
+      await _credentialStore
+          .write(refreshed)
+          .timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // The refreshed in-memory token remains usable for this process.
+    }
+  }
+
+  @override
   Future<void> resetCredentials() async {
     _checkNotDisposed();
+    final refreshing = _refreshOperation;
+    if (refreshing != null) {
+      try {
+        await refreshing;
+      } catch (_) {}
+    }
     final pending = _credentialOperation;
     if (pending != null) {
       try {
@@ -737,8 +855,14 @@ class DoubaoImeAsrSession implements DoubaoImeAsrConnection {
   }
 }
 
-bool isDoubaoImeCredentialRoutingError(String message) =>
-    message.toLowerCase().contains('service discovery failure');
+bool isDoubaoImeCredentialRoutingError(String message) {
+  final normalized = message.toLowerCase();
+  if (normalized.contains('service discovery failure')) return true;
+  // Some gateway responses contain only the numeric status code. These are
+  // the provider's documented retry/routing codes from the IME payload.
+  const retryCodes = <String>{'40100000', '40100004', '50000104', '50700000'};
+  return retryCodes.any(normalized.contains);
+}
 
 DoubaoImeAsrResponse parseDoubaoImeAsrResponse(
   Uint8List bytes, {

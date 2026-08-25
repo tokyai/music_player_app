@@ -37,6 +37,12 @@ void main() {
         statusMessage: 'service discovery failure',
       ).writeToBuffer(),
     );
+    final numericFailure = parseDoubaoImeAsrResponse(
+      pb.AsrResponse(
+        messageType: 'SessionFailed',
+        statusCode: 50700000,
+      ).writeToBuffer(),
+    );
 
     expect(interim.kind, DoubaoImeAsrResponseKind.interim);
     expect(interim.text, '正在识别');
@@ -44,6 +50,7 @@ void main() {
     expect(finalResult.text, '最终结果');
     expect(failure.kind, DoubaoImeAsrResponseKind.error);
     expect(isDoubaoImeCredentialRoutingError(failure.error), isTrue);
+    expect(isDoubaoImeCredentialRoutingError(numericFailure.error), isTrue);
   });
 
   test(
@@ -158,6 +165,11 @@ void main() {
         (payload['extra'] as Map<String, dynamic>)['app_name'],
         'com.android.chrome',
       );
+      final extra = payload['extra'] as Map<String, dynamic>;
+      expect(extra['enable_asr_twopass'], isTrue);
+      expect(extra['enable_asr_threepass'], isTrue);
+      expect(extra['use_twopass_retry'], isTrue);
+      expect(extra['finish_wait_offline_time'], 1000);
 
       session.sendAudio(
         Uint8List(640),
@@ -196,13 +208,118 @@ void main() {
       expect(socket.closeCalls, 1);
     },
   );
+
+  test('refreshes a rejected token before retrying the session', () async {
+    final store = MemoryDoubaoImeCredentialStore(
+      const DoubaoImeCredentials(
+        deviceId: 'device-id',
+        installId: 'install-id',
+        cdid: 'cdid',
+        openUdid: 'open-udid',
+        clientUdid: 'client-udid',
+        token: 'cached-token',
+      ),
+    );
+    var socketCalls = 0;
+    var tokenCalls = 0;
+    final client = DoubaoImeAsrClient(
+      credentialStore: store,
+      httpClient: MockClient((request) async {
+        tokenCalls++;
+        return http.Response(
+          jsonEncode({
+            'data': {
+              'settings': {
+                'asr_config': {'app_key': 'fresh-token'},
+              },
+            },
+          }),
+          200,
+        );
+      }),
+      socketConnector: (uri, headers, timeout) async {
+        socketCalls++;
+        return _FakeDoubaoSocket(failOnStartSession: socketCalls == 1);
+      },
+    );
+    addTearDown(client.dispose);
+
+    final recovered = await client.openSession();
+    expect(socketCalls, 2);
+    expect(tokenCalls, 2);
+    expect(store.value?.deviceId, 'device-id');
+    expect(store.value?.token, 'fresh-token');
+    await recovered.close();
+  });
+
+  test(
+    're-registers the device when a refreshed token is still rejected',
+    () async {
+      final store = MemoryDoubaoImeCredentialStore(
+        const DoubaoImeCredentials(
+          deviceId: 'stale-device',
+          installId: 'stale-install',
+          cdid: 'stale-cdid',
+          openUdid: 'stale-open',
+          clientUdid: 'stale-client',
+          token: 'stale-token',
+        ),
+      );
+      var registerCalls = 0;
+      var tokenCalls = 0;
+      var socketCalls = 0;
+      final client = DoubaoImeAsrClient(
+        credentialStore: store,
+        httpClient: MockClient((request) async {
+          if (request.url.path.contains('device_register')) {
+            registerCalls++;
+            return http.Response(
+              jsonEncode({
+                'device_id': 'fresh-device',
+                'install_id': 'fresh-install',
+              }),
+              200,
+            );
+          }
+          tokenCalls++;
+          return http.Response(
+            jsonEncode({
+              'data': {
+                'settings': {
+                  'asr_config': {'app_key': 'fresh-token-$tokenCalls'},
+                },
+              },
+            }),
+            200,
+          );
+        }),
+        socketConnector: (uri, headers, timeout) async {
+          socketCalls++;
+          return _FakeDoubaoSocket(failOnStartSession: socketCalls < 3);
+        },
+      );
+      addTearDown(client.dispose);
+
+      final recovered = await client.openSession();
+
+      expect(socketCalls, 3);
+      expect(tokenCalls, 3);
+      expect(registerCalls, 1);
+      expect(store.value?.deviceId, 'fresh-device');
+      expect(store.value?.installId, 'fresh-install');
+      await recovered.close();
+    },
+  );
 }
 
 class _FakeDoubaoSocket implements DoubaoImeAsrSocket {
+  final bool failOnStartSession;
   final StreamController<Object?> _messages = StreamController<Object?>();
   final List<pb.AsrRequest> requests = [];
   int closeCalls = 0;
   bool _closed = false;
+
+  _FakeDoubaoSocket({this.failOnStartSession = false});
 
   @override
   Stream<Object?> get messages => _messages.stream;
@@ -216,7 +333,16 @@ class _FakeDoubaoSocket implements DoubaoImeAsrSocket {
         emit(pb.AsrResponse(messageType: 'TaskStarted').writeToBuffer());
         break;
       case 'StartSession':
-        emit(pb.AsrResponse(messageType: 'SessionStarted').writeToBuffer());
+        emit(
+          (failOnStartSession
+                  ? pb.AsrResponse(
+                      messageType: 'SessionFailed',
+                      statusCode: 50700000,
+                      statusMessage: 'service discovery failure',
+                    )
+                  : pb.AsrResponse(messageType: 'SessionStarted'))
+              .writeToBuffer(),
+        );
         break;
     }
   }

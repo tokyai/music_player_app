@@ -1110,6 +1110,7 @@ class DoubaoImeSpeechRecognizer
   static const _frameBytes =
       _aiSpeechSampleRate * _frameDurationMilliseconds ~/ 1000 * 2;
   static const _maxAudioFrames = 60 * 1000 ~/ _frameDurationMilliseconds;
+  static const _sessionFinishTimeout = Duration(seconds: 8);
 
   final DoubaoImeAsrGateway _client;
   final AiAudioCaptureStarter? _captureStarter;
@@ -1125,6 +1126,7 @@ class DoubaoImeSpeechRecognizer
   Future<void> _cleanupFuture = Future<void>.value();
   Future<bool>? _initializing;
   Future<void>? _disposeOperation;
+  Future<void>? _finishInputOperation;
   void Function(String message)? _onError;
   void Function(String status)? _onStatus;
   AiSpeechResultCallback? _onResult;
@@ -1134,9 +1136,15 @@ class DoubaoImeSpeechRecognizer
   int _startedAtMilliseconds = 0;
   int _generation = 0;
   bool _listening = false;
+  bool _listenStarting = false;
   bool _finishing = false;
-  bool _retryingCredentials = false;
-  bool _credentialRetryUsed = false;
+  bool _finishRequested = false;
+  bool _sessionRetryUsed = false;
+  bool _terminalFrameSent = false;
+  bool _finalResultEmitted = false;
+  String _latestSpeechText = '';
+  String _pendingFinalText = '';
+  Completer<void>? _sessionCompletion;
   bool _disposed = false;
 
   DoubaoImeSpeechRecognizer({
@@ -1186,19 +1194,56 @@ class DoubaoImeSpeechRecognizer
   @override
   Future<void> listen(AiSpeechResultCallback onResult) async {
     if (_disposed) throw StateError('豆包语音服务已释放');
-    await _cleanupFuture;
-    if (_disposed || _listening || _finishing) return;
+    if (_listenStarting) return;
+    _listenStarting = true;
+    try {
+      await _listenInternal(onResult);
+    } finally {
+      _listenStarting = false;
+    }
+  }
 
+  Future<void> _listenInternal(AiSpeechResultCallback onResult) async {
+    if (_disposed) throw StateError('豆包语音服务已释放');
     final generation = ++_generation;
+    // The assistant schedules its next listening segment as soon as it
+    // receives a final result. That result can arrive before the provider has
+    // sent SessionFinished, so wait for the in-flight finish handshake before
+    // opening a new socket. Otherwise a new session could overwrite the old
+    // session's completion future and make cleanup race with recognition.
+    while (!_disposed) {
+      final pendingFinish = _finishInputOperation;
+      if (pendingFinish != null) {
+        try {
+          await pendingFinish;
+        } catch (_) {
+          // Finish is best-effort; the operation itself performs bounded
+          // cleanup and the next session may still be attempted.
+        }
+        continue;
+      }
+      final cleanup = _cleanupFuture;
+      await cleanup;
+      if (_finishing || !identical(cleanup, _cleanupFuture)) continue;
+      break;
+    }
+    if (_disposed) throw StateError('豆包语音服务已释放');
+    if (!_isCurrent(generation) || _listening || _finishing) return;
+
     _resetAudioState();
-    _credentialRetryUsed = false;
+    _sessionRetryUsed = false;
+    _finishRequested = false;
+    _terminalFrameSent = false;
+    _finalResultEmitted = false;
+    _latestSpeechText = '';
+    _pendingFinalText = '';
     _onResult = onResult;
     DoubaoImeAsrConnection? session;
     AiAudioCapture? capture;
     try {
       session = await _client.openSession();
       if (!_isCurrent(generation)) {
-        await session.close();
+        await _closeSession(session);
         return;
       }
       capture =
@@ -1207,21 +1252,20 @@ class DoubaoImeSpeechRecognizer
       if (!_isCurrent(generation)) {
         await capture.cancel();
         await capture.dispose();
-        await session.close();
+        await _closeSession(session);
         return;
       }
-
       _session = session;
       _capture = capture;
       _captureChannelCount = capture.channelCount;
       _captureMixDivisor = capture.mixDivisor;
+      _sessionCompletion = Completer<void>();
       _listening = true;
       _responseTask = _readResponses(generation);
       _audioSubscription = capture.audioStream.listen(
         (bytes) => _processAudio(generation, bytes),
-        onError: (Object error, StackTrace stackTrace) {
-          _handleCaptureError(generation, error);
-        },
+        onError: (Object error, StackTrace stackTrace) =>
+            _handleCaptureError(generation, error),
         onDone: () => _handleCaptureDone(generation),
         cancelOnError: false,
       );
@@ -1236,7 +1280,7 @@ class DoubaoImeSpeechRecognizer
         await capture?.dispose();
       } catch (_) {}
       try {
-        await session?.close();
+        if (session != null) await _closeSession(session);
       } catch (_) {}
       if (_isCurrent(generation)) {
         _onResult = null;
@@ -1249,10 +1293,7 @@ class DoubaoImeSpeechRecognizer
   bool _isCurrent(int generation) => !_disposed && generation == _generation;
 
   void _processAudio(int generation, Uint8List bytes) {
-    if (!_isCurrent(generation) ||
-        !_listening ||
-        _finishing ||
-        _retryingCredentials) {
+    if (!_isCurrent(generation) || !_listening || _finishing) {
       return;
     }
     try {
@@ -1270,7 +1311,7 @@ class DoubaoImeSpeechRecognizer
 
   void _sendAudioFrame(Uint8List frame) {
     final session = _session;
-    if (session == null || _retryingCredentials) return;
+    if (session == null) return;
     if (_frameIndex >= _maxAudioFrames) {
       throw StateError('豆包语音单次聆听超过 60 秒');
     }
@@ -1290,50 +1331,73 @@ class DoubaoImeSpeechRecognizer
 
   Future<void> _readResponses(int generation) async {
     try {
-      while (_isCurrent(generation) && _listening && !_finishing) {
+      while (_isCurrent(generation) &&
+          _session != null &&
+          (_listening || _finishRequested)) {
         final session = _session;
         if (session == null) return;
         final response = await session.nextResponse();
         if (!_isCurrent(generation) ||
-            !_listening ||
-            _finishing ||
+            (!_listening && !_finishRequested) ||
             !identical(session, _session)) {
           return;
         }
         if (response == null) {
-          await _finishCapture(fromResponseLoop: true, emitStatus: true);
+          if (_finishRequested) {
+            _emitFinalResultIfNeeded();
+            _completeSessionCompletion();
+          } else {
+            await _finishCapture(fromResponseLoop: true, emitStatus: true);
+          }
           return;
         }
         switch (response.kind) {
           case DoubaoImeAsrResponseKind.interim:
-            if (response.text.trim().isNotEmpty) {
-              _emitResult(response.text.trim(), false);
+            final text = response.text.trim();
+            if (text.isNotEmpty) {
+              _latestSpeechText = text;
+              _emitResult(text, false);
             }
             break;
           case DoubaoImeAsrResponseKind.finalResult:
-            if (response.text.trim().isNotEmpty) {
-              _emitResult(response.text.trim(), true);
+            final text = response.text.trim();
+            if (text.isNotEmpty) _pendingFinalText = text;
+            // The provider can emit its two/three-pass final result as soon
+            // as VAD detects a pause, while the platform microphone stream
+            // remains open. Stop feeding audio and ask the provider to finish
+            // the session, but keep the response loop alive so a later
+            // SessionFinished (and any last correction) is still consumed.
+            // Calling this unawaited is intentional: awaiting it here would
+            // deadlock waiting for the same response loop to receive
+            // SessionFinished.
+            if (!_finishRequested && !_finishing) {
+              unawaited(_finishInput());
             }
-            await _finishCapture(
-              finalizeInput: true,
-              fromResponseLoop: true,
-              emitStatus: true,
-            );
-            return;
+            break;
           case DoubaoImeAsrResponseKind.sessionFinished:
-            await _finishCapture(fromResponseLoop: true, emitStatus: true);
+            _emitFinalResultIfNeeded();
+            if (_finishRequested) {
+              _completeSessionCompletion();
+            } else {
+              await _finishCapture(fromResponseLoop: true, emitStatus: true);
+            }
             return;
           case DoubaoImeAsrResponseKind.error:
-            if (!_credentialRetryUsed &&
+            if (!_sessionRetryUsed &&
                 isDoubaoImeCredentialRoutingError(response.error)) {
-              _credentialRetryUsed = true;
+              _sessionRetryUsed = true;
               if (await _replaceRejectedSession(generation, session)) {
                 continue;
               }
-              return;
+              if (!_isCurrent(generation) || _finishing) return;
             }
             _emitError(null, 'error_network: 豆包语音识别失败：${response.error}');
-            await _finishCapture(fromResponseLoop: true);
+            if (_finishRequested) {
+              _emitFinalResultIfNeeded();
+              _completeSessionCompletion();
+            } else {
+              await _finishCapture(fromResponseLoop: true);
+            }
             return;
           case DoubaoImeAsrResponseKind.taskStarted:
           case DoubaoImeAsrResponseKind.sessionStarted:
@@ -1344,7 +1408,14 @@ class DoubaoImeSpeechRecognizer
         }
       }
     } catch (error, stackTrace) {
-      if (!_isCurrent(generation) || _finishing) return;
+      if (!_isCurrent(generation)) return;
+      if (_finishRequested) {
+        _logError('response stream failed while finishing', error, stackTrace);
+        _emitFinalResultIfNeeded();
+        _completeSessionCompletion();
+        return;
+      }
+      if (_finishing) return;
       _logError('response stream failed', error, stackTrace);
       _emitError(null, 'error_network: 豆包语音连接异常：$error');
       await _finishCapture(fromResponseLoop: true);
@@ -1355,32 +1426,42 @@ class DoubaoImeSpeechRecognizer
     int generation,
     DoubaoImeAsrConnection rejected,
   ) async {
-    if (!_isCurrent(generation) || !identical(rejected, _session)) {
+    if (!_isCurrent(generation) ||
+        !_listening ||
+        _finishRequested ||
+        !identical(rejected, _session)) {
       return false;
     }
-    _retryingCredentials = true;
     _session = null;
     try {
-      await rejected.close();
-      await _client.resetCredentials();
-      if (!_isCurrent(generation) || _finishing) return false;
+      await _closeSession(rejected);
+      if (!_isCurrent(generation) ||
+          !_listening ||
+          _finishRequested ||
+          _finishing) {
+        return false;
+      }
       final replacement = await _client.openSession();
-      if (!_isCurrent(generation) || _finishing) {
-        await replacement.close();
+      if (!_isCurrent(generation) ||
+          !_listening ||
+          _finishRequested ||
+          _finishing) {
+        await _closeSession(replacement);
         return false;
       }
       _session = replacement;
       _resetAudioState();
-      _log('reconnected with fresh credentials');
+      _log('reconnected after provider rejection');
       return true;
-    } finally {
-      _retryingCredentials = false;
+    } catch (error, stackTrace) {
+      _logError('session recovery failed', error, stackTrace);
+      return false;
     }
   }
 
   void _handleCaptureDone(int generation) {
     if (!_isCurrent(generation) || _finishing) return;
-    unawaited(_finishCapture(finalizeInput: true, emitStatus: true));
+    unawaited(_finishInput());
   }
 
   void _handleCaptureError(int generation, Object error) {
@@ -1390,16 +1471,117 @@ class DoubaoImeSpeechRecognizer
   }
 
   @override
-  Future<void> stop() => _finishCapture(finalizeInput: true, emitStatus: true);
+  Future<void> stop() {
+    _invalidatePendingListen();
+    return _finishInput();
+  }
 
   @override
-  Future<void> cancel() => _finishCapture();
+  Future<void> cancel() {
+    _invalidatePendingListen();
+    return _finishCapture();
+  }
+
+  void _invalidatePendingListen() {
+    if (_listenStarting &&
+        !_listening &&
+        _audioSubscription == null &&
+        _capture == null &&
+        _session == null) {
+      _generation++;
+    }
+  }
+
+  Future<void> _finishInput() {
+    final pending = _finishInputOperation;
+    if (pending != null) return pending;
+    late final Future<void> operation;
+    operation = _finishInputInternal().whenComplete(() {
+      if (identical(_finishInputOperation, operation)) {
+        _finishInputOperation = null;
+      }
+    });
+    _finishInputOperation = operation;
+    return operation;
+  }
+
+  Future<void> _finishInputInternal() async {
+    if (_disposed) return;
+    _invalidatePendingListen();
+    if (_finishing) {
+      await _cleanupFuture;
+      return;
+    }
+    final session = _session;
+    if (!_listening &&
+        _audioSubscription == null &&
+        _capture == null &&
+        session == null) {
+      return;
+    }
+    _finishRequested = true;
+    _listening = false;
+    final subscription = _audioSubscription;
+    final capture = _capture;
+    _audioSubscription = null;
+    _capture = null;
+    try {
+      await subscription?.cancel().timeout(const Duration(seconds: 2));
+    } catch (error, stackTrace) {
+      _logError('audio subscription cancel failed', error, stackTrace);
+    }
+    try {
+      await capture?.stop().timeout(const Duration(seconds: 2));
+    } catch (error, stackTrace) {
+      _logError('audio capture stop failed', error, stackTrace);
+    }
+    try {
+      await capture?.dispose().timeout(const Duration(seconds: 2));
+    } catch (error, stackTrace) {
+      _logError('audio capture dispose failed', error, stackTrace);
+    }
+    if (session == null) {
+      await _finishCapture(emitStatus: true, fromFinishInput: true);
+      return;
+    }
+    if (!_terminalFrameSent) {
+      try {
+        _sendTerminalFrame(session);
+        session.finish();
+        _terminalFrameSent = true;
+      } catch (error, stackTrace) {
+        _logError('final audio send failed', error, stackTrace);
+      }
+    }
+    try {
+      await (_sessionCompletion ??= Completer<void>()).future.timeout(
+        _sessionFinishTimeout,
+      );
+    } catch (_) {
+      // A dead provider must not hold the microphone/session indefinitely.
+      _emitFinalResultIfNeeded();
+    }
+    await _finishCapture(emitStatus: true, fromFinishInput: true);
+  }
 
   Future<void> _finishCapture({
     bool finalizeInput = false,
     bool emitStatus = false,
     bool fromResponseLoop = false,
+    bool fromFinishInput = false,
   }) async {
+    _invalidatePendingListen();
+    if (!fromFinishInput) {
+      final pendingInput = _finishInputOperation;
+      if (pendingInput != null) {
+        if (!fromResponseLoop) {
+          try {
+            await pendingInput.timeout(_sessionFinishTimeout);
+          } catch (_) {}
+        }
+        return;
+      }
+    }
     if (_finishing) {
       if (!fromResponseLoop) await _cleanupFuture;
       return;
@@ -1407,12 +1589,13 @@ class DoubaoImeSpeechRecognizer
     if (!_listening &&
         _audioSubscription == null &&
         _capture == null &&
-        _session == null) {
+        _session == null &&
+        !(fromFinishInput && _finishRequested)) {
       return;
     }
     _finishing = true;
     _listening = false;
-    _retryingCredentials = false;
+    _finishRequested = false;
     _generation++;
     final subscription = _audioSubscription;
     final capture = _capture;
@@ -1439,7 +1622,7 @@ class DoubaoImeSpeechRecognizer
         } catch (error, stackTrace) {
           _logError('audio capture stop failed', error, stackTrace);
         }
-        if (finalizeInput && session != null) {
+        if (finalizeInput && session != null && !_terminalFrameSent) {
           try {
             _sendTerminalFrame(session);
             session.finish();
@@ -1448,9 +1631,11 @@ class DoubaoImeSpeechRecognizer
           }
         }
         try {
-          await session?.close();
+          if (session != null) await _closeSession(session);
         } catch (_) {}
-        if (!fromResponseLoop && responseTask != null) {
+        // _finishInput may be initiated by _readResponses after an endpoint
+        // final. Waiting on that same response future would wait on itself.
+        if (!fromResponseLoop && !fromFinishInput && responseTask != null) {
           try {
             await responseTask.timeout(const Duration(seconds: 2));
           } catch (_) {}
@@ -1461,12 +1646,41 @@ class DoubaoImeSpeechRecognizer
         } catch (_) {}
         _onResult = null;
         _resetAudioState();
+        _terminalFrameSent = false;
+        _finalResultEmitted = false;
+        _latestSpeechText = '';
+        _pendingFinalText = '';
+        _sessionRetryUsed = false;
+        _sessionCompletion = null;
         _finishing = false;
         if (emitStatus) _emitStatus('done');
       }
     }();
     _cleanupFuture = cleanup;
     await cleanup;
+  }
+
+  void _completeSessionCompletion() {
+    final completion = _sessionCompletion;
+    if (completion != null && !completion.isCompleted) completion.complete();
+  }
+
+  void _emitFinalResultIfNeeded() {
+    if (_finalResultEmitted) return;
+    final text = _pendingFinalText.isNotEmpty
+        ? _pendingFinalText
+        : _latestSpeechText;
+    if (text.isEmpty) return;
+    _finalResultEmitted = true;
+    _emitResult(text, true);
+  }
+
+  Future<void> _closeSession(DoubaoImeAsrConnection session) async {
+    try {
+      await session.close().timeout(const Duration(seconds: 2));
+    } catch (error, stackTrace) {
+      _logError('session close failed', error, stackTrace);
+    }
   }
 
   void _sendTerminalFrame(DoubaoImeAsrConnection session) {
