@@ -98,11 +98,21 @@ void main() {
 
       await tester.pageBack();
       await tester.pumpAndSettle();
-      await tester.tap(
-        find
-            .byKey(const ValueKey('home-favorite-playlists-header'))
-            .hitTestable(),
+      final homeScroll = find
+          .descendant(
+            of: find.byKey(const PageStorageKey('discover-portrait-scroll')),
+            matching: find.byType(Scrollable),
+          )
+          .first;
+      final playlistHeader = find.byKey(
+        const ValueKey('home-favorite-playlists-header'),
       );
+      await tester.scrollUntilVisible(
+        playlistHeader,
+        220,
+        scrollable: homeScroll,
+      );
+      await tester.tap(playlistHeader.hitTestable());
       await tester.pumpAndSettle();
       expect(find.byType(FavoritePlaylistsScreen), findsOneWidget);
       expect(
@@ -117,11 +127,15 @@ void main() {
 
       await tester.pageBack();
       await tester.pumpAndSettle();
-      await tester.tap(
-        find
-            .byKey(const ValueKey('home-bilibili-favorites-header'))
-            .hitTestable(),
+      final bilibiliHeader = find.byKey(
+        const ValueKey('home-bilibili-favorites-header'),
       );
+      await tester.scrollUntilVisible(
+        bilibiliHeader,
+        220,
+        scrollable: homeScroll,
+      );
+      await tester.tap(bilibiliHeader.hitTestable());
       await tester.pumpAndSettle();
       expect(find.byType(BilibiliFavoritesScreen), findsOneWidget);
       expect(

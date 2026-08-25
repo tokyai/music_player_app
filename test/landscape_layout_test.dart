@@ -783,20 +783,16 @@ void main() {
 
       await tester.pageBack();
       await tester.pumpAndSettle();
-      final libraryPane = find.byKey(
-        const PageStorageKey('discover-landscape-library'),
-      );
-      final libraryList = find
-          .descendant(of: libraryPane, matching: find.byType(Scrollable))
-          .first;
       final historyHeader = find.byKey(
         const ValueKey('home-playback-history-header'),
       );
-      await tester.scrollUntilVisible(
-        historyHeader,
-        180,
-        scrollable: libraryList,
+      final collectionGrid = find.byKey(const ValueKey('home-collection-grid'));
+      expect(collectionGrid, findsOneWidget);
+      await tester.drag(
+        find.byKey(const ValueKey('discover-landscape-library-scroll')),
+        const Offset(0, -720),
       );
+      await tester.pumpAndSettle();
       expect(historyHeader.hitTestable(), findsOneWidget);
       await tester.tap(historyHeader.hitTestable());
       await tester.pumpAndSettle();

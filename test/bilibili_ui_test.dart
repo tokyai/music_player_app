@@ -302,7 +302,7 @@ void main() {
     tester.view.resetDevicePixelRatio();
   });
 
-  testWidgets('large landscape keeps all three favorite previews on screen', (
+  testWidgets('large landscape keeps favorite previews large and reachable', (
     tester,
   ) async {
     final music = _song(MusicPlatform.qq, 'music-1', '收藏歌曲');
@@ -352,6 +352,12 @@ void main() {
         find.byKey(const ValueKey('home-playback-history-header')),
         findsOneWidget,
       );
+      final libraryScroll = find
+          .descendant(
+            of: find.byKey(const ValueKey('discover-landscape-library-scroll')),
+            matching: find.byType(Scrollable),
+          )
+          .first;
       for (final key in const [
         'home-favorites-carousel',
         'home-favorite-playlists-carousel',
@@ -359,8 +365,32 @@ void main() {
       ]) {
         final finder = find.byKey(ValueKey(key));
         expect(finder, findsOneWidget);
+        await tester.scrollUntilVisible(finder, 260, scrollable: libraryScroll);
         expect(finder.hitTestable(), findsOneWidget);
-        expect(tester.getBottomRight(finder).dy, lessThanOrEqualTo(800));
+        expect(tester.getSize(finder).height, greaterThanOrEqualTo(210));
+      }
+      expect(
+        tester
+            .getSize(find.byKey(const ValueKey('home-favorites-panel')))
+            .width,
+        greaterThan(300),
+      );
+      expect(
+        tester
+            .getSize(find.byKey(const ValueKey('home-favorite-qq-music-1')))
+            .width,
+        greaterThanOrEqualTo(148),
+      );
+      for (final key in const [
+        'home-favorites-header',
+        'home-favorite-playlists-header',
+        'home-bilibili-favorites-header',
+        'home-playback-history-header',
+      ]) {
+        final action = find.byKey(ValueKey(key));
+        await tester.scrollUntilVisible(action, 260, scrollable: libraryScroll);
+        expect(tester.getSize(action).shortestSide, greaterThanOrEqualTo(52));
+        expect(action.hitTestable(), findsOneWidget);
       }
       expect(tester.takeException(), isNull);
     }, () => MockClient((_) async => http.Response('{}', 200)));
