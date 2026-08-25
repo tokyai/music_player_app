@@ -64,11 +64,13 @@ android {
 
     buildTypes {
         release {
-            // Sherpa uses Dart FFI/native libraries and record registers an
-            // Android plugin at runtime. Keep release builds deterministic on
-            // ARM devices by disabling R8 code shrinking and obfuscation.
-            minifyEnabled false
-            shrinkResources false
+            // Keep the Android layer small for the R8 validation build. Dart
+            // AOT/native FFI assets remain untouched; plugin entry points are
+            // referenced by Flutter's generated registrant and manifest.
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
+                    'proguard-rules.pro'
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.release
             }
