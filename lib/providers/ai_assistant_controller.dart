@@ -26,6 +26,10 @@ enum AiSessionState {
 class AiAssistantController extends ChangeNotifier {
   static const _speechRestartDelay = Duration(milliseconds: 180);
   static const _speechErrorRestartDelay = Duration(milliseconds: 600);
+  static const _zipformerSpeechCommitDelay = Duration(milliseconds: 350);
+  static const _systemSpeechCommitDelay = Duration(milliseconds: 550);
+  static const _doubaoSpeechCommitDelay = Duration(milliseconds: 120);
+  static const _punctuationTimeout = Duration(milliseconds: 900);
   // Keep the visible transcript bounded during long in-car sessions. The
   // request context is already limited separately in _contextMessages().
   static const _maxStoredMessages = 100;
@@ -48,7 +52,8 @@ class AiAssistantController extends ChangeNotifier {
   final AiSpeechEngine speech;
   final AiPunctuationService punctuation;
   final AiTextToSpeechEngine textToSpeech;
-  final Duration speechCommitDelay;
+  final Duration? speechCommitDelay;
+  final Duration punctuationTimeout;
 
   final List<AiConversationMessage> _messages = [];
   AiSessionState _state = AiSessionState.idle;
@@ -69,6 +74,7 @@ class AiAssistantController extends ChangeNotifier {
   ({MusicPlatform platform, String id})? _songBeforeSession;
   bool _disposed = false;
   Future<void>? _resourceDisposeFuture;
+  AiVoiceModelKind? _sessionVoiceModel;
 
   AiAssistantController({
     required this.player,
@@ -78,7 +84,8 @@ class AiAssistantController extends ChangeNotifier {
     AiSpeechEngine? speech,
     AiPunctuationService? punctuation,
     AiTextToSpeechEngine? textToSpeech,
-    this.speechCommitDelay = const Duration(milliseconds: 1500),
+    this.speechCommitDelay,
+    this.punctuationTimeout = _punctuationTimeout,
   }) : gateway = gateway ?? AiAssistantService(),
        songResolver = songResolver ?? const AiSongResolver(),
        speech = speech ?? PlatformAiSpeechEngine(),
@@ -150,6 +157,7 @@ class AiAssistantController extends ChangeNotifier {
       return;
     }
     _active = true;
+    _sessionVoiceModel = configController.voiceModel;
     _generation++;
     _turnGeneration++;
     _messages.clear();
@@ -288,6 +296,7 @@ class AiAssistantController extends ChangeNotifier {
       }
     }
     _resetSpeechBuffer();
+    _sessionVoiceModel = null;
     _setState(AiSessionState.idle);
   }
 
@@ -348,15 +357,20 @@ class AiAssistantController extends ChangeNotifier {
     if (normalized.isEmpty) return;
     _speechCommitTimer?.cancel();
     _speechCommitTimer = null;
+    _speechRestartTimer?.cancel();
+    _speechRestartTimer = null;
     _currentSpeechText = normalized;
     _transcript = _mergeSpeechText(_finalSpeechText, _currentSpeechText);
     if (isFinal) {
       _finalSpeechText = _mergeSpeechText(_finalSpeechText, normalized);
       _currentSpeechText = '';
       _transcript = _finalSpeechText;
-      _recognitionActive = false;
+      // Do not start another recognition segment here.  The old code started
+      // one after 180 ms and then cancelled it when the commit timer fired,
+      // which caused needless microphone/audio-focus/session churn.  The
+      // commit path below owns the current recognizer's cleanup and the next
+      // segment is opened only after the reply has been spoken.
       _scheduleSpeechCommit(generation);
-      _scheduleRecognitionRestart(generation);
     }
     _notify();
   }
@@ -383,7 +397,9 @@ class AiAssistantController extends ChangeNotifier {
     _setState(AiSessionState.processing);
     var punctuated = normalized;
     try {
-      punctuated = await punctuation.addPunctuation(normalized);
+      if (_shouldAddPunctuation(normalized)) {
+        punctuated = await _addPunctuationWithinBudget(normalized);
+      }
     } catch (_) {
       // Optional post-processing must not discard a valid speech command.
     }
@@ -504,6 +520,8 @@ class AiAssistantController extends ChangeNotifier {
     if ((status == 'done' || status == 'notListening') &&
         _state == AiSessionState.listening) {
       _recognitionActive = false;
+      final hadText =
+          _currentSpeechText.isNotEmpty || _finalSpeechText.isNotEmpty;
       if (_currentSpeechText.isNotEmpty) {
         _finalSpeechText = _mergeSpeechText(
           _finalSpeechText,
@@ -514,7 +532,12 @@ class AiAssistantController extends ChangeNotifier {
         _scheduleSpeechCommit(_generation);
         _notify();
       }
-      _scheduleRecognitionRestart(_generation);
+      // A recognizer that ends without a final text can be restarted.  When
+      // text exists, _scheduleSpeechCommit owns the transition and starting
+      // a second segment would race with _stopRecognition().
+      if (!hadText) {
+        _scheduleRecognitionRestart(_generation);
+      }
     }
   }
 
@@ -524,6 +547,8 @@ class AiAssistantController extends ChangeNotifier {
     if (!_isUnavailableSpeechError(message)) {
       debugPrint('AI 语音识别短暂异常，正在重试: $message');
       _error = null;
+      final hadText =
+          _currentSpeechText.isNotEmpty || _finalSpeechText.isNotEmpty;
       if (_currentSpeechText.isNotEmpty) {
         _finalSpeechText = _mergeSpeechText(
           _finalSpeechText,
@@ -534,11 +559,13 @@ class AiAssistantController extends ChangeNotifier {
         _scheduleSpeechCommit(_generation);
       }
       _setState(AiSessionState.listening);
-      _scheduleRecognitionRestart(
-        _generation,
-        delay: _speechErrorRestartDelay,
-        replacePending: true,
-      );
+      if (!hadText) {
+        _scheduleRecognitionRestart(
+          _generation,
+          delay: _speechErrorRestartDelay,
+          replacePending: true,
+        );
+      }
       return;
     }
     _cancelSpeechTimers();
@@ -548,10 +575,60 @@ class AiAssistantController extends ChangeNotifier {
 
   void _scheduleSpeechCommit(int generation) {
     _speechCommitTimer?.cancel();
-    _speechCommitTimer = Timer(speechCommitDelay, () {
+    _speechRestartTimer?.cancel();
+    _speechRestartTimer = null;
+    _speechCommitTimer = Timer(_effectiveSpeechCommitDelay, () {
       _speechCommitTimer = null;
       unawaited(_commitSpeech(generation));
     });
+  }
+
+  Duration get _effectiveSpeechCommitDelay =>
+      speechCommitDelay ??
+      switch (_sessionVoiceModel ?? configController.voiceModel) {
+        AiVoiceModelKind.zipformerChinese => _zipformerSpeechCommitDelay,
+        AiVoiceModelKind.systemSpeech => _systemSpeechCommitDelay,
+        AiVoiceModelKind.doubaoIme => _doubaoSpeechCommitDelay,
+      };
+
+  bool _shouldAddPunctuation(String text) {
+    // Doubao's final result already includes its server-side correction and
+    // punctuation passes.  Running the local 72 MB punctuation model again
+    // only adds latency and memory pressure.
+    if ((_sessionVoiceModel ?? configController.voiceModel) ==
+        AiVoiceModelKind.doubaoIme) {
+      return false;
+    }
+    // Most assistant voice turns are short commands.  They do not need a
+    // second punctuation pass, while longer natural-language speech still
+    // benefits from it.
+    final command = text
+        .replaceAll(RegExp(r'[，。！？,.!?、\s]+'), '')
+        .replaceFirst(RegExp(r'^(请|麻烦|帮我)'), '');
+    if (RegExp(
+      r'^(我想|我要|想要)?(播放|放一首|放|听|暂停|继续|下一首|上一首|收藏|加入收藏|取消收藏|搜索|打开|关闭|调大|调小|音量|快进|快退)',
+    ).hasMatch(command)) {
+      return false;
+    }
+    return command.length >= 16;
+  }
+
+  Future<String> _addPunctuationWithinBudget(String text) async {
+    try {
+      return await punctuation.addPunctuation(text).timeout(punctuationTimeout);
+    } on TimeoutException {
+      // A timed-out optional model must not keep initializing in the
+      // background and retain a large native allocation after the raw text
+      // has already been submitted.
+      unawaited(_releaseTimedOutPunctuation());
+      return text;
+    }
+  }
+
+  Future<void> _releaseTimedOutPunctuation() async {
+    try {
+      await punctuation.releaseIdleResources();
+    } catch (_) {}
   }
 
   void _scheduleRecognitionRestart(
@@ -700,6 +777,7 @@ class AiAssistantController extends ChangeNotifier {
     if (_resourceDisposeFuture != null) return;
     _disposed = true;
     _active = false;
+    _sessionVoiceModel = null;
     _generation++;
     _turnGeneration++;
     _cancelSpeechTimers();

@@ -121,18 +121,21 @@ void main() {
     'starts a PCM session, sends bounded frame states and closes repeatedly',
     () async {
       final socket = _FakeDoubaoSocket();
-      final client = DoubaoImeAsrClient(
-        credentialStore: MemoryDoubaoImeCredentialStore(
-          const DoubaoImeCredentials(
-            deviceId: 'device-id',
-            installId: 'install-id',
-            cdid: 'cdid',
-            openUdid: 'open-udid',
-            clientUdid: 'client-udid',
-            token: 'cached-token',
-          ),
+      var tokenCalls = 0;
+      final store = _CountingCredentialStore(
+        const DoubaoImeCredentials(
+          deviceId: 'device-id',
+          installId: 'install-id',
+          cdid: 'cdid',
+          openUdid: 'open-udid',
+          clientUdid: 'client-udid',
+          token: 'cached-token',
         ),
+      );
+      final client = DoubaoImeAsrClient(
+        credentialStore: store,
         httpClient: MockClient((request) async {
+          tokenCalls++;
           return http.Response(
             jsonEncode({
               'data': {
@@ -153,6 +156,9 @@ void main() {
       addTearDown(client.dispose);
 
       final session = await client.openSession();
+      expect(tokenCalls, 0);
+      expect(store.readCalls, 1);
+      expect(store.writeCalls, 0);
       final startSession = socket.requests.firstWhere(
         (request) => request.methodName == 'StartSession',
       );
@@ -245,8 +251,10 @@ void main() {
     addTearDown(client.dispose);
 
     final recovered = await client.openSession();
+    // A healthy cached credential is used directly.  Token refresh is only
+    // performed after the provider rejects the first session.
     expect(socketCalls, 2);
-    expect(tokenCalls, 2);
+    expect(tokenCalls, 1);
     expect(store.value?.deviceId, 'device-id');
     expect(store.value?.token, 'fresh-token');
     await recovered.close();
@@ -303,13 +311,40 @@ void main() {
       final recovered = await client.openSession();
 
       expect(socketCalls, 3);
-      expect(tokenCalls, 3);
+      // The first rejected session uses the cached token; subsequent retries
+      // refresh only when the provider explicitly rejects the session.
+      expect(tokenCalls, 2);
       expect(registerCalls, 1);
       expect(store.value?.deviceId, 'fresh-device');
       expect(store.value?.installId, 'fresh-install');
       await recovered.close();
     },
   );
+}
+
+class _CountingCredentialStore implements DoubaoImeCredentialStore {
+  _CountingCredentialStore(this.value);
+
+  DoubaoImeCredentials? value;
+  int readCalls = 0;
+  int writeCalls = 0;
+
+  @override
+  Future<DoubaoImeCredentials?> read() async {
+    readCalls++;
+    return value;
+  }
+
+  @override
+  Future<void> write(DoubaoImeCredentials credentials) async {
+    writeCalls++;
+    value = credentials;
+  }
+
+  @override
+  Future<void> clear() async {
+    value = null;
+  }
 }
 
 class _FakeDoubaoSocket implements DoubaoImeAsrSocket {

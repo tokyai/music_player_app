@@ -314,7 +314,12 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
     required String appName,
   }) async {
     _checkNotDisposed();
-    final credentials = await _ensureCredentials(refreshToken: true);
+    // A normal turn should reuse the cached token.  Refreshing it on every
+    // session (the previous behavior after 30 seconds) adds a blocking HTTP
+    // request before the WebSocket can even start.  The caller already has a
+    // bounded recovery path: if the provider rejects the session, refresh the
+    // token and retry once.
+    final credentials = await _ensureCredentials(refreshToken: false);
     _checkNotDisposed();
     final uri = _endpoints.websocket.replace(
       queryParameters: {
@@ -480,7 +485,13 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
     required bool refreshToken,
   }) async {
     _checkNotDisposed();
-    DoubaoImeCredentials? storedCredentials = _credentials;
+    final inMemoryCredentials = _credentials;
+    if (!refreshToken &&
+        inMemoryCredentials != null &&
+        inMemoryCredentials.token.isNotEmpty) {
+      return inMemoryCredentials;
+    }
+    DoubaoImeCredentials? storedCredentials = inMemoryCredentials;
     if (storedCredentials == null) {
       try {
         storedCredentials = await _credentialStore.read().timeout(
@@ -491,6 +502,7 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
       }
     }
     _checkNotDisposed();
+    var shouldPersist = storedCredentials == null;
     var credentials = storedCredentials ?? await _registerDevice();
     _checkNotDisposed();
 
@@ -503,18 +515,21 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
         final token = await _requestToken(credentials);
         credentials = credentials.copyWith(token: token);
         _tokenRefreshedAt = DateTime.now();
+        shouldPersist = true;
       } catch (_) {
         if (credentials.token.isEmpty) rethrow;
       }
     }
     _checkNotDisposed();
     _credentials = credentials;
-    try {
-      await _credentialStore
-          .write(credentials)
-          .timeout(const Duration(seconds: 5));
-    } catch (_) {
-      // Keep the in-memory credential usable for the current app process.
+    if (shouldPersist) {
+      try {
+        await _credentialStore
+            .write(credentials)
+            .timeout(const Duration(seconds: 5));
+      } catch (_) {
+        // Keep the in-memory credential usable for the current app process.
+      }
     }
     return credentials;
   }

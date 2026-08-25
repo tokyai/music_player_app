@@ -130,17 +130,144 @@ void main() {
     addTearDown(fixture.dispose);
 
     await fixture.controller.startSession();
-    fixture.speech.emit('我想听周杰伦的', isFinal: true);
+    fixture.speech.emit('我最近经常在下班回家的路上听周杰伦的', isFinal: true);
     await Future<void>.delayed(const Duration(milliseconds: 30));
 
     expect(fixture.gateway.requests, isEmpty);
-    fixture.speech.emit('夜曲', isFinal: false);
-    fixture.speech.emit('夜曲', isFinal: true);
+    fixture.speech.emit('一些比较安静又有故事感的歌曲', isFinal: false);
+    fixture.speech.emit('一些比较安静又有故事感的歌曲', isFinal: true);
 
     await _waitFor(() => fixture.gateway.requests.length == 1);
-    expect(punctuationInput, '我想听周杰伦的 夜曲');
-    expect(fixture.gateway.requests.single.single.text, '我想听周杰伦的 夜曲！');
+    expect(punctuationInput, '我最近经常在下班回家的路上听周杰伦的 一些比较安静又有故事感的歌曲');
+    expect(
+      fixture.gateway.requests.single.single.text,
+      '我最近经常在下班回家的路上听周杰伦的 一些比较安静又有故事感的歌曲！',
+    );
     expect(punctuation.calls, 1);
+  });
+
+  test(
+    'does not reopen recognition while final text waits to commit',
+    () async {
+      final fixture = await _Fixture.create(
+        speechCommitDelay: const Duration(milliseconds: 300),
+      );
+      addTearDown(fixture.dispose);
+
+      await fixture.controller.startSession();
+      fixture.speech.emit('周杰伦有哪些适合安静听的歌曲', isFinal: true);
+
+      await Future<void>.delayed(const Duration(milliseconds: 220));
+      expect(fixture.gateway.requests, isEmpty);
+      expect(fixture.speech.listenCalls, 1);
+
+      await _waitFor(() => fixture.gateway.requests.length == 1);
+      await _waitFor(
+        () => fixture.controller.state == AiSessionState.listening,
+      );
+      expect(fixture.speech.cancelCalls, 1);
+      expect(fixture.speech.listenCalls, 2);
+    },
+  );
+
+  test(
+    'done status with recognized text commits instead of restarting',
+    () async {
+      final fixture = await _Fixture.create(
+        speechCommitDelay: const Duration(milliseconds: 300),
+      );
+      addTearDown(fixture.dispose);
+
+      await fixture.controller.startSession();
+      fixture.speech.emit('这是系统识别器返回的文本', isFinal: false);
+      fixture.speech.emitStatus('done');
+
+      await Future<void>.delayed(const Duration(milliseconds: 220));
+      expect(fixture.gateway.requests, isEmpty);
+      expect(fixture.speech.listenCalls, 1);
+
+      await _waitFor(() => fixture.gateway.requests.length == 1);
+      await _waitFor(
+        () => fixture.controller.state == AiSessionState.listening,
+      );
+      expect(fixture.speech.listenCalls, 2);
+    },
+  );
+
+  testWidgets('uses the shorter default Doubao commit delay', (tester) async {
+    final fixture = await _Fixture.create(speechCommitDelay: null);
+    addTearDown(fixture.dispose);
+    await fixture.config.setVoiceModel(AiVoiceModelKind.doubaoIme);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('豆包已经完成最终纠错', isFinal: true);
+
+    await tester.pump(const Duration(milliseconds: 119));
+    expect(fixture.gateway.requests, isEmpty);
+    await tester.pump(const Duration(milliseconds: 2));
+    await tester.pump();
+    expect(fixture.gateway.requests, hasLength(1));
+  });
+
+  testWidgets('keeps a longer default Zipformer commit window', (tester) async {
+    final fixture = await _Fixture.create(speechCommitDelay: null);
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('离线识别最终结果', isFinal: true);
+
+    await tester.pump(const Duration(milliseconds: 349));
+    expect(fixture.gateway.requests, isEmpty);
+    await tester.pump(const Duration(milliseconds: 2));
+    await tester.pump();
+    expect(fixture.gateway.requests, hasLength(1));
+  });
+
+  test('short music commands bypass local punctuation', () async {
+    final punctuation = MemoryAiPunctuationService(
+      transform: (text) => '$text！',
+    );
+    final fixture = await _Fixture.create(punctuation: punctuation);
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('我想听周杰伦的夜曲', isFinal: true);
+
+    await _waitFor(() => fixture.gateway.requests.length == 1);
+    expect(fixture.gateway.requests.single.single.text, '我想听周杰伦的夜曲');
+    expect(punctuation.calls, 0);
+  });
+
+  test('Doubao final results bypass local punctuation', () async {
+    final punctuation = MemoryAiPunctuationService(
+      transform: (text) => '$text！',
+    );
+    final fixture = await _Fixture.create(punctuation: punctuation);
+    addTearDown(fixture.dispose);
+    await fixture.config.setVoiceModel(AiVoiceModelKind.doubaoIme);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('请结合我们前面的对话继续详细介绍这些歌曲背后的创作故事', isFinal: true);
+
+    await _waitFor(() => fixture.gateway.requests.length == 1);
+    expect(punctuation.calls, 0);
+  });
+
+  test('punctuation timeout submits raw text and releases its model', () async {
+    final punctuation = _BlockingPunctuationService();
+    final fixture = await _Fixture.create(
+      punctuation: punctuation,
+      punctuationTimeout: const Duration(milliseconds: 20),
+    );
+    addTearDown(fixture.dispose);
+    const text = '请结合我们前面的对话继续详细介绍这些歌曲背后的创作故事';
+
+    await fixture.controller.startSession();
+    fixture.speech.emit(text, isFinal: true);
+
+    await _waitFor(() => fixture.gateway.requests.length == 1);
+    await _waitFor(() => punctuation.releaseCalls == 1);
+    expect(fixture.gateway.requests.single.single.text, text);
   });
 
   test('keyboard input bypasses speech punctuation', () async {
@@ -165,10 +292,11 @@ void main() {
     addTearDown(fixture.dispose);
 
     await fixture.controller.startSession();
-    fixture.speech.emit('播放周杰伦', isFinal: true);
+    const text = '请结合我们前面的对话继续详细介绍这些歌曲背后的创作故事';
+    fixture.speech.emit(text, isFinal: true);
 
     await _waitFor(() => fixture.gateway.requests.length == 1);
-    expect(fixture.gateway.requests.single.single.text, '播放周杰伦');
+    expect(fixture.gateway.requests.single.single.text, text);
   });
 
   test('stopping and disposing release punctuation resources', () async {
@@ -374,7 +502,8 @@ class _Fixture {
     _TestResolver? resolver,
     List<AiChatResult> gatewayResults = const [],
     int blockedSpeakCount = 0,
-    Duration speechCommitDelay = const Duration(milliseconds: 10),
+    Duration? speechCommitDelay = const Duration(milliseconds: 10),
+    Duration punctuationTimeout = const Duration(milliseconds: 900),
     AiPunctuationService? punctuation,
   }) async {
     final actualPlayer = player ?? _TestPlayer();
@@ -394,6 +523,7 @@ class _Fixture {
       punctuation: actualPunctuation,
       textToSpeech: tts,
       speechCommitDelay: speechCommitDelay,
+      punctuationTimeout: punctuationTimeout,
     );
     return _Fixture._(
       player: actualPlayer,
@@ -446,6 +576,21 @@ class _TestGateway implements AiChatGateway {
   void close() => closed = true;
 }
 
+class _BlockingPunctuationService implements AiPunctuationService {
+  int releaseCalls = 0;
+
+  @override
+  Future<String> addPunctuation(String text) => Completer<String>().future;
+
+  @override
+  Future<void> releaseIdleResources() async {
+    releaseCalls++;
+  }
+
+  @override
+  Future<void> dispose() async {}
+}
+
 class _TestSpeech
     implements AiSpeechEngine, AiVoiceModelSelector, AiSpeechModelWarmup {
   AiSpeechResultCallback? _resultCallback;
@@ -453,6 +598,7 @@ class _TestSpeech
   void Function(String)? _statusCallback;
   bool listening = false;
   int listenCalls = 0;
+  int cancelCalls = 0;
   int preloadCalls = 0;
   int releasePreloadedCalls = 0;
   bool retainIdleModel = false;
@@ -505,7 +651,10 @@ class _TestSpeech
   Future<void> stop() async => listening = false;
 
   @override
-  Future<void> cancel() async => listening = false;
+  Future<void> cancel() async {
+    cancelCalls++;
+    listening = false;
+  }
 }
 
 class _TestTts implements AiTextToSpeechEngine {
