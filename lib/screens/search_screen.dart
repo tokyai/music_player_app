@@ -1540,126 +1540,244 @@ class _SearchVoiceInputDialogState extends State<_SearchVoiceInputDialog> {
   Widget build(BuildContext context) {
     final layout = AppLayout.fromContext(context);
     final compact = layout.isCompactLandscape;
+    final viewInsets = MediaQuery.viewInsetsOf(context);
+    final keyboardOpen = viewInsets.bottom > 0;
+    // A head unit has more useful horizontal than vertical space. Keep the
+    // status/retry panel beside the editor in every landscape; once the
+    // keyboard is visible, return to a scrollable single-column layout so the
+    // editor and actions remain reachable above the IME.
+    final useSplitLayout = layout.isLandscape && !keyboardOpen;
+    final mediaSize = MediaQuery.sizeOf(context);
+    final availableHeight =
+        mediaSize.height - viewInsets.bottom - (layout.isLandscape ? 16 : 48);
+    final maxDialogHeight = availableHeight > 0 ? availableHeight : 120.0;
+    final horizontalInset = compact ? 12.0 : 24.0;
+    final requestedWidth = useSplitLayout
+        ? (layout.usesLargeTypography ? 900.0 : 780.0)
+        : 560.0;
+    final availableWidth = (mediaSize.width - horizontalInset * 2)
+        .clamp(1.0, double.infinity)
+        .toDouble();
+    final dialogWidth = requestedWidth.clamp(1.0, availableWidth).toDouble();
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) unawaited(_cancelDialog());
       },
-      child: AlertDialog(
+      child: Dialog(
         key: const ValueKey('search-voice-dialog'),
         insetPadding: EdgeInsets.symmetric(
-          horizontal: compact ? 12 : 24,
+          horizontal: horizontalInset,
           vertical: compact ? 8 : 24,
         ),
-        titlePadding: EdgeInsets.fromLTRB(
-          compact ? 16 : 24,
-          compact ? 12 : 20,
-          compact ? 16 : 24,
-          compact ? 4 : 8,
-        ),
-        contentPadding: EdgeInsets.fromLTRB(
-          compact ? 16 : 24,
-          compact ? 4 : 8,
-          compact ? 16 : 24,
-          compact ? 4 : 8,
-        ),
-        actionsPadding: EdgeInsets.fromLTRB(
-          compact ? 12 : 16,
-          compact ? 2 : 8,
-          compact ? 12 : 16,
-          compact ? 8 : 12,
-        ),
-        title: const Row(
-          children: [
-            Icon(Icons.mic_rounded),
-            SizedBox(width: 10),
-            Expanded(child: Text('语音搜索')),
-          ],
-        ),
-        content: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 500),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                TextField(
-                  key: const ValueKey('search-voice-candidate'),
-                  controller: _candidateController,
-                  minLines: 1,
-                  maxLines: compact ? 2 : 3,
-                  maxLength: 120,
-                  enabled: !_closing,
-                  decoration: const InputDecoration(labelText: '搜索内容'),
-                  textInputAction: TextInputAction.search,
-                  onTap: () => unawaited(_beginManualEditing()),
-                  onChanged: _handleCandidateChanged,
-                  onSubmitted: (_) => unawaited(_confirm()),
-                ),
-                SizedBox(height: compact ? 2 : 8),
-                Row(
+        child: SizedBox(
+          width: dialogWidth,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxDialogHeight),
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(
+                compact ? 18 : 24,
+                compact ? 14 : 22,
+                compact ? 18 : 24,
+                compact ? 14 : 20,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Expanded(
-                      child: Text(
-                        _error ?? _status,
-                        key: const ValueKey('search-voice-status'),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: _error == null
-                              ? AppColors.textSecondary
-                              : Theme.of(context).colorScheme.error,
-                          fontSize: layout.secondarySize,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    SizedBox.square(
-                      dimension: compact ? 42 : 48,
-                      child: _preparing
-                          ? const Padding(
-                              padding: EdgeInsets.all(10),
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2.5,
-                              ),
-                            )
-                          : IconButton.filledTonal(
-                              key: const ValueKey('search-voice-retry'),
-                              tooltip: _listening ? '停止识别' : '重新识别',
-                              onPressed: _closing
-                                  ? null
-                                  : _listening
-                                  ? () => unawaited(_stopListening())
-                                  : () => unawaited(_startListening()),
-                              icon: Icon(
-                                _listening
-                                    ? Icons.stop_rounded
-                                    : Icons.mic_rounded,
-                              ),
+                    _buildVoiceDialogHeader(context, compact),
+                    SizedBox(height: compact ? 14 : 20),
+                    if (useSplitLayout)
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            flex: 4,
+                            child: _buildVoiceStatusPanel(
+                              context,
+                              compact: true,
                             ),
-                    ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            flex: 6,
+                            child: _buildCandidateEditor(compact),
+                          ),
+                        ],
+                      )
+                    else ...[
+                      _buildCandidateEditor(compact),
+                      const SizedBox(height: 10),
+                      _buildVoiceStatusPanel(context, compact: compact),
+                    ],
+                    SizedBox(height: compact ? 14 : 22),
+                    _buildVoiceDialogActions(),
                   ],
                 ),
-              ],
+              ),
             ),
           ),
         ),
-        actions: [
-          TextButton(
+      ),
+    );
+  }
+
+  Widget _buildVoiceDialogHeader(BuildContext context, bool compact) {
+    return Row(
+      children: [
+        Container(
+          width: compact ? 44 : 52,
+          height: compact ? 44 : 52,
+          decoration: BoxDecoration(
+            color: _listening ? AppColors.primarySoft : AppColors.surfaceSoft,
+            borderRadius: BorderRadius.circular(AppRadius.control),
+          ),
+          child: Icon(
+            _listening ? Icons.mic_rounded : Icons.graphic_eq_rounded,
+            color: _listening ? AppColors.primary : AppColors.textSecondary,
+            size: compact ? 26 : 31,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '语音搜索',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: compact ? 23 : 27,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '识别结果',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: compact ? 13 : 15,
+                ),
+              ),
+            ],
+          ),
+        ),
+        IconButton(
+          key: const ValueKey('search-voice-close'),
+          tooltip: '关闭',
+          onPressed: _closing ? null : () => unawaited(_cancelDialog()),
+          icon: const Icon(Icons.close_rounded),
+          iconSize: compact ? 27 : 30,
+          constraints: BoxConstraints.tightFor(
+            width: compact ? 50 : 56,
+            height: compact ? 50 : 56,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCandidateEditor(bool compact) {
+    return TextField(
+      key: const ValueKey('search-voice-candidate'),
+      controller: _candidateController,
+      minLines: compact ? 2 : 1,
+      maxLines: compact ? 3 : 4,
+      maxLength: 120,
+      enabled: !_closing,
+      decoration: InputDecoration(
+        labelText: '识别文本',
+        hintText: '等待语音内容…',
+        alignLabelWithHint: true,
+        counterText: '',
+        filled: true,
+        fillColor: AppColors.background,
+      ),
+      textInputAction: TextInputAction.search,
+      onTap: () => unawaited(_beginManualEditing()),
+      onChanged: _handleCandidateChanged,
+      onSubmitted: (_) => unawaited(_confirm()),
+    );
+  }
+
+  Widget _buildVoiceStatusPanel(BuildContext context, {required bool compact}) {
+    final statusColor = _error == null
+        ? (_listening ? AppColors.primary : AppColors.textSecondary)
+        : Theme.of(context).colorScheme.error;
+    return Container(
+      padding: EdgeInsets.all(compact ? 12 : 14),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceSoft,
+        borderRadius: BorderRadius.circular(AppRadius.control),
+        border: Border.all(color: AppColors.outline),
+      ),
+      child: Row(
+        children: [
+          SizedBox.square(
+            dimension: compact ? 44 : 48,
+            child: _preparing
+                ? const Padding(
+                    padding: EdgeInsets.all(10),
+                    child: CircularProgressIndicator(strokeWidth: 2.5),
+                  )
+                : IconButton.filledTonal(
+                    key: const ValueKey('search-voice-retry'),
+                    tooltip: _listening ? '停止识别' : '重新识别',
+                    onPressed: _closing
+                        ? null
+                        : _listening
+                        ? () => unawaited(_stopListening())
+                        : () => unawaited(_startListening()),
+                    icon: Icon(
+                      _listening ? Icons.stop_rounded : Icons.mic_rounded,
+                    ),
+                  ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              _error ?? _status,
+              key: const ValueKey('search-voice-status'),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: statusColor,
+                fontSize: compact ? 15 : 17,
+                fontWeight: _listening ? FontWeight.w600 : null,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVoiceDialogActions() {
+    final canConfirm = !_closing && _candidateController.text.trim().isNotEmpty;
+    return Row(
+      children: [
+        Expanded(
+          child: OutlinedButton(
             key: const ValueKey('search-voice-cancel'),
             onPressed: _closing ? null : () => unawaited(_cancelDialog()),
             child: const Text('取消'),
           ),
-          FilledButton.icon(
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          flex: 2,
+          child: FilledButton.icon(
             key: const ValueKey('search-voice-confirm'),
-            onPressed: _closing || _candidateController.text.trim().isEmpty
-                ? null
-                : () => unawaited(_confirm()),
+            onPressed: canConfirm ? () => unawaited(_confirm()) : null,
             icon: const Icon(Icons.search_rounded),
-            label: const Text('搜索'),
+            label: const Text('确认并搜索'),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

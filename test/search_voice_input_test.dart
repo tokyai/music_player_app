@@ -47,6 +47,24 @@ void main() {
           expect(dialog, findsOneWidget);
           expect(candidate, findsOneWidget);
           expect(find.text('正在听…'), findsOneWidget);
+          final dialogRect = tester.getRect(dialog);
+          expect(dialogRect.left, greaterThanOrEqualTo(0));
+          expect(dialogRect.right, lessThanOrEqualTo(size.width));
+          expect(dialogRect.top, greaterThanOrEqualTo(0));
+          expect(dialogRect.bottom, lessThanOrEqualTo(size.height));
+          expect(
+            dialogRect.width,
+            greaterThan(size == const Size(640, 360) ? 560 : 780),
+          );
+          final statusRect = tester.getRect(
+            find.byKey(const ValueKey('search-voice-status')),
+          );
+          final candidateRect = tester.getRect(candidate);
+          if (size.width > size.height) {
+            expect(candidateRect.left, greaterThan(statusRect.right));
+          } else {
+            expect(statusRect.top, greaterThan(candidateRect.bottom));
+          }
           expect(tester.takeException(), isNull);
 
           speech.emitResult('七里', false);

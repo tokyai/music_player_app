@@ -736,7 +736,18 @@ void main() {
 
       await tester.tap(find.byKey(const ValueKey('home-user-avatar')));
       await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('user-switch-dialog')), findsOneWidget);
+      final switchDialog = find.byKey(const ValueKey('user-switch-dialog'));
+      expect(switchDialog, findsOneWidget);
+      final switchDialogRect = tester.getRect(switchDialog);
+      expect(switchDialogRect.left, greaterThanOrEqualTo(0));
+      expect(switchDialogRect.right, lessThanOrEqualTo(size.width));
+      expect(switchDialogRect.top, greaterThanOrEqualTo(0));
+      expect(switchDialogRect.bottom, lessThanOrEqualTo(size.height));
+      expect(switchDialogRect.width, greaterThan(560));
+      expect(
+        tester.getSize(find.byKey(const ValueKey('user-switch-list'))).width,
+        greaterThan(0),
+      );
       await tester.tap(find.byKey(ValueKey('user-switch-${second.id}')));
       await tester.pumpAndSettle();
       expect(find.textContaining('驾驶员B'), findsOneWidget);

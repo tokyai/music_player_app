@@ -274,32 +274,8 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   Future<void> _showUserSwitcher(UserController users) async {
     final selected = await showDialog<String>(
       context: context,
-      builder: (dialogContext) => SimpleDialog(
-        key: const ValueKey('user-switch-dialog'),
-        title: const Text('切换用户'),
-        children: [
-          for (final user in users.users)
-            SimpleDialogOption(
-              key: ValueKey('user-switch-${user.id}'),
-              onPressed: () => Navigator.pop(dialogContext, user.id),
-              child: Row(
-                children: [
-                  AppUserAvatar(user: user, size: 44),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      user.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  if (user.id == users.activeUserId)
-                    Icon(Icons.check_rounded, color: AppColors.primary),
-                ],
-              ),
-            ),
-        ],
-      ),
+      barrierDismissible: true,
+      builder: (dialogContext) => _UserSwitcherDialog(users: users),
     );
     if (selected == null || selected == users.activeUserId || !mounted) return;
     try {
@@ -993,6 +969,185 @@ class _FavoriteSongCard extends StatelessWidget {
                 color: AppColors.textHint,
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A car-friendly user switcher.  The grid keeps every profile as a large,
+/// independently tappable target while the scroll view prevents a long user
+/// list from exceeding the short head-unit viewport.
+class _UserSwitcherDialog extends StatelessWidget {
+  final UserController users;
+
+  const _UserSwitcherDialog({required this.users});
+
+  @override
+  Widget build(BuildContext context) {
+    final layout = AppLayout.fromContext(context);
+    final compact = layout.isCompactLandscape;
+    final media = MediaQuery.sizeOf(context);
+    final horizontalInset = compact ? 12.0 : 24.0;
+    final verticalInset = compact ? 10.0 : 24.0;
+    final availableWidth = (media.width - horizontalInset * 2)
+        .clamp(1.0, double.infinity)
+        .toDouble();
+    final maxWidth = (compact ? 760.0 : 620.0)
+        .clamp(1.0, availableWidth)
+        .toDouble();
+    final maxHeight = (media.height - verticalInset * 2).clamp(220.0, 620.0);
+    final columns = compact || layout.isWideLandscape ? 2 : 1;
+
+    return Dialog(
+      key: const ValueKey('user-switch-dialog'),
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: horizontalInset,
+        vertical: verticalInset,
+      ),
+      child: SizedBox(
+        width: maxWidth,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: maxHeight),
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(
+              compact ? 18 : 24,
+              compact ? 14 : 22,
+              compact ? 18 : 24,
+              compact ? 14 : 22,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: compact ? 42 : 50,
+                      height: compact ? 42 : 50,
+                      decoration: BoxDecoration(
+                        color: AppColors.primarySoft,
+                        borderRadius: BorderRadius.circular(AppRadius.control),
+                      ),
+                      child: Icon(
+                        Icons.switch_account_rounded,
+                        color: AppColors.primary,
+                        size: compact ? 25 : 30,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        '切换用户 · 当前：${users.activeUser.name}',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: compact ? 21 : 25,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      key: const ValueKey('user-switch-close'),
+                      tooltip: '关闭',
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close_rounded),
+                      iconSize: compact ? 26 : 30,
+                      constraints: BoxConstraints.tightFor(
+                        width: compact ? 50 : 56,
+                        height: compact ? 50 : 56,
+                      ),
+                    ),
+                  ],
+                ),
+                SizedBox(height: compact ? 14 : 20),
+                Flexible(
+                  child: GridView.builder(
+                    key: const ValueKey('user-switch-list'),
+                    shrinkWrap: true,
+                    padding: const EdgeInsets.all(2),
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: columns,
+                      crossAxisSpacing: compact ? 10 : 12,
+                      mainAxisSpacing: compact ? 10 : 12,
+                      mainAxisExtent: compact ? 76 : 86,
+                    ),
+                    itemCount: users.users.length,
+                    itemBuilder: (context, index) {
+                      final user = users.users[index];
+                      final selected = user.id == users.activeUserId;
+                      return _UserSwitcherOption(
+                        key: ValueKey('user-switch-${user.id}'),
+                        user: user,
+                        selected: selected,
+                        compact: compact,
+                        onPressed: () => Navigator.pop(context, user.id),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _UserSwitcherOption extends StatelessWidget {
+  final AppUserProfile user;
+  final bool selected;
+  final bool compact;
+  final VoidCallback onPressed;
+
+  const _UserSwitcherOption({
+    super.key,
+    required this.user,
+    required this.selected,
+    required this.compact,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final borderColor = selected ? AppColors.primary : AppColors.outline;
+    return RemoteFocusable(
+      onPressed: onPressed,
+      semanticLabel: '切换到 ${user.name}',
+      borderRadius: BorderRadius.circular(AppRadius.control),
+      child: AnimatedContainer(
+        duration: AppMotion.resolve(context, AppMotion.quick),
+        padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 14),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.primarySoft : AppColors.surface,
+          borderRadius: BorderRadius.circular(AppRadius.control),
+          border: Border.all(color: borderColor, width: selected ? 2 : 1),
+        ),
+        child: Row(
+          children: [
+            AppUserAvatar(user: user, size: compact ? 48 : 54),
+            SizedBox(width: compact ? 10 : 12),
+            Expanded(
+              child: Text(
+                user.name,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: compact ? 17 : 19,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                ),
+              ),
+            ),
+            if (selected)
+              Icon(
+                Icons.check_circle_rounded,
+                color: AppColors.primary,
+                size: compact ? 24 : 28,
+              ),
           ],
         ),
       ),
