@@ -101,6 +101,7 @@ void main() {
 
     await controller.setVoiceModel(AiVoiceModelKind.doubaoIme);
     await controller.setVoiceLoadMode(AiVoiceLoadMode.startupPreload);
+    await controller.setBargeInMode(AiBargeInMode.voiceActivity);
     await controller.createProfile(
       name: '备用模型',
       config: _config(
@@ -120,6 +121,7 @@ void main() {
 
     expect(reloaded.voiceModel, AiVoiceModelKind.doubaoIme);
     expect(reloaded.voiceLoadMode, AiVoiceLoadMode.startupPreload);
+    expect(reloaded.bargeInMode, AiBargeInMode.voiceActivity);
     final preferences = await SharedPreferences.getInstance();
     expect(
       preferences.getString('ai_assistant_profiles_v1'),
@@ -130,6 +132,23 @@ void main() {
       AiVoiceModelKind.doubaoIme.value,
     );
   });
+
+  test(
+    'legacy global voice backups default automatic interruption to off',
+    () async {
+      final controller = AiConfigController(secretStore: MemoryAiSecretStore());
+      addTearDown(controller.dispose);
+      await controller.ready;
+
+      await controller.restoreVoiceBackupJson({
+        'version': 1,
+        'model': AiVoiceModelKind.zipformerChinese.value,
+        'loadMode': AiVoiceLoadMode.onDemand.value,
+      });
+
+      expect(controller.bargeInMode, AiBargeInMode.disabled);
+    },
+  );
 
   test('creates, selects, updates, deletes and reloads profiles', () async {
     final secrets = MemoryAiSecretStore();

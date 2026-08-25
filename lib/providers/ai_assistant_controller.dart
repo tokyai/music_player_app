@@ -75,6 +75,12 @@ class AiAssistantController extends ChangeNotifier {
   bool _disposed = false;
   Future<void>? _resourceDisposeFuture;
   AiVoiceModelKind? _sessionVoiceModel;
+  AiBargeInMode? _sessionBargeInMode;
+  Future<bool>? _ttsInitialization;
+  bool _ttsReady = false;
+  int _ttsInitializationGeneration = 0;
+  Future<void>? _bargeInTask;
+  int _bargeInToken = 0;
 
   AiAssistantController({
     required this.player,
@@ -158,6 +164,7 @@ class AiAssistantController extends ChangeNotifier {
     }
     _active = true;
     _sessionVoiceModel = configController.voiceModel;
+    _sessionBargeInMode = configController.bargeInMode;
     _generation++;
     _turnGeneration++;
     _messages.clear();
@@ -190,17 +197,18 @@ class AiAssistantController extends ChangeNotifier {
     } catch (error) {
       _handleSpeechError(error.toString());
     }
-    try {
-      await textToSpeech.initialize();
-    } catch (_) {
-      // 语音播报不可用时仍可继续识别和文字对话。
-    }
     if (_disposed || !_active) return;
     if (!speechReady) {
       _setState(AiSessionState.textOnly);
+      // TTS is optional. Start it in the background so a later text reply can
+      // use it without delaying the first recognition attempt.
+      unawaited(_ensureTtsInitialized());
       return;
     }
-    await _startListening(_generation);
+    final listening = _startListening(_generation);
+    unawaited(_ensureTtsInitialized());
+    await listening;
+    if (_disposed || !_active) return;
   }
 
   Future<void> sendText(String text) async {
@@ -213,6 +221,11 @@ class AiAssistantController extends ChangeNotifier {
     final generation = _generation;
     final turn = ++_turnGeneration;
     final wasSpeaking = _state == AiSessionState.speaking;
+    if (wasSpeaking) {
+      _invalidateBargeIn();
+      await _stopBargeInMonitor();
+      await _awaitBargeInTask();
+    }
     await _stopRecognition();
     _resetSpeechBuffer();
     if (wasSpeaking) {
@@ -237,6 +250,9 @@ class AiAssistantController extends ChangeNotifier {
     if (_state == AiSessionState.speaking) {
       final generation = _generation;
       final turn = ++_turnGeneration;
+      _invalidateBargeIn();
+      await _stopBargeInMonitor();
+      await _awaitBargeInTask();
       await _stopSpeaking();
       if (!_isCurrentTurn(generation, turn)) return;
       await _startListening(generation);
@@ -260,6 +276,9 @@ class AiAssistantController extends ChangeNotifier {
     _turnGeneration++;
     final generation = _generation;
     _ignoreSpeechEvents = true;
+    _invalidateBargeIn();
+    await _stopBargeInMonitor();
+    await _awaitBargeInTask();
     await _stopRecognition();
     if (_disposed || !_active || generation != _generation) return;
     await _stopSpeaking();
@@ -278,7 +297,10 @@ class AiAssistantController extends ChangeNotifier {
     final wasActive = _active;
     _active = false;
     _ignoreSpeechEvents = true;
+    _invalidateBargeIn();
     _setState(AiSessionState.stopping);
+    await _stopBargeInMonitor();
+    await _awaitBargeInTask();
     await _stopRecognition();
     await _stopSpeaking();
     await _releaseIdleVoiceResources();
@@ -297,6 +319,7 @@ class AiAssistantController extends ChangeNotifier {
     }
     _resetSpeechBuffer();
     _sessionVoiceModel = null;
+    _sessionBargeInMode = null;
     _setState(AiSessionState.idle);
   }
 
@@ -345,6 +368,129 @@ class AiAssistantController extends ChangeNotifier {
       _listenStarting = false;
     }
   }
+
+  AiSpeechBargeInSupport? get _bargeInSupport =>
+      speech is AiSpeechBargeInSupport
+      ? speech as AiSpeechBargeInSupport
+      : null;
+
+  bool get _bargeInEnabled =>
+      _sessionBargeInMode == AiBargeInMode.voiceActivity &&
+      (_bargeInSupport?.supportsBargeIn ?? false);
+
+  void _invalidateBargeIn() {
+    _bargeInToken++;
+  }
+
+  Future<void> _stopBargeInMonitor({bool preserveForNextListen = false}) async {
+    final support = _bargeInSupport;
+    if (support == null) return;
+    try {
+      await support.stopBargeInMonitor(
+        preserveForNextListen: preserveForNextListen,
+      );
+    } catch (error, stackTrace) {
+      debugPrint('停止自动打断监听失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  Future<void> _awaitBargeInTask() async {
+    final pending = _bargeInTask;
+    if (pending == null) return;
+    try {
+      await pending.timeout(const Duration(seconds: 2));
+    } catch (error, stackTrace) {
+      debugPrint('等待自动打断收尾超时: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  Future<bool> _startBargeInMonitor(int generation, int turn) async {
+    if (!_bargeInEnabled || !_isCurrentTurn(generation, turn)) return false;
+    final support = _bargeInSupport;
+    if (support == null) return false;
+    final token = ++_bargeInToken;
+    try {
+      final started = await support.startBargeInMonitor(
+        onVoiceDetected: () => _handleBargeInDetected(generation, turn, token),
+      );
+      if (!_isCurrentTurn(generation, turn) || token != _bargeInToken) {
+        if (started) await _stopBargeInMonitor();
+        return false;
+      }
+      return started;
+    } catch (error, stackTrace) {
+      debugPrint('启动自动打断监听失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      return false;
+    }
+  }
+
+  Future<void> _handleBargeInDetected(
+    int generation,
+    int turn,
+    int token,
+  ) async {
+    if (!_isCurrentTurn(generation, turn) ||
+        token != _bargeInToken ||
+        _state != AiSessionState.speaking ||
+        !_bargeInEnabled ||
+        _bargeInTask != null) {
+      return;
+    }
+    final task = _handleBargeInDetectedInternal(generation, turn, token);
+    _bargeInTask = task;
+    try {
+      await task;
+    } finally {
+      if (identical(_bargeInTask, task)) _bargeInTask = null;
+    }
+  }
+
+  Future<void> _handleBargeInDetectedInternal(
+    int generation,
+    int turn,
+    int token,
+  ) async {
+    if (!_isCurrentTurn(generation, turn) || token != _bargeInToken) return;
+    // Invalidate the TTS turn before stopping the native utterance. If the
+    // utterance completion callback wins the race, it can no longer reopen a
+    // second listening segment or discard the handoff buffer.
+    _bargeInToken++;
+    final handoffToken = _bargeInToken;
+    final nextTurn = ++_turnGeneration;
+    await _stopSpeaking();
+    if (!_isCurrentGeneration(generation) ||
+        !_active ||
+        nextTurn != _turnGeneration ||
+        handoffToken != _bargeInToken) {
+      await _stopBargeInMonitor();
+      return;
+    }
+    // Keep detecting while the native TTS stop is in flight, then snapshot
+    // the user's bounded preroll immediately before opening the full ASR.
+    await _stopBargeInMonitor(preserveForNextListen: true);
+    if (!_isCurrentGeneration(generation) ||
+        nextTurn != _turnGeneration ||
+        handoffToken != _bargeInToken) {
+      await _stopBargeInMonitor();
+      return;
+    }
+    var handedOff = false;
+    try {
+      await _startListening(generation);
+      handedOff = _state == AiSessionState.listening;
+    } finally {
+      // PlatformAiSpeechEngine.listen() consumes the preroll. If a test/future
+      // engine cannot accept it or startup fails, release the monitor here so
+      // no microphone/capture remains active.
+      if (!handedOff) await _stopBargeInMonitor();
+    }
+  }
+
+  bool _isCurrentGeneration(int generation) =>
+      !_disposed && _active && generation == _generation;
 
   void _onSpeechResult(int generation, String text, bool isFinal) {
     if (!_active ||
@@ -475,9 +621,33 @@ class AiAssistantController extends ChangeNotifier {
         ? normalized
         : '${normalized.substring(0, _maxTtsChars - 1)}…';
     _setState(AiSessionState.speaking);
+    final ttsReady = await _ensureTtsInitialized();
+    if (!ttsReady) return _isCurrentTurn(generation, turn);
+    if (!_isCurrentTurn(generation, turn)) return false;
+    final monitorStarted = await _startBargeInMonitor(generation, turn);
+    if (!_isCurrentTurn(generation, turn)) {
+      if (monitorStarted) await _stopBargeInMonitor();
+      return false;
+    }
     try {
       await textToSpeech.speak(spoken);
-    } catch (_) {}
+    } catch (error, stackTrace) {
+      debugPrint('AI 语音播报失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+    if (!_isCurrentTurn(generation, turn)) {
+      // An automatic callback may have invalidated this turn while native TTS
+      // was stopping. Let that handoff snapshot the preroll before disposing
+      // the monitor; otherwise the first user syllable can be lost.
+      await _awaitBargeInTask();
+      if (_state == AiSessionState.listening) return false;
+      _invalidateBargeIn();
+      await _stopBargeInMonitor();
+      return false;
+    }
+    _invalidateBargeIn();
+    await _stopBargeInMonitor();
+    await _awaitBargeInTask();
     return _isCurrentTurn(generation, turn);
   }
 
@@ -485,6 +655,9 @@ class AiAssistantController extends ChangeNotifier {
     if (!_active) return;
     final generation = _generation;
     final turn = ++_turnGeneration;
+    _invalidateBargeIn();
+    await _stopBargeInMonitor();
+    await _awaitBargeInTask();
     await _stopRecognition();
     await _stopSpeaking();
     if (!_isCurrentTurn(generation, turn)) return;
@@ -507,6 +680,41 @@ class AiAssistantController extends ChangeNotifier {
     try {
       await speech.cancel();
     } catch (_) {}
+  }
+
+  Future<bool> _ensureTtsInitialized() {
+    if (_disposed) return Future<bool>.value(false);
+    if (_ttsReady) return Future<bool>.value(true);
+    final existing = _ttsInitialization;
+    if (existing != null) return existing;
+    final generation = _ttsInitializationGeneration;
+    late final Future<bool> operation;
+    operation = _initializeTtsInternal(generation).whenComplete(() {
+      if (identical(_ttsInitialization, operation)) {
+        _ttsInitialization = null;
+      }
+    });
+    _ttsInitialization = operation;
+    return operation;
+  }
+
+  Future<bool> _initializeTtsInternal(int generation) async {
+    try {
+      await textToSpeech.initialize();
+      if (_disposed || generation != _ttsInitializationGeneration) {
+        return false;
+      }
+      _ttsReady = true;
+      return true;
+    } catch (error, stackTrace) {
+      // TTS is optional; preserve text/voice recognition when the system
+      // engine is unavailable. Concurrent callers share one initialization
+      // future, while a later turn/session can retry a transient platform
+      // failure without creating an unbounded initialization storm.
+      debugPrint('AI 语音播报初始化失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      return false;
+    }
   }
 
   Future<void> _stopSpeaking() async {
@@ -777,7 +985,11 @@ class AiAssistantController extends ChangeNotifier {
     if (_resourceDisposeFuture != null) return;
     _disposed = true;
     _active = false;
+    _ttsInitializationGeneration++;
+    _ttsReady = false;
     _sessionVoiceModel = null;
+    _sessionBargeInMode = null;
+    _invalidateBargeIn();
     _generation++;
     _turnGeneration++;
     _cancelSpeechTimers();
@@ -821,6 +1033,8 @@ class AiAssistantController extends ChangeNotifier {
   }
 
   Future<void> _disposeSpeechResources() async {
+    await _stopBargeInMonitor();
+    await _awaitBargeInTask();
     try {
       await _stopRecognition();
     } catch (_) {}

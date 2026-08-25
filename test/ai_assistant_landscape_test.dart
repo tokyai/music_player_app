@@ -706,6 +706,14 @@ void main() {
         await tester.pumpAndSettle();
         expect(config.voiceLoadMode, AiVoiceLoadMode.startupPreload);
 
+        final bargeIn = find.byKey(const ValueKey('global-voice-barge-in'));
+        await tester.scrollUntilVisible(bargeIn, 160, scrollable: systemScroll);
+        expect(bargeIn.hitTestable(), findsOneWidget);
+        expect(tester.widget<SwitchListTile>(bargeIn).value, isFalse);
+        await tester.tap(bargeIn);
+        await tester.pumpAndSettle();
+        expect(config.bargeInMode, AiBargeInMode.voiceActivity);
+
         final originalProfileId = config.activeProfileId;
         final profileAdd = find.byKey(const ValueKey('ai-profile-add'));
         await tester.scrollUntilVisible(

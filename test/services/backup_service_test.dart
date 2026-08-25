@@ -102,6 +102,7 @@ void main() {
     );
     await source.setVoiceModel(AiVoiceModelKind.doubaoIme);
     await source.setVoiceLoadMode(AiVoiceLoadMode.startupPreload);
+    await source.setBargeInMode(AiBargeInMode.voiceActivity);
     final primaryId = source.activeProfileId;
     await source.renameProfile(primaryId, '主力模型');
     final backupProfile = await source.createProfile(
@@ -135,6 +136,7 @@ void main() {
     final exportedVoice = exported['globalVoice'] as Map<String, dynamic>;
     expect(exportedVoice['model'], AiVoiceModelKind.doubaoIme.value);
     expect(exportedVoice['loadMode'], AiVoiceLoadMode.startupPreload.value);
+    expect(exportedVoice['bargeInMode'], AiBargeInMode.voiceActivity.value);
     expect(exportedAi['activeProfileId'], primaryId);
     final profiles = exportedAi['profiles'] as List<dynamic>;
     expect(profiles, hasLength(2));
@@ -166,6 +168,7 @@ void main() {
     expect(restored.config.webSearchMode, AiWebSearchMode.always);
     expect(restored.voiceModel, AiVoiceModelKind.doubaoIme);
     expect(restored.voiceLoadMode, AiVoiceLoadMode.startupPreload);
+    expect(restored.bargeInMode, AiBargeInMode.voiceActivity);
     expect(restored.profiles.map((profile) => profile.name), ['主力模型', '备用中转站']);
     expect(restored.activeProfileId, primaryId);
     await restored.selectProfile(backupProfile.id);

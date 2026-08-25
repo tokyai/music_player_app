@@ -151,6 +151,24 @@ class _SettingsScreenState extends State<SettingsScreen>
     }
   }
 
+  Future<void> _setBargeInMode(AiBargeInMode mode) async {
+    if (_savingVoiceSettings || mode == _aiConfigController.bargeInMode) {
+      return;
+    }
+    setState(() => _savingVoiceSettings = true);
+    try {
+      await _aiConfigController.setBargeInMode(mode);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('自动打断设置保存失败：$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _savingVoiceSettings = false);
+    }
+  }
+
   Future<void> _loadVersion() async {
     try {
       final pkg = await PackageInfo.fromPlatform();
@@ -2143,7 +2161,11 @@ class _SettingsScreenState extends State<SettingsScreen>
     final layout = AppLayout.fromContext(context);
     final voiceModel = _aiConfigController.voiceModel;
     final loadMode = _aiConfigController.voiceLoadMode;
+    final bargeInMode = _aiConfigController.bargeInMode;
     final supportsPreload = voiceModel == AiVoiceModelKind.zipformerChinese;
+    final supportsBargeIn =
+        voiceModel == AiVoiceModelKind.zipformerChinese ||
+        voiceModel == AiVoiceModelKind.doubaoIme;
     return _buildCard(
       compact: compact,
       children: [
@@ -2225,6 +2247,27 @@ class _SettingsScreenState extends State<SettingsScreen>
                   color: AppColors.textHint,
                   fontSize: layout.secondarySize,
                 ),
+              ),
+              const SizedBox(height: 8),
+              SwitchListTile.adaptive(
+                key: const ValueKey('global-voice-barge-in'),
+                contentPadding: EdgeInsets.zero,
+                title: const Text('播报时自动打断'),
+                subtitle: Text(
+                  supportsBargeIn ? '检测到连续人声后停止播报并开始识别' : '当前车机系统语音暂不支持自动打断',
+                ),
+                value:
+                    supportsBargeIn &&
+                    bargeInMode == AiBargeInMode.voiceActivity,
+                onChanged: !supportsBargeIn || _savingVoiceSettings
+                    ? null
+                    : (enabled) => unawaited(
+                        _setBargeInMode(
+                          enabled == true
+                              ? AiBargeInMode.voiceActivity
+                              : AiBargeInMode.disabled,
+                        ),
+                      ),
               ),
             ],
           ),

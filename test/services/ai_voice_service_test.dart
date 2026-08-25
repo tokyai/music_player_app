@@ -74,6 +74,76 @@ void main() {
     expect(focus.events, ['request', 'abandon']);
   });
 
+  test(
+    'automatic barge-in hands bounded preroll to the next recognizer',
+    () async {
+      final recognizer = _PrerollRecognizer();
+      final capture = _FakeAudioCapture();
+      final monitor = AiBargeInMonitor(captureStarter: () async => capture);
+      final engine = PlatformAiSpeechEngine(
+        speech: recognizer,
+        microphonePermission: _FakeMicrophonePermission(granted: true),
+        audioFocus: _FakeAudioFocus(),
+        bargeInMonitor: monitor,
+      );
+      addTearDown(engine.dispose);
+      engine.setVoiceModel(AiVoiceModelKind.zipformerChinese);
+      await engine.initialize(onError: (_) {}, onStatus: (_) {});
+
+      expect(
+        await engine.startBargeInMonitor(onVoiceDetected: () async {}),
+        isTrue,
+      );
+      capture.emit(_pcmBytes(0.01, 8960));
+      capture.emit(_pcmBytes(0.08, 1600));
+      await engine.stopBargeInMonitor(preserveForNextListen: true);
+      await engine.listen((_, _) {});
+
+      expect(recognizer.prerolls, hasLength(1));
+      expect(recognizer.prerolls.single, isNotEmpty);
+      expect(recognizer.prerolls.single.length, lessThanOrEqualTo(7680));
+    },
+  );
+
+  test('normal barge-in stop discards preroll before manual listen', () async {
+    final recognizer = _PrerollRecognizer();
+    final capture = _FakeAudioCapture();
+    final engine = PlatformAiSpeechEngine(
+      speech: recognizer,
+      microphonePermission: _FakeMicrophonePermission(granted: true),
+      audioFocus: _FakeAudioFocus(),
+      bargeInMonitor: AiBargeInMonitor(captureStarter: () async => capture),
+    );
+    addTearDown(engine.dispose);
+    engine.setVoiceModel(AiVoiceModelKind.doubaoIme);
+    await engine.initialize(onError: (_) {}, onStatus: (_) {});
+
+    await engine.startBargeInMonitor(onVoiceDetected: () async {});
+    capture.emit(_pcmBytes(0.08, 1600));
+    await engine.stopBargeInMonitor();
+    await engine.listen((_, _) {});
+
+    expect(recognizer.prerolls, hasLength(1));
+    expect(recognizer.prerolls.single, isEmpty);
+  });
+
+  test('system speech reports no automatic barge-in support', () async {
+    final engine = PlatformAiSpeechEngine(
+      speech: _FakeRecognizer(),
+      microphonePermission: _FakeMicrophonePermission(granted: true),
+      audioFocus: _FakeAudioFocus(),
+    );
+    addTearDown(engine.dispose);
+    engine.setVoiceModel(AiVoiceModelKind.systemSpeech);
+    await engine.initialize(onError: (_) {}, onStatus: (_) {});
+
+    expect(engine.supportsBargeIn, isFalse);
+    expect(
+      await engine.startBargeInMonitor(onVoiceDetected: () async {}),
+      isFalse,
+    );
+  });
+
   test('releases focus when the recognizer reports done', () async {
     final recognizer = _FakeRecognizer();
     final focus = _FakeAudioFocus();
@@ -296,6 +366,33 @@ void main() {
 
     expect(gateway.openSessionCalls, 2);
     expect(results, [('恢复后的识别结果', true)]);
+  });
+
+  test('Doubao sends barge-in preroll before live microphone audio', () async {
+    final gateway = _FakeDoubaoGateway();
+    final capture = _FakeAudioCapture();
+    final recognizer = DoubaoImeSpeechRecognizer(
+      client: gateway,
+      captureStarter: () async => capture,
+    );
+    addTearDown(recognizer.dispose);
+    await recognizer.initialize(onError: (_) {}, onStatus: (_) {});
+    final preroll = Uint8List.fromList(
+      List<int>.generate(1280, (index) => index & 0xff),
+    );
+    recognizer.setNextPreroll(preroll);
+
+    await recognizer.listen((_, _) {});
+
+    final frames = gateway.connections.single.audioFrames;
+    expect(frames, hasLength(2));
+    expect(frames.first.state, DoubaoImeAudioFrameState.first);
+    expect(frames.last.state, DoubaoImeAudioFrameState.middle);
+    expect(
+      Uint8List.fromList([...frames.first.bytes, ...frames.last.bytes]),
+      preroll,
+    );
+    await recognizer.cancel();
   });
 
   test(
@@ -551,6 +648,26 @@ class _FakeRecognizer
   void emitError(String error) => _onError?.call(error);
 }
 
+class _PrerollRecognizer extends _FakeRecognizer
+    implements AiSpeechPrerollRecognizer {
+  final List<Uint8List> prerolls = [];
+
+  @override
+  void setNextPreroll(Uint8List pcm16Mono) {
+    prerolls.add(Uint8List.fromList(pcm16Mono));
+  }
+}
+
+Uint8List _pcmBytes(double amplitude, int samples) {
+  final bytes = Uint8List(samples * 2);
+  final value = (amplitude * 32767).round();
+  final data = ByteData.sublistView(bytes);
+  for (var index = 0; index < samples; index++) {
+    data.setInt16(index * 2, value, Endian.little);
+  }
+  return bytes;
+}
+
 class _DelayedRecognizer extends _FakeRecognizer {
   final Completer<void> started = Completer<void>();
   final Completer<bool> finish = Completer<bool>();
@@ -721,6 +838,8 @@ class _FakeDoubaoConnection implements DoubaoImeAsrConnection {
   bool _closed = false;
   int closeCalls = 0;
   int finishCalls = 0;
+  final List<({Uint8List bytes, DoubaoImeAudioFrameState state})> audioFrames =
+      [];
 
   _FakeDoubaoConnection({
     this.responseAfterFirstFrame,
@@ -734,6 +853,7 @@ class _FakeDoubaoConnection implements DoubaoImeAsrConnection {
     required DoubaoImeAudioFrameState frameState,
     required int timestampMilliseconds,
   }) {
+    audioFrames.add((bytes: Uint8List.fromList(bytes), state: frameState));
     final response = responseAfterFirstFrame;
     if (_closed || _responseSent || response == null) return;
     _responseSent = true;

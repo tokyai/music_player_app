@@ -96,7 +96,7 @@ enum AiWebSearchMode {
 /// Speech input engines shared by every AI assistant profile on this device.
 enum AiVoiceModelKind {
   zipformerChinese(
-    label: 'Zipformer Small CTC 中文 INT8（离线）',
+    label: '69M 多语料中文流式 Zipformer INT8',
     value: 'streaming-zipformer-small-ctc-zh-int8-2025-04-01',
   ),
   systemSpeech(label: '车机自带语音功能', value: 'system-speech-recognizer'),
@@ -132,6 +132,21 @@ enum AiVoiceLoadMode {
   static AiVoiceLoadMode fromValue(String? value) => values.firstWhere(
     (item) => item.value == value,
     orElse: () => AiVoiceLoadMode.onDemand,
+  );
+}
+
+enum AiBargeInMode {
+  disabled(label: '关闭', value: 'disabled'),
+  voiceActivity(label: '播报时说话自动打断', value: 'voice-activity');
+
+  const AiBargeInMode({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  static AiBargeInMode fromValue(String? value) => values.firstWhere(
+    (item) => item.value == value,
+    orElse: () => AiBargeInMode.disabled,
   );
 }
 

@@ -372,6 +372,122 @@ void main() {
     expect(fixture.controller.state, AiSessionState.listening);
   });
 
+  for (final model in const [
+    AiVoiceModelKind.zipformerChinese,
+    AiVoiceModelKind.doubaoIme,
+  ]) {
+    test('automatic barge-in starts a new $model recognition turn', () async {
+      final fixture = await _Fixture.create(
+        blockedSpeakCount: 1,
+        gatewayResults: const [
+          AiChatResult(reply: '第一轮回答还在播报。'),
+          AiChatResult(reply: '已根据打断内容继续。'),
+        ],
+      );
+      addTearDown(fixture.dispose);
+      await fixture.config.setVoiceModel(model);
+      await fixture.config.setBargeInMode(AiBargeInMode.voiceActivity);
+
+      await fixture.controller.startSession();
+      fixture.speech.emit('第一轮问题', isFinal: true);
+      await _waitFor(() => fixture.controller.state == AiSessionState.speaking);
+      expect(fixture.speech.bargeInStartCalls, 1);
+
+      await fixture.speech.triggerBargeIn();
+      await _waitFor(
+        () => fixture.controller.state == AiSessionState.listening,
+      );
+
+      expect(fixture.tts.stopCalls, 1);
+      expect(fixture.speech.bargeInPreserveValues, contains(true));
+      expect(fixture.speech.prerollConsumedCalls, 1);
+      fixture.speech.emit('继续刚才的话题', isFinal: true);
+      await _waitFor(() => fixture.gateway.requests.length == 2);
+      expect(fixture.gateway.requests.last.map((message) => message.text), [
+        '第一轮问题',
+        '第一轮回答还在播报。',
+        '继续刚才的话题',
+      ]);
+    });
+  }
+
+  test('duplicate barge-in callbacks interrupt TTS only once', () async {
+    final fixture = await _Fixture.create(
+      blockedSpeakCount: 1,
+      gatewayResults: const [AiChatResult(reply: '正在播报。')],
+    );
+    addTearDown(fixture.dispose);
+    await fixture.config.setBargeInMode(AiBargeInMode.voiceActivity);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('测试重复触发', isFinal: true);
+    await _waitFor(() => fixture.controller.state == AiSessionState.speaking);
+
+    await Future.wait([
+      fixture.speech.triggerBargeIn(),
+      fixture.speech.triggerBargeIn(),
+    ]);
+    await _waitFor(() => fixture.controller.state == AiSessionState.listening);
+
+    expect(fixture.tts.stopCalls, 1);
+    expect(
+      fixture.speech.bargeInPreserveValues.where((value) => value),
+      hasLength(1),
+    );
+    expect(fixture.speech.prerollConsumedCalls, 1);
+  });
+
+  test('system speech does not start automatic barge-in monitoring', () async {
+    final fixture = await _Fixture.create(
+      gatewayResults: const [AiChatResult(reply: '系统播报。')],
+    );
+    addTearDown(fixture.dispose);
+    await fixture.config.setVoiceModel(AiVoiceModelKind.systemSpeech);
+    await fixture.config.setBargeInMode(AiBargeInMode.voiceActivity);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('系统语音测试', isFinal: true);
+    await _waitFor(() => fixture.gateway.requests.length == 1);
+    await _waitFor(() => fixture.controller.state == AiSessionState.listening);
+
+    expect(fixture.speech.bargeInStartCalls, 0);
+    expect(fixture.speech.prerollConsumedCalls, 0);
+  });
+
+  test('manual interruption discards barge-in preroll', () async {
+    final fixture = await _Fixture.create(
+      blockedSpeakCount: 1,
+      gatewayResults: const [AiChatResult(reply: '正在播报。')],
+    );
+    addTearDown(fixture.dispose);
+    await fixture.config.setBargeInMode(AiBargeInMode.voiceActivity);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('手动打断测试', isFinal: true);
+    await _waitFor(() => fixture.controller.state == AiSessionState.speaking);
+    await fixture.controller.toggleListening();
+
+    expect(fixture.controller.state, AiSessionState.listening);
+    expect(fixture.speech.bargeInPreserveValues, isNot(contains(true)));
+    expect(fixture.speech.prerollConsumedCalls, 0);
+  });
+
+  test(
+    'first listening does not wait for optional TTS initialization',
+    () async {
+      final fixture = await _Fixture.create(blockTtsInitialization: true);
+      addTearDown(fixture.dispose);
+
+      await fixture.controller.startSession();
+
+      expect(fixture.controller.state, AiSessionState.listening);
+      expect(fixture.speech.listenCalls, 1);
+      expect(fixture.tts.initializeCalls, 1);
+      expect(fixture.tts.initializationPending, isTrue);
+      fixture.tts.completeInitialization();
+    },
+  );
+
   test('exit keyword ends the session and restores paused music', () async {
     final oldSong = _queueItem(id: 'old-song', name: '原来播放的歌');
     final fixture = await _Fixture.create(
@@ -505,6 +621,7 @@ class _Fixture {
     Duration? speechCommitDelay = const Duration(milliseconds: 10),
     Duration punctuationTimeout = const Duration(milliseconds: 900),
     AiPunctuationService? punctuation,
+    bool blockTtsInitialization = false,
   }) async {
     final actualPlayer = player ?? _TestPlayer();
     final config = AiConfigController(secretStore: MemoryAiSecretStore());
@@ -513,7 +630,10 @@ class _Fixture {
     final gateway = _TestGateway(gatewayResults);
     final speech = _TestSpeech();
     final actualPunctuation = punctuation ?? MemoryAiPunctuationService();
-    final tts = _TestTts(blockedSpeakCount: blockedSpeakCount);
+    final tts = _TestTts(
+      blockedSpeakCount: blockedSpeakCount,
+      blockInitialization: blockTtsInitialization,
+    );
     final controller = AiAssistantController(
       player: actualPlayer,
       configController: config,
@@ -592,7 +712,11 @@ class _BlockingPunctuationService implements AiPunctuationService {
 }
 
 class _TestSpeech
-    implements AiSpeechEngine, AiVoiceModelSelector, AiSpeechModelWarmup {
+    implements
+        AiSpeechEngine,
+        AiVoiceModelSelector,
+        AiSpeechModelWarmup,
+        AiSpeechBargeInSupport {
   AiSpeechResultCallback? _resultCallback;
   void Function(String)? _errorCallback;
   void Function(String)? _statusCallback;
@@ -603,6 +727,16 @@ class _TestSpeech
   int releasePreloadedCalls = 0;
   bool retainIdleModel = false;
   AiVoiceModelKind? voiceModel;
+  Future<void> Function()? _bargeInCallback;
+  int bargeInStartCalls = 0;
+  final List<bool> bargeInPreserveValues = [];
+  bool _pendingPreroll = false;
+  int prerollConsumedCalls = 0;
+
+  @override
+  bool get supportsBargeIn =>
+      voiceModel == AiVoiceModelKind.zipformerChinese ||
+      voiceModel == AiVoiceModelKind.doubaoIme;
 
   @override
   void setVoiceModel(AiVoiceModelKind model) => voiceModel = model;
@@ -637,6 +771,32 @@ class _TestSpeech
     _resultCallback = onResult;
     listening = true;
     listenCalls++;
+    if (_pendingPreroll) {
+      prerollConsumedCalls++;
+      _pendingPreroll = false;
+    }
+  }
+
+  @override
+  Future<bool> startBargeInMonitor({
+    required Future<void> Function() onVoiceDetected,
+  }) async {
+    if (!supportsBargeIn) return false;
+    bargeInStartCalls++;
+    _bargeInCallback = onVoiceDetected;
+    return true;
+  }
+
+  @override
+  Future<void> stopBargeInMonitor({bool preserveForNextListen = false}) async {
+    bargeInPreserveValues.add(preserveForNextListen);
+    _bargeInCallback = null;
+    _pendingPreroll = preserveForNextListen;
+  }
+
+  Future<void> triggerBargeIn() async {
+    final callback = _bargeInCallback;
+    if (callback != null) await callback();
   }
 
   void emit(String text, {bool isFinal = true}) {
@@ -661,12 +821,28 @@ class _TestTts implements AiTextToSpeechEngine {
   final List<String> spoken = [];
   int blockedSpeakCount;
   int stopCalls = 0;
+  int initializeCalls = 0;
+  final bool blockInitialization;
+  Completer<void>? _initialization;
   Completer<void>? _pendingSpeak;
 
-  _TestTts({this.blockedSpeakCount = 0});
+  _TestTts({this.blockedSpeakCount = 0, this.blockInitialization = false});
+
+  bool get initializationPending =>
+      _initialization != null && !_initialization!.isCompleted;
+
+  void completeInitialization() {
+    final pending = _initialization;
+    if (pending != null && !pending.isCompleted) pending.complete();
+  }
 
   @override
-  Future<void> initialize() async {}
+  Future<void> initialize() async {
+    initializeCalls++;
+    if (!blockInitialization) return;
+    final pending = _initialization ??= Completer<void>();
+    await pending.future;
+  }
 
   @override
   Future<void> speak(String text) async {

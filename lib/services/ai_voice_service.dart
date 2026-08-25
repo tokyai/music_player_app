@@ -8,6 +8,7 @@ import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 import 'package:speech_to_text/speech_to_text.dart';
 
 import '../models/ai_assistant.dart';
+import 'ai_barge_in.dart';
 import 'doubao_ime_asr_client.dart';
 import 'sherpa_audio_utils.dart';
 
@@ -24,6 +25,28 @@ abstract class AiSpeechEngine {
   Future<void> listen(AiSpeechResultCallback onResult);
   Future<void> stop();
   Future<void> cancel();
+}
+
+/// Optional full-duplex control used while TTS is speaking. Implementations
+/// must run only lightweight voice detection and must not start a second full
+/// recognizer until [onVoiceDetected] asks the controller to stop TTS.
+abstract class AiSpeechBargeInSupport {
+  bool get supportsBargeIn;
+  Future<bool> startBargeInMonitor({
+    required Future<void> Function() onVoiceDetected,
+  });
+
+  /// Stops the lightweight monitor. Only the automatic-detection path may
+  /// preserve its bounded PCM for the immediately following
+  /// [AiSpeechEngine.listen]. Normal completion, manual interruption and
+  /// teardown must leave [preserveForNextListen] false so assistant audio is
+  /// never replayed into the recognizer.
+  Future<void> stopBargeInMonitor({bool preserveForNextListen = false});
+}
+
+/// A recognizer that can accept the mono PCM retained by the barge-in monitor.
+abstract class AiSpeechPrerollRecognizer {
+  void setNextPreroll(Uint8List pcm16Mono);
 }
 
 abstract class AiVoiceModelSelector {
@@ -114,7 +137,8 @@ class AiSpeechRecognizerRouter
         AiSpeechRecognizer,
         AiVoiceModelSelector,
         AiSpeechResourceOwner,
-        AiSpeechIdleResourceOwner {
+        AiSpeechIdleResourceOwner,
+        AiSpeechPrerollRecognizer {
   final AiSpeechRecognizerFactory _zipformerFactory;
   final AiSpeechRecognizerFactory _systemFactory;
   final AiSpeechRecognizerFactory _doubaoFactory;
@@ -228,6 +252,14 @@ class AiSpeechRecognizerRouter
   @override
   Future<void> cancel() async {
     await _active?.cancel();
+  }
+
+  @override
+  void setNextPreroll(Uint8List pcm16Mono) {
+    final active = _active;
+    if (active is AiSpeechPrerollRecognizer) {
+      (active as AiSpeechPrerollRecognizer).setNextPreroll(pcm16Mono);
+    }
   }
 
   @override
@@ -522,22 +554,24 @@ Future<AiAudioCapture> _startAiAudioCapture({
         'opening capture source: ${profile.source.name} '
         'channels=${profile.channelCount}',
       );
-      final stream = await recorder.startStream(
-        RecordConfig(
-          encoder: AudioEncoder.pcm16bits,
-          sampleRate: _aiSpeechSampleRate,
-          numChannels: profile.channelCount,
-          // PlatformAiAudioFocusCoordinator is the single focus owner.
-          // record's default focus request would preempt it and cancel us.
-          audioInterruption: AudioInterruptionMode.none,
-          // Let AudioRecord choose a hardware-safe buffer for Flyme stereo.
-          streamBufferSize: profile.channelCount == 1 ? 3200 : null,
-          androidConfig: AndroidRecordConfig(
-            audioSource: profile.source,
-            manageBluetooth: true,
-          ),
-        ),
-      );
+      final stream = await recorder
+          .startStream(
+            RecordConfig(
+              encoder: AudioEncoder.pcm16bits,
+              sampleRate: _aiSpeechSampleRate,
+              numChannels: profile.channelCount,
+              // PlatformAiAudioFocusCoordinator is the single focus owner.
+              // record's default focus request would preempt it and cancel us.
+              audioInterruption: AudioInterruptionMode.none,
+              // Let AudioRecord choose a hardware-safe buffer for Flyme stereo.
+              streamBufferSize: profile.channelCount == 1 ? 3200 : null,
+              androidConfig: AndroidRecordConfig(
+                audioSource: profile.source,
+                manageBluetooth: true,
+              ),
+            ),
+          )
+          .timeout(const Duration(seconds: 5));
       final description =
           'standard(source=${profile.source.name}, '
           'channels=${profile.channelCount})';
@@ -565,12 +599,243 @@ Future<AiAudioCapture> _startAiAudioCapture({
   throw StateError('无法打开车机麦克风：$firstError');
 }
 
+/// Barge-in capture intentionally uses the communication source instead of
+/// the car-array stream. Android can attach its hardware AEC/NS path to this
+/// source while TTS is playing; falling back to voice-recognition keeps the
+/// feature usable on older head units without opening a second car-array
+/// session that would be prone to speaker echo.
+Future<AiAudioCapture> _startBargeInAudioCapture() async {
+  Object? firstError;
+  for (final source in const [
+    AndroidAudioSource.voiceCommunication,
+    AndroidAudioSource.voiceRecognition,
+    AndroidAudioSource.mic,
+  ]) {
+    final recorder = AudioRecorder();
+    try {
+      final stream = await recorder
+          .startStream(
+            RecordConfig(
+              encoder: AudioEncoder.pcm16bits,
+              sampleRate: _aiSpeechSampleRate,
+              numChannels: 1,
+              echoCancel: true,
+              noiseSuppress: true,
+              audioInterruption: AudioInterruptionMode.none,
+              streamBufferSize: 3200,
+              androidConfig: AndroidRecordConfig(
+                audioSource: source,
+                speakerphone: false,
+                audioManagerMode: AudioManagerMode.modeInCommunication,
+                manageBluetooth: true,
+              ),
+            ),
+          )
+          .timeout(const Duration(seconds: 5));
+      return _RecordAudioCapture(
+        recorder: recorder,
+        audioStream: stream,
+        description: 'barge-in(source=${source.name}, aec=preferred)',
+        channelCount: 1,
+        mixDivisor: 1,
+      );
+    } catch (error, stackTrace) {
+      firstError ??= error;
+      debugPrint('[AiBargeIn] source ${source.name} failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      try {
+        await recorder.dispose();
+      } catch (_) {}
+    }
+  }
+  throw StateError('无法打开自动打断麦克风：$firstError');
+}
+
+/// Monitors the microphone only while TTS is active. It converts to mono once,
+/// keeps a bounded preroll, and uses a lightweight energy gate instead of a
+/// second ASR model/WebSocket. The capture is handed off by stopping it before
+/// the selected recognizer opens its normal session.
+class AiBargeInMonitor {
+  AiBargeInMonitor({
+    AiAudioCaptureStarter? captureStarter,
+    AiBargeInVoiceGate? gate,
+  }) : _captureStarter = captureStarter,
+       _gate = gate ?? AiBargeInVoiceGate();
+
+  final AiAudioCaptureStarter? _captureStarter;
+  final AiBargeInVoiceGate _gate;
+  final Pcm16MonoStreamConverter _converter = Pcm16MonoStreamConverter();
+  final Pcm16StreamDecoder _decoder = Pcm16StreamDecoder();
+  final AiPcmRingBuffer _preroll = AiPcmRingBuffer();
+  AiAudioCapture? _capture;
+  StreamSubscription<Uint8List>? _subscription;
+  Future<void> _lifecycleTail = Future<void>.value();
+  Future<void> Function()? _onVoiceDetected;
+  bool _triggering = false;
+  bool _disposed = false;
+  int _generation = 0;
+
+  bool get active => _capture != null || _subscription != null;
+
+  Future<bool> start(Future<void> Function() onVoiceDetected) {
+    final generation = ++_generation;
+    return _enqueue(() => _startInternal(generation, onVoiceDetected));
+  }
+
+  Future<bool> _startInternal(
+    int generation,
+    Future<void> Function() onVoiceDetected,
+  ) async {
+    await _stopCurrent();
+    if (_disposed || generation != _generation) return false;
+    _converter.reset();
+    _decoder.reset();
+    _preroll.clear();
+    _gate.reset();
+    _triggering = false;
+    AiAudioCapture? capture;
+    late final Future<AiAudioCapture> pendingCapture;
+    try {
+      pendingCapture = Future<AiAudioCapture>.sync(
+        () => _captureStarter?.call() ?? _startBargeInAudioCapture(),
+      );
+      try {
+        capture = await pendingCapture.timeout(const Duration(seconds: 2));
+      } on TimeoutException {
+        // Future cancellation is not available for every recorder/plugin.
+        // Keep the late result attached and release it as soon as it arrives,
+        // while allowing TTS and the assistant state machine to continue.
+        unawaited(
+          pendingCapture.then<void>(
+            _releaseCapture,
+            onError: (Object _, StackTrace __) {},
+          ),
+        );
+        return false;
+      }
+      if (_disposed || generation != _generation) {
+        await _releaseCapture(capture);
+        return false;
+      }
+      _capture = capture;
+      _onVoiceDetected = onVoiceDetected;
+      final channelCount = capture.channelCount;
+      final mixDivisor = capture.mixDivisor;
+      _subscription = capture.audioStream.listen(
+        (bytes) => _process(bytes, channelCount, mixDivisor),
+        onError: (Object error, StackTrace stackTrace) {
+          debugPrint('[AiBargeIn] capture failed: $error');
+          debugPrintStack(stackTrace: stackTrace);
+          unawaited(stop());
+        },
+        onDone: () => unawaited(stop()),
+        cancelOnError: false,
+      );
+      return true;
+    } catch (error, stackTrace) {
+      debugPrint('[AiBargeIn] unavailable: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      await _releaseCapture(capture);
+      return false;
+    }
+  }
+
+  void _process(Uint8List bytes, int channelCount, int mixDivisor) {
+    if (_disposed || !active) return;
+    try {
+      final mono = _converter.convert(
+        bytes,
+        channelCount: channelCount,
+        mixDivisor: mixDivisor,
+      );
+      if (mono.isEmpty) return;
+      _preroll.add(mono);
+      final samples = _decoder.decode(mono);
+      final detected = _gate.accept(samples);
+      if (!detected || _triggering) return;
+      _triggering = true;
+      final callback = _onVoiceDetected;
+      if (callback != null) {
+        unawaited(
+          callback().catchError((Object error, StackTrace stackTrace) {
+            debugPrint('[AiBargeIn] detection callback failed: $error');
+            debugPrintStack(stackTrace: stackTrace);
+          }),
+        );
+      }
+    } catch (error, stackTrace) {
+      debugPrint('[AiBargeIn] PCM detection failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      unawaited(stop());
+    }
+  }
+
+  Future<Uint8List> stop() {
+    _generation++;
+    return _enqueue(_stopCurrent);
+  }
+
+  Future<Uint8List> _stopCurrent() async {
+    final subscription = _subscription;
+    final capture = _capture;
+    _subscription = null;
+    _capture = null;
+    _onVoiceDetected = null;
+    try {
+      await subscription?.cancel().timeout(const Duration(seconds: 2));
+    } catch (_) {}
+    // StreamSubscription.cancel waits for an in-flight synchronous callback,
+    // so snapshot after cancellation to retain the last user packet that
+    // arrived just before automatic detection.
+    final preroll = _preroll.snapshot();
+    try {
+      await capture?.cancel().timeout(const Duration(seconds: 2));
+    } catch (_) {}
+    try {
+      await capture?.dispose().timeout(const Duration(seconds: 2));
+    } catch (_) {}
+    _converter.reset();
+    _decoder.reset();
+    _preroll.clear();
+    _gate.reset();
+    _triggering = false;
+    return preroll;
+  }
+
+  Future<T> _enqueue<T>(Future<T> Function() action) {
+    final previous = _lifecycleTail;
+    final operation = previous.catchError((_) {}).then((_) => action());
+    _lifecycleTail = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace __) {},
+    );
+    return operation;
+  }
+
+  Future<void> _releaseCapture(AiAudioCapture? capture) async {
+    if (capture == null) return;
+    try {
+      await capture.cancel().timeout(const Duration(seconds: 2));
+    } catch (_) {}
+    try {
+      await capture.dispose().timeout(const Duration(seconds: 2));
+    } catch (_) {}
+  }
+
+  Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    await stop();
+  }
+}
+
 class _SherpaOnnxRecognizer
     implements
         AiSpeechRecognizer,
         AiVoiceModelSelector,
         AiSpeechResourceOwner,
-        AiSpeechIdleResourceOwner {
+        AiSpeechIdleResourceOwner,
+        AiSpeechPrerollRecognizer {
   static const _sampleRate = _aiSpeechSampleRate;
   static const _modelChannel = MethodChannel('music_player/ai_model');
   static const _homophoneModelId = 'homophone-replacer-zh';
@@ -600,6 +865,15 @@ class _SherpaOnnxRecognizer
   Future<void>? _disposeOperation;
   int _modelGeneration = 0;
   bool _disposed = false;
+  Uint8List _nextPreroll = Uint8List(0);
+
+  @override
+  void setNextPreroll(Uint8List pcm16Mono) {
+    if (_disposed) return;
+    _nextPreroll = pcm16Mono.length <= 32 * 1024
+        ? Uint8List.fromList(pcm16Mono)
+        : Uint8List.fromList(pcm16Mono.sublist(pcm16Mono.length - 32 * 1024));
+  }
 
   @override
   void setVoiceModel(AiVoiceModelKind model) {
@@ -799,6 +1073,11 @@ class _SherpaOnnxRecognizer
         onDone: () => _handleCaptureDone(generation),
         cancelOnError: false,
       );
+      final preroll = _nextPreroll;
+      _nextPreroll = Uint8List(0);
+      if (preroll.isNotEmpty) {
+        _processAudio(generation, preroll);
+      }
       _log('capture listening: generation=$generation ${capture.description}');
       _emitStatus('listening');
     } catch (error, stackTrace) {
@@ -813,6 +1092,7 @@ class _SherpaOnnxRecognizer
       _freeStream(stream);
       if (identical(_stream, stream)) _stream = null;
       _onResult = null;
+      _nextPreroll = Uint8List(0);
       rethrow;
     }
   }
@@ -998,6 +1278,7 @@ class _SherpaOnnxRecognizer
     _recognizer = null;
     _loadedVoiceModel = null;
     _onResult = null;
+    _nextPreroll = Uint8List(0);
   }
 
   Future<void> _disposeInternal() async {
@@ -1105,7 +1386,8 @@ class DoubaoImeSpeechRecognizer
     implements
         AiSpeechRecognizer,
         AiSpeechResourceOwner,
-        AiSpeechIdleResourceOwner {
+        AiSpeechIdleResourceOwner,
+        AiSpeechPrerollRecognizer {
   static const _frameDurationMilliseconds = 20;
   static const _frameBytes =
       _aiSpeechSampleRate * _frameDurationMilliseconds ~/ 1000 * 2;
@@ -1146,6 +1428,15 @@ class DoubaoImeSpeechRecognizer
   String _pendingFinalText = '';
   Completer<void>? _sessionCompletion;
   bool _disposed = false;
+  Uint8List _nextPreroll = Uint8List(0);
+
+  @override
+  void setNextPreroll(Uint8List pcm16Mono) {
+    if (_disposed) return;
+    _nextPreroll = pcm16Mono.length <= 32 * 1024
+        ? Uint8List.fromList(pcm16Mono)
+        : Uint8List.fromList(pcm16Mono.sublist(pcm16Mono.length - 32 * 1024));
+  }
 
   DoubaoImeSpeechRecognizer({
     DoubaoImeAsrGateway? client,
@@ -1269,6 +1560,11 @@ class DoubaoImeSpeechRecognizer
         onDone: () => _handleCaptureDone(generation),
         cancelOnError: false,
       );
+      final preroll = _nextPreroll;
+      _nextPreroll = Uint8List(0);
+      if (preroll.isNotEmpty) {
+        _frameBuffer.add(preroll, _sendAudioFrame);
+      }
       _log('capture listening: generation=$generation ${capture.description}');
       _emitStatus('listening');
     } catch (error, stackTrace) {
@@ -1284,6 +1580,7 @@ class DoubaoImeSpeechRecognizer
       } catch (_) {}
       if (_isCurrent(generation)) {
         _onResult = null;
+        _nextPreroll = Uint8List(0);
         _resetAudioState();
       }
       rethrow;
@@ -1735,6 +2032,7 @@ class DoubaoImeSpeechRecognizer
       await _client.dispose();
     } catch (_) {}
     _onResult = null;
+    _nextPreroll = Uint8List(0);
     _onError = null;
     _onStatus = null;
   }
@@ -1913,10 +2211,12 @@ class PlatformAiSpeechEngine
         AiVoiceModelSelector,
         AiSpeechModelWarmup,
         AiSpeechResourceOwner,
-        AiSpeechIdleResourceOwner {
+        AiSpeechIdleResourceOwner,
+        AiSpeechBargeInSupport {
   final AiSpeechRecognizer _speech;
   final AiMicrophonePermission _microphonePermission;
   final AiAudioFocusCoordinator _audioFocus;
+  late final AiBargeInMonitor _bargeInMonitor;
   bool _initialized = false;
   bool _focusHeld = false;
   bool _retainIdleModel = false;
@@ -1925,15 +2225,27 @@ class PlatformAiSpeechEngine
   Future<void> _focusReleaseFuture = Future<void>.value();
   Future<bool>? _initializeOperation;
   Future<void>? _disposeOperation;
+  Uint8List _pendingBargeInPreroll = Uint8List(0);
 
   PlatformAiSpeechEngine({
     AiSpeechRecognizer? speech,
     AiMicrophonePermission? microphonePermission,
     AiAudioFocusCoordinator? audioFocus,
+    AiBargeInMonitor? bargeInMonitor,
   }) : _speech = speech ?? _defaultSpeechRecognizer(),
        _microphonePermission =
            microphonePermission ?? PlatformAiMicrophonePermission(),
-       _audioFocus = audioFocus ?? PlatformAiAudioFocusCoordinator();
+       _audioFocus = audioFocus ?? PlatformAiAudioFocusCoordinator() {
+    _bargeInMonitor =
+        bargeInMonitor ??
+        AiBargeInMonitor(captureStarter: _startBargeInAudioCapture);
+  }
+
+  @override
+  bool get supportsBargeIn =>
+      !_disposed &&
+      (_voiceModel == AiVoiceModelKind.zipformerChinese ||
+          _voiceModel == AiVoiceModelKind.doubaoIme);
 
   @override
   void setVoiceModel(AiVoiceModelKind model) {
@@ -2059,6 +2371,11 @@ class PlatformAiSpeechEngine
     if (!_initialized) {
       throw StateError('语音识别服务尚未初始化');
     }
+    // A normal/manual listen must never inherit the tail of the assistant's
+    // own TTS. Automatic detection explicitly stages a bounded handoff below.
+    await _bargeInMonitor.stop();
+    final preroll = _pendingBargeInPreroll;
+    _pendingBargeInPreroll = Uint8List(0);
     // A recognizer status callback may release focus asynchronously just as
     // the controller schedules its next listening segment.
     await _focusReleaseFuture;
@@ -2072,16 +2389,44 @@ class PlatformAiSpeechEngine
       throw StateError('error_audio_focus: 无法获取语音输入音频焦点');
     }
     _focusHeld = true;
+    final speech = _speech;
+    final prerollRecognizer = speech is AiSpeechPrerollRecognizer
+        ? speech as AiSpeechPrerollRecognizer
+        : null;
+    prerollRecognizer?.setNextPreroll(preroll);
     try {
       await _speech.listen(onResult);
     } catch (_) {
+      prerollRecognizer?.setNextPreroll(Uint8List(0));
       await _releaseFocus();
       rethrow;
     }
   }
 
   @override
+  Future<bool> startBargeInMonitor({
+    required Future<void> Function() onVoiceDetected,
+  }) async {
+    if (!supportsBargeIn || !_initialized) return false;
+    if (!await _microphonePermission.ensureGranted()) return false;
+    _pendingBargeInPreroll = Uint8List(0);
+    return _bargeInMonitor.start(onVoiceDetected);
+  }
+
+  @override
+  Future<void> stopBargeInMonitor({bool preserveForNextListen = false}) async {
+    final preroll = await _bargeInMonitor.stop();
+    if (preserveForNextListen && supportsBargeIn && !_disposed) {
+      _pendingBargeInPreroll = preroll;
+    } else {
+      _pendingBargeInPreroll = Uint8List(0);
+    }
+  }
+
+  @override
   Future<void> stop() async {
+    _pendingBargeInPreroll = Uint8List(0);
+    await _bargeInMonitor.stop();
     try {
       await _speech.stop();
     } finally {
@@ -2091,6 +2436,8 @@ class PlatformAiSpeechEngine
 
   @override
   Future<void> cancel() async {
+    _pendingBargeInPreroll = Uint8List(0);
+    await _bargeInMonitor.stop();
     try {
       await _speech.cancel();
     } finally {
@@ -2101,6 +2448,8 @@ class PlatformAiSpeechEngine
   @override
   Future<void> releaseIdleResources() async {
     if (_disposed) return;
+    _pendingBargeInPreroll = Uint8List(0);
+    await _bargeInMonitor.stop();
     try {
       await _speech.cancel();
     } catch (_) {}
@@ -2174,6 +2523,8 @@ class PlatformAiSpeechEngine
   Future<void> _disposeInternal() async {
     if (_disposed) return;
     _disposed = true;
+    _pendingBargeInPreroll = Uint8List(0);
+    await _bargeInMonitor.dispose();
     final initializing = _initializeOperation;
     try {
       await _speech.cancel();

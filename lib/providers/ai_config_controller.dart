@@ -84,6 +84,7 @@ class AiConfigController extends ChangeNotifier {
   static const petPositionYPreferenceKey = 'ai_assistant_pet_position_y';
   static const voiceModelPreferenceKey = 'ai_voice_model_global_v1';
   static const voiceLoadModePreferenceKey = 'ai_voice_load_mode_global_v1';
+  static const bargeInModePreferenceKey = 'ai_voice_barge_in_global_v1';
 
   static const minPetScale = 0.65;
   static const maxPetScale = 2.0;
@@ -101,6 +102,7 @@ class AiConfigController extends ChangeNotifier {
   AiPetPosition _petPosition = AiPetPosition.centered;
   AiVoiceModelKind _voiceModel = AiVoiceModelKind.zipformerChinese;
   AiVoiceLoadMode _voiceLoadMode = AiVoiceLoadMode.onDemand;
+  AiBargeInMode _bargeInMode = AiBargeInMode.disabled;
   bool _disposed = false;
 
   AiConfigController({AiSecretStore? secretStore, UserDataScope? dataScope})
@@ -130,6 +132,7 @@ class AiConfigController extends ChangeNotifier {
   AiPetPosition get petPosition => _petPosition;
   AiVoiceModelKind get voiceModel => _voiceModel;
   AiVoiceLoadMode get voiceLoadMode => _voiceLoadMode;
+  AiBargeInMode get bargeInMode => _bargeInMode;
 
   /// Serializes all AI settings for an explicit user-created backup.
   ///
@@ -153,14 +156,16 @@ class AiConfigController extends ChangeNotifier {
   };
 
   Map<String, dynamic> toVoiceBackupJson() => {
-    'version': 1,
+    'version': 2,
     'model': _voiceModel.value,
     'loadMode': _voiceLoadMode.value,
+    'bargeInMode': _bargeInMode.value,
   };
 
   void validateVoiceBackupJson(Map<String, dynamic> json) {
     final model = json['model'];
     final loadMode = json['loadMode'];
+    final bargeInMode = json['bargeInMode'];
     if (model is! String ||
         !AiVoiceModelKind.values.any((item) => item.value == model)) {
       throw const FormatException('备份文件中的语音模型无效');
@@ -168,6 +173,11 @@ class AiConfigController extends ChangeNotifier {
     if (loadMode is! String ||
         !AiVoiceLoadMode.values.any((item) => item.value == loadMode)) {
       throw const FormatException('备份文件中的语音加载方式无效');
+    }
+    if (bargeInMode != null &&
+        (bargeInMode is! String ||
+            !AiBargeInMode.values.any((item) => item.value == bargeInMode))) {
+      throw const FormatException('备份文件中的语音自动打断设置无效');
     }
   }
 
@@ -177,14 +187,44 @@ class AiConfigController extends ChangeNotifier {
     validateVoiceBackupJson(json);
     final model = AiVoiceModelKind.fromValue(json['model'] as String);
     final loadMode = AiVoiceLoadMode.fromValue(json['loadMode'] as String);
+    final bargeInMode = AiBargeInMode.fromValue(
+      json['bargeInMode']?.toString(),
+    );
     final prefs = await SharedPreferences.getInstance();
-    final saved = await Future.wait([
-      prefs.setString(voiceModelPreferenceKey, model.value),
-      prefs.setString(voiceLoadModePreferenceKey, loadMode.value),
-    ]);
-    if (saved.any((value) => !value)) throw StateError('保存全局语音设置失败');
+    final previous = <String, String?>{
+      voiceModelPreferenceKey: prefs.getString(voiceModelPreferenceKey),
+      voiceLoadModePreferenceKey: prefs.getString(voiceLoadModePreferenceKey),
+      bargeInModePreferenceKey: prefs.getString(bargeInModePreferenceKey),
+    };
+    try {
+      for (final entry in {
+        voiceModelPreferenceKey: model.value,
+        voiceLoadModePreferenceKey: loadMode.value,
+        bargeInModePreferenceKey: bargeInMode.value,
+      }.entries) {
+        if (!await prefs.setString(entry.key, entry.value)) {
+          throw StateError('保存全局语音设置失败');
+        }
+      }
+    } catch (error) {
+      // SharedPreferences normally persists atomically per key, but restoring
+      // three settings is a multi-step operation. Best-effort rollback keeps a
+      // failed import from leaving a mixed voice configuration behind.
+      for (final entry in previous.entries) {
+        try {
+          final value = entry.value;
+          if (value == null) {
+            await prefs.remove(entry.key);
+          } else {
+            await prefs.setString(entry.key, value);
+          }
+        } catch (_) {}
+      }
+      rethrow;
+    }
     _voiceModel = model;
     _voiceLoadMode = loadMode;
+    _bargeInMode = bargeInMode;
     if (!_disposed) notifyListeners();
   }
 
@@ -451,6 +491,15 @@ class AiConfigController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> setBargeInMode(AiBargeInMode mode) async {
+    await ready;
+    if (_disposed || _bargeInMode == mode) return;
+    await _persistGlobalVoiceSetting(bargeInMode: mode);
+    if (_disposed) return;
+    _bargeInMode = mode;
+    notifyListeners();
+  }
+
   Future<void> resetPetPosition() => setPetPosition(AiPetPosition.centered);
 
   Future<void> _load() async {
@@ -467,6 +516,9 @@ class AiConfigController extends ChangeNotifier {
       final legacyVoiceModels = <String, AiVoiceModelKind>{};
       _voiceLoadMode = AiVoiceLoadMode.fromValue(
         prefs.getString(voiceLoadModePreferenceKey),
+      );
+      _bargeInMode = AiBargeInMode.fromValue(
+        prefs.getString(bargeInModePreferenceKey),
       );
       _apiKeys.addAll(_decodeSecretMap(results[1] as String?));
       _showAssistantOnAllPages =
@@ -596,15 +648,18 @@ class AiConfigController extends ChangeNotifier {
   Future<void> _persistGlobalVoiceSetting({
     AiVoiceModelKind? voiceModel,
     AiVoiceLoadMode? loadMode,
+    AiBargeInMode? bargeInMode,
   }) async {
     if (_disposed) return;
     final prefs = await SharedPreferences.getInstance();
     if (_disposed) return;
     final saved = voiceModel != null
         ? await prefs.setString(voiceModelPreferenceKey, voiceModel.value)
+        : loadMode != null
+        ? await prefs.setString(voiceLoadModePreferenceKey, loadMode.value)
         : await prefs.setString(
-            voiceLoadModePreferenceKey,
-            (loadMode ?? _voiceLoadMode).value,
+            bargeInModePreferenceKey,
+            (bargeInMode ?? _bargeInMode).value,
           );
     if (!saved) throw StateError('保存全局语音设置失败');
   }
