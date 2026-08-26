@@ -20,6 +20,9 @@ const _doubaoUserAgent =
     '(Linux; U; Android 16; en_US; Pixel 7 Pro; '
     'Build/BP2A.250605.031.A2; Cronet/TTNetVersion:94cf429a '
     '2025-11-17 QuicVersion:1f89f732 2025-05-08)';
+const _doubaoCredentialRefreshInterval = Duration(hours: 6);
+const _doubaoRecentRefreshWindow = Duration(seconds: 30);
+const _doubaoRefreshFailureBackoff = Duration(minutes: 1);
 
 class DoubaoImeAsrEndpoints {
   final Uri register;
@@ -48,6 +51,10 @@ class DoubaoImeCredentials {
   final String openUdid;
   final String clientUdid;
   final String token;
+  // The provider does not currently expose a token TTL. Persisting the
+  // refresh time lets a new app process avoid reusing an indefinitely old
+  // token while retaining the same anonymous device identity.
+  final int refreshedAtEpochSeconds;
 
   const DoubaoImeCredentials({
     required this.deviceId,
@@ -56,15 +63,21 @@ class DoubaoImeCredentials {
     required this.openUdid,
     required this.clientUdid,
     this.token = '',
+    this.refreshedAtEpochSeconds = 0,
   });
 
-  DoubaoImeCredentials copyWith({String? token}) => DoubaoImeCredentials(
+  DoubaoImeCredentials copyWith({
+    String? token,
+    int? refreshedAtEpochSeconds,
+  }) => DoubaoImeCredentials(
     deviceId: deviceId,
     installId: installId,
     cdid: cdid,
     openUdid: openUdid,
     clientUdid: clientUdid,
     token: token ?? this.token,
+    refreshedAtEpochSeconds:
+        refreshedAtEpochSeconds ?? this.refreshedAtEpochSeconds,
   );
 
   Map<String, Object?> toJson() => {
@@ -74,6 +87,7 @@ class DoubaoImeCredentials {
     'openudid': openUdid,
     'clientudid': clientUdid,
     'token': token,
+    'refreshed_at': refreshedAtEpochSeconds,
   };
 
   factory DoubaoImeCredentials.fromJson(Map<String, Object?> json) {
@@ -90,8 +104,28 @@ class DoubaoImeCredentials {
       openUdid: requiredString('openudid'),
       clientUdid: requiredString('clientudid'),
       token: json['token']?.toString().trim() ?? '',
+      refreshedAtEpochSeconds: _parseEpochSeconds(json['refreshed_at']),
     );
   }
+}
+
+int _parseEpochSeconds(Object? value) {
+  final parsed = value is num ? value.toInt() : int.tryParse('$value');
+  return parsed != null && parsed > 0 ? parsed : 0;
+}
+
+bool isDoubaoImeCredentialRefreshDue(
+  DoubaoImeCredentials credentials, {
+  DateTime? now,
+  Duration interval = _doubaoCredentialRefreshInterval,
+}) {
+  if (credentials.token.isEmpty || credentials.refreshedAtEpochSeconds <= 0) {
+    return true;
+  }
+  final nowSeconds = (now ?? DateTime.now()).millisecondsSinceEpoch ~/ 1000;
+  final elapsed = nowSeconds - credentials.refreshedAtEpochSeconds;
+  // A clock rollback must not make a possibly stale token live forever.
+  return elapsed < 0 || elapsed >= interval.inSeconds;
 }
 
 abstract interface class DoubaoImeCredentialStore {
@@ -175,11 +209,17 @@ class DoubaoImeAsrResponse {
   final DoubaoImeAsrResponseKind kind;
   final String text;
   final String error;
+  final String messageType;
+  final int statusCode;
+  final String statusMessage;
 
   const DoubaoImeAsrResponse({
     required this.kind,
     this.text = '',
     this.error = '',
+    this.messageType = '',
+    this.statusCode = 0,
+    this.statusMessage = '',
   });
 }
 
@@ -263,6 +303,7 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
   Future<DoubaoImeCredentials>? _credentialOperation;
   Future<void>? _refreshOperation;
   DateTime? _tokenRefreshedAt;
+  DateTime? _tokenRefreshRetryAfter;
   bool _disposed = false;
 
   DoubaoImeAsrClient({
@@ -351,7 +392,7 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
       final task = await _nextStartupResponse(iterator);
       if (task.kind != DoubaoImeAsrResponseKind.taskStarted) {
         throw DoubaoImeAsrException(
-          task.error.isNotEmpty ? task.error : '豆包语音任务启动失败',
+          _describeDoubaoImeAsrResponse(task, '豆包语音任务启动失败'),
         );
       }
 
@@ -372,7 +413,7 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
       final started = await _nextStartupResponse(iterator);
       if (started.kind != DoubaoImeAsrResponseKind.sessionStarted) {
         throw DoubaoImeAsrException(
-          started.error.isNotEmpty ? started.error : '豆包语音会话启动失败',
+          _describeDoubaoImeAsrResponse(started, '豆包语音会话启动失败'),
         );
       }
 
@@ -488,7 +529,9 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
     final inMemoryCredentials = _credentials;
     if (!refreshToken &&
         inMemoryCredentials != null &&
-        inMemoryCredentials.token.isNotEmpty) {
+        inMemoryCredentials.token.isNotEmpty &&
+        (!isDoubaoImeCredentialRefreshDue(inMemoryCredentials) ||
+            !_canAttemptProactiveRefresh())) {
       return inMemoryCredentials;
     }
     DoubaoImeCredentials? storedCredentials = inMemoryCredentials;
@@ -509,15 +552,28 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
     final recentlyRefreshed =
         _tokenRefreshedAt != null &&
         DateTime.now().difference(_tokenRefreshedAt!) <
-            const Duration(seconds: 30);
-    if (credentials.token.isEmpty || (refreshToken && !recentlyRefreshed)) {
+            _doubaoRecentRefreshWindow;
+    final refreshDue = isDoubaoImeCredentialRefreshDue(credentials);
+    if (credentials.token.isEmpty ||
+        (!recentlyRefreshed &&
+            (refreshToken || (refreshDue && _canAttemptProactiveRefresh())))) {
       try {
         final token = await _requestToken(credentials);
-        credentials = credentials.copyWith(token: token);
+        _checkNotDisposed();
+        credentials = credentials.copyWith(
+          token: token,
+          refreshedAtEpochSeconds:
+              DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        );
         _tokenRefreshedAt = DateTime.now();
+        _tokenRefreshRetryAfter = null;
         shouldPersist = true;
       } catch (_) {
+        if (_disposed) rethrow;
         if (credentials.token.isEmpty) rethrow;
+        _tokenRefreshRetryAfter = DateTime.now().add(
+          _doubaoRefreshFailureBackoff,
+        );
       }
     }
     _checkNotDisposed();
@@ -569,10 +625,30 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
       await _ensureCredentials(refreshToken: true);
       return;
     }
-    final token = await _requestToken(current);
-    final refreshed = current.copyWith(token: token);
+    if (_tokenRefreshedAt != null &&
+        DateTime.now().difference(_tokenRefreshedAt!) <
+            _doubaoRecentRefreshWindow) {
+      return;
+    }
+    late final String token;
+    try {
+      token = await _requestToken(current);
+    } catch (_) {
+      if (!_disposed) {
+        _tokenRefreshRetryAfter = DateTime.now().add(
+          _doubaoRefreshFailureBackoff,
+        );
+      }
+      rethrow;
+    }
+    _checkNotDisposed();
+    final refreshed = current.copyWith(
+      token: token,
+      refreshedAtEpochSeconds: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+    );
     _credentials = refreshed;
     _tokenRefreshedAt = DateTime.now();
+    _tokenRefreshRetryAfter = null;
     try {
       await _credentialStore
           .write(refreshed)
@@ -600,6 +676,7 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
     _checkNotDisposed();
     _credentials = null;
     _tokenRefreshedAt = null;
+    _tokenRefreshRetryAfter = null;
     try {
       await _credentialStore.clear().timeout(const Duration(seconds: 5));
     } catch (_) {
@@ -769,6 +846,11 @@ class DoubaoImeAsrClient implements DoubaoImeAsrGateway {
     if (_disposed) throw const DoubaoImeAsrException('豆包语音服务已释放');
   }
 
+  bool _canAttemptProactiveRefresh() {
+    final retryAfter = _tokenRefreshRetryAfter;
+    return retryAfter == null || !DateTime.now().isBefore(retryAfter);
+  }
+
   @override
   Future<void> dispose() async {
     if (_disposed) return;
@@ -870,12 +952,17 @@ class DoubaoImeAsrSession implements DoubaoImeAsrConnection {
   }
 }
 
-bool isDoubaoImeCredentialRoutingError(String message) {
+bool isDoubaoImeCredentialRoutingError(String message, {int? statusCode}) {
+  const retryCodes = <String>{'40100000', '40100004', '50000104', '50700000'};
   final normalized = message.toLowerCase();
+  if (statusCode != null && retryCodes.contains('$statusCode')) return true;
   if (normalized.contains('service discovery failure')) return true;
+  // A stale anonymous credential is also reported by some gateways as a
+  // generic backend-read failure. Recovery is bounded to one replacement
+  // session by the recognizer, so retrying this once is safe.
+  if (normalized.contains('read backend response')) return true;
   // Some gateway responses contain only the numeric status code. These are
   // the provider's documented retry/routing codes from the IME payload.
-  const retryCodes = <String>{'40100000', '40100004', '50000104', '50700000'};
   return retryCodes.any(normalized.contains);
 }
 
@@ -907,6 +994,9 @@ DoubaoImeAsrResponse parseDoubaoImeAsrResponse(
         error: response.statusMessage.trim().isEmpty
             ? '豆包语音服务返回错误（${response.statusCode}）'
             : response.statusMessage.trim(),
+        messageType: response.messageType,
+        statusCode: response.statusCode,
+        statusMessage: response.statusMessage.trim(),
       );
   }
   if (response.resultJson.isEmpty) {
@@ -962,6 +1052,16 @@ Uint8List _binaryMessage(Object? message) {
   if (message is Uint8List) return message;
   if (message is List<int>) return Uint8List.fromList(message);
   throw const DoubaoImeAsrException('豆包语音返回了非二进制响应');
+}
+
+String _describeDoubaoImeAsrResponse(
+  DoubaoImeAsrResponse response,
+  String fallback,
+) {
+  final message = response.error.trim().isEmpty ? fallback : response.error;
+  if (response.statusCode == 0) return message;
+  final type = response.messageType.isEmpty ? 'provider' : response.messageType;
+  return '$message [$type status=${response.statusCode}]';
 }
 
 final Random _secureRandom = Random.secure();

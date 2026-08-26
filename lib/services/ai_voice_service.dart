@@ -1680,15 +1680,30 @@ class DoubaoImeSpeechRecognizer
             }
             return;
           case DoubaoImeAsrResponseKind.error:
+            _log(
+              'provider failure: type=${response.messageType.isEmpty ? 'unknown' : response.messageType} '
+              'status=${response.statusCode} '
+              'message=${response.statusMessage.isEmpty ? response.error : response.statusMessage}',
+            );
             if (!_sessionRetryUsed &&
-                isDoubaoImeCredentialRoutingError(response.error)) {
+                isDoubaoImeCredentialRoutingError(
+                  response.error,
+                  statusCode: response.statusCode,
+                )) {
               _sessionRetryUsed = true;
               if (await _replaceRejectedSession(generation, session)) {
                 continue;
               }
               if (!_isCurrent(generation) || _finishing) return;
             }
-            _emitError(null, 'error_network: 豆包语音识别失败：${response.error}');
+            final status = response.statusCode == 0
+                ? ''
+                : ' [${response.messageType.isEmpty ? 'provider' : response.messageType} '
+                      'status=${response.statusCode}]';
+            _emitError(
+              null,
+              'error_network: 豆包语音识别失败：${response.error}$status',
+            );
             if (_finishRequested) {
               _emitFinalResultIfNeeded();
               _completeSessionCompletion();
@@ -1732,6 +1747,23 @@ class DoubaoImeSpeechRecognizer
     _session = null;
     try {
       await _closeSession(rejected);
+      if (!_isCurrent(generation) ||
+          !_listening ||
+          _finishRequested ||
+          _finishing) {
+        return false;
+      }
+      try {
+        await _client.refreshToken();
+      } catch (error, stackTrace) {
+        // A transient settings-endpoint failure should not prevent a new
+        // provider session from recovering with the current credential.
+        _logError(
+          'credential refresh during recovery failed',
+          error,
+          stackTrace,
+        );
+      }
       if (!_isCurrent(generation) ||
           !_listening ||
           _finishRequested ||

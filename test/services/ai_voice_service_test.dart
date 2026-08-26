@@ -335,6 +335,7 @@ void main() {
   test('recovers a post-handshake Doubao routing rejection', () async {
     final gateway = _FakeDoubaoGateway(
       rejectFirstAudioSession: true,
+      rejectionError: 'read backend response failed',
       finalResultOnAudio: '恢复后的识别结果',
     );
     final capture = _FakeAudioCapture();
@@ -365,6 +366,7 @@ void main() {
     await done.future.timeout(const Duration(seconds: 2));
 
     expect(gateway.openSessionCalls, 2);
+    expect(gateway.refreshCalls, 1);
     expect(results, [('恢复后的识别结果', true)]);
   });
 
@@ -393,6 +395,30 @@ void main() {
       preroll,
     );
     await recognizer.cancel();
+  });
+
+  test('stop wins while Doubao credential refresh is pending', () async {
+    final gateway = _RefreshRaceDoubaoGateway();
+    final capture = _FakeAudioCapture();
+    final recognizer = DoubaoImeSpeechRecognizer(
+      client: gateway,
+      captureStarter: () async => capture,
+    );
+
+    addTearDown(recognizer.dispose);
+    await recognizer.initialize(onError: (_) {}, onStatus: (_) {});
+    await recognizer.listen((_, _) {});
+    capture.emit(Uint8List(640));
+    await gateway.refreshStarted.future.timeout(const Duration(seconds: 2));
+
+    final stopping = recognizer.stop();
+    gateway.refreshResult.complete();
+    await stopping.timeout(const Duration(seconds: 2));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(gateway.openSessionCalls, 1);
+    expect(gateway.connections.single.closeCalls, 1);
+    expect(capture.disposeCalls, 1);
   });
 
   test(
@@ -696,6 +722,7 @@ class _FailFirstRecognizer extends _FakeRecognizer {
 
 class _FakeDoubaoGateway implements DoubaoImeAsrGateway {
   final bool rejectFirstAudioSession;
+  final String rejectionError;
   final String? finalResultOnAudio;
   final String? finalResultOnFinish;
   final bool finishWithoutSessionFinished;
@@ -707,6 +734,7 @@ class _FakeDoubaoGateway implements DoubaoImeAsrGateway {
 
   _FakeDoubaoGateway({
     this.rejectFirstAudioSession = false,
+    this.rejectionError = 'service discovery failure',
     this.finalResultOnAudio,
     this.finalResultOnFinish,
     this.finishWithoutSessionFinished = false,
@@ -720,9 +748,9 @@ class _FakeDoubaoGateway implements DoubaoImeAsrGateway {
     openSessionCalls++;
     final connection = _FakeDoubaoConnection(
       responseAfterFirstFrame: rejectFirstAudioSession && openSessionCalls == 1
-          ? const DoubaoImeAsrResponse(
+          ? DoubaoImeAsrResponse(
               kind: DoubaoImeAsrResponseKind.error,
-              error: 'service discovery failure',
+              error: rejectionError,
             )
           : finalResultOnAudio != null
           ? DoubaoImeAsrResponse(
@@ -783,6 +811,48 @@ class _DelayedDoubaoGateway implements DoubaoImeAsrGateway {
 
   @override
   Future<void> dispose() async {}
+}
+
+class _RefreshRaceDoubaoGateway implements DoubaoImeAsrGateway {
+  final Completer<void> refreshStarted = Completer<void>();
+  final Completer<void> refreshResult = Completer<void>();
+  final List<_FakeDoubaoConnection> connections = [];
+  int openSessionCalls = 0;
+
+  @override
+  Future<void> prepare() async {}
+
+  @override
+  Future<DoubaoImeAsrConnection> openSession() async {
+    openSessionCalls++;
+    final connection = _FakeDoubaoConnection(
+      responseAfterFirstFrame: openSessionCalls == 1
+          ? const DoubaoImeAsrResponse(
+              kind: DoubaoImeAsrResponseKind.error,
+              error: 'read backend response failed',
+            )
+          : null,
+    );
+    connections.add(connection);
+    return connection;
+  }
+
+  @override
+  Future<void> refreshToken() {
+    if (!refreshStarted.isCompleted) refreshStarted.complete();
+    return refreshResult.future;
+  }
+
+  @override
+  Future<void> resetCredentials() async {}
+
+  @override
+  Future<void> dispose() async {
+    if (!refreshResult.isCompleted) refreshResult.complete();
+    for (final connection in connections) {
+      await connection.close();
+    }
+  }
 }
 
 class _RecoveryRaceDoubaoGateway implements DoubaoImeAsrGateway {

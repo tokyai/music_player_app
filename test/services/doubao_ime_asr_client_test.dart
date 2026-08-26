@@ -8,7 +8,45 @@ import 'package:http/testing.dart';
 import 'package:music_player_app/services/doubao_ime_asr_client.dart';
 import 'package:music_player_app/services/proto/doubao_ime_asr.pb.dart' as pb;
 
+int _nowEpochSeconds() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
 void main() {
+  test('marks legacy and expired credentials for refresh', () {
+    final now = DateTime(2026, 8, 26, 12);
+    const legacy = DoubaoImeCredentials(
+      deviceId: 'device',
+      installId: 'install',
+      cdid: 'cdid',
+      openUdid: 'open',
+      clientUdid: 'client',
+      token: 'token',
+    );
+    final decodedLegacy = DoubaoImeCredentials.fromJson(const {
+      'device_id': 'device',
+      'install_id': 'install',
+      'cdid': 'cdid',
+      'openudid': 'open',
+      'clientudid': 'client',
+      'token': 'token',
+    });
+    final fresh = legacy.copyWith(
+      refreshedAtEpochSeconds:
+          now.millisecondsSinceEpoch ~/ 1000 - 6 * 60 * 60 + 1,
+    );
+    final expired = legacy.copyWith(
+      refreshedAtEpochSeconds: now.millisecondsSinceEpoch ~/ 1000 - 6 * 60 * 60,
+    );
+
+    expect(isDoubaoImeCredentialRefreshDue(legacy, now: now), isTrue);
+    expect(decodedLegacy.refreshedAtEpochSeconds, 0);
+    expect(isDoubaoImeCredentialRefreshDue(fresh, now: now), isFalse);
+    expect(isDoubaoImeCredentialRefreshDue(expired, now: now), isTrue);
+    expect(
+      DoubaoImeCredentials.fromJson(fresh.toJson()).refreshedAtEpochSeconds,
+      fresh.refreshedAtEpochSeconds,
+    );
+  });
+
   test('parses interim, final and server error protobuf responses', () {
     final interim = parseDoubaoImeAsrResponse(
       pb.AsrResponse(
@@ -49,8 +87,146 @@ void main() {
     expect(finalResult.kind, DoubaoImeAsrResponseKind.finalResult);
     expect(finalResult.text, '最终结果');
     expect(failure.kind, DoubaoImeAsrResponseKind.error);
+    expect(failure.messageType, 'TaskFailed');
+    expect(failure.statusCode, 2);
+    expect(failure.statusMessage, 'service discovery failure');
     expect(isDoubaoImeCredentialRoutingError(failure.error), isTrue);
     expect(isDoubaoImeCredentialRoutingError(numericFailure.error), isTrue);
+    expect(
+      isDoubaoImeCredentialRoutingError(
+        'backend read failed',
+        statusCode: 50700000,
+      ),
+      isTrue,
+    );
+    expect(isDoubaoImeCredentialRoutingError('read backend response'), isTrue);
+  });
+
+  test(
+    'refreshes a legacy credential and persists the refresh timestamp',
+    () async {
+      final store = MemoryDoubaoImeCredentialStore(
+        const DoubaoImeCredentials(
+          deviceId: 'device-id',
+          installId: 'install-id',
+          cdid: 'cdid',
+          openUdid: 'open-udid',
+          clientUdid: 'client-udid',
+          token: 'legacy-token',
+        ),
+      );
+      var tokenCalls = 0;
+      http.Response tokenResponse() => http.Response(
+        jsonEncode({
+          'data': {
+            'settings': {
+              'asr_config': {'app_key': 'fresh-token'},
+            },
+          },
+        }),
+        200,
+      );
+      final first = DoubaoImeAsrClient(
+        credentialStore: store,
+        httpClient: MockClient((_) async {
+          tokenCalls++;
+          return tokenResponse();
+        }),
+      );
+      addTearDown(first.dispose);
+
+      await first.prepare();
+      expect(tokenCalls, 1);
+      expect(store.value?.refreshedAtEpochSeconds, greaterThan(0));
+
+      final second = DoubaoImeAsrClient(
+        credentialStore: store,
+        httpClient: MockClient((_) async {
+          tokenCalls++;
+          return tokenResponse();
+        }),
+      );
+      addTearDown(second.dispose);
+      await second.prepare();
+      expect(tokenCalls, 1);
+    },
+  );
+
+  test(
+    'keeps a cached token when proactive refresh temporarily fails',
+    () async {
+      final store = MemoryDoubaoImeCredentialStore(
+        const DoubaoImeCredentials(
+          deviceId: 'device-id',
+          installId: 'install-id',
+          cdid: 'cdid',
+          openUdid: 'open-udid',
+          clientUdid: 'client-udid',
+          token: 'cached-token',
+        ),
+      );
+      var tokenCalls = 0;
+      final client = DoubaoImeAsrClient(
+        credentialStore: store,
+        httpClient: MockClient((_) async {
+          tokenCalls++;
+          return http.Response('temporarily unavailable', 503);
+        }),
+      );
+      addTearDown(client.dispose);
+
+      await client.prepare();
+      await client.prepare();
+
+      expect(tokenCalls, 1);
+      expect(store.value?.token, 'cached-token');
+      expect(store.value?.refreshedAtEpochSeconds, 0);
+    },
+  );
+
+  test('does not publish a token refresh after disposal', () async {
+    final store = MemoryDoubaoImeCredentialStore(
+      const DoubaoImeCredentials(
+        deviceId: 'device-id',
+        installId: 'install-id',
+        cdid: 'cdid',
+        openUdid: 'open-udid',
+        clientUdid: 'client-udid',
+        token: 'cached-token',
+      ),
+    );
+    final requestStarted = Completer<void>();
+    final response = Completer<http.Response>();
+    final client = DoubaoImeAsrClient(
+      credentialStore: store,
+      httpClient: MockClient((_) {
+        if (!requestStarted.isCompleted) requestStarted.complete();
+        return response.future;
+      }),
+    );
+    final refresh = expectLater(
+      client.refreshToken(),
+      throwsA(isA<DoubaoImeAsrException>()),
+    );
+    await requestStarted.future;
+
+    await client.dispose();
+    response.complete(
+      http.Response(
+        jsonEncode({
+          'data': {
+            'settings': {
+              'asr_config': {'app_key': 'late-token'},
+            },
+          },
+        }),
+        200,
+      ),
+    );
+    await refresh;
+
+    expect(store.value?.token, 'cached-token');
+    expect(store.value?.refreshedAtEpochSeconds, 0);
   });
 
   test(
@@ -59,13 +235,14 @@ void main() {
       var registerCalls = 0;
       var tokenCalls = 0;
       final store = MemoryDoubaoImeCredentialStore(
-        const DoubaoImeCredentials(
+        DoubaoImeCredentials(
           deviceId: 'stale-device',
           installId: 'stale-install',
           cdid: 'stale-cdid',
           openUdid: 'stale-open',
           clientUdid: 'stale-client',
           token: 'stale-token',
+          refreshedAtEpochSeconds: _nowEpochSeconds(),
         ),
       );
       final client = DoubaoImeAsrClient(
@@ -123,13 +300,14 @@ void main() {
       final socket = _FakeDoubaoSocket();
       var tokenCalls = 0;
       final store = _CountingCredentialStore(
-        const DoubaoImeCredentials(
+        DoubaoImeCredentials(
           deviceId: 'device-id',
           installId: 'install-id',
           cdid: 'cdid',
           openUdid: 'open-udid',
           clientUdid: 'client-udid',
           token: 'cached-token',
+          refreshedAtEpochSeconds: _nowEpochSeconds(),
         ),
       );
       final client = DoubaoImeAsrClient(
@@ -217,13 +395,14 @@ void main() {
 
   test('refreshes a rejected token before retrying the session', () async {
     final store = MemoryDoubaoImeCredentialStore(
-      const DoubaoImeCredentials(
+      DoubaoImeCredentials(
         deviceId: 'device-id',
         installId: 'install-id',
         cdid: 'cdid',
         openUdid: 'open-udid',
         clientUdid: 'client-udid',
         token: 'cached-token',
+        refreshedAtEpochSeconds: _nowEpochSeconds(),
       ),
     );
     var socketCalls = 0;
@@ -264,13 +443,14 @@ void main() {
     're-registers the device when a refreshed token is still rejected',
     () async {
       final store = MemoryDoubaoImeCredentialStore(
-        const DoubaoImeCredentials(
+        DoubaoImeCredentials(
           deviceId: 'stale-device',
           installId: 'stale-install',
           cdid: 'stale-cdid',
           openUdid: 'stale-open',
           clientUdid: 'stale-client',
           token: 'stale-token',
+          refreshedAtEpochSeconds: _nowEpochSeconds(),
         ),
       );
       var registerCalls = 0;
