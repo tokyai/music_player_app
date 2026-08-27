@@ -389,10 +389,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           onTap: () =>
               context.read<PlayerProvider>().playFromPlaylist(videos, index),
           onAddToQueue: () {
-            context.read<PlayerProvider>().addToQueue(video);
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text('已添加: ${video.name}')));
+            unawaited(_addBilibiliToQueue(video));
           },
         );
       },
@@ -1267,10 +1264,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                     index,
                   ),
                   onAddToQueue: () {
-                    context.read<PlayerProvider>().addToQueue(video);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('已添加: ${video.name}')),
-                    );
+                    unawaited(_addBilibiliToQueue(video));
                   },
                 ),
               );
@@ -1278,6 +1272,16 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _addBilibiliToQueue(SongSearchResult video) async {
+    final count = await context.read<PlayerProvider>().addToQueueAndGetCount(
+      video,
+    );
+    if (!mounted || count <= 0) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('已添加 $count 个分P: ${video.name}')));
   }
 
   Widget _buildSelectionBar(List<SongSearchResult> songs) {

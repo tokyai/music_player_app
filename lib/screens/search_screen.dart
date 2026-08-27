@@ -89,6 +89,19 @@ class _SearchScreenState extends State<SearchScreen>
     await _session.search(context.read<PlayerProvider>().api, normalized);
   }
 
+  Future<void> _addSearchResultToQueue(SongSearchResult song) async {
+    final count = await context.read<PlayerProvider>().addToQueueAndGetCount(
+      song,
+    );
+    if (!mounted || count <= 0) return;
+    final message = song.platform == MusicPlatform.bilibili
+        ? '已添加 $count 个分P: ${song.name}'
+        : '已添加到队列: ${song.name}';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 1)),
+    );
+  }
+
   Future<void> _showVoiceInput() async {
     if (_voiceInputOpen || !mounted) return;
     final assistant = Provider.of<AiAssistantController?>(
@@ -752,13 +765,7 @@ class _SearchScreenState extends State<SearchScreen>
             );
           },
           onAddToQueue: () {
-            context.read<PlayerProvider>().addToQueue(song);
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('已添加到队列: ${song.name}'),
-                duration: const Duration(seconds: 1),
-              ),
-            );
+            unawaited(_addSearchResultToQueue(song));
           },
         );
       },

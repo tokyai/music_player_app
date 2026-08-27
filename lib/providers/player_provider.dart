@@ -43,6 +43,9 @@ class PlayerProvider extends ChangeNotifier {
   static const _maxCachedPlayUrls = 64;
   static const _maxCachedLyricOffsets = 128;
   static const _maxBilibiliLyricAttempts = 64;
+  // A single B 站视频通常只有几个分 P. Keep an unexpectedly malformed
+  // response from turning one tap into an unbounded queue allocation.
+  static const _maxBilibiliPagesPerResource = 500;
   static const _bilibiliLyricPlatformOrderKey = 'bilibili_lyric_platform_order';
   static const _defaultBilibiliLyricPlatformOrder = <MusicPlatform>[
     MusicPlatform.qq,
@@ -125,16 +128,19 @@ class PlayerProvider extends ChangeNotifier {
   StreamSubscription? _errorSub;
   int _playRequestId = 0;
   int _queueSessionId = 0;
+  int _bilibiliPlayRequestId = 0;
+  int _bilibiliAddRequestId = 0;
   bool _disposed = false;
   final UserDataScope dataScope;
 
   PlayerProvider({
     this.dataScope = UserDataScope.defaultScope,
     bool activateRestoredSession = true,
+    BilibiliService? bilibiliService,
   }) : _restoredSessionActivationEnabled = activateRestoredSession {
     _api = ApiService(
       apiKey: '',
-      bilibili: BilibiliService(dataScope: dataScope),
+      bilibili: bilibiliService ?? BilibiliService(dataScope: dataScope),
     );
     _api.bilibili.addListener(_handleBilibiliChanged);
     _initAudioPlayer();
@@ -520,6 +526,10 @@ class PlayerProvider extends ChangeNotifier {
   void _cancelPendingPlaybackRestore() {
     _restoredPlaybackPending = false;
     _playbackStateInteraction = true;
+  }
+
+  void _cancelPendingBilibiliPlay() {
+    _bilibiliPlayRequestId++;
   }
 
   Future<void> activateRestoredSession() async {
@@ -1366,6 +1376,12 @@ class PlayerProvider extends ChangeNotifier {
     int index,
   ) async {
     if (index < 0 || index >= results.length) return;
+    final selected = results[index];
+    if (selected.platform == MusicPlatform.bilibili) {
+      await playBilibiliResource(selected);
+      return;
+    }
+    _cancelPendingBilibiliPlay();
     _cancelPendingPlaybackRestore();
     late final List<PlayQueueItem> nextQueue;
     try {
@@ -1387,6 +1403,11 @@ class PlayerProvider extends ChangeNotifier {
 
   /// 添加到队列并播放
   Future<void> playSingle(SongSearchResult result) async {
+    if (result.platform == MusicPlatform.bilibili) {
+      await playBilibiliResource(result);
+      return;
+    }
+    _cancelPendingBilibiliPlay();
     _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     _queueSessionId++;
@@ -1397,9 +1418,78 @@ class PlayerProvider extends ChangeNotifier {
     await _playCurrent();
   }
 
-  /// 添加到队列末尾（不立即播放）
+  /// 添加到队列末尾（不立即播放）。保留 void 签名，兼容车机遥控、旧页面
+  /// 和第三方调用方；需要知道实际追加数量的页面使用
+  /// [addToQueueAndGetCount]。
   void addToQueue(SongSearchResult result) {
-    addTracksToQueue([result]);
+    if (result.platform != MusicPlatform.bilibili) {
+      addTracksToQueue([result]);
+      return;
+    }
+    unawaited(addToQueueAndGetCount(result));
+  }
+
+  /// Adds a result to the queue and returns the number of concrete queue items
+  /// appended. B 站 results expand to one item per valid page.
+  Future<int> addToQueueAndGetCount(SongSearchResult result) async {
+    if (result.platform != MusicPlatform.bilibili) {
+      return addTracksToQueue([result]) ? 1 : 0;
+    }
+    final requestId = ++_bilibiliAddRequestId;
+    final queueSessionId = _queueSessionId;
+    try {
+      final expanded = await _expandBilibiliResource(result);
+      if (_disposed ||
+          requestId != _bilibiliAddRequestId ||
+          queueSessionId != _queueSessionId) {
+        return 0;
+      }
+      return addTracksToQueue(expanded) ? expanded.length : 0;
+    } catch (error, stackTrace) {
+      if (!_disposed &&
+          requestId == _bilibiliAddRequestId &&
+          queueSessionId == _queueSessionId) {
+        _handleBilibiliQueueError(error, stackTrace);
+      }
+      return 0;
+    }
+  }
+
+  /// Plays one B 站 search result as a queue containing all of that video's
+  /// valid pages. Search results themselves are separate videos and must not
+  /// be mixed into the same queue when the user taps one result.
+  Future<void> playBilibiliResource(SongSearchResult result) async {
+    if (_disposed || result.platform != MusicPlatform.bilibili) return;
+    final requestId = ++_bilibiliPlayRequestId;
+    try {
+      final expanded = await _expandBilibiliResource(result);
+      if (_disposed ||
+          requestId != _bilibiliPlayRequestId ||
+          expanded.isEmpty) {
+        return;
+      }
+      late final List<PlayQueueItem> nextQueue;
+      try {
+        nextQueue = expanded
+            .map(PlayQueueItem.fromSearchResult)
+            .toList(growable: true);
+      } catch (error, stackTrace) {
+        _handleQueueAllocationFailure(error, stackTrace);
+        return;
+      }
+      _cancelPendingPlaybackRestore();
+      _recordCurrentHistory(immediate: true);
+      _queueSessionId++;
+      _queue = nextQueue;
+      _currentIndex = 0;
+      _persistPlaybackStateNow();
+      notifyListeners();
+      await _playCurrent();
+    } catch (error, stackTrace) {
+      if (!_disposed && requestId == _bilibiliPlayRequestId) {
+        _handleBilibiliQueueError(error, stackTrace);
+      }
+    }
   }
 
   /// 批量追加到队列；传入会话编号时，只允许追加到发起加载时的队列。
@@ -1427,12 +1517,90 @@ class PlayerProvider extends ChangeNotifier {
     return true;
   }
 
+  /// Loads the authoritative B 站 video metadata and turns every valid page
+  /// into an independent queue item. The source result is never mutated.
+  Future<List<SongSearchResult>> _expandBilibiliResource(
+    SongSearchResult result,
+  ) async {
+    if (result.platform != MusicPlatform.bilibili) return [result];
+    final info = result.bilibiliPages.isNotEmpty
+        ? BilibiliVideoInfo(
+            bvid: result.id,
+            title: result.bilibiliVideoTitle ?? result.album,
+            description: result.bilibiliDescription ?? '',
+            ownerName: result.artist,
+            coverUrl: result.coverUrl,
+            duration: result.duration,
+            pages: result.bilibiliPages,
+          )
+        : await _api.bilibili.videoInfo(result.id);
+    final pages = info.pages
+        .where((page) => page.cid > 0)
+        .toList(growable: false);
+    if (pages.isEmpty) {
+      throw const BilibiliApiException('VIDEO_NO_PAGE', '视频没有可播放的分P');
+    }
+    if (pages.length > _maxBilibiliPagesPerResource) {
+      throw const BilibiliApiException(
+        'VIDEO_TOO_MANY_PAGES',
+        '视频分P数量异常，已拒绝加入播放队列',
+      );
+    }
+    final videoTitle = info.title.trim().isEmpty
+        ? (result.bilibiliVideoTitle ?? result.album).trim()
+        : info.title.trim();
+    final artist = info.ownerName.trim().isEmpty
+        ? result.artist
+        : info.ownerName.trim();
+    final cover = _preferExisting(result.coverUrl, info.coverUrl);
+    final description = info.description.trim().isEmpty
+        ? result.bilibiliDescription
+        : info.description.trim();
+    return pages
+        .map(
+          (page) => SongSearchResult(
+            platform: MusicPlatform.bilibili,
+            id: info.bvid.trim().isEmpty ? result.id : info.bvid,
+            name: page.title.trim().isEmpty ? 'P${page.page}' : page.title,
+            artist: artist,
+            album: videoTitle.isEmpty ? result.album : videoTitle,
+            coverUrl: cover,
+            duration: page.duration,
+            bilibiliVideoTitle: videoTitle.isEmpty
+                ? result.bilibiliVideoTitle
+                : videoTitle,
+            bilibiliDescription: description,
+            bilibiliCid: page.cid,
+            bilibiliPage: page.page,
+            bilibiliPages: pages,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  void _handleBilibiliQueueError(Object error, StackTrace stackTrace) {
+    debugPrint('展开 B 站视频分P失败: $error');
+    debugPrintStack(stackTrace: stackTrace);
+    if (_disposed) return;
+    _errorMessage = error.toString();
+    _lastError = error is BilibiliApiException
+        ? error.message
+        : 'B站视频分P加载失败，请重试';
+    notifyListeners();
+  }
+
   /// 从歌单播放
   Future<void> playFromPlaylist(
     List<SongSearchResult> tracks,
     int index,
   ) async {
     if (index < 0 || index >= tracks.length) return;
+    final selected = tracks[index];
+    if (selected.platform == MusicPlatform.bilibili) {
+      await playBilibiliResource(selected);
+      return;
+    }
+    _cancelPendingBilibiliPlay();
     _cancelPendingPlaybackRestore();
     late final List<PlayQueueItem> nextQueue;
     try {
@@ -1463,6 +1631,7 @@ class PlayerProvider extends ChangeNotifier {
 
   /// 从历史记录重新播放，并在音源准备完成后跳回上次断点。
   Future<void> playFromHistory(PlaybackHistoryEntry entry) async {
+    _cancelPendingBilibiliPlay();
     _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     _queueSessionId++;
@@ -1481,6 +1650,7 @@ class PlayerProvider extends ChangeNotifier {
     int index,
   ) async {
     if (index < 0 || index >= entries.length) return;
+    _cancelPendingBilibiliPlay();
     _cancelPendingPlaybackRestore();
     if (entries.length == 1) {
       await playFromHistory(entries.first);
@@ -2164,6 +2334,7 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> playPause() async {
     if (currentSong == null || _isLoading) return;
+    _cancelPendingBilibiliPlay();
     _cancelPendingPlaybackRestore();
     if (_isPlaying) {
       final paused = await _tryAudioCommand('暂停播放', _audioPlayer.pause);
@@ -2181,6 +2352,7 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   Future<void> pause() async {
+    _cancelPendingBilibiliPlay();
     _cancelPendingPlaybackRestore();
     final paused = await _tryAudioCommand('暂停播放', _audioPlayer.pause);
     if (paused) {
@@ -2190,6 +2362,7 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   Future<void> stop() async {
+    _cancelPendingBilibiliPlay();
     _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     await _tryAudioCommand('停止播放', _audioPlayer.stop);
@@ -2318,6 +2491,7 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> playNext() async {
     if (_queue.isEmpty) return;
+    _cancelPendingBilibiliPlay();
     _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     if (_playMode == PlayMode.shuffle) {
@@ -2332,6 +2506,7 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> playPrevious() async {
     if (_queue.isEmpty) return;
+    _cancelPendingBilibiliPlay();
     _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     _currentIndex = (_currentIndex - 1 + _queue.length) % _queue.length;
@@ -2406,6 +2581,7 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> playQueueItem(int index) async {
     if (index < 0 || index >= _queue.length) return;
+    _cancelPendingBilibiliPlay();
     _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     _currentIndex = index;
@@ -2416,6 +2592,7 @@ class PlayerProvider extends ChangeNotifier {
 
   void removeFromQueue(int index) {
     if (index < 0 || index >= _queue.length) return;
+    _cancelPendingBilibiliPlay();
     _cancelPendingPlaybackRestore();
     if (index == _currentIndex) _recordCurrentHistory(immediate: true);
     _queue.removeAt(index);
@@ -2435,6 +2612,8 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   void clearQueue() {
+    _cancelPendingBilibiliPlay();
+    _bilibiliAddRequestId++;
     _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     _playRequestId++;
@@ -2485,6 +2664,8 @@ class PlayerProvider extends ChangeNotifier {
     }
     _playRequestId++;
     _queueSessionId++;
+    _bilibiliPlayRequestId++;
+    _bilibiliAddRequestId++;
     final subscriptions = <StreamSubscription?>[
       _playerSub,
       _durationSub,

@@ -8,6 +8,7 @@ import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/providers/player_provider.dart';
 import 'package:music_player_app/providers/search_session.dart';
 import 'package:music_player_app/screens/search_screen.dart';
+import 'package:music_player_app/services/bilibili_service.dart';
 import 'package:music_player_app/services/favorite_service.dart';
 import 'package:music_player_app/theme/app_theme.dart';
 import 'package:music_player_app/widgets/smart_cover.dart';
@@ -266,6 +267,59 @@ void main() {
     );
 
     testWidgets(
+      'Bilibili resource actions stay usable at ${size.width.toInt()}x${size.height.toInt()}',
+      (tester) async {
+        final player = _RecordingBilibiliSearchPlayer();
+        final session = SearchSession();
+        final favorites = FavoriteService();
+        try {
+          await _pumpSearch(
+            tester,
+            player: player,
+            session: session,
+            favorites: favorites,
+            size: size,
+          );
+
+          await session.search(
+            player.api,
+            '多P测试',
+            preferredPlatform: MusicPlatform.bilibili,
+          );
+          await tester.pumpAndSettle();
+
+          final title = find.text('B站多P资源');
+          expect(title.hitTestable(), findsOneWidget);
+          await tester.tap(title.hitTestable());
+          await tester.pump();
+          expect(player.played?.id, 'BVmulti');
+
+          final row = find.ancestor(of: title, matching: find.byType(ListTile));
+          final menu = find.descendant(
+            of: row,
+            matching: find.byType(PopupMenuButton<String>),
+          );
+          expect(menu.hitTestable(), findsOneWidget);
+          await tester.tap(menu.hitTestable());
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('添加到队列'));
+          await tester.pumpAndSettle();
+
+          expect(player.added?.id, 'BVmulti');
+          expect(find.text('已添加 2 个分P: B站多P资源'), findsOneWidget);
+          expect(tester.takeException(), isNull);
+        } finally {
+          await tester.pumpWidget(const SizedBox.shrink());
+          player.dispose();
+          session.dispose();
+          favorites.dispose();
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        }
+      },
+    );
+
+    testWidgets(
       'Netease official covers reach song rows at ${size.width.toInt()}x${size.height.toInt()}',
       (tester) async {
         await http.runWithClient(() async {
@@ -308,6 +362,25 @@ void main() {
         }, _neteaseCoverClient);
       },
     );
+  }
+}
+
+class _RecordingBilibiliSearchPlayer extends PlayerProvider {
+  SongSearchResult? played;
+  SongSearchResult? added;
+
+  _RecordingBilibiliSearchPlayer()
+    : super(bilibiliService: BilibiliService(client: _bilibiliSearchClient()));
+
+  @override
+  Future<void> playBilibiliResource(SongSearchResult result) async {
+    played = result;
+  }
+
+  @override
+  Future<int> addToQueueAndGetCount(SongSearchResult result) async {
+    added = result;
+    return 2;
   }
 }
 
@@ -443,6 +516,41 @@ http.Client _neteaseCoverClient() {
       });
     }
     return http.Response('not found', 404);
+  });
+}
+
+http.Client _bilibiliSearchClient() {
+  return MockClient((request) async {
+    if (request.url.path == '/x/web-interface/nav') {
+      return _jsonResponse({
+        'code': 0,
+        'data': {
+          'wbi_img': {
+            'img_url':
+                'https://i0.hdslb.com/bfs/wbi/abcdefghijklmnopqrstuvwxyz012345.png',
+            'sub_url':
+                'https://i0.hdslb.com/bfs/wbi/9876543210abcdefghijklmnopqrstuvwxyz.png',
+          },
+        },
+      });
+    }
+    if (request.url.path == '/x/web-interface/wbi/search/type') {
+      return _jsonResponse({
+        'code': 0,
+        'data': {
+          'result': [
+            {
+              'bvid': 'BVmulti',
+              'title': 'B站多P资源',
+              'author': '测试UP主',
+              'pic': '//example.com/bilibili.jpg',
+              'duration': '05:00',
+            },
+          ],
+        },
+      });
+    }
+    return _jsonResponse({'code': -404, 'message': 'not found'});
   });
 }
 
