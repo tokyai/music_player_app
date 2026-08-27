@@ -55,7 +55,10 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   }
 
   void _handleTrackScroll() {
-    if (!_trackScrollController.hasClients || _loadingMore || !_hasMore) {
+    if (!mounted ||
+        !_trackScrollController.hasClients ||
+        _loadingMore ||
+        !_hasMore) {
       return;
     }
     final position = _trackScrollController.position;
@@ -145,7 +148,10 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     return message;
   }
 
-  Future<List<SongSearchResult>> _loadMore(PlayerProvider player) {
+  Future<List<SongSearchResult>> _loadMore(
+    PlayerProvider player, {
+    bool retainTracks = true,
+  }) {
     final pending = _loadMoreFuture;
     if (pending != null) return pending;
     if (_loading || !_hasMore) {
@@ -153,16 +159,21 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     }
 
     late final Future<List<SongSearchResult>> operation;
-    operation = _loadMorePage(player).whenComplete(() {
-      if (identical(_loadMoreFuture, operation)) {
-        _loadMoreFuture = null;
-      }
-    });
+    operation = _loadMorePage(player, retainTracks: retainTracks).whenComplete(
+      () {
+        if (identical(_loadMoreFuture, operation)) {
+          _loadMoreFuture = null;
+        }
+      },
+    );
     _loadMoreFuture = operation;
     return operation;
   }
 
-  Future<List<SongSearchResult>> _loadMorePage(PlayerProvider player) async {
+  Future<List<SongSearchResult>> _loadMorePage(
+    PlayerProvider player, {
+    required bool retainTracks,
+  }) async {
     final offset = _nextOffset;
     _loadingMore = true;
     if (mounted) setState(() {});
@@ -170,27 +181,13 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       final page = await _fetchPage(player, offset);
       final nextTracks = List<SongSearchResult>.of(page.tracks);
       void appendPage() {
-        _tracks.addAll(nextTracks);
+        if (retainTracks) _tracks.addAll(nextTracks);
         _nextOffset = offset + nextTracks.length;
         _hasMore = nextTracks.isNotEmpty && _pageHasMore(page, _nextOffset);
-        if (_detail != null) {
-          _detail = PlaylistInfo(
-            id: _detail!.id,
-            name: _detail!.name,
-            coverUrl: _detail!.coverUrl,
-            creator: _detail!.creator,
-            trackCount: _detail!.trackCount,
-            description: _detail!.description,
-            tracks: List.unmodifiable(_tracks),
-          );
-        }
       }
 
-      if (mounted) {
-        setState(appendPage);
-      } else {
-        appendPage();
-      }
+      if (!mounted) return const <SongSearchResult>[];
+      setState(appendPage);
       return nextTracks;
     } catch (e) {
       if (mounted) {
@@ -321,16 +318,18 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
     final canPlay = _detail != null && _detail!.tracks.isNotEmpty;
     Future<void> playAll() async {
-      if (!canPlay || _loadingAll) return;
+      if (!mounted || !canPlay || _loadingAll) return;
       final player = context.read<PlayerProvider>();
-      final initialTracks = List<SongSearchResult>.of(_tracks);
       setState(() => _loadingAll = true);
-      final playback = player.playFromPlaylist(initialTracks, 0);
+      // playFromPlaylist converts the list synchronously before its first
+      // await, so passing the existing page avoids another full-list copy.
+      final playback = player.playFromPlaylist(_tracks, 0);
       final queueSessionId = player.queueSessionId;
       unawaited(playback);
       try {
         while (_hasMore && player.queueSessionId == queueSessionId) {
-          final nextTracks = await _loadMore(player);
+          final nextTracks = await _loadMore(player, retainTracks: false);
+          if (!mounted) return;
           if (nextTracks.isEmpty ||
               !player.addTracksToQueue(
                 nextTracks,
@@ -352,7 +351,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       ),
     );
     final loadingLabel = p.trackCount > 0
-        ? '加载中 ${_tracks.length}/${p.trackCount}'
+        ? '加载中 $_nextOffset/${p.trackCount}'
         : '加载中';
     final playButton = canPlay
         ? isLandscape
@@ -407,11 +406,18 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 : AppColors.surfaceSoft,
           ),
           onPressed: () async {
-            final added = await favorites.togglePlaylist(widget.platform, p);
-            if (!context.mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text(added ? '已收藏歌单: ${p.name}' : '已取消收藏歌单')),
-            );
+            try {
+              final added = await favorites.togglePlaylist(widget.platform, p);
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(added ? '已收藏歌单: ${p.name}' : '已取消收藏歌单')),
+              );
+            } catch (error) {
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(SnackBar(content: Text('收藏歌单失败：$error')));
+            }
           },
           icon: AppAnimatedIcon(
             stateKey: isFavorite,

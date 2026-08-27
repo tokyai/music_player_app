@@ -44,6 +44,15 @@ abstract class AiChatGateway {
 class AiAssistantService implements AiChatGateway {
   static const _timeout = Duration(seconds: 35);
   static const _maxResponseBytes = 3 * 1024 * 1024;
+  // A response can contain the same text in several provider-specific fields.
+  // Bound extracted text before joining/cleaning so a large but valid JSON
+  // response cannot multiply its temporary Dart string allocations.
+  static const _maxExtractedTextChars = 128 * 1024;
+  // Provider payloads are JSON, but a malformed relay can still return a
+  // deeply nested object. Bound recursive inspection so parsing cannot turn
+  // into a stack overflow or an unbounded tree walk.
+  static const _maxInspectionDepth = 32;
+  static const _maxInspectionNodes = 20000;
 
   final http.Client _client;
 
@@ -464,8 +473,13 @@ class AiAssistantService implements AiChatGateway {
     final texts = <String>[];
     AiPlaySongRequest? action;
     final sources = <Uri>{};
+    var inspectedNodes = 0;
 
-    void inspect(dynamic value) {
+    void inspect(dynamic value, [int depth = 0]) {
+      if (depth > _maxInspectionDepth ||
+          inspectedNodes++ >= _maxInspectionNodes) {
+        return;
+      }
       if (value is Map) {
         final map = Map<String, dynamic>.from(value);
         final type = map['type']?.toString();
@@ -508,11 +522,11 @@ class AiAssistantService implements AiChatGateway {
               sources.add(uri);
             }
           }
-          inspect(entry.value);
+          inspect(entry.value, depth + 1);
         }
       } else if (value is List) {
         for (final item in value) {
-          inspect(item);
+          inspect(item, depth + 1);
         }
       }
     }
@@ -533,8 +547,17 @@ class AiAssistantService implements AiChatGateway {
 
   List<String> _extractTexts(Map<String, dynamic> response) {
     final values = <String>[];
+    var extractedChars = 0;
     void add(dynamic value) {
-      if (value is String && value.trim().isNotEmpty) values.add(value.trim());
+      if (value is! String || extractedChars >= _maxExtractedTextChars) return;
+      final text = value.trim();
+      if (text.isEmpty) return;
+      final remaining = _maxExtractedTextChars - extractedChars;
+      final bounded = text.length <= remaining
+          ? text
+          : text.substring(0, remaining);
+      values.add(bounded);
+      extractedChars += bounded.length;
     }
 
     // OpenAI Responses.

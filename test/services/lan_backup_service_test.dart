@@ -16,6 +16,8 @@ void main() {
       final home = await http.get(localUri).timeout(const Duration(seconds: 5));
       expect(home.statusCode, 200);
       expect(home.body, contains('库仔音乐备份'));
+      expect(home.body, contains('备份包含全部用户资料'));
+      expect(home.body, contains('文件不能超过 12 MB'));
       expect(Uri.parse(session.qrUrl).queryParameters['pin'], session.pin);
       expect(home.body, contains('initialPin'));
 

@@ -7,20 +7,25 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'models/ai_assistant.dart';
 import 'providers/ai_assistant_controller.dart';
 import 'providers/ai_config_controller.dart';
 import 'providers/player_provider.dart';
 import 'providers/search_session.dart';
 import 'providers/theme_controller.dart';
+import 'providers/user_controller.dart';
 import 'screens/discover_screen.dart';
 import 'screens/player_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/playlist_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/favorite_service.dart';
+import 'services/app_exit_service.dart';
+import 'services/audio_cache_service.dart';
 import 'services/floating_capsule_service.dart';
+import 'services/global_settings_service.dart';
 import 'services/player_media_handler.dart';
+import 'services/user_data_scope.dart';
 import 'theme/app_layout.dart';
 import 'theme/app_motion.dart';
 import 'theme/app_theme.dart';
@@ -29,13 +34,19 @@ import 'widgets/mini_player.dart';
 import 'widgets/ai_assistant_overlay.dart';
 import 'widgets/remote_focusable.dart';
 
-final _navigatorKey = GlobalKey<NavigatorState>();
 const _foregroundMediaKeyChannel = MethodChannel(
   'music_player/foreground_media_keys',
 );
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Music lists can contain hundreds of covers. Flutter's default image
+  // cache is item-count based and may retain a large decoded-image working
+  // set on a car display. Bound only the in-memory decoded cache; the disk
+  // cache and user audio cache remain untouched.
+  final imageCache = PaintingBinding.instance.imageCache;
+  imageCache.maximumSize = 300;
+  imageCache.maximumSizeBytes = 64 << 20;
   PlatformDispatcher.instance.onError = (error, stack) {
     debugPrint('未捕获的后台异常: $error');
     debugPrintStack(stackTrace: stack);
@@ -43,7 +54,15 @@ void main() async {
   };
   // 全面屏适配：内容延伸到状态栏/导航栏区域（各页面已用 SafeArea 保护内容）
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-  final player = PlayerProvider();
+  // Restore the mini-window preference before constructing the player. The
+  // player can restore a paused queue immediately, and that song should still
+  // be available in the always-on-top window.
+  FloatingCapsuleService.init();
+  final users = UserController();
+  await users.ready;
+  await GlobalSettingsService.migrateLegacyScopedSettings(users.activeScope);
+  await FloatingCapsuleService.restoreEnabled(scope: users.activeScope);
+  final player = PlayerProvider(dataScope: users.activeScope);
   try {
     final audioSession = await AudioSession.instance;
     await audioSession.configure(const AudioSessionConfiguration.music());
@@ -52,8 +71,9 @@ void main() async {
     debugPrintStack(stackTrace: stack);
   }
   // 系统媒体会话：通知栏、锁屏和车机方向盘共用应用内播放队列。
+  PlayerMediaHandler? mediaHandler;
   try {
-    await AudioService.init(
+    mediaHandler = await AudioService.init<PlayerMediaHandler>(
       builder: () => PlayerMediaHandler(player),
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'com.example.music_player_app.audio',
@@ -70,14 +90,15 @@ void main() async {
   }
   // Some car launchers deliver next/previous to the foreground Activity
   // instead of the active MediaSession. Keep a narrow fallback for that path.
+  var activePlayer = player;
   _foregroundMediaKeyChannel.setMethodCallHandler((call) async {
     try {
       switch (call.method) {
         case 'next':
-          await player.playNext();
+          await activePlayer.playNext();
           break;
         case 'previous':
-          await player.playPrevious();
+          await activePlayer.playPrevious();
           break;
       }
     } catch (error) {
@@ -87,7 +108,7 @@ void main() async {
   });
   bool? foregroundMediaKeysEnabled;
   void syncForegroundMediaKeys() {
-    final enabled = player.currentSong != null && player.isPlaying;
+    final enabled = activePlayer.currentSong != null && activePlayer.isPlaying;
     if (foregroundMediaKeysEnabled == enabled) return;
     foregroundMediaKeysEnabled = enabled;
     unawaited(
@@ -97,43 +118,265 @@ void main() async {
     );
   }
 
-  player.addListener(syncForegroundMediaKeys);
+  void bindSystemPlayer(PlayerProvider next) {
+    if (identical(activePlayer, next)) return;
+    activePlayer.removeListener(syncForegroundMediaKeys);
+    activePlayer = next;
+    mediaHandler?.bindPlayer(next);
+    foregroundMediaKeysEnabled = null;
+    activePlayer.addListener(syncForegroundMediaKeys);
+    syncForegroundMediaKeys();
+  }
+
+  activePlayer.addListener(syncForegroundMediaKeys);
   syncForegroundMediaKeys();
   // Android 13+ 请求通知权限（否则系统媒体通知不显示）
   try {
     await Permission.notification.request();
   } catch (_) {}
-  // 系统悬浮窗胶囊：初始化通道 + 恢复开关状态
-  FloatingCapsuleService.init();
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    FloatingCapsuleService.setEnabled(
-      prefs.getBool('floating_capsule_enabled') ?? false,
-    );
-  } catch (_) {}
-  runApp(MusicPlayerApp(player: player));
+  runApp(
+    MusicPlayerApp(
+      player: player,
+      users: users,
+      bindSystemPlayer: bindSystemPlayer,
+    ),
+  );
 }
 
-class MusicPlayerApp extends StatelessWidget {
-  const MusicPlayerApp({super.key, required this.player});
+class MusicPlayerApp extends StatefulWidget {
+  const MusicPlayerApp({
+    super.key,
+    required this.player,
+    required this.users,
+    required this.bindSystemPlayer,
+    this.sharedAiConfig,
+    this.sharedTheme,
+  });
 
   final PlayerProvider player;
+  final UserController users;
+  final void Function(PlayerProvider player) bindSystemPlayer;
+  final AiConfigController? sharedAiConfig;
+  final ThemeController? sharedTheme;
+
+  @override
+  State<MusicPlayerApp> createState() => _MusicPlayerAppState();
+}
+
+class _MusicPlayerAppState extends State<MusicPlayerApp>
+    with WidgetsBindingObserver {
+  late _UserSession _session;
+  late final AiConfigController _sharedAiConfig;
+  late final ThemeController _sharedTheme;
+  late final bool _ownsSharedAiConfig;
+  late final bool _ownsSharedTheme;
+  GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+  AiVoiceLoadMode? _runtimeVoiceLoadMode;
+  int _voicePreloadGeneration = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _ownsSharedAiConfig = widget.sharedAiConfig == null;
+    _ownsSharedTheme = widget.sharedTheme == null;
+    _sharedAiConfig = widget.sharedAiConfig ?? AiConfigController();
+    _sharedTheme = widget.sharedTheme ?? ThemeController();
+    _session = _UserSession(
+      scope: widget.users.activeScope,
+      player: widget.player,
+      sharedAiConfig: _sharedAiConfig,
+      sharedTheme: _sharedTheme,
+    );
+    widget.users.attachSessionSwitcher(_switchUserSession);
+    widget.users.attachSessionReloader(_reloadActiveUserSession);
+    FloatingCapsuleService.onPlayPauseTap = () => _session.player.playPause();
+    FloatingCapsuleService.onCapsuleTap = () {
+      final context = _navigatorKey.currentContext;
+      if (context != null) {
+        _navigatorKey.currentState?.push(PlayerScreen.route(context));
+      }
+    };
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_configureVoicePreloading(_session));
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_syncFloatingCapsuleOnResume());
+    }
+  }
+
+  @override
+  void didHaveMemoryPressure() {
+    unawaited(_session.aiAssistant.releasePreloadedVoiceModel());
+  }
+
+  Future<void> _configureVoicePreloading(_UserSession session) async {
+    final generation = ++_voicePreloadGeneration;
+    try {
+      await session.aiConfig.ready;
+      if (!mounted ||
+          !identical(session, _session) ||
+          generation != _voicePreloadGeneration) {
+        return;
+      }
+      _runtimeVoiceLoadMode ??= session.aiConfig.voiceLoadMode;
+      final enabled = _runtimeVoiceLoadMode == AiVoiceLoadMode.startupPreload;
+      session.aiAssistant.configureVoicePreloading(enabled: enabled);
+      if (!enabled ||
+          session.aiConfig.voiceModel != AiVoiceModelKind.zipformerChinese) {
+        return;
+      }
+      await session.aiAssistant.preloadVoiceModel();
+    } catch (error, stackTrace) {
+      debugPrint('启动预加载语音模型失败，将在打开助手时重试: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  Future<void> _syncFloatingCapsuleOnResume() async {
+    if (!mounted || !FloatingCapsuleService.enabled) return;
+    final player = _session.player;
+    final song = player.currentSong;
+    if (song == null) return;
+    await FloatingCapsuleService.show(
+      title: song.name,
+      artist: song.artist,
+      coverUrl: song.coverUrl,
+      isPlaying: player.isPlaying,
+    );
+  }
+
+  Future<void> _switchUserSession(String userId) async {
+    await _replaceUserSession(userId, activateUser: true);
+  }
+
+  Future<void> _reloadActiveUserSession() async {
+    await _replaceUserSession(widget.users.activeUserId, activateUser: false);
+  }
+
+  Future<void> _replaceUserSession(
+    String userId, {
+    required bool activateUser,
+  }) async {
+    if (activateUser && userId == _session.scope.userId) return;
+    final previous = _session;
+    var previousPrepared = false;
+    _UserSession? target;
+    try {
+      await previous.aiAssistant.stopSession(restoreMusic: false);
+      await previous.aiAssistant.releasePreloadedVoiceModel();
+      await previous.player.prepareForUserSwitch();
+      previousPrepared = true;
+      // Construct the target only after the old model/player has been stopped.
+      // The short overlap is limited to lightweight Dart/plugin wrappers; the
+      // large voice model has already been released above.
+      target = _UserSession(
+        scope: UserDataScope(userId),
+        sharedAiConfig: _sharedAiConfig,
+        sharedTheme: _sharedTheme,
+        activateRestoredSession: false,
+      );
+      unawaited(
+        target.ready.catchError((error, stackTrace) {
+          debugPrint('加载目标用户数据失败: $error');
+          debugPrintStack(stackTrace: stackTrace);
+        }),
+      );
+      if (!mounted) throw StateError('应用正在关闭，无法切换用户');
+      if (activateUser) await widget.users.activatePreparedUser(userId);
+      // Mark the old session disposed without waiting on a potentially slow
+      // native platform-channel teardown. Its release future continues in the
+      // background and drops the old cache index when complete.
+      previous.disposeResources(waitForNative: false);
+      if (!mounted) {
+        await target.disposeResources(waitForNative: false);
+        return;
+      }
+      setState(() {
+        _session = target!;
+        // A new navigator disposes the cached home route and every page that
+        // may still hold controllers from the previous user session.
+        _navigatorKey = GlobalKey<NavigatorState>();
+      });
+      unawaited(_configureVoicePreloading(target));
+      try {
+        widget.bindSystemPlayer(target.player);
+        await FloatingCapsuleService.hide();
+        await FloatingCapsuleService.restoreEnabled(scope: target.scope);
+        unawaited(_activateTargetSession(target));
+      } catch (error, stackTrace) {
+        // The user/session commit is already complete. Optional platform
+        // integrations must not roll the UI back to providers being disposed.
+        debugPrint('切换用户后同步系统播放状态失败: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+    } catch (error) {
+      if (previousPrepared &&
+          (activateUser ? _session.scope.userId != userId : true)) {
+        await previous.player.cancelPreparedUserSwitch();
+      }
+      if (target != null && !identical(_session, target)) {
+        await target.disposeResources(waitForNative: false);
+      }
+      rethrow;
+    }
+  }
+
+  @override
+  void dispose() {
+    _voicePreloadGeneration++;
+    WidgetsBinding.instance.removeObserver(this);
+    widget.users.detachSessionSwitcher();
+    FloatingCapsuleService.onPlayPauseTap = null;
+    FloatingCapsuleService.onCapsuleTap = null;
+    unawaited(_disposeSessionAndSharedControllers());
+    widget.users.dispose();
+    super.dispose();
+  }
+
+  Future<void> _activateTargetSession(_UserSession target) async {
+    try {
+      await target.ready;
+      if (!mounted || !identical(target, _session)) return;
+      await target.player.activateRestoredSession();
+    } catch (error, stackTrace) {
+      debugPrint('恢复目标用户播放状态失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  Future<void> _disposeSessionAndSharedControllers() async {
+    await _session.disposeResources(waitForNative: false);
+    if (_ownsSharedAiConfig) {
+      _sharedAiConfig.dispose();
+    }
+    if (_ownsSharedTheme) {
+      _sharedTheme.dispose();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
+      key: ValueKey('user-session-${_session.scope.userId}'),
       providers: [
-        ChangeNotifierProvider<PlayerProvider>.value(value: player),
-        ChangeNotifierProvider(create: (_) => AiConfigController()),
-        ChangeNotifierProvider(
-          create: (context) => AiAssistantController(
-            player: player,
-            configController: context.read<AiConfigController>(),
-          ),
+        ChangeNotifierProvider<UserController>.value(value: widget.users),
+        ChangeNotifierProvider<PlayerProvider>.value(value: _session.player),
+        ChangeNotifierProvider<AiConfigController>.value(
+          value: _session.aiConfig,
         ),
-        ChangeNotifierProvider(create: (_) => SearchSession()),
-        ChangeNotifierProvider(create: (_) => ThemeController()),
-        ChangeNotifierProvider(create: (_) => FavoriteService()..load()),
+        ChangeNotifierProvider<AiAssistantController>.value(
+          value: _session.aiAssistant,
+        ),
+        ChangeNotifierProvider<SearchSession>.value(value: _session.search),
+        ChangeNotifierProvider<ThemeController>.value(value: _session.theme),
+        ChangeNotifierProvider<FavoriteService>.value(
+          value: _session.favorites,
+        ),
       ],
       child: Consumer<ThemeController>(
         builder: (context, themeCtrl, _) {
@@ -153,15 +396,6 @@ class MusicPlayerApp extends StatelessWidget {
             builder: (context, child) {
               AppColors.syncWithTheme(context);
               applySystemUi(dark: AppColors.isDark);
-              // 注入系统悬浮窗胶囊回调（仅一次）
-              if (FloatingCapsuleService.onPlayPauseTap == null) {
-                FloatingCapsuleService.onPlayPauseTap = () {
-                  context.read<PlayerProvider>().playPause();
-                };
-                FloatingCapsuleService.onCapsuleTap = () {
-                  _navigatorKey.currentState?.push(PlayerScreen.route(context));
-                };
-              }
               // 在车机大屏上统一放大未显式使用 AppLayout 尺寸令牌的文字，
               // 同时合并系统无障碍字号和用户设置的整体字号比例。
               return TvRemoteScope(
@@ -175,11 +409,86 @@ class MusicPlayerApp extends StatelessWidget {
                 ),
               );
             },
-            home: const MainScreen(),
+            home: MainScreen(key: ValueKey(_session.scope.userId)),
           );
         },
       ),
     );
+  }
+}
+
+class _UserSession {
+  final UserDataScope scope;
+  final PlayerProvider player;
+  late final AiConfigController aiConfig;
+  late final AiAssistantController aiAssistant;
+  late final SearchSession search;
+  late final ThemeController theme;
+  late final FavoriteService favorites;
+
+  _UserSession({
+    required this.scope,
+    required AiConfigController sharedAiConfig,
+    required ThemeController sharedTheme,
+    PlayerProvider? player,
+    bool activateRestoredSession = true,
+  }) : player =
+           player ??
+           PlayerProvider(
+             dataScope: scope,
+             activateRestoredSession: activateRestoredSession,
+           ) {
+    aiConfig = sharedAiConfig;
+    aiAssistant = AiAssistantController(
+      player: this.player,
+      configController: sharedAiConfig,
+    );
+    search = SearchSession(dataScope: scope);
+    theme = sharedTheme;
+    favorites = FavoriteService(dataScope: scope);
+    ready = Future.wait<void>([
+      this.player.settingsReady,
+      this.player.historyReady,
+      this.player.playbackStateReady,
+      sharedAiConfig.ready,
+      search.historyReady,
+      sharedTheme.ready,
+      favorites.load(),
+    ]);
+  }
+
+  late final Future<void> ready;
+  Future<void>? _resourceReleaseFuture;
+
+  Future<void> disposeResources({bool waitForNative = true}) {
+    final existing = _resourceReleaseFuture;
+    if (existing != null) {
+      return waitForNative ? existing : Future<void>.value();
+    }
+    final release = _releaseResources();
+    _resourceReleaseFuture = release;
+    search.dispose();
+    favorites.dispose();
+    if (!waitForNative) unawaited(release);
+    return waitForNative ? release : Future<void>.value();
+  }
+
+  Future<void> _releaseResources() async {
+    try {
+      await aiAssistant.stopSession(restoreMusic: false);
+      await Future.wait([
+        aiAssistant.disposeResources(),
+        player.disposeResources(),
+      ]);
+    } catch (error, stackTrace) {
+      // Each provider performs best-effort cleanup internally. Keep one
+      // unexpected failure from preventing the other user's cache context
+      // from being released.
+      debugPrint('释放用户会话资源失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    } finally {
+      await AudioCacheService.releaseMemoryContext(scope);
+    }
   }
 }
 
@@ -343,7 +652,13 @@ class _MainScreenState extends State<MainScreen>
                                             : 132)
                                       : 118),
                             selectedIndex: _currentIndex,
-                            onDestinationSelected: _selectScreen,
+                            onDestinationSelected: (index) {
+                              if (index == 4) {
+                                AppExitService.confirmAndExit(context);
+                                return;
+                              }
+                              _selectScreen(index);
+                            },
                             labelType: NavigationRailLabelType.all,
                             groupAlignment: compactRail ? 0 : -0.28,
                             useIndicator: true,
@@ -375,6 +690,7 @@ class _MainScreenState extends State<MainScreen>
                               compact: compactRail,
                               wide: largeUi,
                             ),
+                            scrollable: compactRail,
                             destinations: const [
                               NavigationRailDestination(
                                 icon: Icon(Icons.explore_outlined),
@@ -409,6 +725,13 @@ class _MainScreenState extends State<MainScreen>
                                 icon: Icon(Icons.settings_outlined),
                                 selectedIcon: Icon(Icons.settings),
                                 label: Text('设置'),
+                              ),
+                              NavigationRailDestination(
+                                icon: Icon(
+                                  Icons.power_settings_new_rounded,
+                                  key: ValueKey('landscape-complete-exit'),
+                                ),
+                                label: Text('退出'),
                               ),
                             ],
                           ),

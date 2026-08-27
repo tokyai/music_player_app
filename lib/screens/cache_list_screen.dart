@@ -26,69 +26,106 @@ class _CacheListScreenState extends State<CacheListScreen> {
   }
 
   Future<void> _loadCacheList() async {
+    if (!mounted) return;
     setState(() => _loading = true);
     try {
-      final list = await AudioCacheService.getCacheList();
+      final list = await AudioCacheService.getCacheList(
+        scope: context.read<PlayerProvider>().dataScope,
+      );
       if (mounted) setState(() => _cacheList = list);
     } catch (_) {}
     if (mounted) setState(() => _loading = false);
   }
 
   Future<void> _removeCache(CachedSongInfo info) async {
-    await AudioCacheService.removeCache(info.platformCode, info.songId);
-    _loadCacheList();
+    try {
+      await AudioCacheService.removeCache(
+        info.platformCode,
+        info.songId,
+        scope: context.read<PlayerProvider>().dataScope,
+      );
+      if (!mounted) return;
+      await _loadCacheList();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('删除缓存失败：$error')));
+    }
   }
 
   Future<void> _playFromCache(CachedSongInfo info) async {
-    final player = context.read<PlayerProvider>();
-    // 通过平台和 ID 搜索歌曲后播放
-    final platform = MusicPlatform.values.firstWhere(
-      (e) => e.code == info.platformCode,
-      orElse: () => MusicPlatform.netease,
-    );
-    player.playSingle(
-      SongSearchResult(
-        platform: platform,
-        id: info.songId,
-        name: info.name,
-        artist: info.artist,
-        album: '',
-      ),
-    );
+    try {
+      final player = context.read<PlayerProvider>();
+      // 通过平台和 ID 搜索歌曲后播放
+      final platform = MusicPlatform.values.firstWhere(
+        (e) => e.code == info.platformCode,
+        orElse: () => MusicPlatform.netease,
+      );
+      await player.playSingle(
+        SongSearchResult(
+          platform: platform,
+          id: info.songId,
+          name: info.name,
+          artist: info.artist,
+          album: '',
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('播放缓存歌曲失败：$error')));
+    }
   }
 
   Future<void> _clearAllCache() async {
-    final totalSize = await AudioCacheService.getCacheSize();
-    if (!mounted) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('清除全部缓存'),
-        content: Text(
-          '将删除 ${_cacheList.length} 首已缓存歌曲'
-          '（${AudioCacheService.formatSize(totalSize)}），'
-          '下次播放需重新联网。是否继续？',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('清除'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-
-    await AudioCacheService.clearCache();
-    _loadCacheList();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('缓存已清除'), duration: Duration(seconds: 1)),
+    try {
+      final totalSize = await AudioCacheService.getCacheSize(
+        scope: context.read<PlayerProvider>().dataScope,
       );
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('清除全部缓存'),
+          content: Text(
+            '将删除 ${_cacheList.length} 首已缓存歌曲'
+            '（${AudioCacheService.formatSize(totalSize)}），'
+            '下次播放需重新联网。是否继续？',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('清除'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+
+      await AudioCacheService.clearCache(
+        scope: context.read<PlayerProvider>().dataScope,
+      );
+      if (!mounted) return;
+      await _loadCacheList();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('缓存已清除'),
+            duration: Duration(seconds: 1),
+          ),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('清除缓存失败：$error')));
     }
   }
 

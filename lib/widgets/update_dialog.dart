@@ -8,6 +8,7 @@ import 'remote_focusable.dart';
 /// 弹出更新提示对话框（仿 momo 的更新体验）。
 /// [info] 为服务器返回的新版本信息。
 void showUpdateDialog(BuildContext context, UpdateInfo info) {
+  if (!context.mounted) return;
   showDialog(
     context: context,
     barrierDismissible: !info.forceUpdate,
@@ -61,6 +62,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
   }
 
   Future<void> _start() async {
+    if (!mounted || _downloading) return;
     setState(() {
       _downloading = true;
       _error = null;
@@ -71,7 +73,9 @@ class _UpdateDialogState extends State<_UpdateDialog> {
         total,
       ) {
         if (mounted && total > 0) {
-          setState(() => _progress = received / total);
+          setState(
+            () => _progress = (received / total).clamp(0.0, 1.0).toDouble(),
+          );
         }
       });
       if (!mounted) return;

@@ -567,6 +567,45 @@ class SongSearchResult {
     );
   }
 
+  /// Returns the compact representation used by playback-session and
+  /// playback-history persistence.
+  ///
+  /// Expanded Bilibili queues keep one concrete page per item. Older app
+  /// versions also copied the complete page list into every concrete item,
+  /// which made serializing/restoring a large queue quadratic. Keep the page
+  /// identity fields, but drop the repeated list when a concrete CID is
+  /// already present. A resource-level item without a CID still retains its
+  /// page list so the legacy page picker remains usable.
+  SongSearchResult compactForPlaybackPersistence() {
+    if (platform != MusicPlatform.bilibili ||
+        bilibiliCid == null ||
+        bilibiliCid! <= 0 ||
+        bilibiliPages.isEmpty) {
+      return this;
+    }
+    BilibiliPageInfo? page;
+    for (final candidate in bilibiliPages) {
+      if (candidate.cid == bilibiliCid) {
+        page = candidate;
+        break;
+      }
+    }
+    return SongSearchResult(
+      platform: platform,
+      id: id,
+      name: name,
+      artist: artist,
+      album: album,
+      coverUrl: coverUrl,
+      duration: duration ?? page?.duration,
+      bilibiliVideoTitle: bilibiliVideoTitle,
+      bilibiliDescription: bilibiliDescription,
+      bilibiliCid: bilibiliCid,
+      bilibiliPage: bilibiliPage ?? page?.page,
+      bilibiliPages: const [],
+    );
+  }
+
   /// 序列化（收藏本地持久化用）
   Map<String, dynamic> toJson() => {
     'platform': platform.code,
@@ -585,7 +624,10 @@ class SongSearchResult {
   };
 
   /// 反序列化（收藏本地持久化用）
-  factory SongSearchResult.fromJson(Map<String, dynamic> json) {
+  factory SongSearchResult.fromJson(
+    Map<String, dynamic> json, {
+    bool includeBilibiliPages = true,
+  }) {
     final platform = MusicPlatform.values.firstWhere(
       (e) => e.code == json['platform'],
       orElse: () => MusicPlatform.netease,
@@ -604,13 +646,16 @@ class SongSearchResult {
       bilibiliDescription: json['bilibiliDescription']?.toString(),
       bilibiliCid: _intValue(json['bilibiliCid']),
       bilibiliPage: _intValue(json['bilibiliPage']),
-      bilibiliPages: (json['bilibiliPages'] as List? ?? const [])
-          .whereType<Map>()
-          .map(
-            (page) =>
-                BilibiliPageInfo.fromJson(Map<String, dynamic>.from(page)),
-          )
-          .toList(growable: false),
+      bilibiliPages: includeBilibiliPages
+          ? (json['bilibiliPages'] as List? ?? const [])
+                .whereType<Map>()
+                .map(
+                  (page) => BilibiliPageInfo.fromJson(
+                    Map<String, dynamic>.from(page),
+                  ),
+                )
+                .toList(growable: false)
+          : const [],
     );
   }
 }

@@ -94,6 +94,8 @@ class _ExoPlaybackController extends _MvPlaybackController {
   AudioPlayer? _audioPlayer;
   Future<void>? _audioSyncOperation;
   Future<void>? _audioPlayOperation;
+  Future<dynamic>? _controllerInitializeOperation;
+  Future<dynamic>? _audioInitializeOperation;
   Future<void>? _closeFuture;
   final Completer<void> _closedSignal = Completer<void>();
   bool _closed = false;
@@ -212,18 +214,49 @@ class _ExoPlaybackController extends _MvPlaybackController {
 
   @override
   Future<void> initialize() async {
-    await Future.any<void>([_controller.initialize(), _closedSignal.future]);
+    final controllerInitialization = _controller.initialize();
+    _controllerInitializeOperation = controllerInitialization;
+    controllerInitialization.then<void>(
+      (_) {
+        if (identical(
+          _controllerInitializeOperation,
+          controllerInitialization,
+        )) {
+          _controllerInitializeOperation = null;
+        }
+      },
+      onError: (Object _, StackTrace __) {
+        if (identical(
+          _controllerInitializeOperation,
+          controllerInitialization,
+        )) {
+          _controllerInitializeOperation = null;
+        }
+      },
+    );
+    await Future.any<void>([controllerInitialization, _closedSignal.future]);
     if (_closed) return;
     final audioUrl = _audioUrl;
     if (audioUrl != null && audioUrl.isNotEmpty) {
       final audioPlayer = AudioPlayer();
       _audioPlayer = audioPlayer;
-      await Future.any<Object?>([
-        audioPlayer.setAudioSource(
-          AudioSource.uri(Uri.parse(audioUrl), headers: _headers),
-        ),
-        _closedSignal.future,
-      ]);
+      final audioInitialization = audioPlayer.setAudioSource(
+        AudioSource.uri(Uri.parse(audioUrl), headers: _headers),
+      );
+      _audioInitializeOperation = audioInitialization;
+      audioInitialization.then<void>(
+        (_) {
+          if (identical(_audioInitializeOperation, audioInitialization)) {
+            _audioInitializeOperation = null;
+          }
+        },
+        onError: (Object _, StackTrace __) {
+          if (identical(_audioInitializeOperation, audioInitialization)) {
+            _audioInitializeOperation = null;
+          }
+        },
+      );
+      await Future.any<Object?>([audioInitialization, _closedSignal.future]);
       if (_closed) return;
     }
     await _controller.play();
@@ -266,6 +299,15 @@ class _ExoPlaybackController extends _MvPlaybackController {
     _closedSignal.complete();
     _controller.removeListener(_handleChanged);
     final audioPlayer = _audioPlayer;
+    // Do not dispose native players while initialize/setAudioSource is still
+    // inside a platform call. Those futures cannot be cancelled, and a late
+    // completion racing dispose is a common source of native crashes.
+    try {
+      await _controllerInitializeOperation;
+    } catch (_) {}
+    try {
+      await _audioInitializeOperation;
+    } catch (_) {}
     // just_audio.play() completes when playback is stopped or paused. Stop it
     // before waiting for an in-flight play operation during teardown.
     try {
@@ -296,6 +338,8 @@ class _MpvPlaybackController extends _MvPlaybackController {
   final Map<String, String> headers;
   bool _initialized = false;
   bool _closed = false;
+  Future<dynamic>? _propertyOperation;
+  Future<dynamic>? _openOperation;
   Future<void>? _closeFuture;
   final Completer<void> _closedSignal = Completer<void>();
   String? _error;
@@ -312,17 +356,52 @@ class _MpvPlaybackController extends _MvPlaybackController {
       ),
     );
     _subscriptions.addAll([
-      _player.stream.playing.listen((_) => _changed()),
-      _player.stream.position.listen((_) => _changed()),
-      _player.stream.duration.listen((_) => _changed()),
-      _player.stream.buffering.listen((_) => _changed()),
-      _player.stream.width.listen((_) => _changed()),
-      _player.stream.height.listen((_) => _changed()),
-      _player.stream.error.listen((message) {
-        if (message.trim().isEmpty || _closed) return;
-        _error = message;
-        _changed();
-      }),
+      _player.stream.playing.listen(
+        (_) => _changed(),
+        onError: (Object error, StackTrace stackTrace) {
+          _handleStreamError('playing', error, stackTrace);
+        },
+      ),
+      _player.stream.position.listen(
+        (_) => _changed(),
+        onError: (Object error, StackTrace stackTrace) {
+          _handleStreamError('position', error, stackTrace);
+        },
+      ),
+      _player.stream.duration.listen(
+        (_) => _changed(),
+        onError: (Object error, StackTrace stackTrace) {
+          _handleStreamError('duration', error, stackTrace);
+        },
+      ),
+      _player.stream.buffering.listen(
+        (_) => _changed(),
+        onError: (Object error, StackTrace stackTrace) {
+          _handleStreamError('buffering', error, stackTrace);
+        },
+      ),
+      _player.stream.width.listen(
+        (_) => _changed(),
+        onError: (Object error, StackTrace stackTrace) {
+          _handleStreamError('width', error, stackTrace);
+        },
+      ),
+      _player.stream.height.listen(
+        (_) => _changed(),
+        onError: (Object error, StackTrace stackTrace) {
+          _handleStreamError('height', error, stackTrace);
+        },
+      ),
+      _player.stream.error.listen(
+        (message) {
+          if (message.trim().isEmpty || _closed) return;
+          _error = message;
+          _changed();
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          _handleStreamError('error', error, stackTrace);
+        },
+      ),
     ]);
   }
 
@@ -358,6 +437,18 @@ class _MpvPlaybackController extends _MvPlaybackController {
     if (!_closed) notifyListeners();
   }
 
+  void _handleStreamError(
+    String streamName,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    if (_closed) return;
+    _error = 'MPV $streamName 状态异常：$error';
+    debugPrint('MPV $streamName 状态流异常: $error');
+    debugPrintStack(stackTrace: stackTrace);
+    _changed();
+  }
+
   @override
   Future<void> initialize() async {
     if (_closed) return;
@@ -370,18 +461,56 @@ class _MpvPlaybackController extends _MvPlaybackController {
       final userAgent = headers['User-Agent'];
       final referer = headers['Referer'];
       if (userAgent != null) {
-        await nativePlayer.setProperty('user-agent', userAgent);
+        final operation = nativePlayer.setProperty('user-agent', userAgent);
+        _propertyOperation = operation;
+        operation.then<void>(
+          (_) {
+            if (identical(_propertyOperation, operation)) {
+              _propertyOperation = null;
+            }
+          },
+          onError: (Object _, StackTrace __) {
+            if (identical(_propertyOperation, operation)) {
+              _propertyOperation = null;
+            }
+          },
+        );
+        await Future.any<void>([operation, _closedSignal.future]);
         if (_closed) return;
       }
       if (referer != null) {
-        await nativePlayer.setProperty('referrer', referer);
+        final operation = nativePlayer.setProperty('referrer', referer);
+        _propertyOperation = operation;
+        operation.then<void>(
+          (_) {
+            if (identical(_propertyOperation, operation)) {
+              _propertyOperation = null;
+            }
+          },
+          onError: (Object _, StackTrace __) {
+            if (identical(_propertyOperation, operation)) {
+              _propertyOperation = null;
+            }
+          },
+        );
+        await Future.any<void>([operation, _closedSignal.future]);
         if (_closed) return;
       }
     }
-    await Future.any<void>([
-      _player.open(media_kit.Media(source, httpHeaders: headers), play: true),
-      _closedSignal.future,
-    ]);
+    final opening = _player.open(
+      media_kit.Media(source, httpHeaders: headers),
+      play: true,
+    );
+    _openOperation = opening;
+    opening.then<void>(
+      (_) {
+        if (identical(_openOperation, opening)) _openOperation = null;
+      },
+      onError: (Object _, StackTrace __) {
+        if (identical(_openOperation, opening)) _openOperation = null;
+      },
+    );
+    await Future.any<void>([opening, _closedSignal.future]);
     if (_closed) return;
     _initialized = true;
     _changed();
@@ -420,6 +549,14 @@ class _MpvPlaybackController extends _MvPlaybackController {
   Future<void> _close() async {
     _closed = true;
     _closedSignal.complete();
+    // media_kit cannot cancel an in-flight property/open call. Wait for those
+    // platform operations before disposing the native player instance.
+    try {
+      await _propertyOperation;
+    } catch (_) {}
+    try {
+      await _openOperation;
+    } catch (_) {}
     for (final subscription in _subscriptions) {
       try {
         await subscription.cancel();
@@ -829,6 +966,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!mounted) return;
     if (state != AppLifecycleState.resumed && _controller.isPlaying) {
       final controller = _controller;
       unawaited(_pauseForLifecycle(controller));
@@ -852,6 +990,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   void _toggleControls() {
+    if (!mounted) return;
     _controlsTimer?.cancel();
     setState(() => _controlsVisible = !_controlsVisible);
     if (_controlsVisible) _scheduleControlsHide();
@@ -870,6 +1009,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool get _controlsHaveFocus => _topControlsFocused || _bottomControlsFocused;
 
   void _handleControlsFocus({required bool top, required bool focused}) {
+    if (!mounted) return;
     if (top) {
       _topControlsFocused = focused;
     } else {
@@ -883,6 +1023,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   KeyEventResult _handleRemoteKey(FocusNode _, KeyEvent event) {
+    if (!mounted) return KeyEventResult.ignored;
     final isPress = event is KeyDownEvent || event is KeyRepeatEvent;
     if (event.logicalKey == LogicalKeyboardKey.mediaPlayPause) {
       if (isPress && _controller.isInitialized) unawaited(_togglePlayback());

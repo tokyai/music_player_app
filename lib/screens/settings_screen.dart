@@ -1,24 +1,35 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/ai_assistant.dart';
+import '../models/app_user.dart';
 import '../models/song.dart';
+import '../providers/ai_assistant_controller.dart';
 import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
 import '../providers/theme_controller.dart';
+import '../providers/user_controller.dart';
 import '../services/audio_cache_service.dart';
+import '../services/app_exit_service.dart';
+import '../services/batch_favorite_import_service.dart';
 import '../services/favorite_service.dart';
 import '../services/floating_capsule_service.dart';
 import '../services/lan_ai_config_service.dart';
 import '../services/lan_api_key_service.dart';
+import '../services/lan_favorite_import_service.dart';
+import '../services/user_data_scope.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../theme/lyric_style.dart';
 import '../widgets/bilibili_login_dialog.dart';
 import '../widgets/ai_profile_editor_dialog.dart';
 import '../widgets/remote_focusable.dart';
+import '../widgets/app_user_avatar.dart';
+import '../widgets/user_profile_editor_dialog.dart';
 import 'backup_restore_screen.dart';
 import 'cache_list_screen.dart';
 import 'favorites_screen.dart';
@@ -31,13 +42,18 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _SettingsScreenState extends State<SettingsScreen>
+    with WidgetsBindingObserver {
   final _apiKeyController = TextEditingController();
   bool _obscureKey = true;
   bool _apiKeyEdited = false;
   late final AiConfigController _aiConfigController;
+  late final UserDataScope _dataScope;
   late final bool _ownsAiConfigController;
   double _petScaleDraft = AiConfigController.minPetScale + 0.35;
+  double _duckingReductionDraft = AiConfigController
+      .defaultDuckingReductionPercent
+      .toDouble();
 
   String _versionName = '';
   String _versionCode = '';
@@ -45,10 +61,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int _cacheCount = 0;
   LyricFontFamilyPreset _lyricFontFamily = LyricFontFamilyPreset.system;
   LyricFontWeightPreset _lyricFontWeight = LyricFontWeightPreset.medium;
+  bool _waitingForFloatingPermission = false;
+  bool _leftForFloatingPermission = false;
+  bool _changingFloatingCapsule = false;
+  bool _savingVoiceSettings = false;
+  bool _batchFavoriteImportInProgress = false;
+  int _batchFavoriteImportGeneration = 0;
+  LanFavoriteImportSession? _activeFavoriteImportSession;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    final player = context.read<PlayerProvider>();
+    _dataScope = player.dataScope;
     final sharedAiConfig = Provider.of<AiConfigController?>(
       context,
       listen: false,
@@ -56,17 +82,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _ownsAiConfigController = sharedAiConfig == null;
     _aiConfigController =
         sharedAiConfig ??
-        AiConfigController(secretStore: MemoryAiSecretStore());
+        AiConfigController(
+          dataScope: _dataScope,
+          secretStore: MemoryAiSecretStore(),
+        );
     _petScaleDraft = _aiConfigController.petScale;
-    _aiConfigController.addListener(_syncPetScaleDraft);
+    _duckingReductionDraft = _aiConfigController.duckingReductionPercent
+        .toDouble();
+    _aiConfigController.addListener(_syncAiConfigDrafts);
     _aiConfigController.ready.then((_) {
       if (mounted) {
         setState(() {
           _petScaleDraft = _aiConfigController.petScale;
+          _duckingReductionDraft = _aiConfigController.duckingReductionPercent
+              .toDouble();
         });
       }
     });
-    final player = context.read<PlayerProvider>();
     _apiKeyController.text = player.apiKey;
     player.settingsReady.then((_) {
       if (mounted && !_apiKeyEdited) {
@@ -78,11 +110,121 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadLyricStyleSettings();
   }
 
-  void _syncPetScaleDraft() {
+  void _syncAiConfigDrafts() {
     if (!mounted) return;
     final scale = _aiConfigController.petScale;
-    if ((_petScaleDraft - scale).abs() < 0.001) return;
-    setState(() => _petScaleDraft = scale);
+    final duckingReduction = _aiConfigController.duckingReductionPercent
+        .toDouble();
+    if ((_petScaleDraft - scale).abs() < 0.001 &&
+        (_duckingReductionDraft - duckingReduction).abs() < 0.001) {
+      return;
+    }
+    setState(() {
+      _petScaleDraft = scale;
+      _duckingReductionDraft = duckingReduction;
+    });
+  }
+
+  Future<void> _setGlobalVoiceModel(AiVoiceModelKind model) async {
+    if (_savingVoiceSettings || model == _aiConfigController.voiceModel) return;
+    setState(() => _savingVoiceSettings = true);
+    try {
+      await _aiConfigController.setVoiceModel(model);
+      if (model != AiVoiceModelKind.zipformerChinese && mounted) {
+        final assistant = Provider.of<AiAssistantController?>(
+          context,
+          listen: false,
+        );
+        await assistant?.releasePreloadedVoiceModel();
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('语音引擎保存失败：$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _savingVoiceSettings = false);
+    }
+  }
+
+  Future<void> _setVoiceLoadMode(AiVoiceLoadMode mode) async {
+    if (_savingVoiceSettings || mode == _aiConfigController.voiceLoadMode) {
+      return;
+    }
+    setState(() => _savingVoiceSettings = true);
+    try {
+      await _aiConfigController.setVoiceLoadMode(mode);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('语音加载方式保存失败：$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _savingVoiceSettings = false);
+    }
+  }
+
+  Future<void> _setBargeInMode(AiBargeInMode mode) async {
+    if (_savingVoiceSettings || mode == _aiConfigController.bargeInMode) {
+      return;
+    }
+    setState(() => _savingVoiceSettings = true);
+    try {
+      await _aiConfigController.setBargeInMode(mode);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('自动打断设置保存失败：$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _savingVoiceSettings = false);
+    }
+  }
+
+  Future<void> _setAssistantPlaybackMode(AiAssistantPlaybackMode mode) async {
+    if (_savingVoiceSettings ||
+        mode == _aiConfigController.assistantPlaybackMode) {
+      return;
+    }
+    setState(() => _savingVoiceSettings = true);
+    try {
+      await _aiConfigController.setAssistantPlaybackMode(mode);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('助手播放方式保存失败：$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _savingVoiceSettings = false);
+    }
+  }
+
+  Future<void> _setDuckingReductionPercent(double value) async {
+    final percent = value.round();
+    if (_savingVoiceSettings ||
+        percent == _aiConfigController.duckingReductionPercent) {
+      return;
+    }
+    setState(() => _savingVoiceSettings = true);
+    try {
+      await _aiConfigController.setDuckingReductionPercent(percent);
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _duckingReductionDraft = _aiConfigController.duckingReductionPercent
+              .toDouble();
+        });
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('后台音量降低比例保存失败：$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _savingVoiceSettings = false);
+    }
   }
 
   Future<void> _loadVersion() async {
@@ -100,8 +242,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadCacheInfo() async {
     try {
       final results = await Future.wait([
-        AudioCacheService.getCacheSize(),
-        AudioCacheService.getCacheCount(),
+        AudioCacheService.getCacheSize(scope: _dataScope),
+        AudioCacheService.getCacheCount(scope: _dataScope),
       ]);
       if (!mounted) return;
       setState(() {
@@ -130,21 +272,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _setLyricFontFamily(LyricFontFamilyPreset family) async {
+    if (_dataScope.isDeleted) return;
     if (_lyricFontFamily != family && mounted) {
       setState(() => _lyricFontFamily = family);
     }
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (_dataScope.isDeleted) return;
       await prefs.setString(LyricStylePreferences.fontFamilyKey, family.value);
     } catch (_) {}
   }
 
   Future<void> _setLyricFontWeight(LyricFontWeightPreset weight) async {
+    if (_dataScope.isDeleted) return;
     if (_lyricFontWeight != weight && mounted) {
       setState(() => _lyricFontWeight = weight);
     }
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (_dataScope.isDeleted) return;
       await prefs.setInt(LyricStylePreferences.fontWeightKey, weight.value);
     } catch (_) {}
   }
@@ -168,13 +314,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     if (confirmed != true) return;
-
-    await AudioCacheService.clearCache();
-    await _loadCacheInfo();
     if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('缓存已清除')));
+
+    try {
+      await AudioCacheService.clearCache(scope: _dataScope);
+      await _loadCacheInfo();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('缓存已清除')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('清除缓存失败：$error')));
+    }
   }
 
   Future<void> _showApiKeyQrInput(PlayerProvider player) async {
@@ -195,13 +349,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
 
     final saveFuture = _receiveAndSaveApiKey(session, player);
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) =>
-          _ApiKeyQrDialog(session: session, saveFuture: saveFuture),
-    );
-    await session.stop();
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) =>
+            _ApiKeyQrDialog(session: session, saveFuture: saveFuture),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('扫码输入已中止：$error')));
+      }
+    } finally {
+      try {
+        await session.stop();
+      } catch (_) {}
+    }
     if (mounted) FocusManager.instance.primaryFocus?.unfocus();
   }
 
@@ -226,8 +391,120 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return true;
   }
 
+  Future<void> _showBatchFavoriteImport() async {
+    if (_batchFavoriteImportInProgress || !mounted) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    final generation = ++_batchFavoriteImportGeneration;
+    setState(() => _batchFavoriteImportInProgress = true);
+
+    LanFavoriteImportSession? session;
+    Future<BatchFavoriteImportResult?>? importFuture;
+    try {
+      session = await LanFavoriteImportService.start();
+      if (!mounted || generation != _batchFavoriteImportGeneration) return;
+      _activeFavoriteImportSession = session;
+      final receivedFuture = session.receivedSongNames;
+      importFuture = _receiveAndAddFavoriteSongs(
+        session,
+        context.read<PlayerProvider>(),
+        context.read<FavoriteService>(),
+        generation,
+      );
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _FavoriteImportQrDialog(
+          session: session!,
+          receivedFuture: receivedFuture,
+          importFuture: importFuture!,
+        ),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('批量收藏失败：$error')));
+      }
+    } finally {
+      if (identical(_activeFavoriteImportSession, session)) {
+        _activeFavoriteImportSession = null;
+      }
+      try {
+        await session?.stop();
+      } catch (error, stackTrace) {
+        debugPrint('关闭批量收藏局域网服务失败: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+      if (importFuture != null) {
+        try {
+          await importFuture;
+        } catch (error) {
+          if (mounted) {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('匹配收藏歌曲失败：$error')));
+          }
+        }
+      }
+      if (mounted && generation == _batchFavoriteImportGeneration) {
+        setState(() => _batchFavoriteImportInProgress = false);
+      }
+    }
+  }
+
+  Future<BatchFavoriteImportResult?> _receiveAndAddFavoriteSongs(
+    LanFavoriteImportSession session,
+    PlayerProvider player,
+    FavoriteService favorites,
+    int generation,
+  ) async {
+    final names = await session.receivedSongNames;
+    if (names == null ||
+        !mounted ||
+        generation != _batchFavoriteImportGeneration) {
+      return null;
+    }
+    final result = await BatchFavoriteImportService.import(
+      api: player.api,
+      favorites: favorites,
+      songNames: names,
+      isCancelled: () =>
+          !mounted || generation != _batchFavoriteImportGeneration,
+    );
+    if (!mounted || result.cancelled) return result;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(_favoriteImportMessage(result)),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+    return result;
+  }
+
+  String _favoriteImportMessage(BatchFavoriteImportResult result) {
+    final parts = <String>['新增 ${result.added} 首'];
+    if (result.alreadyFavorite > 0) {
+      parts.add('${result.alreadyFavorite} 首已收藏');
+    }
+    if (result.notFound.isNotEmpty) {
+      final preview = result.notFound.take(3).join('、');
+      final remaining = result.notFound.length - 3;
+      parts.add(
+        '未找到 $preview${remaining > 0 ? ' 等 ${result.notFound.length} 首' : ''}',
+      );
+    }
+    return parts.join('，');
+  }
+
   Future<void> _selectAiProfile(AiAssistantProfile profile) async {
-    await _aiConfigController.selectProfile(profile.id);
+    try {
+      await _aiConfigController.selectProfile(profile.id);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('切换模型配置失败：$error')));
+    }
   }
 
   Future<String?> _askProfileName({String initial = ''}) async {
@@ -264,15 +541,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _createAiProfile() async {
     final name = await _askProfileName();
     if (name == null) return;
-    final current = _aiConfigController.config;
-    final profile = await _aiConfigController.createProfile(
-      name: name,
-      config: current.copyWith(model: ''),
-    );
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已新增模型配置“${profile.name}”，请点击编辑填写完整参数')),
+    try {
+      final current = _aiConfigController.config;
+      final profile = await _aiConfigController.createProfile(
+        name: name,
+        config: current.copyWith(model: ''),
       );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已新增模型配置“${profile.name}”，请点击编辑填写完整参数')),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('新增模型配置失败：$error')));
     }
   }
 
@@ -341,13 +625,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     final saveFuture = _receiveAndSaveAiConfig(session, profileId);
     final statusFuture = saveFuture.then((config) => config != null);
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) =>
-          _AiConfigQrDialog(session: session, saveFuture: statusFuture),
-    );
-    await session.stop();
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) =>
+            _AiConfigQrDialog(session: session, saveFuture: statusFuture),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('扫码配置已中止：$error')));
+      }
+    } finally {
+      try {
+        await session.stop();
+      } catch (_) {}
+    }
     if (mounted) FocusManager.instance.primaryFocus?.unfocus();
     return saveFuture;
   }
@@ -358,13 +653,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   ) async {
     final received = await session.receivedConfig;
     if (received == null) return null;
-    final existing = _aiConfigController.profiles
-        .where((profile) => profile.id == profileId)
-        .firstOrNull;
-    final config = existing == null
-        ? received
-        : received.copyWith(voiceModel: existing.config.voiceModel);
-    await _aiConfigController.updateProfile(profileId, config: config);
+    await _aiConfigController.updateProfile(profileId, config: received);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -373,55 +662,138 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       );
     }
-    return config;
+    return received;
   }
 
   @override
   void dispose() {
+    _batchFavoriteImportGeneration++;
+    final activeFavoriteImport = _activeFavoriteImportSession;
+    _activeFavoriteImportSession = null;
+    if (activeFavoriteImport != null) unawaited(activeFavoriteImport.stop());
+    WidgetsBinding.instance.removeObserver(this);
     _apiKeyController.dispose();
-    _aiConfigController.removeListener(_syncPetScaleDraft);
+    _aiConfigController.removeListener(_syncAiConfigDrafts);
     if (_ownsAiConfigController) _aiConfigController.dispose();
     super.dispose();
   }
 
-  /// 系统悬浮胶囊开关
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_waitingForFloatingPermission && state != AppLifecycleState.resumed) {
+      _leftForFloatingPermission = true;
+    }
+    if (state == AppLifecycleState.resumed &&
+        _waitingForFloatingPermission &&
+        _leftForFloatingPermission) {
+      unawaited(_finishFloatingPermissionRequest());
+    }
+  }
+
+  /// 车机迷你窗开关：允许在其他应用上方持续查看当前歌曲。
   Future<void> _toggleFloatingCapsule(bool value) async {
-    if (value) {
-      final hasPerm = await FloatingCapsuleService.hasPermission();
-      if (!hasPerm) {
-        FloatingCapsuleService.openPermissionSettings();
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('请在系统设置中开启「悬浮窗」权限，返回后重新打开开关'),
-              duration: Duration(seconds: 3),
-            ),
-          );
+    if (_changingFloatingCapsule) return;
+    setState(() => _changingFloatingCapsule = true);
+    try {
+      if (value) {
+        final hasPerm = await FloatingCapsuleService.hasPermission();
+        if (!mounted) return;
+        if (!hasPerm) {
+          _waitingForFloatingPermission = true;
+          _leftForFloatingPermission = false;
+          final opened = await FloatingCapsuleService.openPermissionSettings();
+          if (!mounted) return;
+          if (!opened) {
+            _waitingForFloatingPermission = false;
+            _leftForFloatingPermission = false;
+            _showFloatingMessage('无法打开悬浮窗权限设置，请在系统设置中手动授权');
+          } else {
+            _showFloatingMessage('授权后返回库仔音乐，迷你窗会自动开启');
+          }
+          return;
         }
+        _waitingForFloatingPermission = false;
+        _leftForFloatingPermission = false;
+        final shown = await _enableFloatingCapsule();
+        if (mounted) _announceFloatingEnableResult(shown);
+      } else {
+        _waitingForFloatingPermission = false;
+        _leftForFloatingPermission = false;
+        FloatingCapsuleService.setEnabled(false);
+        await FloatingCapsuleService.hide();
+        await FloatingCapsuleService.persistEnabled(false, scope: _dataScope);
+        if (mounted) setState(() {});
+      }
+    } catch (error) {
+      if (!mounted) return;
+      _showFloatingMessage('车机迷你窗设置失败：$error');
+    } finally {
+      if (mounted) setState(() => _changingFloatingCapsule = false);
+      if (mounted &&
+          _waitingForFloatingPermission &&
+          _leftForFloatingPermission &&
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+        unawaited(_finishFloatingPermissionRequest());
+      }
+    }
+  }
+
+  Future<void> _finishFloatingPermissionRequest() async {
+    if (!_waitingForFloatingPermission || _changingFloatingCapsule) return;
+    _waitingForFloatingPermission = false;
+    _leftForFloatingPermission = false;
+    if (mounted) setState(() => _changingFloatingCapsule = true);
+    try {
+      final granted = await FloatingCapsuleService.hasPermission();
+      if (!mounted) return;
+      if (!granted) {
+        await FloatingCapsuleService.persistEnabled(false, scope: _dataScope);
+        _showFloatingMessage('未获得悬浮窗权限，迷你窗未开启');
         return;
       }
-    } else {
-      FloatingCapsuleService.hide();
+      final shown = await _enableFloatingCapsule();
+      if (mounted) _announceFloatingEnableResult(shown);
+    } catch (error) {
+      if (mounted) _showFloatingMessage('启用车机迷你窗失败：$error');
+    } finally {
+      if (mounted) setState(() => _changingFloatingCapsule = false);
     }
-    if (!mounted) return;
-    FloatingCapsuleService.setEnabled(value);
-    if (value) {
-      final player = context.read<PlayerProvider>();
-      final song = player.currentSong;
-      if (song != null) {
-        await FloatingCapsuleService.show(
-          title: song.name,
-          artist: song.artist,
-          coverUrl: song.coverUrl,
-          isPlaying: player.isPlaying,
-        );
-      }
+  }
+
+  Future<bool?> _enableFloatingCapsule() async {
+    if (!mounted) return false;
+    final player = context.read<PlayerProvider>();
+    final song = player.currentSong;
+    FloatingCapsuleService.setEnabled(true);
+    bool? shown;
+    if (song != null) {
+      shown = await FloatingCapsuleService.show(
+        title: song.name,
+        artist: song.artist,
+        coverUrl: song.coverUrl,
+        isPlaying: player.isPlaying,
+      );
     }
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('floating_capsule_enabled', value);
-    } catch (_) {}
+    await FloatingCapsuleService.persistEnabled(true, scope: _dataScope);
     if (mounted) setState(() {});
+    return shown;
+  }
+
+  void _announceFloatingEnableResult(bool? shown) {
+    if (shown == true) {
+      _showFloatingMessage('车机迷你窗已开启');
+    } else if (shown == null) {
+      _showFloatingMessage('车机迷你窗已开启，播放歌曲后会自动显示');
+    } else {
+      _showFloatingMessage('权限已生效，窗口将在下次播放或返回应用时重试');
+    }
+  }
+
+  void _showFloatingMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
+    );
   }
 
   @override
@@ -441,14 +813,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
       padding: const EdgeInsets.only(bottom: 24),
       children: [
         _buildPageTitle(),
+        _buildUsersCard(),
         _buildAppearanceCard(),
         _buildLyricsCard(),
         _buildLibraryCard(),
         _buildPlaybackCard(),
         _buildBilibiliAccountCard(),
         _buildApiCard(),
+        AnimatedBuilder(
+          animation: _aiConfigController,
+          builder: (context, _) => _buildGlobalVoiceSettingsCard(),
+        ),
         _buildAiAssistantCard(),
         _buildAboutCard(),
+        _buildSystemActionsCard(),
       ],
     );
   }
@@ -477,6 +855,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       child: Column(
                         children: [
+                          _buildUsersCard(compact: compact),
                           _buildAppearanceCard(compact: compact),
                           _buildLyricsCard(compact: compact),
                           _buildLibraryCard(compact: compact),
@@ -502,6 +881,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         children: [
                           _buildBilibiliAccountCard(compact: compact),
                           _buildApiCard(compact: compact),
+                          AnimatedBuilder(
+                            animation: _aiConfigController,
+                            builder: (context, _) =>
+                                _buildGlobalVoiceSettingsCard(compact: compact),
+                          ),
                           _buildAiAssistantCard(compact: compact),
                           _buildAboutCard(compact: compact),
                         ],
@@ -697,20 +1081,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const Divider(height: 24),
                   SwitchListTile(
+                    key: const ValueKey('floating-mini-window-toggle'),
                     contentPadding: EdgeInsets.zero,
-                    secondary: const Icon(Icons.circle_notifications),
-                    title: const Text('系统悬浮胶囊'),
+                    secondary: const Icon(Icons.picture_in_picture_alt_rounded),
+                    title: const Text('车机迷你窗（置顶）'),
                     subtitle: Text(
-                      FloatingCapsuleService.enabled
-                          ? '播放时跨 App 悬浮显示（需悬浮窗权限）'
-                          : '在任意界面顶部显示播放胶囊',
+                      _changingFloatingCapsule
+                          ? '正在检查悬浮窗状态…'
+                          : FloatingCapsuleService.enabled
+                          ? '切换到其他应用后仍显示封面、歌名和歌手'
+                          : '在其他应用上方显示当前歌曲信息（需悬浮窗权限）',
                       style: TextStyle(
                         fontSize: layout.secondarySize,
                         color: AppColors.textSecondary,
                       ),
                     ),
                     value: FloatingCapsuleService.enabled,
-                    onChanged: _toggleFloatingCapsule,
+                    onChanged: _changingFloatingCapsule
+                        ? null
+                        : _toggleFloatingCapsule,
                   ),
                 ],
               ),
@@ -719,6 +1108,149 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ],
     );
+  }
+
+  Widget _buildUsersCard({bool compact = false}) {
+    final users = Provider.of<UserController?>(context);
+    if (users == null) return const SizedBox.shrink();
+    return _buildCard(
+      compact: compact,
+      children: [
+        Padding(
+          padding: EdgeInsets.only(right: compact ? 8 : 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: _buildSectionHeader(
+                  icon: Icons.group_outlined,
+                  title: '用户',
+                ),
+              ),
+              IconButton(
+                key: const ValueKey('user-add'),
+                tooltip: '新增用户',
+                onPressed:
+                    users.switching ||
+                        users.users.length >= UserController.maxUsers
+                    ? null
+                    : () => _editUser(users),
+                icon: const Icon(Icons.person_add_alt_1_rounded),
+              ),
+            ],
+          ),
+        ),
+        for (final user in users.users)
+          ListTile(
+            key: ValueKey('user-management-${user.id}'),
+            dense: compact,
+            leading: AppUserAvatar(user: user, size: compact ? 40 : 44),
+            title: Text(
+              user.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: Text(
+              user.id == users.activeUserId
+                  ? '当前用户${user.isDefault ? ' · 系统默认' : ''}'
+                  : user.isDefault
+                  ? '系统默认'
+                  : '独立数据空间',
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  key: ValueKey('user-edit-${user.id}'),
+                  tooltip: '编辑用户',
+                  onPressed: users.switching
+                      ? null
+                      : () => _editUser(users, user),
+                  icon: const Icon(Icons.edit_outlined),
+                ),
+                if (!user.isDefault)
+                  IconButton(
+                    key: ValueKey('user-delete-${user.id}'),
+                    tooltip: '删除用户',
+                    onPressed: users.switching
+                        ? null
+                        : () => _deleteUser(users, user),
+                    icon: Icon(
+                      Icons.delete_outline_rounded,
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Future<void> _editUser(UserController users, [AppUserProfile? user]) async {
+    final draft = await showDialog<UserProfileDraft>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => UserProfileEditorDialog(initialUser: user),
+    );
+    if (draft == null || !mounted) return;
+    try {
+      if (user == null) {
+        await users.createUser(
+          name: draft.name,
+          avatarId: draft.avatarId,
+          avatarColorIndex: draft.avatarColorIndex,
+          customAvatarBytes: draft.customAvatarBytes,
+        );
+      } else {
+        await users.updateUser(
+          user.id,
+          name: draft.name,
+          avatarId: draft.avatarId,
+          avatarColorIndex: draft.avatarColorIndex,
+          customAvatarBytes: draft.customAvatarBytes,
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('保存用户失败：$error')));
+    }
+  }
+
+  Future<void> _deleteUser(UserController users, AppUserProfile user) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        key: const ValueKey('user-delete-dialog'),
+        title: const Text('删除用户？'),
+        content: Text('将永久删除“${user.name}”的收藏、历史、配置、账号和缓存数据。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const ValueKey('user-delete-confirm'),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+              foregroundColor: Theme.of(dialogContext).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await users.deleteUser(user.id);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('删除用户失败：$error')));
+    }
   }
 
   Widget _buildLyricsCard({bool compact = false}) {
@@ -950,7 +1482,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       },
     );
-    if (selected != null) await player.setLyricOffsetStep(selected);
+    if (selected == null) return;
+    try {
+      await player.setLyricOffsetStep(selected);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('保存歌词时延失败：$error')));
+    }
   }
 
   String _formatLyricOffsetStep(Duration step) {
@@ -1041,7 +1581,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       },
     );
     if (selected != null) {
-      await player.setBilibiliLyricPlatformOrder(selected);
+      try {
+        await player.setBilibiliLyricPlatformOrder(selected);
+      } catch (error) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('保存歌词平台顺序失败：$error')));
+      }
     }
   }
 
@@ -1289,6 +1836,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ),
         const Divider(height: 1),
+        ListTile(
+          key: const ValueKey('batch-favorite-import'),
+          dense: compact,
+          leading: const Icon(Icons.playlist_add_rounded),
+          title: const Text('批量加入收藏歌曲'),
+          subtitle: const Text('手机扫码输入歌名，使用“、”分隔'),
+          trailing: _batchFavoriteImportInProgress
+              ? const SizedBox.square(
+                  dimension: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2.5),
+                )
+              : const Icon(Icons.qr_code_rounded),
+          onTap: _batchFavoriteImportInProgress
+              ? null
+              : () => unawaited(_showBatchFavoriteImport()),
+        ),
+        const Divider(height: 1),
         Consumer<PlayerProvider>(
           builder: (context, player, _) => ListTile(
             dense: compact,
@@ -1408,15 +1972,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _openBilibiliLogin(PlayerProvider player) async {
-    final loggedIn = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const BilibiliLoginDialog(),
-    );
-    if (loggedIn != true || !mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('B站账号登录成功')));
+    try {
+      final loggedIn = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const BilibiliLoginDialog(),
+      );
+      if (loggedIn != true || !mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('B站账号登录成功')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('B站登录失败：$error')));
+    }
   }
 
   Future<void> _logoutBilibili(PlayerProvider player) async {
@@ -1438,11 +2009,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     if (confirmed != true) return;
-    await player.logoutBilibili();
-    if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('已退出 B站账号')));
+    try {
+      await player.logoutBilibili();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已退出 B站账号')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('退出 B站失败：$error')));
+    }
   }
 
   Widget _buildApiCard({bool compact = false}) {
@@ -1500,14 +2078,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     onPressed: () async {
                       final player = context.read<PlayerProvider>();
                       final messenger = ScaffoldMessenger.of(context);
-                      await player.setApiKey(_apiKeyController.text.trim());
-                      if (!mounted) return;
-                      messenger.showSnackBar(
-                        const SnackBar(
-                          content: Text('API Key 已保存'),
-                          duration: Duration(seconds: 1),
-                        ),
-                      );
+                      try {
+                        await player.setApiKey(_apiKeyController.text.trim());
+                        if (!mounted) return;
+                        messenger.showSnackBar(
+                          const SnackBar(
+                            content: Text('API Key 已保存'),
+                            duration: Duration(seconds: 1),
+                          ),
+                        );
+                      } catch (error) {
+                        if (!mounted) return;
+                        messenger.showSnackBar(
+                          SnackBar(content: Text('API Key 保存失败：$error')),
+                        );
+                      }
                     },
                     icon: const Icon(Icons.save),
                     label: const Text('保存'),
@@ -1627,6 +2212,211 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
         ],
       ),
+    );
+  }
+
+  Widget _buildGlobalVoiceSettingsCard({bool compact = false}) {
+    final layout = AppLayout.fromContext(context);
+    final voiceModel = _aiConfigController.voiceModel;
+    final loadMode = _aiConfigController.voiceLoadMode;
+    final bargeInMode = _aiConfigController.bargeInMode;
+    final playbackMode = _aiConfigController.assistantPlaybackMode;
+    final ducksPlayback = playbackMode == AiAssistantPlaybackMode.duck;
+    final supportsPreload = voiceModel == AiVoiceModelKind.zipformerChinese;
+    final supportsBargeIn =
+        voiceModel == AiVoiceModelKind.zipformerChinese ||
+        voiceModel == AiVoiceModelKind.doubaoIme;
+    return _buildCard(
+      compact: compact,
+      children: [
+        _buildSectionHeader(icon: Icons.mic_none_rounded, title: '全局语音设置'),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              DropdownButtonFormField<AiVoiceModelKind>(
+                key: ValueKey('global-voice-engine-${voiceModel.value}'),
+                initialValue: voiceModel,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: '语音输入引擎',
+                  helperText: '对所有 AI 模型配置生效',
+                ),
+                items: AiVoiceModelKind.values
+                    .map(
+                      (model) => DropdownMenuItem(
+                        value: model,
+                        child: Text(
+                          model.label,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: _savingVoiceSettings
+                    ? null
+                    : (model) {
+                        if (model != null) {
+                          unawaited(_setGlobalVoiceModel(model));
+                        }
+                      },
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Zipformer 加载方式',
+                style: TextStyle(
+                  color: supportsPreload
+                      ? AppColors.textPrimary
+                      : AppColors.textHint,
+                  fontSize: layout.secondarySize,
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: SegmentedButton<AiVoiceLoadMode>(
+                  key: const ValueKey('global-voice-load-mode'),
+                  segments: AiVoiceLoadMode.values
+                      .map(
+                        (mode) => ButtonSegment<AiVoiceLoadMode>(
+                          value: mode,
+                          label: Text(
+                            mode.label,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  selected: {loadMode},
+                  showSelectedIcon: false,
+                  expandedInsets: EdgeInsets.zero,
+                  onSelectionChanged: !supportsPreload || _savingVoiceSettings
+                      ? null
+                      : (selection) {
+                          if (selection.isNotEmpty) {
+                            unawaited(_setVoiceLoadMode(selection.first));
+                          }
+                        },
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                supportsPreload ? '加载方式将在下次完整启动应用时生效' : '车机系统语音和豆包语音保持使用时初始化',
+                style: TextStyle(
+                  color: AppColors.textHint,
+                  fontSize: layout.secondarySize,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                '触发助手时的音乐状态',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: layout.secondarySize,
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: SegmentedButton<AiAssistantPlaybackMode>(
+                  key: const ValueKey('global-voice-playback-mode'),
+                  segments: AiAssistantPlaybackMode.values
+                      .map(
+                        (mode) => ButtonSegment<AiAssistantPlaybackMode>(
+                          value: mode,
+                          label: Text(
+                            mode.label,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  selected: {playbackMode},
+                  showSelectedIcon: false,
+                  expandedInsets: EdgeInsets.zero,
+                  onSelectionChanged: _savingVoiceSettings
+                      ? null
+                      : (selection) {
+                          if (selection.isNotEmpty) {
+                            unawaited(
+                              _setAssistantPlaybackMode(selection.first),
+                            );
+                          }
+                        },
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '后台播放降低比例',
+                      style: TextStyle(
+                        color: ducksPlayback
+                            ? AppColors.textPrimary
+                            : AppColors.textHint,
+                        fontSize: layout.secondarySize,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    '${_duckingReductionDraft.round()}%',
+                    key: const ValueKey('global-voice-ducking-reduction-value'),
+                    style: TextStyle(
+                      color: ducksPlayback
+                          ? AppColors.primary
+                          : AppColors.textHint,
+                      fontSize: layout.secondarySize,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+              Slider.adaptive(
+                key: const ValueKey('global-voice-ducking-reduction'),
+                value: _duckingReductionDraft,
+                min: AiConfigController.minDuckingReductionPercent.toDouble(),
+                max: AiConfigController.maxDuckingReductionPercent.toDouble(),
+                divisions:
+                    (AiConfigController.maxDuckingReductionPercent -
+                        AiConfigController.minDuckingReductionPercent) ~/
+                    10,
+                label: '降低 ${_duckingReductionDraft.round()}%',
+                onChanged: !ducksPlayback || _savingVoiceSettings
+                    ? null
+                    : (value) {
+                        setState(() => _duckingReductionDraft = value);
+                      },
+                onChangeEnd: !ducksPlayback || _savingVoiceSettings
+                    ? null
+                    : (value) => unawaited(_setDuckingReductionPercent(value)),
+              ),
+              const SizedBox(height: 8),
+              SwitchListTile.adaptive(
+                key: const ValueKey('global-voice-barge-in'),
+                contentPadding: EdgeInsets.zero,
+                title: const Text('播报时自动打断'),
+                subtitle: Text(
+                  supportsBargeIn ? '检测到连续人声后停止播报并开始识别' : '当前车机系统语音暂不支持自动打断',
+                ),
+                value:
+                    supportsBargeIn &&
+                    bargeInMode == AiBargeInMode.voiceActivity,
+                onChanged: !supportsBargeIn || _savingVoiceSettings
+                    ? null
+                    : (enabled) => unawaited(
+                        _setBargeInMode(
+                          enabled == true
+                              ? AiBargeInMode.voiceActivity
+                              : AiBargeInMode.disabled,
+                        ),
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -1778,6 +2568,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _buildSystemActionsCard() {
+    final colors = Theme.of(context).colorScheme;
+    return _buildCard(
+      children: [
+        _buildSectionHeader(icon: Icons.settings_power_rounded, title: '系统操作'),
+        ListTile(
+          key: const ValueKey('portrait-complete-exit'),
+          leading: Icon(Icons.power_settings_new_rounded, color: colors.error),
+          title: Text(
+            '完全退出',
+            style: TextStyle(color: colors.error, fontWeight: FontWeight.w600),
+          ),
+          subtitle: const Text('保存当前状态并彻底关闭软件'),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: () => AppExitService.confirmAndExit(context),
+        ),
+      ],
+    );
+  }
+
   /// 卡片分组容器
   Widget _buildCard({required List<Widget> children, bool compact = false}) {
     final layout = AppLayout.fromContext(context);
@@ -1866,9 +2676,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             value: level.value,
             groupValue: player.neteaseLevel.value,
             title: Text(level.label),
-            onChanged: (v) {
-              player.setNeteaseLevel(level);
-              Navigator.pop(ctx);
+            onChanged: (v) async {
+              if (v == null) return;
+              try {
+                await player.setNeteaseLevel(level);
+                if (ctx.mounted) Navigator.pop(ctx);
+              } catch (error) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text('保存网易云音质失败：$error')));
+              }
             },
           );
         }).toList(),
@@ -1886,9 +2704,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             value: level.value,
             groupValue: player.commonLevel.value,
             title: Text(level.label),
-            onChanged: (v) {
-              player.setCommonLevel(level);
-              Navigator.pop(ctx);
+            onChanged: (v) async {
+              if (v == null) return;
+              try {
+                await player.setCommonLevel(level);
+                if (ctx.mounted) Navigator.pop(ctx);
+              } catch (error) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text('保存 QQ/酷狗音质失败：$error')));
+              }
             },
           );
         }).toList(),
@@ -1921,9 +2747,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             onChanged: (selected) async {
               if (selected == null) return;
-              await player.setPlaybackSource(platform, selected);
-              if (!dialogContext.mounted) return;
-              Navigator.pop(dialogContext);
+              try {
+                await player.setPlaybackSource(platform, selected);
+                if (!dialogContext.mounted) return;
+                Navigator.pop(dialogContext);
+              } catch (error) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('保存${platform.label}音源失败：$error')),
+                );
+              }
             },
           );
         }).toList(),
@@ -1951,9 +2784,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: Text(description),
             onChanged: (selected) async {
               if (selected == null) return;
-              await player.setVideoPlayerMode(selected);
-              if (!dialogContext.mounted) return;
-              Navigator.pop(dialogContext);
+              try {
+                await player.setVideoPlayerMode(selected);
+                if (!dialogContext.mounted) return;
+                Navigator.pop(dialogContext);
+              } catch (error) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text('保存视频播放器设置失败：$error')));
+              }
             },
           );
         }).toList(),
@@ -1986,6 +2826,207 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _FavoriteImportQrDialog extends StatelessWidget {
+  final LanFavoriteImportSession session;
+  final Future<List<String>?> receivedFuture;
+  final Future<BatchFavoriteImportResult?> importFuture;
+
+  const _FavoriteImportQrDialog({
+    required this.session,
+    required this.receivedFuture,
+    required this.importFuture,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final layout = AppLayout.fromContext(context);
+    final compact = layout.isCompactLandscape;
+    final qrSize = compact ? 146.0 : 205.0;
+    final qrCode = Container(
+      padding: const EdgeInsets.all(10),
+      color: Colors.white,
+      child: QrImageView(
+        key: const ValueKey('favorite-import-qr-code'),
+        data: session.url,
+        version: QrVersions.auto,
+        size: qrSize,
+        backgroundColor: Colors.white,
+      ),
+    );
+    final details = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          '批量加入收藏歌曲',
+          style: TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: layout.sectionTitleSize,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 10),
+        _buildStatus(),
+        const SizedBox(height: 10),
+        Text(
+          '手机与车机需连接同一个 Wi-Fi。歌曲之间使用“、”连接，一次最多 30 首。',
+          style: TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: layout.secondarySize,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            key: const ValueKey('favorite-import-qr-close'),
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.close_rounded),
+            label: const Text('关闭'),
+          ),
+        ),
+      ],
+    );
+
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 620),
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: EdgeInsets.all(compact ? 12 : 20),
+            child: MediaQuery.orientationOf(context) == Orientation.landscape
+                ? Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      qrCode,
+                      SizedBox(width: compact ? 12 : 20),
+                      Flexible(child: details),
+                    ],
+                  )
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [qrCode, const SizedBox(height: 16), details],
+                  ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatus() {
+    return FutureBuilder<List<String>?>(
+      future: receivedFuture,
+      builder: (context, received) {
+        if (received.hasError) {
+          return const _FavoriteImportQrStatus(
+            icon: Icons.error_outline_rounded,
+            message: '接收失败，请关闭后重试',
+            color: Colors.redAccent,
+          );
+        }
+        if (received.connectionState != ConnectionState.done) {
+          return const _FavoriteImportQrStatus(
+            icon: Icons.phone_android_rounded,
+            message: '等待手机扫码并提交歌曲列表',
+            color: AppColors.primary,
+          );
+        }
+        final names = received.data;
+        if (names == null) {
+          return _FavoriteImportQrStatus(
+            icon: Icons.timer_off_outlined,
+            message: '本次批量收藏已结束',
+            color: AppColors.textHint,
+          );
+        }
+        return FutureBuilder<BatchFavoriteImportResult?>(
+          future: importFuture,
+          builder: (context, imported) {
+            if (imported.hasError) {
+              return const _FavoriteImportQrStatus(
+                icon: Icons.error_outline_rounded,
+                message: '匹配收藏歌曲失败，请关闭后重试',
+                color: Colors.redAccent,
+              );
+            }
+            if (imported.connectionState != ConnectionState.done) {
+              return _FavoriteImportQrStatus(
+                icon: Icons.sync_rounded,
+                message: '已收到 ${names.length} 首，正在匹配并加入收藏',
+                color: AppColors.primary,
+                showProgress: true,
+              );
+            }
+            final result = imported.data;
+            if (result == null || result.cancelled) {
+              return _FavoriteImportQrStatus(
+                icon: Icons.timer_off_outlined,
+                message: '本次批量收藏已结束',
+                color: AppColors.textHint,
+              );
+            }
+            return _FavoriteImportQrStatus(
+              icon: Icons.check_circle_outline_rounded,
+              message: _resultMessage(result),
+              color: AppColors.primary,
+            );
+          },
+        );
+      },
+    );
+  }
+
+  String _resultMessage(BatchFavoriteImportResult result) {
+    final parts = <String>['已完成：新增 ${result.added} 首'];
+    if (result.alreadyFavorite > 0) {
+      parts.add('${result.alreadyFavorite} 首已收藏');
+    }
+    if (result.notFound.isNotEmpty) {
+      parts.add('${result.notFound.length} 首未找到');
+    }
+    return parts.join('，');
+  }
+}
+
+class _FavoriteImportQrStatus extends StatelessWidget {
+  final IconData icon;
+  final String message;
+  final Color color;
+  final bool showProgress;
+
+  const _FavoriteImportQrStatus({
+    required this.icon,
+    required this.message,
+    required this.color,
+    this.showProgress = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        if (showProgress)
+          SizedBox.square(
+            dimension: 22,
+            child: CircularProgressIndicator(strokeWidth: 2.5, color: color),
+          )
+        else
+          Icon(icon, color: color, size: 22),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            message,
+            key: const ValueKey('favorite-import-qr-status'),
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: AppColors.textPrimary),
+          ),
+        ),
+      ],
     );
   }
 }

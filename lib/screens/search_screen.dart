@@ -3,9 +3,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/song.dart';
+import '../providers/ai_assistant_controller.dart';
+import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
 import '../providers/search_session.dart';
 import '../services/favorite_service.dart';
+import '../services/voice_input_session.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
@@ -40,6 +43,8 @@ class _SearchScreenState extends State<SearchScreen>
   late TabController _tabController;
   late final SearchSession _session;
   late String _observedSessionKeyword;
+  VoiceInputSession? _activeVoiceInputSession;
+  bool _voiceInputOpen = false;
 
   @override
   void initState() {
@@ -59,6 +64,9 @@ class _SearchScreenState extends State<SearchScreen>
 
   @override
   void dispose() {
+    final activeVoiceInput = _activeVoiceInputSession;
+    _activeVoiceInputSession = null;
+    if (activeVoiceInput != null) unawaited(activeVoiceInput.close());
     _session.removeListener(_handleSessionChanged);
     _tabController.removeListener(_handleTabChanged);
     _controller.dispose();
@@ -68,6 +76,7 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Future<void> _search(String keyword) async {
+    if (!mounted) return;
     final normalized = keyword.trim();
     if (normalized.isEmpty) return;
     _searchFocusNode.unfocus();
@@ -78,6 +87,74 @@ class _SearchScreenState extends State<SearchScreen>
       );
     }
     await _session.search(context.read<PlayerProvider>().api, normalized);
+  }
+
+  Future<void> _addSearchResultToQueue(SongSearchResult song) async {
+    final count = await context.read<PlayerProvider>().addToQueueAndGetCount(
+      song,
+    );
+    if (!mounted || count <= 0) return;
+    final message = song.platform == MusicPlatform.bilibili
+        ? '已添加 $count 个分P: ${song.name}'
+        : '已添加到队列: ${song.name}';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 1)),
+    );
+  }
+
+  Future<void> _showVoiceInput() async {
+    if (_voiceInputOpen || !mounted) return;
+    final assistant = Provider.of<AiAssistantController?>(
+      context,
+      listen: false,
+    );
+    final config = Provider.of<AiConfigController?>(context, listen: false);
+    if (assistant == null || config == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前语音输入服务不可用')));
+      return;
+    }
+    if (assistant.isActive) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请先结束当前 AI 助理对话')));
+      return;
+    }
+
+    setState(() => _voiceInputOpen = true);
+    _searchFocusNode.unfocus();
+    VoiceInputSession? voiceSession;
+    String? candidate;
+    try {
+      await config.ready;
+      if (!mounted) return;
+      voiceSession = VoiceInputSession(
+        speech: assistant.speech,
+        voiceModel: config.voiceModel,
+      );
+      _activeVoiceInputSession = voiceSession;
+      candidate = await showDialog<String>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) =>
+            _SearchVoiceInputDialog(session: voiceSession!),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('语音输入失败：$error')));
+      }
+    } finally {
+      if (identical(_activeVoiceInputSession, voiceSession)) {
+        _activeVoiceInputSession = null;
+      }
+      await voiceSession?.close();
+      if (mounted) setState(() => _voiceInputOpen = false);
+    }
+    if (!mounted || candidate == null || candidate.trim().isEmpty) return;
+    await _search(candidate);
   }
 
   Future<Iterable<_SearchSuggestion>> _buildSearchSuggestions(
@@ -156,7 +233,7 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   void _handleTabChanged() {
-    if (_tabController.indexIsChanging) return;
+    if (!mounted || _tabController.indexIsChanging) return;
     unawaited(
       _session.selectPlatform(
         context.read<PlayerProvider>().api,
@@ -166,15 +243,18 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   void _retryPlatform(MusicPlatform platform) {
+    if (!mounted) return;
     unawaited(_session.retry(context.read<PlayerProvider>().api, platform));
   }
 
   void _clearSearch() {
+    if (!mounted) return;
     _controller.clear();
     _session.clear();
   }
 
   void _handleQueryChanged(String value) {
+    if (!mounted) return;
     if (value.trim().isEmpty && _session.keyword.isNotEmpty) {
       _session.clear();
       return;
@@ -183,6 +263,7 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   void _switchMode(bool playlistMode) {
+    if (!mounted) return;
     unawaited(
       _session.setPlaylistMode(
         context.read<PlayerProvider>().api,
@@ -340,52 +421,78 @@ class _SearchScreenState extends State<SearchScreen>
     final layout = AppLayout.fromContext(context);
     return Padding(
       padding: padding ?? const EdgeInsets.fromLTRB(20, 8, 20, 8),
-      child: RawAutocomplete<_SearchSuggestion>(
-        textEditingController: _controller,
-        focusNode: _searchFocusNode,
-        displayStringForOption: (option) => option.keyword,
-        optionsBuilder: _buildSearchSuggestions,
-        onSelected: (option) => unawaited(_search(option.keyword)),
-        optionsViewOpenDirection: OptionsViewOpenDirection.mostSpace,
-        optionsViewBuilder: _buildSuggestionOptions,
-        fieldViewBuilder: (context, textController, focusNode, _) {
-          return RemoteTextFieldTraversal(
-            controller: textController,
-            child: TextField(
-              key: const ValueKey('search-field'),
-              controller: textController,
-              focusNode: focusNode,
-              decoration: InputDecoration(
-                hintText: '搜索歌曲、歌手...',
-                prefixIcon: Icon(Icons.search, color: AppColors.textSecondary),
-                suffixIcon: textController.text.isNotEmpty
-                    ? IconButton(
-                        tooltip: '清空输入',
-                        icon: Icon(
-                          Icons.clear,
-                          size: layout.isCompactLandscape ? 24 : 28,
-                          color: AppColors.textSecondary,
-                        ),
-                        onPressed: _clearSearch,
-                      )
-                    : null,
-                hintStyle: TextStyle(
-                  color: AppColors.textHint,
-                  fontSize: layout.bodySize,
-                ),
-              ),
-              style: TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: layout.bodySize,
-                height: 1.2,
-              ),
-              textInputAction: TextInputAction.search,
-              onSubmitted: (value) => unawaited(_search(value)),
-              onChanged: _handleQueryChanged,
-              onTapOutside: (_) => focusNode.unfocus(),
+      child: Row(
+        children: [
+          Expanded(
+            child: RawAutocomplete<_SearchSuggestion>(
+              textEditingController: _controller,
+              focusNode: _searchFocusNode,
+              displayStringForOption: (option) => option.keyword,
+              optionsBuilder: _buildSearchSuggestions,
+              onSelected: (option) => unawaited(_search(option.keyword)),
+              optionsViewOpenDirection: OptionsViewOpenDirection.mostSpace,
+              optionsViewBuilder: _buildSuggestionOptions,
+              fieldViewBuilder: (context, textController, focusNode, _) {
+                return RemoteTextFieldTraversal(
+                  controller: textController,
+                  child: TextField(
+                    key: const ValueKey('search-field'),
+                    controller: textController,
+                    focusNode: focusNode,
+                    decoration: InputDecoration(
+                      hintText: '搜索歌曲、歌手...',
+                      prefixIcon: Icon(
+                        Icons.search,
+                        color: AppColors.textSecondary,
+                      ),
+                      suffixIcon: textController.text.isNotEmpty
+                          ? IconButton(
+                              tooltip: '清空输入',
+                              icon: Icon(
+                                Icons.clear,
+                                size: layout.isCompactLandscape ? 24 : 28,
+                                color: AppColors.textSecondary,
+                              ),
+                              onPressed: _clearSearch,
+                            )
+                          : null,
+                      hintStyle: TextStyle(
+                        color: AppColors.textHint,
+                        fontSize: layout.bodySize,
+                      ),
+                    ),
+                    style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: layout.bodySize,
+                      height: 1.2,
+                    ),
+                    textInputAction: TextInputAction.search,
+                    onSubmitted: (value) => unawaited(_search(value)),
+                    onChanged: _handleQueryChanged,
+                    onTapOutside: (_) => focusNode.unfocus(),
+                  ),
+                );
+              },
             ),
-          );
-        },
+          ),
+          SizedBox(width: layout.isCompactLandscape ? 6 : 10),
+          SizedBox.square(
+            dimension: layout.isCompactLandscape ? 48 : 56,
+            child: IconButton.filledTonal(
+              key: const ValueKey('search-voice-input'),
+              tooltip: '语音输入',
+              onPressed: _voiceInputOpen
+                  ? null
+                  : () => unawaited(_showVoiceInput()),
+              icon: Icon(
+                _voiceInputOpen
+                    ? Icons.hourglass_top_rounded
+                    : Icons.mic_rounded,
+                size: layout.isCompactLandscape ? 24 : 28,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -646,21 +753,19 @@ class _SearchScreenState extends State<SearchScreen>
         if (hasPlaylists && i == 0) {
           return _buildRelatedPlaylists(platform, playlists);
         }
-        final song = list[i - (hasPlaylists ? 1 : 0)];
+        final songIndex = i - (hasPlaylists ? 1 : 0);
+        final song = list[songIndex];
         return SongTile(
           song: song,
           showFavorite: true,
           onTap: () {
-            context.read<PlayerProvider>().playSingle(song);
+            context.read<PlayerProvider>().playFromSearchResults(
+              list,
+              songIndex,
+            );
           },
           onAddToQueue: () {
-            context.read<PlayerProvider>().addToQueue(song);
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('已添加到队列: ${song.name}'),
-                duration: const Duration(seconds: 1),
-              ),
-            );
+            unawaited(_addSearchResultToQueue(song));
           },
         );
       },
@@ -957,14 +1062,26 @@ class _SearchScreenState extends State<SearchScreen>
             tooltip: isFavorite ? '取消收藏歌单' : '收藏歌单',
             visualDensity: VisualDensity.compact,
             onPressed: () async {
-              final added = await favorites.togglePlaylist(platform, playlist);
-              if (!context.mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(added ? '已收藏歌单: ${playlist.name}' : '已取消收藏歌单'),
-                  duration: const Duration(seconds: 1),
-                ),
-              );
+              try {
+                final added = await favorites.togglePlaylist(
+                  platform,
+                  playlist,
+                );
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      added ? '已收藏歌单: ${playlist.name}' : '已取消收藏歌单',
+                    ),
+                    duration: const Duration(seconds: 1),
+                  ),
+                );
+              } catch (error) {
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text('收藏歌单失败：$error')));
+              }
             },
             icon: AppAnimatedIcon(
               stateKey: isFavorite,
@@ -1237,6 +1354,434 @@ class _SearchScreenState extends State<SearchScreen>
                 ),
               ),
             ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SearchVoiceInputDialog extends StatefulWidget {
+  final VoiceInputSession session;
+
+  const _SearchVoiceInputDialog({required this.session});
+
+  @override
+  State<_SearchVoiceInputDialog> createState() =>
+      _SearchVoiceInputDialogState();
+}
+
+class _SearchVoiceInputDialogState extends State<_SearchVoiceInputDialog> {
+  late final TextEditingController _candidateController;
+  bool _preparing = true;
+  bool _listening = false;
+  bool _manuallyEdited = false;
+  bool _closing = false;
+  bool _startPending = false;
+  int _operationGeneration = 0;
+  String _status = '正在准备语音服务…';
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _candidateController = TextEditingController();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_startListening(clearCandidate: false));
+    });
+  }
+
+  @override
+  void dispose() {
+    _candidateController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _startListening({bool clearCandidate = true}) async {
+    if (_closing || _startPending) return;
+    final operation = ++_operationGeneration;
+    _startPending = true;
+    FocusManager.instance.primaryFocus?.unfocus();
+    if (clearCandidate) _candidateController.clear();
+    _manuallyEdited = false;
+    setState(() {
+      _preparing = true;
+      _listening = false;
+      _error = null;
+      _status = '正在准备语音服务…';
+    });
+
+    try {
+      final started = await widget.session.start(
+        onResult: _handleResult,
+        onError: _handleError,
+        onStatus: _handleStatus,
+      );
+      if (!mounted || _closing || operation != _operationGeneration) return;
+      setState(() {
+        _preparing = false;
+        _listening = started && widget.session.isListening;
+        if (!started && _error == null && !_manuallyEdited) {
+          _error = '语音输入未能启动，请重试';
+          _status = '语音输入不可用';
+        }
+      });
+    } finally {
+      _startPending = false;
+    }
+  }
+
+  void _handleResult(String text, bool isFinal) {
+    if (!mounted || _closing || _manuallyEdited) return;
+    final candidate = text.trim();
+    if (candidate.isEmpty) return;
+    _candidateController.value = TextEditingValue(
+      text: candidate,
+      selection: TextSelection.collapsed(offset: candidate.length),
+    );
+    setState(() {
+      _status = isFinal ? '已识别' : '正在识别…';
+      if (isFinal) _listening = false;
+    });
+    if (isFinal) unawaited(_stopListening());
+  }
+
+  void _handleError(String message) {
+    if (!mounted || _closing) return;
+    setState(() {
+      _preparing = false;
+      _listening = false;
+      _error = _cleanSpeechMessage(message);
+      _status = '语音输入失败';
+    });
+  }
+
+  void _handleStatus(String status) {
+    if (!mounted || _closing) return;
+    if (status == 'listening') {
+      setState(() {
+        _preparing = false;
+        _listening = true;
+        _status = '正在听…';
+      });
+    } else if (status == 'done' || status == 'notListening') {
+      setState(() {
+        _preparing = false;
+        _listening = false;
+        if (_error == null) {
+          _status = _candidateController.text.trim().isEmpty ? '未识别到内容' : '已识别';
+        }
+      });
+    }
+  }
+
+  Future<void> _stopListening() async {
+    if (_closing) return;
+    _operationGeneration++;
+    await widget.session.stop();
+    if (!mounted || _closing) return;
+    setState(() {
+      _preparing = false;
+      _listening = false;
+      if (_error == null) {
+        _status = _candidateController.text.trim().isEmpty ? '未识别到内容' : '已识别';
+      }
+    });
+  }
+
+  Future<void> _beginManualEditing() async {
+    if (_closing || _manuallyEdited) return;
+    _operationGeneration++;
+    _manuallyEdited = true;
+    if (_preparing || _listening) await widget.session.cancel();
+    if (!mounted || _closing) return;
+    setState(() {
+      _preparing = false;
+      _listening = false;
+      _error = null;
+      _status = '可编辑';
+    });
+  }
+
+  void _handleCandidateChanged(String _) {
+    if (_closing) return;
+    _manuallyEdited = true;
+    setState(() {});
+  }
+
+  Future<void> _confirm() async {
+    if (_closing || _candidateController.text.trim().isEmpty) return;
+    final candidate = _candidateController.text.trim();
+    _operationGeneration++;
+    setState(() {
+      _closing = true;
+      _preparing = true;
+      _listening = false;
+      _status = '正在结束语音输入…';
+    });
+    await widget.session.close();
+    if (!mounted) return;
+    Navigator.pop(context, candidate.isEmpty ? null : candidate);
+  }
+
+  Future<void> _cancelDialog() async {
+    if (_closing) return;
+    _operationGeneration++;
+    setState(() {
+      _closing = true;
+      _preparing = true;
+      _listening = false;
+      _status = '正在结束语音输入…';
+    });
+    await widget.session.close();
+    if (mounted) Navigator.pop(context);
+  }
+
+  String _cleanSpeechMessage(String message) {
+    return message
+        .replaceFirst(RegExp(r'^(speech_not_supported|error_audio):\s*'), '')
+        .trim();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final layout = AppLayout.fromContext(context);
+    final compact = layout.isCompactLandscape;
+    final viewInsets = MediaQuery.viewInsetsOf(context);
+    final keyboardOpen = viewInsets.bottom > 0;
+    // A head unit has more useful horizontal than vertical space. Keep the
+    // status/retry panel beside the editor in every landscape; once the
+    // keyboard is visible, return to a scrollable single-column layout so the
+    // editor and actions remain reachable above the IME.
+    final useSplitLayout = layout.isLandscape && !keyboardOpen;
+    final mediaSize = MediaQuery.sizeOf(context);
+    final availableHeight =
+        mediaSize.height - viewInsets.bottom - (layout.isLandscape ? 16 : 48);
+    final maxDialogHeight = availableHeight > 0 ? availableHeight : 120.0;
+    final horizontalInset = compact ? 12.0 : 24.0;
+    final requestedWidth = useSplitLayout
+        ? (layout.usesLargeTypography ? 900.0 : 780.0)
+        : 560.0;
+    final availableWidth = (mediaSize.width - horizontalInset * 2)
+        .clamp(1.0, double.infinity)
+        .toDouble();
+    final dialogWidth = requestedWidth.clamp(1.0, availableWidth).toDouble();
+
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) unawaited(_cancelDialog());
+      },
+      child: Dialog(
+        key: const ValueKey('search-voice-dialog'),
+        insetPadding: EdgeInsets.symmetric(
+          horizontal: horizontalInset,
+          vertical: compact ? 8 : 24,
+        ),
+        child: SizedBox(
+          width: dialogWidth,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxDialogHeight),
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(
+                compact ? 18 : 24,
+                compact ? 14 : 22,
+                compact ? 18 : 24,
+                compact ? 14 : 20,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildVoiceDialogHeader(context, compact),
+                    SizedBox(height: compact ? 14 : 20),
+                    if (useSplitLayout)
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            flex: 4,
+                            child: _buildVoiceStatusPanel(
+                              context,
+                              compact: true,
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            flex: 6,
+                            child: _buildCandidateEditor(compact),
+                          ),
+                        ],
+                      )
+                    else ...[
+                      _buildCandidateEditor(compact),
+                      const SizedBox(height: 10),
+                      _buildVoiceStatusPanel(context, compact: compact),
+                    ],
+                    SizedBox(height: compact ? 14 : 22),
+                    _buildVoiceDialogActions(),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildVoiceDialogHeader(BuildContext context, bool compact) {
+    return Row(
+      children: [
+        Container(
+          width: compact ? 44 : 52,
+          height: compact ? 44 : 52,
+          decoration: BoxDecoration(
+            color: _listening ? AppColors.primarySoft : AppColors.surfaceSoft,
+            borderRadius: BorderRadius.circular(AppRadius.control),
+          ),
+          child: Icon(
+            _listening ? Icons.mic_rounded : Icons.graphic_eq_rounded,
+            color: _listening ? AppColors.primary : AppColors.textSecondary,
+            size: compact ? 26 : 31,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '语音搜索',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: compact ? 23 : 27,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                '识别结果',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: compact ? 13 : 15,
+                ),
+              ),
+            ],
+          ),
+        ),
+        IconButton(
+          key: const ValueKey('search-voice-close'),
+          tooltip: '关闭',
+          onPressed: _closing ? null : () => unawaited(_cancelDialog()),
+          icon: const Icon(Icons.close_rounded),
+          iconSize: compact ? 27 : 30,
+          constraints: BoxConstraints.tightFor(
+            width: compact ? 50 : 56,
+            height: compact ? 50 : 56,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCandidateEditor(bool compact) {
+    return TextField(
+      key: const ValueKey('search-voice-candidate'),
+      controller: _candidateController,
+      minLines: compact ? 2 : 1,
+      maxLines: compact ? 3 : 4,
+      maxLength: 120,
+      enabled: !_closing,
+      decoration: InputDecoration(
+        labelText: '识别文本',
+        hintText: '等待语音内容…',
+        alignLabelWithHint: true,
+        counterText: '',
+        filled: true,
+        fillColor: AppColors.background,
+      ),
+      textInputAction: TextInputAction.search,
+      onTap: () => unawaited(_beginManualEditing()),
+      onChanged: _handleCandidateChanged,
+      onSubmitted: (_) => unawaited(_confirm()),
+    );
+  }
+
+  Widget _buildVoiceStatusPanel(BuildContext context, {required bool compact}) {
+    final statusColor = _error == null
+        ? (_listening ? AppColors.primary : AppColors.textSecondary)
+        : Theme.of(context).colorScheme.error;
+    return Container(
+      padding: EdgeInsets.all(compact ? 12 : 14),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceSoft,
+        borderRadius: BorderRadius.circular(AppRadius.control),
+        border: Border.all(color: AppColors.outline),
+      ),
+      child: Row(
+        children: [
+          SizedBox.square(
+            dimension: compact ? 44 : 48,
+            child: _preparing
+                ? const Padding(
+                    padding: EdgeInsets.all(10),
+                    child: CircularProgressIndicator(strokeWidth: 2.5),
+                  )
+                : IconButton.filledTonal(
+                    key: const ValueKey('search-voice-retry'),
+                    tooltip: _listening ? '停止识别' : '重新识别',
+                    onPressed: _closing
+                        ? null
+                        : _listening
+                        ? () => unawaited(_stopListening())
+                        : () => unawaited(_startListening()),
+                    icon: Icon(
+                      _listening ? Icons.stop_rounded : Icons.mic_rounded,
+                    ),
+                  ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              _error ?? _status,
+              key: const ValueKey('search-voice-status'),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: statusColor,
+                fontSize: compact ? 15 : 17,
+                fontWeight: _listening ? FontWeight.w600 : null,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVoiceDialogActions() {
+    final canConfirm = !_closing && _candidateController.text.trim().isNotEmpty;
+    return Row(
+      children: [
+        Expanded(
+          child: OutlinedButton(
+            key: const ValueKey('search-voice-cancel'),
+            onPressed: _closing ? null : () => unawaited(_cancelDialog()),
+            child: const Text('取消'),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          flex: 2,
+          child: FilledButton.icon(
+            key: const ValueKey('search-voice-confirm'),
+            onPressed: canConfirm ? () => unawaited(_confirm()) : null,
+            icon: const Icon(Icons.search_rounded),
+            label: const Text('确认并搜索'),
           ),
         ),
       ],

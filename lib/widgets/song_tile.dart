@@ -25,6 +25,10 @@ class SongTile extends StatelessWidget {
   /// playlist rows. The default keeps the existing compact song-row style.
   final bool collectionCard;
 
+  /// Aligns row padding with the playback-history list while preserving all
+  /// song actions. Used by the dedicated favorite collection pages.
+  final bool historyListLayout;
+
   const SongTile({
     super.key,
     required this.song,
@@ -38,7 +42,9 @@ class SongTile extends StatelessWidget {
     this.onSelectionChanged,
     this.onLongPress,
     this.collectionCard = false,
-  }) : assert(!selectionMode || onSelectionChanged != null);
+    this.historyListLayout = false,
+  }) : assert(!selectionMode || onSelectionChanged != null),
+       assert(!collectionCard || !historyListLayout);
 
   @override
   Widget build(BuildContext context) {
@@ -82,7 +88,13 @@ class SongTile extends StatelessWidget {
           ),
           padding: cardPadding,
           child: ListTile(
-            minTileHeight: collectionCard ? coverSize : layout.songRowHeight,
+            minTileHeight: collectionCard
+                ? coverSize
+                : historyListLayout
+                ? (layout.usesLargeTypography
+                      ? 104
+                      : (layout.isCompactLandscape ? 70 : 86))
+                : layout.songRowHeight,
             minVerticalPadding: collectionCard ? 0 : null,
             tileColor: Colors.transparent,
             selectedTileColor: Colors.transparent,
@@ -92,6 +104,11 @@ class SongTile extends StatelessWidget {
             horizontalTitleGap: collectionCard ? 12 : null,
             contentPadding: collectionCard
                 ? EdgeInsets.zero
+                : historyListLayout
+                ? EdgeInsets.symmetric(
+                    horizontal: layout.isCompactLandscape ? 8 : 14,
+                    vertical: layout.usesLargeTypography ? 8 : 4,
+                  )
                 : EdgeInsets.symmetric(
                     horizontal: veryCompact
                         ? 8

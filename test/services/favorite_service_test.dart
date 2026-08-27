@@ -56,6 +56,44 @@ void main() {
     expect(exported['songs'], hasLength(2));
   });
 
+  test('reuses read-only favorite views until data changes', () async {
+    final service = FavoriteService();
+    await service.toggle(_song(MusicPlatform.qq, 'song-1', 'Song One'));
+
+    final first = service.favorites;
+    expect(identical(first, service.favorites), isTrue);
+
+    await service.toggle(_song(MusicPlatform.qq, 'song-2', 'Song Two'));
+
+    expect(identical(first, service.favorites), isFalse);
+    expect(service.favorites.map((song) => song.id), ['song-2', 'song-1']);
+  });
+
+  test(
+    'addMany keeps existing favorites and persists a deduplicated batch',
+    () async {
+      final existing = _song(MusicPlatform.qq, 'existing', 'Existing');
+      final added = _song(MusicPlatform.netease, 'added', 'Added');
+      final service = FavoriteService();
+      await service.toggle(existing);
+
+      final result = await service.addMany([existing, added, added]);
+
+      expect(result.added, 1);
+      expect(result.skipped, 2);
+      expect(result.total, 3);
+      expect(service.isFavorite(existing.platform, existing.id), isTrue);
+      expect(service.isFavorite(added.platform, added.id), isTrue);
+
+      final restored = FavoriteService();
+      await restored.load();
+      expect(restored.favorites.map(FavoriteService.keyOf), [
+        FavoriteService.keyOf(added),
+        FavoriteService.keyOf(existing),
+      ]);
+    },
+  );
+
   test(
     'replace import overwrites existing favorites and persists them',
     () async {
@@ -154,7 +192,7 @@ void main() {
     },
   );
 
-  test('version 3 backup separates Bilibili favorites', () async {
+  test('version 4 backup separates Bilibili favorites by user', () async {
     final service = FavoriteService();
     await service.toggle(_song(MusicPlatform.qq, 'song-1', 'Song One'));
     await service.toggle(_song(MusicPlatform.bilibili, 'BV1test', 'Video One'));
@@ -171,7 +209,8 @@ void main() {
 
     final raw = service.exportJson(apiKey: 'api-key-for-backup');
     final exported = jsonDecode(raw) as Map<String, dynamic>;
-    expect(exported['version'], 3);
+    expect(exported['version'], 4);
+    expect(exported['userDataVersion'], 1);
     expect(exported['songs'], hasLength(1));
     expect(exported['bilibili'], hasLength(1));
     expect(exported['playlists'], hasLength(1));

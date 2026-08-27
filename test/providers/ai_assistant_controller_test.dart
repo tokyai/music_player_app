@@ -6,6 +6,7 @@ import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/providers/ai_assistant_controller.dart';
 import 'package:music_player_app/providers/ai_config_controller.dart';
 import 'package:music_player_app/providers/player_provider.dart';
+import 'package:music_player_app/services/ai_punctuation_service.dart';
 import 'package:music_player_app/services/ai_service.dart';
 import 'package:music_player_app/services/ai_song_resolver.dart';
 import 'package:music_player_app/services/ai_voice_service.dart';
@@ -51,37 +52,263 @@ void main() {
     expect(fixture.speech.listenCalls, greaterThanOrEqualTo(4));
   });
 
-  test('uses the configured offline voice model for a new session', () async {
+  test('bounds unusually large messages and request context', () async {
+    final fixture = await _Fixture.create(
+      gatewayResults: [AiChatResult(reply: '回复' * 40000)],
+    );
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    await fixture.controller.sendText('问题' * 40000);
+
+    expect(fixture.controller.messages, hasLength(2));
+    expect(
+      fixture.controller.messages.every(
+        (message) => message.text.length <= 32769,
+      ),
+      isTrue,
+    );
+    expect(
+      fixture.gateway.requests.single.single.text.length,
+      lessThanOrEqualTo(32768),
+    );
+    expect(fixture.tts.spoken.single.length, lessThanOrEqualTo(8192));
+  });
+
+  test('bounds a long continuous speech transcript', () async {
+    final fixture = await _Fixture.create(
+      speechCommitDelay: const Duration(hours: 1),
+    );
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('语音' * 40000, isFinal: true);
+
+    expect(fixture.controller.transcript.length, lessThanOrEqualTo(32768));
+  });
+
+  test('uses the configured voice engine for a new session', () async {
     final fixture = await _Fixture.create();
     addTearDown(fixture.dispose);
-    await fixture.config.save(
-      fixture.config.config.copyWith(
-        voiceModel: AiVoiceModelKind.paraformerBilingual,
-      ),
-    );
+    await fixture.config.setVoiceModel(AiVoiceModelKind.doubaoIme);
 
     await fixture.controller.startSession();
 
-    expect(fixture.speech.voiceModel, AiVoiceModelKind.paraformerBilingual);
+    expect(fixture.speech.voiceModel, AiVoiceModelKind.doubaoIme);
   });
 
+  test(
+    'preloads and releases the global offline voice model while idle',
+    () async {
+      final fixture = await _Fixture.create();
+      addTearDown(fixture.dispose);
+
+      fixture.controller.configureVoicePreloading(enabled: true);
+      expect(await fixture.controller.preloadVoiceModel(), isTrue);
+      expect(fixture.speech.retainIdleModel, isTrue);
+      expect(fixture.speech.preloadCalls, 1);
+      expect(fixture.controller.isActive, isFalse);
+
+      await fixture.controller.releasePreloadedVoiceModel();
+      expect(fixture.speech.releasePreloadedCalls, 1);
+    },
+  );
+
   test('waits for continued speech and sends combined text once', () async {
+    String? punctuationInput;
+    final punctuation = MemoryAiPunctuationService(
+      transform: (text) {
+        punctuationInput = text;
+        return '$text！';
+      },
+    );
     final fixture = await _Fixture.create(
       speechCommitDelay: const Duration(milliseconds: 80),
       gatewayResults: const [AiChatResult(reply: '收到完整问题。')],
+      punctuation: punctuation,
     );
     addTearDown(fixture.dispose);
 
     await fixture.controller.startSession();
-    fixture.speech.emit('我想听周杰伦的', isFinal: true);
+    fixture.speech.emit('我最近经常在下班回家的路上听周杰伦的', isFinal: true);
     await Future<void>.delayed(const Duration(milliseconds: 30));
 
     expect(fixture.gateway.requests, isEmpty);
-    fixture.speech.emit('夜曲', isFinal: false);
-    fixture.speech.emit('夜曲', isFinal: true);
+    fixture.speech.emit('一些比较安静又有故事感的歌曲', isFinal: false);
+    fixture.speech.emit('一些比较安静又有故事感的歌曲', isFinal: true);
 
     await _waitFor(() => fixture.gateway.requests.length == 1);
-    expect(fixture.gateway.requests.single.single.text, '我想听周杰伦的 夜曲');
+    expect(punctuationInput, '我最近经常在下班回家的路上听周杰伦的 一些比较安静又有故事感的歌曲');
+    expect(
+      fixture.gateway.requests.single.single.text,
+      '我最近经常在下班回家的路上听周杰伦的 一些比较安静又有故事感的歌曲！',
+    );
+    expect(punctuation.calls, 1);
+  });
+
+  test(
+    'does not reopen recognition while final text waits to commit',
+    () async {
+      final fixture = await _Fixture.create(
+        speechCommitDelay: const Duration(milliseconds: 300),
+      );
+      addTearDown(fixture.dispose);
+
+      await fixture.controller.startSession();
+      fixture.speech.emit('周杰伦有哪些适合安静听的歌曲', isFinal: true);
+
+      await Future<void>.delayed(const Duration(milliseconds: 220));
+      expect(fixture.gateway.requests, isEmpty);
+      expect(fixture.speech.listenCalls, 1);
+
+      await _waitFor(() => fixture.gateway.requests.length == 1);
+      await _waitFor(
+        () => fixture.controller.state == AiSessionState.listening,
+      );
+      expect(fixture.speech.cancelCalls, 1);
+      expect(fixture.speech.listenCalls, 2);
+    },
+  );
+
+  test(
+    'done status with recognized text commits instead of restarting',
+    () async {
+      final fixture = await _Fixture.create(
+        speechCommitDelay: const Duration(milliseconds: 300),
+      );
+      addTearDown(fixture.dispose);
+
+      await fixture.controller.startSession();
+      fixture.speech.emit('这是系统识别器返回的文本', isFinal: false);
+      fixture.speech.emitStatus('done');
+
+      await Future<void>.delayed(const Duration(milliseconds: 220));
+      expect(fixture.gateway.requests, isEmpty);
+      expect(fixture.speech.listenCalls, 1);
+
+      await _waitFor(() => fixture.gateway.requests.length == 1);
+      await _waitFor(
+        () => fixture.controller.state == AiSessionState.listening,
+      );
+      expect(fixture.speech.listenCalls, 2);
+    },
+  );
+
+  testWidgets('uses the shorter default Doubao commit delay', (tester) async {
+    final fixture = await _Fixture.create(speechCommitDelay: null);
+    addTearDown(fixture.dispose);
+    await fixture.config.setVoiceModel(AiVoiceModelKind.doubaoIme);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('豆包已经完成最终纠错', isFinal: true);
+
+    await tester.pump(const Duration(milliseconds: 119));
+    expect(fixture.gateway.requests, isEmpty);
+    await tester.pump(const Duration(milliseconds: 2));
+    await tester.pump();
+    expect(fixture.gateway.requests, hasLength(1));
+  });
+
+  testWidgets('keeps a longer default Zipformer commit window', (tester) async {
+    final fixture = await _Fixture.create(speechCommitDelay: null);
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('离线识别最终结果', isFinal: true);
+
+    await tester.pump(const Duration(milliseconds: 349));
+    expect(fixture.gateway.requests, isEmpty);
+    await tester.pump(const Duration(milliseconds: 2));
+    await tester.pump();
+    expect(fixture.gateway.requests, hasLength(1));
+  });
+
+  test('short music commands bypass local punctuation', () async {
+    final punctuation = MemoryAiPunctuationService(
+      transform: (text) => '$text！',
+    );
+    final fixture = await _Fixture.create(punctuation: punctuation);
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('我想听周杰伦的夜曲', isFinal: true);
+
+    await _waitFor(() => fixture.gateway.requests.length == 1);
+    expect(fixture.gateway.requests.single.single.text, '我想听周杰伦的夜曲');
+    expect(punctuation.calls, 0);
+  });
+
+  test('Doubao final results bypass local punctuation', () async {
+    final punctuation = MemoryAiPunctuationService(
+      transform: (text) => '$text！',
+    );
+    final fixture = await _Fixture.create(punctuation: punctuation);
+    addTearDown(fixture.dispose);
+    await fixture.config.setVoiceModel(AiVoiceModelKind.doubaoIme);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('请结合我们前面的对话继续详细介绍这些歌曲背后的创作故事', isFinal: true);
+
+    await _waitFor(() => fixture.gateway.requests.length == 1);
+    expect(punctuation.calls, 0);
+  });
+
+  test('punctuation timeout submits raw text and releases its model', () async {
+    final punctuation = _BlockingPunctuationService();
+    final fixture = await _Fixture.create(
+      punctuation: punctuation,
+      punctuationTimeout: const Duration(milliseconds: 20),
+    );
+    addTearDown(fixture.dispose);
+    const text = '请结合我们前面的对话继续详细介绍这些歌曲背后的创作故事';
+
+    await fixture.controller.startSession();
+    fixture.speech.emit(text, isFinal: true);
+
+    await _waitFor(() => fixture.gateway.requests.length == 1);
+    await _waitFor(() => punctuation.releaseCalls == 1);
+    expect(fixture.gateway.requests.single.single.text, text);
+  });
+
+  test('keyboard input bypasses speech punctuation', () async {
+    final punctuation = MemoryAiPunctuationService(
+      transform: (text) => '$text！',
+    );
+    final fixture = await _Fixture.create(punctuation: punctuation);
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    await fixture.controller.sendText('键盘输入');
+
+    expect(fixture.gateway.requests.single.single.text, '键盘输入');
+    expect(punctuation.calls, 0);
+  });
+
+  test('punctuation failure falls back to the recognized text', () async {
+    final punctuation = MemoryAiPunctuationService(
+      transform: (_) => throw StateError('模型不可用'),
+    );
+    final fixture = await _Fixture.create(punctuation: punctuation);
+    addTearDown(fixture.dispose);
+
+    await fixture.controller.startSession();
+    const text = '请结合我们前面的对话继续详细介绍这些歌曲背后的创作故事';
+    fixture.speech.emit(text, isFinal: true);
+
+    await _waitFor(() => fixture.gateway.requests.length == 1);
+    expect(fixture.gateway.requests.single.single.text, text);
+  });
+
+  test('stopping and disposing release punctuation resources', () async {
+    final punctuation = MemoryAiPunctuationService();
+    final fixture = await _Fixture.create(punctuation: punctuation);
+
+    await fixture.controller.startSession();
+    await fixture.controller.stopSession();
+    expect(punctuation.releaseCalls, 1);
+
+    await fixture.dispose();
+    await _waitFor(() => punctuation.disposeCalls == 1);
   });
 
   test(
@@ -145,6 +372,122 @@ void main() {
     expect(fixture.controller.state, AiSessionState.listening);
   });
 
+  for (final model in const [
+    AiVoiceModelKind.zipformerChinese,
+    AiVoiceModelKind.doubaoIme,
+  ]) {
+    test('automatic barge-in starts a new $model recognition turn', () async {
+      final fixture = await _Fixture.create(
+        blockedSpeakCount: 1,
+        gatewayResults: const [
+          AiChatResult(reply: '第一轮回答还在播报。'),
+          AiChatResult(reply: '已根据打断内容继续。'),
+        ],
+      );
+      addTearDown(fixture.dispose);
+      await fixture.config.setVoiceModel(model);
+      await fixture.config.setBargeInMode(AiBargeInMode.voiceActivity);
+
+      await fixture.controller.startSession();
+      fixture.speech.emit('第一轮问题', isFinal: true);
+      await _waitFor(() => fixture.controller.state == AiSessionState.speaking);
+      expect(fixture.speech.bargeInStartCalls, 1);
+
+      await fixture.speech.triggerBargeIn();
+      await _waitFor(
+        () => fixture.controller.state == AiSessionState.listening,
+      );
+
+      expect(fixture.tts.stopCalls, 1);
+      expect(fixture.speech.bargeInPreserveValues, contains(true));
+      expect(fixture.speech.prerollConsumedCalls, 1);
+      fixture.speech.emit('继续刚才的话题', isFinal: true);
+      await _waitFor(() => fixture.gateway.requests.length == 2);
+      expect(fixture.gateway.requests.last.map((message) => message.text), [
+        '第一轮问题',
+        '第一轮回答还在播报。',
+        '继续刚才的话题',
+      ]);
+    });
+  }
+
+  test('duplicate barge-in callbacks interrupt TTS only once', () async {
+    final fixture = await _Fixture.create(
+      blockedSpeakCount: 1,
+      gatewayResults: const [AiChatResult(reply: '正在播报。')],
+    );
+    addTearDown(fixture.dispose);
+    await fixture.config.setBargeInMode(AiBargeInMode.voiceActivity);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('测试重复触发', isFinal: true);
+    await _waitFor(() => fixture.controller.state == AiSessionState.speaking);
+
+    await Future.wait([
+      fixture.speech.triggerBargeIn(),
+      fixture.speech.triggerBargeIn(),
+    ]);
+    await _waitFor(() => fixture.controller.state == AiSessionState.listening);
+
+    expect(fixture.tts.stopCalls, 1);
+    expect(
+      fixture.speech.bargeInPreserveValues.where((value) => value),
+      hasLength(1),
+    );
+    expect(fixture.speech.prerollConsumedCalls, 1);
+  });
+
+  test('system speech does not start automatic barge-in monitoring', () async {
+    final fixture = await _Fixture.create(
+      gatewayResults: const [AiChatResult(reply: '系统播报。')],
+    );
+    addTearDown(fixture.dispose);
+    await fixture.config.setVoiceModel(AiVoiceModelKind.systemSpeech);
+    await fixture.config.setBargeInMode(AiBargeInMode.voiceActivity);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('系统语音测试', isFinal: true);
+    await _waitFor(() => fixture.gateway.requests.length == 1);
+    await _waitFor(() => fixture.controller.state == AiSessionState.listening);
+
+    expect(fixture.speech.bargeInStartCalls, 0);
+    expect(fixture.speech.prerollConsumedCalls, 0);
+  });
+
+  test('manual interruption discards barge-in preroll', () async {
+    final fixture = await _Fixture.create(
+      blockedSpeakCount: 1,
+      gatewayResults: const [AiChatResult(reply: '正在播报。')],
+    );
+    addTearDown(fixture.dispose);
+    await fixture.config.setBargeInMode(AiBargeInMode.voiceActivity);
+
+    await fixture.controller.startSession();
+    fixture.speech.emit('手动打断测试', isFinal: true);
+    await _waitFor(() => fixture.controller.state == AiSessionState.speaking);
+    await fixture.controller.toggleListening();
+
+    expect(fixture.controller.state, AiSessionState.listening);
+    expect(fixture.speech.bargeInPreserveValues, isNot(contains(true)));
+    expect(fixture.speech.prerollConsumedCalls, 0);
+  });
+
+  test(
+    'first listening does not wait for optional TTS initialization',
+    () async {
+      final fixture = await _Fixture.create(blockTtsInitialization: true);
+      addTearDown(fixture.dispose);
+
+      await fixture.controller.startSession();
+
+      expect(fixture.controller.state, AiSessionState.listening);
+      expect(fixture.speech.listenCalls, 1);
+      expect(fixture.tts.initializeCalls, 1);
+      expect(fixture.tts.initializationPending, isTrue);
+      fixture.tts.completeInitialization();
+    },
+  );
+
   test('exit keyword ends the session and restores paused music', () async {
     final oldSong = _queueItem(id: 'old-song', name: '原来播放的歌');
     final fixture = await _Fixture.create(
@@ -164,6 +507,65 @@ void main() {
     expect(fixture.tts.spoken.last, '好的，我先退下了。');
     expect(fixture.player.playPauseCalls, 1);
     expect(fixture.player.isPlaying, isTrue);
+  });
+
+  test('duck mode keeps music playing and restores its volume', () async {
+    final oldSong = _queueItem(id: 'old-song', name: '原来播放的歌');
+    final player = _TestPlayer(song: oldSong, playing: true);
+    final fixture = await _Fixture.create(player: player);
+    addTearDown(fixture.dispose);
+    await fixture.config.setAssistantPlaybackMode(AiAssistantPlaybackMode.duck);
+    await fixture.config.setDuckingReductionPercent(70);
+
+    await fixture.controller.startSession();
+
+    expect(player.pauseCalls, 0);
+    expect(player.playing, isTrue);
+    expect(player.beginDuckingCalls, 1);
+    expect(player.duckingPercent, 70);
+
+    await fixture.controller.stopSession();
+
+    expect(player.endDuckingCalls, 1);
+    expect(player.playPauseCalls, 0);
+    expect(player.playing, isTrue);
+  });
+
+  test('shutdown path restores ducking without resuming music', () async {
+    final player = _TestPlayer(
+      song: _queueItem(id: 'old-song', name: '原来播放的歌'),
+      playing: true,
+    );
+    final fixture = await _Fixture.create(player: player);
+    addTearDown(fixture.dispose);
+    await fixture.config.setAssistantPlaybackMode(AiAssistantPlaybackMode.duck);
+
+    await fixture.controller.startSession();
+    await fixture.controller.stopSession(restoreMusic: false);
+
+    expect(player.endDuckingCalls, 1);
+    expect(player.playPauseCalls, 0);
+    expect(player.playing, isTrue);
+  });
+
+  test('duck failure falls back to pausing and resumes the old song', () async {
+    final oldSong = _queueItem(id: 'old-song', name: '原来播放的歌');
+    final player = _TestPlayer(
+      song: oldSong,
+      playing: true,
+      duckingSucceeds: false,
+    );
+    final fixture = await _Fixture.create(player: player);
+    addTearDown(fixture.dispose);
+    await fixture.config.setAssistantPlaybackMode(AiAssistantPlaybackMode.duck);
+
+    await fixture.controller.startSession();
+    expect(player.pauseCalls, 1);
+    expect(player.playing, isFalse);
+
+    await fixture.controller.stopSession();
+    expect(player.playPauseCalls, 1);
+    expect(player.playing, isTrue);
   });
 
   test(
@@ -256,6 +658,7 @@ class _Fixture {
   final AiConfigController config;
   final _TestGateway gateway;
   final _TestSpeech speech;
+  final AiPunctuationService punctuation;
   final _TestTts tts;
   final AiAssistantController controller;
 
@@ -264,6 +667,7 @@ class _Fixture {
     required this.config,
     required this.gateway,
     required this.speech,
+    required this.punctuation,
     required this.tts,
     required this.controller,
   });
@@ -273,7 +677,10 @@ class _Fixture {
     _TestResolver? resolver,
     List<AiChatResult> gatewayResults = const [],
     int blockedSpeakCount = 0,
-    Duration speechCommitDelay = const Duration(milliseconds: 10),
+    Duration? speechCommitDelay = const Duration(milliseconds: 10),
+    Duration punctuationTimeout = const Duration(milliseconds: 900),
+    AiPunctuationService? punctuation,
+    bool blockTtsInitialization = false,
   }) async {
     final actualPlayer = player ?? _TestPlayer();
     final config = AiConfigController(secretStore: MemoryAiSecretStore());
@@ -281,21 +688,28 @@ class _Fixture {
     await config.save(_completeConfig());
     final gateway = _TestGateway(gatewayResults);
     final speech = _TestSpeech();
-    final tts = _TestTts(blockedSpeakCount: blockedSpeakCount);
+    final actualPunctuation = punctuation ?? MemoryAiPunctuationService();
+    final tts = _TestTts(
+      blockedSpeakCount: blockedSpeakCount,
+      blockInitialization: blockTtsInitialization,
+    );
     final controller = AiAssistantController(
       player: actualPlayer,
       configController: config,
       gateway: gateway,
       songResolver: resolver ?? _TestResolver.notFound(),
       speech: speech,
+      punctuation: actualPunctuation,
       textToSpeech: tts,
       speechCommitDelay: speechCommitDelay,
+      punctuationTimeout: punctuationTimeout,
     );
     return _Fixture._(
       player: actualPlayer,
       config: config,
       gateway: gateway,
       speech: speech,
+      punctuation: actualPunctuation,
       tts: tts,
       controller: controller,
     );
@@ -341,16 +755,65 @@ class _TestGateway implements AiChatGateway {
   void close() => closed = true;
 }
 
-class _TestSpeech implements AiSpeechEngine, AiVoiceModelSelector {
+class _BlockingPunctuationService implements AiPunctuationService {
+  int releaseCalls = 0;
+
+  @override
+  Future<String> addPunctuation(String text) => Completer<String>().future;
+
+  @override
+  Future<void> releaseIdleResources() async {
+    releaseCalls++;
+  }
+
+  @override
+  Future<void> dispose() async {}
+}
+
+class _TestSpeech
+    implements
+        AiSpeechEngine,
+        AiVoiceModelSelector,
+        AiSpeechModelWarmup,
+        AiSpeechBargeInSupport {
   AiSpeechResultCallback? _resultCallback;
   void Function(String)? _errorCallback;
   void Function(String)? _statusCallback;
   bool listening = false;
   int listenCalls = 0;
+  int cancelCalls = 0;
+  int preloadCalls = 0;
+  int releasePreloadedCalls = 0;
+  bool retainIdleModel = false;
   AiVoiceModelKind? voiceModel;
+  Future<void> Function()? _bargeInCallback;
+  int bargeInStartCalls = 0;
+  final List<bool> bargeInPreserveValues = [];
+  bool _pendingPreroll = false;
+  int prerollConsumedCalls = 0;
+
+  @override
+  bool get supportsBargeIn =>
+      voiceModel == AiVoiceModelKind.zipformerChinese ||
+      voiceModel == AiVoiceModelKind.doubaoIme;
 
   @override
   void setVoiceModel(AiVoiceModelKind model) => voiceModel = model;
+
+  @override
+  void setRetainIdleModel(bool retain) => retainIdleModel = retain;
+
+  @override
+  Future<bool> preloadModel(AiVoiceModelKind model) async {
+    preloadCalls++;
+    voiceModel = model;
+    return true;
+  }
+
+  @override
+  Future<void> releasePreloadedModel() async {
+    releasePreloadedCalls++;
+  }
 
   @override
   Future<bool> initialize({
@@ -367,6 +830,32 @@ class _TestSpeech implements AiSpeechEngine, AiVoiceModelSelector {
     _resultCallback = onResult;
     listening = true;
     listenCalls++;
+    if (_pendingPreroll) {
+      prerollConsumedCalls++;
+      _pendingPreroll = false;
+    }
+  }
+
+  @override
+  Future<bool> startBargeInMonitor({
+    required Future<void> Function() onVoiceDetected,
+  }) async {
+    if (!supportsBargeIn) return false;
+    bargeInStartCalls++;
+    _bargeInCallback = onVoiceDetected;
+    return true;
+  }
+
+  @override
+  Future<void> stopBargeInMonitor({bool preserveForNextListen = false}) async {
+    bargeInPreserveValues.add(preserveForNextListen);
+    _bargeInCallback = null;
+    _pendingPreroll = preserveForNextListen;
+  }
+
+  Future<void> triggerBargeIn() async {
+    final callback = _bargeInCallback;
+    if (callback != null) await callback();
   }
 
   void emit(String text, {bool isFinal = true}) {
@@ -381,19 +870,38 @@ class _TestSpeech implements AiSpeechEngine, AiVoiceModelSelector {
   Future<void> stop() async => listening = false;
 
   @override
-  Future<void> cancel() async => listening = false;
+  Future<void> cancel() async {
+    cancelCalls++;
+    listening = false;
+  }
 }
 
 class _TestTts implements AiTextToSpeechEngine {
   final List<String> spoken = [];
   int blockedSpeakCount;
   int stopCalls = 0;
+  int initializeCalls = 0;
+  final bool blockInitialization;
+  Completer<void>? _initialization;
   Completer<void>? _pendingSpeak;
 
-  _TestTts({this.blockedSpeakCount = 0});
+  _TestTts({this.blockedSpeakCount = 0, this.blockInitialization = false});
+
+  bool get initializationPending =>
+      _initialization != null && !_initialization!.isCompleted;
+
+  void completeInitialization() {
+    final pending = _initialization;
+    if (pending != null && !pending.isCompleted) pending.complete();
+  }
 
   @override
-  Future<void> initialize() async {}
+  Future<void> initialize() async {
+    initializeCalls++;
+    if (!blockInitialization) return;
+    final pending = _initialization ??= Completer<void>();
+    await pending.future;
+  }
 
   @override
   Future<void> speak(String text) async {
@@ -436,10 +944,14 @@ class _TestResolver implements AiSongPlaybackResolver {
 class _TestPlayer extends PlayerProvider {
   PlayQueueItem? song;
   bool playing;
+  final bool duckingSucceeds;
   int pauseCalls = 0;
   int playPauseCalls = 0;
+  int beginDuckingCalls = 0;
+  int endDuckingCalls = 0;
+  int? duckingPercent;
 
-  _TestPlayer({this.song, this.playing = false});
+  _TestPlayer({this.song, this.playing = false, this.duckingSucceeds = true});
 
   @override
   PlayQueueItem? get currentSong => song;
@@ -465,6 +977,19 @@ class _TestPlayer extends PlayerProvider {
     playPauseCalls++;
     playing = !playing;
     notifyListeners();
+  }
+
+  @override
+  Future<bool> beginAssistantDucking(int reductionPercent) async {
+    beginDuckingCalls++;
+    duckingPercent = reductionPercent;
+    return duckingSucceeds;
+  }
+
+  @override
+  Future<bool> endAssistantDucking() async {
+    endDuckingCalls++;
+    return true;
   }
 }
 

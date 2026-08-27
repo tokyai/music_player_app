@@ -8,8 +8,9 @@ import 'package:http/io_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'bounded_http_response.dart';
+import 'user_data_scope.dart';
 
-const _maxBackupBytes = 5 * 1024 * 1024;
+const _maxBackupBytes = 12 * 1024 * 1024;
 
 class WebDavConfig {
   static const defaultUrl = 'https://23.254.235.247:8443/kuzai-dav/';
@@ -21,19 +22,24 @@ class WebDavConfig {
   final String username;
   final String password;
   final String certificateSha256;
+  final UserDataScope dataScope;
 
   const WebDavConfig({
     required this.url,
     required this.username,
     required this.password,
     required this.certificateSha256,
+    this.dataScope = UserDataScope.defaultScope,
   });
 
-  factory WebDavConfig.defaults() => const WebDavConfig(
+  factory WebDavConfig.defaults({
+    UserDataScope dataScope = UserDataScope.defaultScope,
+  }) => WebDavConfig(
     url: defaultUrl,
     username: defaultUsername,
     password: '',
     certificateSha256: defaultCertificateSha256,
+    dataScope: dataScope,
   );
 
   bool get isHttps => parsedUrl.scheme.toLowerCase() == 'https';
@@ -56,12 +62,17 @@ class WebDavConfig {
     return parsed;
   }
 
-  Uri fileUri([String fileName = 'kuzai-music-backup.json']) {
+  Uri fileUri([String? fileName]) {
     final base = parsedUrl;
     final basePath = base.path.isEmpty ? '/' : base.path;
+    final resolvedFileName =
+        fileName ??
+        (dataScope.isDefault
+            ? 'kuzai-music-backup.json'
+            : 'kuzai-music-backup-${dataScope.userId}.json');
     final path = basePath.endsWith('/')
-        ? '$basePath$fileName'
-        : '$basePath/$fileName';
+        ? '$basePath$resolvedFileName'
+        : '$basePath/$resolvedFileName';
     return base.replace(path: path, query: null, fragment: null);
   }
 
@@ -76,6 +87,7 @@ class WebDavConfig {
       username: username ?? this.username,
       password: password ?? this.password,
       certificateSha256: certificateSha256 ?? this.certificateSha256,
+      dataScope: dataScope,
     );
   }
 
@@ -83,27 +95,43 @@ class WebDavConfig {
     return value.replaceAll(RegExp(r'[^0-9a-fA-F]'), '').toUpperCase();
   }
 
-  static Future<WebDavConfig> load() async {
+  static Future<WebDavConfig> load({
+    UserDataScope dataScope = UserDataScope.defaultScope,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
-    final defaults = WebDavConfig.defaults();
+    final defaults = WebDavConfig.defaults(dataScope: dataScope);
     return WebDavConfig(
-      url: prefs.getString('webdav_url') ?? defaults.url,
-      username: prefs.getString('webdav_username') ?? defaults.username,
-      password: prefs.getString('webdav_password') ?? defaults.password,
+      url:
+          prefs.getString(dataScope.preferenceKey('webdav_url')) ??
+          defaults.url,
+      username:
+          prefs.getString(dataScope.preferenceKey('webdav_username')) ??
+          defaults.username,
+      password:
+          prefs.getString(dataScope.preferenceKey('webdav_password')) ??
+          defaults.password,
       certificateSha256:
-          prefs.getString('webdav_certificate_sha256') ??
+          prefs.getString(
+            dataScope.preferenceKey('webdav_certificate_sha256'),
+          ) ??
           defaults.certificateSha256,
+      dataScope: dataScope,
     );
   }
 
   Future<void> save() async {
+    if (dataScope.isDeleted) return;
     final prefs = await SharedPreferences.getInstance();
+    if (dataScope.isDeleted) return;
     await Future.wait([
-      prefs.setString('webdav_url', url.trim()),
-      prefs.setString('webdav_username', username.trim()),
-      prefs.setString('webdav_password', password),
+      prefs.setString(dataScope.preferenceKey('webdav_url'), url.trim()),
       prefs.setString(
-        'webdav_certificate_sha256',
+        dataScope.preferenceKey('webdav_username'),
+        username.trim(),
+      ),
+      prefs.setString(dataScope.preferenceKey('webdav_password'), password),
+      prefs.setString(
+        dataScope.preferenceKey('webdav_certificate_sha256'),
         normalizeFingerprint(certificateSha256),
       ),
     ]);
@@ -151,7 +179,7 @@ class WebDavBackupService {
         timeout: const Duration(seconds: 15),
       );
     } on HttpResponseTooLargeException {
-      throw const WebDavException('TOO_LARGE', '备份文件不能超过 5 MB');
+      throw const WebDavException('TOO_LARGE', '备份文件不能超过 12 MB');
     } on TimeoutException {
       throw const WebDavException('TIMEOUT', 'WebDAV 请求超时');
     } on HandshakeException catch (error) {
@@ -274,7 +302,7 @@ class WebDavBackupService {
   static void _validateSize(String content) {
     final bytes = utf8.encode(content).length;
     if (bytes > _maxBackupBytes) {
-      throw const WebDavException('TOO_LARGE', '备份文件不能超过 5 MB');
+      throw const WebDavException('TOO_LARGE', '备份文件不能超过 12 MB');
     }
   }
 }

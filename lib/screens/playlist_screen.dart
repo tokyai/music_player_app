@@ -43,7 +43,8 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   }
 
   void _handleTrackScroll() {
-    if (!_trackScrollController.hasClients ||
+    if (!mounted ||
+        !_trackScrollController.hasClients ||
         _loading ||
         _loadingMore ||
         !_hasMore) {
@@ -60,6 +61,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     bool saveOnSuccess = false,
     PlaylistInfo? savedMetadata,
   }) async {
+    if (!mounted) return;
     final player = context.read<PlayerProvider>();
     final favorites = context.read<FavoriteService>();
     final requestId = ++_loadRequestId;
@@ -111,12 +113,18 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
       case MusicPlatform.qq:
         if (savedMetadata == null) {
           final playlist = await player.api.qqPlaylist(id);
-          return (playlist, playlist.tracks.length < playlist.trackCount);
+          return (
+            _copyPlaylist(
+              playlist,
+              List<SongSearchResult>.of(playlist.tracks, growable: true),
+            ),
+            playlist.tracks.length < playlist.trackCount,
+          );
         }
         final page = await player.api.qqPlaylistTracks(id, limit: _pageSize);
         final playlist = _copyPlaylist(
           savedMetadata,
-          page.tracks,
+          List<SongSearchResult>.of(page.tracks, growable: true),
           trackCount: page.total,
         );
         return (playlist, page.hasMore(0, _pageSize));
@@ -129,7 +137,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
         );
         final playlist = _copyPlaylist(
           metadata,
-          page.tracks,
+          List<SongSearchResult>.of(page.tracks, growable: true),
           trackCount: page.total,
         );
         return (playlist, page.hasMore(0, _pageSize));
@@ -140,7 +148,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
         final page = await player.api.kugouPlaylistTracks(id, limit: _pageSize);
         final playlist = _copyPlaylist(
           savedMetadata,
-          page.tracks,
+          List<SongSearchResult>.of(page.tracks, growable: true),
           trackCount: page.total,
         );
         return (playlist, page.hasMore(0, _pageSize));
@@ -161,11 +169,14 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
       creator: source.creator,
       trackCount: trackCount ?? source.trackCount,
       description: source.description,
+      // This page owns its loaded track list. Keeping it growable lets later
+      // pages append in place instead of copying the entire playlist again.
       tracks: tracks,
     );
   }
 
   Future<void> _loadMoreTracks() async {
+    if (!mounted) return;
     final playlist = _playlist;
     final platform = _platform;
     final requestId = _loadRequestId;
@@ -204,7 +215,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
       final nextTracks = page.tracks;
       final total = page.total;
       if (!mounted || requestId != _loadRequestId) return;
-      final combined = [...playlist.tracks, ...nextTracks];
+      final combined = playlist.tracks..addAll(nextTracks);
       setState(() {
         _playlist = _copyPlaylist(playlist, combined);
         _hasMore =
@@ -714,6 +725,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   }
 
   Future<void> _confirmDeletePlaylist(FavoritePlaylist favorite) async {
+    if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -746,14 +758,21 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
         _error = null;
       });
     }
-    await context.read<FavoriteService>().removePlaylist(
-      favorite.platform,
-      favorite.id,
-    );
-    if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('已删除：${favorite.playlist.name}')));
+    try {
+      await context.read<FavoriteService>().removePlaylist(
+        favorite.platform,
+        favorite.id,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已删除：${favorite.playlist.name}')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('删除歌单失败：$error')));
+    }
   }
 
   Widget _buildAnimatedTrackArea({AppLayout? layout}) {

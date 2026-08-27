@@ -218,6 +218,7 @@ class _KuzaiPetState extends State<KuzaiPet> with TickerProviderStateMixin {
   }
 
   void _handleTap() {
+    if (!mounted) return;
     setState(() => _interaction = _KuzaiInteraction.wave);
     _interactionController.duration = const Duration(milliseconds: 950);
     _interactionController.forward(from: 0);
@@ -225,11 +226,15 @@ class _KuzaiPetState extends State<KuzaiPet> with TickerProviderStateMixin {
   }
 
   void _handleLongPress(LongPressStartDetails details) {
+    if (!mounted) return;
     _petLeanDirection = details.localPosition.dx < widget.size * 0.56 ? -1 : 1;
     setState(() => _interaction = _KuzaiInteraction.petting);
     _interactionController.duration = const Duration(milliseconds: 1600);
     _interactionController.forward(from: 0);
-    unawaited(HapticFeedback.lightImpact());
+    // Haptic feedback is optional. Some car builds do not expose the
+    // platform channel, and teardown can race the callback; never let that
+    // best-effort effect become an uncaught Future error.
+    unawaited(HapticFeedback.lightImpact().catchError((_) {}));
   }
 
   void _handleInteractionStatus(AnimationStatus status) {

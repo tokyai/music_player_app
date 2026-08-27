@@ -11,8 +11,9 @@ void applySystemUi({required bool dark}) {
       statusBarIconBrightness: dark ? Brightness.light : Brightness.dark,
       statusBarBrightness: dark ? Brightness.dark : Brightness.light,
       systemNavigationBarColor: Colors.transparent,
-      systemNavigationBarIconBrightness:
-          dark ? Brightness.light : Brightness.dark,
+      systemNavigationBarIconBrightness: dark
+          ? Brightness.light
+          : Brightness.dark,
       systemNavigationBarDividerColor: Colors.transparent,
     ),
   );

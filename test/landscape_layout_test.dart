@@ -242,7 +242,9 @@ void main() {
         await tester.tap(find.text('保留结果'));
         await tester.pumpAndSettle();
         expect(find.byType(MiniPlayer), findsOneWidget);
-        await tester.tap(find.byType(MiniPlayer));
+        await tester.tap(
+          find.byKey(const ValueKey('mini-player-qq:preserved-song')),
+        );
         await tester.pumpAndSettle();
         expect(find.byType(PlayerScreen), findsOneWidget);
 
@@ -781,20 +783,16 @@ void main() {
 
       await tester.pageBack();
       await tester.pumpAndSettle();
-      final libraryPane = find.byKey(
-        const PageStorageKey('discover-landscape-library'),
-      );
-      final libraryList = find
-          .descendant(of: libraryPane, matching: find.byType(Scrollable))
-          .first;
       final historyHeader = find.byKey(
         const ValueKey('home-playback-history-header'),
       );
-      await tester.scrollUntilVisible(
-        historyHeader,
-        180,
-        scrollable: libraryList,
+      final collectionGrid = find.byKey(const ValueKey('home-collection-grid'));
+      expect(collectionGrid, findsOneWidget);
+      await tester.drag(
+        find.byKey(const ValueKey('discover-landscape-library-scroll')),
+        const Offset(0, -720),
       );
+      await tester.pumpAndSettle();
       expect(historyHeader.hitTestable(), findsOneWidget);
       await tester.tap(historyHeader.hitTestable());
       await tester.pumpAndSettle();
@@ -2078,6 +2076,68 @@ void main() {
     tester.view.resetDevicePixelRatio();
   });
 
+  testWidgets('batch favorite QR input is usable in both landscapes', (
+    tester,
+  ) async {
+    for (final size in const [Size(640, 360), Size(1280, 800)]) {
+      SharedPreferences.setMockInitialValues({});
+      final player = PlayerProvider();
+      final theme = ThemeController();
+      await player.settingsReady;
+
+      await _pumpScreen(tester, const SettingsScreen(), player, theme, size);
+      final import = find.byKey(const ValueKey('batch-favorite-import'));
+      final preferencesScroll = find
+          .descendant(
+            of: find.byKey(
+              const PageStorageKey<String>('settings-landscape-preferences'),
+            ),
+            matching: find.byType(Scrollable),
+          )
+          .first;
+      await tester.scrollUntilVisible(
+        import,
+        160,
+        scrollable: preferencesScroll,
+      );
+      expect(import.hitTestable(), findsOneWidget);
+
+      await tester.tap(import);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final qrCode = find.byKey(const ValueKey('favorite-import-qr-code'));
+      final close = find.byKey(const ValueKey('favorite-import-qr-close'));
+      expect(qrCode, findsOneWidget);
+      expect(
+        tester.widget<QrImageView>(qrCode).size,
+        size == const Size(640, 360) ? 146 : 205,
+      );
+      expect(find.text('等待手机扫码并提交歌曲列表'), findsOneWidget);
+      expect(close.hitTestable(), findsOneWidget);
+      _expectNoException(tester);
+
+      await tester.tap(close);
+      await tester.pump();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(qrCode, findsNothing);
+      _expectNoException(tester);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      player.dispose();
+      theme.dispose();
+    }
+    tester.view.resetPhysicalSize();
+    tester.view.resetDevicePixelRatio();
+  });
+
   testWidgets('lyric font family and weight persist in both landscapes', (
     tester,
   ) async {
@@ -3097,6 +3157,16 @@ class _ControllablePlayer extends PlayerProvider {
   @override
   Future<void> playSingle(SongSearchResult result) async {
     _currentSong = PlayQueueItem.fromSearchResult(result);
+    notifyListeners();
+  }
+
+  @override
+  Future<void> playFromSearchResults(
+    List<SongSearchResult> results,
+    int index,
+  ) async {
+    if (index < 0 || index >= results.length) return;
+    _currentSong = PlayQueueItem.fromSearchResult(results[index]);
     notifyListeners();
   }
 

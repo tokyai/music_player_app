@@ -7,8 +7,21 @@ import '../services/api_service.dart';
 import '../services/audio_cache_service.dart';
 import '../services/bilibili_service.dart';
 import '../services/floating_capsule_service.dart';
+import '../services/global_settings_service.dart';
 import '../services/playback_history_service.dart';
+import '../services/playback_state_service.dart';
+import '../services/user_data_scope.dart';
 import '../utils/lyric_parser.dart';
+
+// Lyrics are returned as user-facing text but then expanded into many parsed
+// objects and retained in a session cache. Keep a malformed or unexpectedly
+// large response from creating a second memory spike in the player.
+const _maxLyricTextChars = 256 * 1024;
+
+String? _boundLyricText(String? value) {
+  if (value == null || value.length <= _maxLyricTextChars) return value;
+  return value.substring(0, _maxLyricTextChars);
+}
 
 /// 播放模式
 enum PlayMode { sequence, repeat, shuffle }
@@ -22,6 +35,17 @@ class PlayerProvider extends ChangeNotifier {
   static const lyricOffsetLimit = Duration(minutes: 1);
   static const _lyricOffsetStepKey = 'lyric_offset_step_ms';
   static const _historyPersistDelay = Duration(seconds: 2);
+  static const _playbackStatePersistDelay = Duration(seconds: 1);
+  // Keep session-only metadata bounded during long car sessions. Lyrics are
+  // parsed into many Dart objects, while the other maps otherwise grow once
+  // for every song visited in the current process.
+  static const _maxCachedLyrics = 24;
+  static const _maxCachedPlayUrls = 64;
+  static const _maxCachedLyricOffsets = 128;
+  static const _maxBilibiliLyricAttempts = 64;
+  // A single B 站视频通常只有几个分 P. Keep an unexpectedly malformed
+  // response from turning one tap into an unbounded queue allocation.
+  static const _maxBilibiliPagesPerResource = 500;
   static const _bilibiliLyricPlatformOrderKey = 'bilibili_lyric_platform_order';
   static const _defaultBilibiliLyricPlatformOrder = <MusicPlatform>[
     MusicPlatform.qq,
@@ -32,6 +56,7 @@ class PlayerProvider extends ChangeNotifier {
   final AudioPlayer _audioPlayer = AudioPlayer();
   late ApiService _api;
   late final Future<void> settingsReady;
+  late final Future<void> playbackStateReady;
 
   // ---- 状态 ----
   List<PlayQueueItem> _queue = [];
@@ -62,7 +87,21 @@ class PlayerProvider extends ChangeNotifier {
   Timer? _historyPersistTimer;
   bool _historyPersistInFlight = false;
   bool _historyPersistAgain = false;
+  Completer<void>? _historyPersistCompletion;
   bool _historyLoaded = false;
+  Timer? _playbackStatePersistTimer;
+  bool _playbackStatePersistInFlight = false;
+  bool _playbackStatePersistAgain = false;
+  Completer<void>? _playbackStatePersistCompletion;
+  bool _playbackStateLoaded = false;
+  bool _restoredPlaybackPending = false;
+  bool _playbackStateInteraction = false;
+  bool _restoredSessionActivationEnabled;
+  bool _preparingForExit = false;
+  bool _resumeAfterCancelledUserSwitch = false;
+  Future<void>? _exitPreparationFuture;
+  Future<void>? _resourceDisposeFuture;
+  double? _volumeBeforeAssistantDucking;
 
   // 音质
   NeteaseLevel _neteaseLevel = NeteaseLevel.jymaster;
@@ -90,20 +129,41 @@ class PlayerProvider extends ChangeNotifier {
   StreamSubscription? _errorSub;
   int _playRequestId = 0;
   int _queueSessionId = 0;
+  int _bilibiliPlayRequestId = 0;
+  int _bilibiliAddRequestId = 0;
   bool _disposed = false;
+  final UserDataScope dataScope;
 
-  PlayerProvider() {
-    _api = ApiService(apiKey: '');
+  PlayerProvider({
+    this.dataScope = UserDataScope.defaultScope,
+    bool activateRestoredSession = true,
+    BilibiliService? bilibiliService,
+  }) : _restoredSessionActivationEnabled = activateRestoredSession {
+    _api = ApiService(
+      apiKey: '',
+      bilibili: bilibiliService ?? BilibiliService(dataScope: dataScope),
+    );
     _api.bilibili.addListener(_handleBilibiliChanged);
     _initAudioPlayer();
     historyReady = _loadPlaybackHistory();
     settingsReady = _loadSettings();
+    playbackStateReady = _loadPlaybackState();
   }
 
   late final Future<void> historyReady;
 
   void _handleBilibiliChanged() {
     if (!_disposed) notifyListeners();
+  }
+
+  /// Audio/plugin callbacks can arrive after [dispose] starts cancelling the
+  /// subscriptions. Keep every existing notification call safe at the
+  /// provider boundary instead of relying on each async path to remember a
+  /// separate mounted-style check.
+  @override
+  void notifyListeners() {
+    if (_disposed) return;
+    super.notifyListeners();
   }
 
   // ==================== Getters ====================
@@ -115,6 +175,16 @@ class PlayerProvider extends ChangeNotifier {
       _currentIndex >= 0 && _currentIndex < _queue.length
       ? _queue[_currentIndex]
       : null;
+  List<BilibiliPageInfo> get currentBilibiliPages {
+    final song = currentSong;
+    if (song == null || song.platform != MusicPlatform.bilibili) {
+      return const [];
+    }
+    return List<BilibiliPageInfo>.unmodifiable(
+      _currentBilibiliPageTargets().map((target) => target.page),
+    );
+  }
+
   bool get isPlaying => _isPlaying;
   bool get isLoading => _isLoading;
   Duration get position => _position;
@@ -163,6 +233,16 @@ class PlayerProvider extends ChangeNotifier {
 
   VideoPlayerMode get videoPlayerMode => _videoPlayerMode;
 
+  Map<String, dynamic> bilibiliAccountToBackupJson() =>
+      _api.bilibili.toBackupJson();
+
+  Future<void> restoreBilibiliAccountBackupJson(
+    Map<String, dynamic> json,
+  ) async {
+    await _api.bilibili.restoreBackupJson(json);
+    if (!_disposed) notifyListeners();
+  }
+
   /// Serializes the playback preferences that are otherwise kept in
   /// SharedPreferences. API Key is intentionally handled by BackupService.
   Map<String, dynamic> toBackupJson() => {
@@ -182,6 +262,73 @@ class PlayerProvider extends ChangeNotifier {
     'lyricOffsetStepMs': _lyricOffsetStep.inMilliseconds,
     'videoPlayerMode': _videoPlayerMode.value,
   };
+
+  static void validateBackupJson(Map<String, dynamic> json) {
+    bool containsValue<T>(Iterable<T> values, String value) => values.any(
+      (item) => switch (item) {
+        NeteaseLevel item => item.value == value,
+        CommonLevel item => item.value == value,
+        PlaybackSource item => item.value == value,
+        VideoPlayerMode item => item.value == value,
+        _ => false,
+      },
+    );
+
+    final neteaseLevel = json['neteaseLevel'];
+    final commonLevel = json['commonLevel'];
+    final sources = json['playbackSources'];
+    final audioQuality = json['bilibiliAudioQuality'];
+    final videoQuality = json['bilibiliVideoQuality'];
+    final rawOrder = json['bilibiliLyricPlatformOrder'];
+    final lyricStep = json['lyricOffsetStepMs'];
+    final videoMode = json['videoPlayerMode'];
+    if (neteaseLevel is! String ||
+        !containsValue(NeteaseLevel.values, neteaseLevel) ||
+        commonLevel is! String ||
+        !containsValue(CommonLevel.values, commonLevel) ||
+        sources is! Map ||
+        audioQuality is! num ||
+        !audioQuality.isFinite ||
+        audioQuality.toInt() != audioQuality ||
+        audioQuality <= 0 ||
+        videoQuality is! num ||
+        !videoQuality.isFinite ||
+        videoQuality.toInt() != videoQuality ||
+        videoQuality <= 0 ||
+        rawOrder is! List ||
+        rawOrder.any((item) => item is! String) ||
+        lyricStep is! num ||
+        !lyricStep.isFinite ||
+        lyricStep.toInt() != lyricStep ||
+        lyricStep <= 0 ||
+        videoMode is! String ||
+        !containsValue(VideoPlayerMode.values, videoMode)) {
+      throw const FormatException('备份文件中的播放器设置无效');
+    }
+    for (final platform in const [
+      MusicPlatform.netease,
+      MusicPlatform.qq,
+      MusicPlatform.kugou,
+    ]) {
+      final value = sources[platform.code];
+      if (value is! String || !containsValue(PlaybackSource.values, value)) {
+        throw const FormatException('备份文件中的播放音源设置无效');
+      }
+    }
+    final order = rawOrder.cast<String>();
+    const lyricPlatforms = {
+      MusicPlatform.netease,
+      MusicPlatform.qq,
+      MusicPlatform.kugou,
+    };
+    if (order.length != lyricPlatforms.length ||
+        order.toSet().length != order.length ||
+        order.any(
+          (value) => !lyricPlatforms.any((platform) => platform.code == value),
+        )) {
+      throw const FormatException('备份文件中的歌词匹配顺序无效');
+    }
+  }
 
   /// Restores playback preferences in one batch so an import does not cause
   /// several intermediate player rebuilds or repeated URL resolution.
@@ -338,9 +485,47 @@ class PlayerProvider extends ChangeNotifier {
     return true;
   }
 
+  void _rememberLyric(String key, _ResolvedLyrics value) {
+    _lyricCache.remove(key);
+    _lyricCache[key] = value;
+    while (_lyricCache.length > _maxCachedLyrics) {
+      _lyricCache.remove(_lyricCache.keys.first);
+    }
+  }
+
+  void _rememberPlayUrl(String key) {
+    final now = DateTime.now();
+    _playUrlResolvedAt.removeWhere(
+      (_, resolvedAt) => now.difference(resolvedAt) > _resolvedUrlLifetime,
+    );
+    _playUrlResolvedAt.remove(key);
+    _playUrlResolvedAt[key] = now;
+    while (_playUrlResolvedAt.length > _maxCachedPlayUrls) {
+      _playUrlResolvedAt.remove(_playUrlResolvedAt.keys.first);
+    }
+  }
+
+  bool _rememberBilibiliLyricAttempt(String key) {
+    if (!_bilibiliLyricAutoAttempted.add(key)) return false;
+    while (_bilibiliLyricAutoAttempted.length > _maxBilibiliLyricAttempts) {
+      _bilibiliLyricAutoAttempted.remove(_bilibiliLyricAutoAttempted.first);
+    }
+    return true;
+  }
+
   List<PlaybackHistoryEntry> get playbackHistory =>
       List.unmodifiable(_playbackHistory);
   int get playbackHistoryRevision => _playbackHistoryRevision;
+
+  Map<String, dynamic> toUserBackupJson() {
+    final json = <String, dynamic>{
+      'playbackHistory': PlaybackHistoryService.toBackupJson(_playbackHistory),
+    };
+    if (_playbackStateLoaded && _queue.isNotEmpty) {
+      json['playbackState'] = _playbackStateSnapshot().toJson();
+    }
+    return json;
+  }
 
   String get apiKey => _apiKey;
   AudioPlayer get audioPlayer => _audioPlayer;
@@ -349,53 +534,181 @@ class PlayerProvider extends ChangeNotifier {
   // ==================== 初始化 ====================
 
   Future<void> _loadPlaybackHistory() async {
-    _playbackHistory = await PlaybackHistoryService.load();
+    try {
+      _playbackHistory = await PlaybackHistoryService.load(scope: dataScope);
+    } catch (error, stackTrace) {
+      // Keep the constructor-owned future contained if storage fails outside
+      // the service's normal error boundary.
+      debugPrint('读取播放历史失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      _playbackHistory = [];
+    }
     _playbackHistoryRevision++;
     _historyLoaded = true;
     if (!_disposed) notifyListeners();
   }
 
+  Future<void> _loadPlaybackState() async {
+    final snapshot = await PlaybackStateService.load(scope: dataScope);
+    if (_disposed) return;
+    _playbackStateLoaded = true;
+    if (snapshot == null || _playbackStateInteraction) {
+      if (_queue.isNotEmpty) _persistPlaybackStateNow();
+      return;
+    }
+
+    try {
+      _queue = snapshot.queue
+          .map(PlayQueueItem.fromSearchResult)
+          .toList(growable: true);
+      _currentIndex = snapshot.currentIndex;
+      _position = snapshot.position;
+      _duration = _queue[_currentIndex].duration == null
+          ? Duration.zero
+          : Duration(seconds: _queue[_currentIndex].duration!);
+      _playMode = switch (snapshot.playMode) {
+        'repeat' => PlayMode.repeat,
+        'shuffle' => PlayMode.shuffle,
+        _ => PlayMode.sequence,
+      };
+      _restoredPlaybackPending = snapshot.isPlaying;
+      notifyListeners();
+      // A paused session still has a meaningful current song. Keep the
+      // always-on-top car mini window informative even when no audio source
+      // needs to be resolved on startup.
+      final restoredSong = currentSong;
+      if (_restoredSessionActivationEnabled &&
+          restoredSong != null &&
+          FloatingCapsuleService.enabled) {
+        unawaited(
+          FloatingCapsuleService.show(
+            title: restoredSong.name,
+            artist: restoredSong.artist,
+            coverUrl: restoredSong.coverUrl,
+            isPlaying: snapshot.isPlaying,
+          ),
+        );
+      }
+      if (_restoredSessionActivationEnabled &&
+          snapshot.isPlaying &&
+          !_preparingForExit) {
+        unawaited(_resumeRestoredPlayback());
+      }
+    } catch (error, stackTrace) {
+      debugPrint('恢复播放会话失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      _queue = [];
+      _currentIndex = -1;
+      _position = Duration.zero;
+      _duration = Duration.zero;
+    }
+  }
+
+  Future<void> _resumeRestoredPlayback() async {
+    await Future.wait([settingsReady, historyReady]);
+    if (_disposed || !_restoredPlaybackPending || _queue.isEmpty) return;
+    _restoredPlaybackPending = false;
+    await _playCurrent(resumePosition: _position);
+  }
+
+  void _cancelPendingPlaybackRestore() {
+    _restoredPlaybackPending = false;
+    _playbackStateInteraction = true;
+  }
+
+  void _cancelPendingBilibiliPlay() {
+    _bilibiliPlayRequestId++;
+  }
+
+  Future<void> activateRestoredSession() async {
+    await playbackStateReady;
+    if (_disposed || _restoredSessionActivationEnabled) return;
+    _restoredSessionActivationEnabled = true;
+    final song = currentSong;
+    if (song != null && FloatingCapsuleService.enabled) {
+      await FloatingCapsuleService.show(
+        title: song.name,
+        artist: song.artist,
+        coverUrl: song.coverUrl,
+        isPlaying: _restoredPlaybackPending,
+      );
+    }
+    if (_restoredPlaybackPending) await _resumeRestoredPlayback();
+  }
+
   void _initAudioPlayer() {
-    _playerSub = _audioPlayer.playerStateStream.listen((state) {
-      _isPlaying = state.playing;
-      // 系统悬浮胶囊同步播放状态
-      if (FloatingCapsuleService.enabled) {
-        FloatingCapsuleService.updatePlayState(state.playing);
-      }
-      // 空音频/加载失败保护：加载或解码失败（如 404、空文件、格式不支持）
-      // 会触发 playbackEventStream 的 onError（下方 _errorSub 统一处理：停止 + 提示）
-      if (state.processingState == ProcessingState.completed) {
-        _recordCurrentHistory(position: Duration.zero, immediate: true);
-        _onSongComplete();
-      } else if (!state.playing &&
-          state.processingState != ProcessingState.idle) {
-        // A pause is an explicit persistence boundary, so a resumed session
-        // does not lose the latest position while waiting for the debounce.
-        _recordCurrentHistory(immediate: true);
-      }
-      notifyListeners();
-    });
+    _playerSub = _audioPlayer.playerStateStream.listen(
+      (state) {
+        if (_disposed) return;
+        _isPlaying = state.playing;
+        // 系统悬浮胶囊同步播放状态
+        if (FloatingCapsuleService.enabled) {
+          FloatingCapsuleService.updatePlayState(state.playing);
+        }
+        // 空音频/加载失败保护：加载或解码失败（如 404、空文件、格式不支持）
+        // 会触发 playbackEventStream 的 onError（下方 _errorSub 统一处理：停止 + 提示）
+        if (state.processingState == ProcessingState.completed) {
+          _recordCurrentHistory(position: Duration.zero, immediate: true);
+          _persistPlaybackStateNow();
+          _onSongComplete();
+        } else if (!state.playing &&
+            state.processingState != ProcessingState.idle) {
+          // A pause is an explicit persistence boundary, so a resumed session
+          // does not lose the latest position while waiting for the debounce.
+          _recordCurrentHistory(immediate: true);
+          _persistPlaybackStateNow();
+        } else {
+          _schedulePlaybackStatePersist();
+        }
+        notifyListeners();
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _handlePlayerStreamError('player state', error, stackTrace);
+      },
+    );
 
-    _durationSub = _audioPlayer.durationStream.listen((d) {
-      _duration = d ?? Duration.zero;
-      notifyListeners();
-    });
+    _durationSub = _audioPlayer.durationStream.listen(
+      (d) {
+        if (_disposed) return;
+        _duration = d ?? Duration.zero;
+        notifyListeners();
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _handlePlayerStreamError('duration', error, stackTrace);
+      },
+    );
 
-    _positionSub = _audioPlayer.positionStream.listen((p) {
-      _position = p;
-      _updateLyricIndex();
-      if (_isPlaying) _recordCurrentHistory(position: p);
-      notifyListeners();
-    });
+    _positionSub = _audioPlayer.positionStream.listen(
+      (p) {
+        if (_disposed) return;
+        _position = p;
+        _updateLyricIndex();
+        if (_isPlaying) {
+          _recordCurrentHistory(position: p);
+          _schedulePlaybackStatePersist();
+        }
+        notifyListeners();
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _handlePlayerStreamError('position', error, stackTrace);
+      },
+    );
 
-    _bufferSub = _audioPlayer.bufferedPositionStream.listen((b) {
-      _buffered = b;
-      notifyListeners();
-    });
+    _bufferSub = _audioPlayer.bufferedPositionStream.listen(
+      (b) {
+        if (_disposed) return;
+        _buffered = b;
+        notifyListeners();
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _handlePlayerStreamError('buffered position', error, stackTrace);
+      },
+    );
 
     _errorSub = _audioPlayer.playbackEventStream.listen(
       (_) {},
       onError: (e) {
+        if (_disposed) return;
         // 播放中途出错（解码失败/数据流中断）：停止并提示，避免静默
         _isLoading = false;
         _errorMessage = '播放错误: $e';
@@ -404,6 +717,16 @@ class PlayerProvider extends ChangeNotifier {
         notifyListeners();
       },
     );
+  }
+
+  void _handlePlayerStreamError(
+    String streamName,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    if (_disposed) return;
+    debugPrint('播放器 $streamName 状态流异常: $error');
+    debugPrintStack(stackTrace: stackTrace);
   }
 
   Future<void> _stopAfterPlaybackError() async {
@@ -461,7 +784,7 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   void _schedulePlaybackHistoryPersist() {
-    if (_disposed) return;
+    if (_disposed || _preparingForExit) return;
     if (_historyPersistInFlight) {
       _historyPersistAgain = true;
       return;
@@ -479,9 +802,11 @@ class PlayerProvider extends ChangeNotifier {
       return;
     }
     _historyPersistInFlight = true;
+    final completion = Completer<void>();
+    _historyPersistCompletion = completion;
     final snapshot = List<PlaybackHistoryEntry>.of(_playbackHistory);
     try {
-      await PlaybackHistoryService.save(snapshot);
+      await PlaybackHistoryService.save(snapshot, scope: dataScope);
     } catch (error) {
       debugPrint('保存播放历史失败: $error');
     } finally {
@@ -492,17 +817,96 @@ class PlayerProvider extends ChangeNotifier {
       } else {
         _historyPersistAgain = false;
       }
+      if (identical(_historyPersistCompletion, completion)) {
+        _historyPersistCompletion = null;
+      }
+      completion.complete();
     }
   }
 
   Future<void> clearPlaybackHistory() async {
-    if (_playbackHistory.isEmpty) return;
+    if (_disposed || _playbackHistory.isEmpty) return;
     _playbackHistory = [];
     _playbackHistoryRevision++;
     _historyPersistTimer?.cancel();
     _historyPersistTimer = null;
     notifyListeners();
     await _persistPlaybackHistory();
+  }
+
+  PlaybackSessionSnapshot _playbackStateSnapshot() {
+    const maxEntries = PlaybackStateService.maxQueueEntries;
+    var start = 0;
+    if (_queue.length > maxEntries) {
+      start = (_currentIndex - maxEntries ~/ 2)
+          .clamp(0, _queue.length - maxEntries)
+          .toInt();
+    }
+    final songs = _queue
+        .skip(start)
+        .take(maxEntries)
+        .map(SongSearchResult.fromQueueItem)
+        .toList(growable: false);
+    final savedIndex = _currentIndex < 0
+        ? 0
+        : (_currentIndex - start).clamp(0, songs.length - 1).toInt();
+    return PlaybackSessionSnapshot(
+      queue: songs,
+      currentIndex: savedIndex,
+      position: _position,
+      isPlaying: _isPlaying && _queue.isNotEmpty,
+      playMode: _playMode.name,
+    );
+  }
+
+  void _schedulePlaybackStatePersist() {
+    if (!_playbackStateLoaded || _disposed || _preparingForExit) return;
+    if (_playbackStatePersistInFlight) {
+      _playbackStatePersistAgain = true;
+      return;
+    }
+    if (_playbackStatePersistTimer != null) return;
+    _playbackStatePersistTimer = Timer(_playbackStatePersistDelay, () {
+      _playbackStatePersistTimer = null;
+      unawaited(_persistPlaybackState());
+    });
+  }
+
+  void _persistPlaybackStateNow() {
+    if (!_playbackStateLoaded || _disposed || _preparingForExit) return;
+    _playbackStatePersistTimer?.cancel();
+    _playbackStatePersistTimer = null;
+    unawaited(_persistPlaybackState());
+  }
+
+  Future<void> _persistPlaybackState() async {
+    if (!_playbackStateLoaded) return;
+    if (_playbackStatePersistInFlight) {
+      _playbackStatePersistAgain = true;
+      return;
+    }
+    _playbackStatePersistInFlight = true;
+    final completion = Completer<void>();
+    _playbackStatePersistCompletion = completion;
+    final snapshot = _playbackStateSnapshot();
+    try {
+      await PlaybackStateService.save(snapshot, scope: dataScope);
+    } catch (error, stackTrace) {
+      debugPrint('保存播放会话失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    } finally {
+      _playbackStatePersistInFlight = false;
+      if (_playbackStatePersistAgain && !_disposed) {
+        _playbackStatePersistAgain = false;
+        unawaited(_persistPlaybackState());
+      } else {
+        _playbackStatePersistAgain = false;
+      }
+      if (identical(_playbackStatePersistCompletion, completion)) {
+        _playbackStatePersistCompletion = null;
+      }
+      completion.complete();
+    }
   }
 
   /// UI 消费完错误后调用，防止重复弹提示
@@ -515,6 +919,7 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> _loadSettings() async {
     try {
+      await GlobalSettingsService.migrateLegacyScopedSettings(dataScope);
       final prefs = await SharedPreferences.getInstance();
       _apiKey = prefs.getString('api_key') ?? '';
       _api.setApiKey(_apiKey);
@@ -573,8 +978,10 @@ class PlayerProvider extends ChangeNotifier {
     String label,
     Future<bool> Function(SharedPreferences prefs) write,
   ) async {
+    if (dataScope.isDeleted) return;
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (dataScope.isDeleted) return;
       await write(prefs);
     } catch (error, stack) {
       // Settings remain active in memory even when the platform store is
@@ -847,7 +1254,7 @@ class PlayerProvider extends ChangeNotifier {
       _lyrics = resolved.lines;
       _currentLyricIndex = LyricParser.findCurrentIndex(_lyrics, lyricPosition);
       _lyricsLoading = false;
-      _lyricCache[_lyricKey(activeSong)] = resolved;
+      _rememberLyric(_lyricKey(activeSong), resolved);
       _queue[_currentIndex] = activeSong.copyWith(lyric: resolved.rawText);
       notifyListeners();
     } catch (_) {
@@ -1057,27 +1464,120 @@ class PlayerProvider extends ChangeNotifier {
     int index,
   ) async {
     if (index < 0 || index >= results.length) return;
+    final selected = results[index];
+    if (selected.platform == MusicPlatform.bilibili) {
+      await playBilibiliResource(selected);
+      return;
+    }
+    _cancelPendingBilibiliPlay();
+    _cancelPendingPlaybackRestore();
+    late final List<PlayQueueItem> nextQueue;
+    try {
+      nextQueue = results
+          .map((result) => PlayQueueItem.fromSearchResult(result))
+          .toList(growable: true);
+    } catch (error, stackTrace) {
+      _handleQueueAllocationFailure(error, stackTrace);
+      return;
+    }
     _recordCurrentHistory(immediate: true);
     _queueSessionId++;
-    _queue = results.map((e) => PlayQueueItem.fromSearchResult(e)).toList();
+    _queue = nextQueue;
     _currentIndex = index;
+    _persistPlaybackStateNow();
     notifyListeners();
     await _playCurrent();
   }
 
   /// 添加到队列并播放
   Future<void> playSingle(SongSearchResult result) async {
+    if (result.platform == MusicPlatform.bilibili) {
+      await playBilibiliResource(result);
+      return;
+    }
+    _cancelPendingBilibiliPlay();
+    _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     _queueSessionId++;
     _queue = [PlayQueueItem.fromSearchResult(result)];
     _currentIndex = 0;
+    _persistPlaybackStateNow();
     notifyListeners();
     await _playCurrent();
   }
 
-  /// 添加到队列末尾（不立即播放）
+  /// 添加到队列末尾（不立即播放）。保留 void 签名，兼容车机遥控、旧页面
+  /// 和第三方调用方；需要知道实际追加数量的页面使用
+  /// [addToQueueAndGetCount]。
   void addToQueue(SongSearchResult result) {
-    addTracksToQueue([result]);
+    if (result.platform != MusicPlatform.bilibili) {
+      addTracksToQueue([result]);
+      return;
+    }
+    unawaited(addToQueueAndGetCount(result));
+  }
+
+  /// Adds a result to the queue and returns the number of concrete queue items
+  /// appended. B 站 results expand to one item per valid page.
+  Future<int> addToQueueAndGetCount(SongSearchResult result) async {
+    if (result.platform != MusicPlatform.bilibili) {
+      return addTracksToQueue([result]) ? 1 : 0;
+    }
+    final requestId = ++_bilibiliAddRequestId;
+    final queueSessionId = _queueSessionId;
+    try {
+      final expanded = await _expandBilibiliResource(result);
+      if (_disposed ||
+          requestId != _bilibiliAddRequestId ||
+          queueSessionId != _queueSessionId) {
+        return 0;
+      }
+      return addTracksToQueue(expanded) ? expanded.length : 0;
+    } catch (error, stackTrace) {
+      if (!_disposed &&
+          requestId == _bilibiliAddRequestId &&
+          queueSessionId == _queueSessionId) {
+        _handleBilibiliQueueError(error, stackTrace);
+      }
+      return 0;
+    }
+  }
+
+  /// Plays one B 站 search result as a queue containing all of that video's
+  /// valid pages. Search results themselves are separate videos and must not
+  /// be mixed into the same queue when the user taps one result.
+  Future<void> playBilibiliResource(SongSearchResult result) async {
+    if (_disposed || result.platform != MusicPlatform.bilibili) return;
+    final requestId = ++_bilibiliPlayRequestId;
+    try {
+      final expanded = await _expandBilibiliResource(result);
+      if (_disposed ||
+          requestId != _bilibiliPlayRequestId ||
+          expanded.isEmpty) {
+        return;
+      }
+      late final List<PlayQueueItem> nextQueue;
+      try {
+        nextQueue = expanded
+            .map(PlayQueueItem.fromSearchResult)
+            .toList(growable: true);
+      } catch (error, stackTrace) {
+        _handleQueueAllocationFailure(error, stackTrace);
+        return;
+      }
+      _cancelPendingPlaybackRestore();
+      _recordCurrentHistory(immediate: true);
+      _queueSessionId++;
+      _queue = nextQueue;
+      _currentIndex = 0;
+      _persistPlaybackStateNow();
+      notifyListeners();
+      await _playCurrent();
+    } catch (error, stackTrace) {
+      if (!_disposed && requestId == _bilibiliPlayRequestId) {
+        _handleBilibiliQueueError(error, stackTrace);
+      }
+    }
   }
 
   /// 批量追加到队列；传入会话编号时，只允许追加到发起加载时的队列。
@@ -1091,9 +1591,89 @@ class PlayerProvider extends ChangeNotifier {
       return false;
     }
     if (tracks.isEmpty) return true;
-    _queue.addAll(tracks.map(PlayQueueItem.fromSearchResult));
+    _cancelPendingPlaybackRestore();
+    try {
+      _queue.addAll(
+        tracks.map(PlayQueueItem.fromSearchResult).toList(growable: false),
+      );
+    } catch (error, stackTrace) {
+      _handleQueueAllocationFailure(error, stackTrace);
+      return false;
+    }
+    _schedulePlaybackStatePersist();
     notifyListeners();
     return true;
+  }
+
+  /// Loads the authoritative B 站 video metadata and turns every valid page
+  /// into an independent queue item. The source result is never mutated.
+  Future<List<SongSearchResult>> _expandBilibiliResource(
+    SongSearchResult result,
+  ) async {
+    if (result.platform != MusicPlatform.bilibili) return [result];
+    final info = result.bilibiliPages.isNotEmpty
+        ? BilibiliVideoInfo(
+            bvid: result.id,
+            title: result.bilibiliVideoTitle ?? result.album,
+            description: result.bilibiliDescription ?? '',
+            ownerName: result.artist,
+            coverUrl: result.coverUrl,
+            duration: result.duration,
+            pages: result.bilibiliPages,
+          )
+        : await _api.bilibili.videoInfo(result.id);
+    final pages = info.pages
+        .where((page) => page.cid > 0)
+        .toList(growable: false);
+    if (pages.isEmpty) {
+      throw const BilibiliApiException('VIDEO_NO_PAGE', '视频没有可播放的分P');
+    }
+    if (pages.length > _maxBilibiliPagesPerResource) {
+      throw const BilibiliApiException(
+        'VIDEO_TOO_MANY_PAGES',
+        '视频分P数量异常，已拒绝加入播放队列',
+      );
+    }
+    final videoTitle = info.title.trim().isEmpty
+        ? (result.bilibiliVideoTitle ?? result.album).trim()
+        : info.title.trim();
+    final artist = info.ownerName.trim().isEmpty
+        ? result.artist
+        : info.ownerName.trim();
+    final cover = _preferExisting(result.coverUrl, info.coverUrl);
+    final description = info.description.trim().isEmpty
+        ? result.bilibiliDescription
+        : info.description.trim();
+    return pages
+        .map(
+          (page) => SongSearchResult(
+            platform: MusicPlatform.bilibili,
+            id: info.bvid.trim().isEmpty ? result.id : info.bvid,
+            name: page.title.trim().isEmpty ? 'P${page.page}' : page.title,
+            artist: artist,
+            album: videoTitle.isEmpty ? result.album : videoTitle,
+            coverUrl: cover,
+            duration: page.duration,
+            bilibiliVideoTitle: videoTitle.isEmpty
+                ? result.bilibiliVideoTitle
+                : videoTitle,
+            bilibiliDescription: description,
+            bilibiliCid: page.cid,
+            bilibiliPage: page.page,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  void _handleBilibiliQueueError(Object error, StackTrace stackTrace) {
+    debugPrint('展开 B 站视频分P失败: $error');
+    debugPrintStack(stackTrace: stackTrace);
+    if (_disposed) return;
+    _errorMessage = error.toString();
+    _lastError = error is BilibiliApiException
+        ? error.message
+        : 'B站视频分P加载失败，请重试';
+    notifyListeners();
   }
 
   /// 从歌单播放
@@ -1102,22 +1682,76 @@ class PlayerProvider extends ChangeNotifier {
     int index,
   ) async {
     if (index < 0 || index >= tracks.length) return;
+    final selected = tracks[index];
+    if (selected.platform == MusicPlatform.bilibili) {
+      await playBilibiliResource(selected);
+      return;
+    }
+    _cancelPendingBilibiliPlay();
+    _cancelPendingPlaybackRestore();
+    late final List<PlayQueueItem> nextQueue;
+    try {
+      nextQueue = tracks
+          .map((track) => PlayQueueItem.fromSearchResult(track))
+          .toList(growable: true);
+    } catch (error, stackTrace) {
+      _handleQueueAllocationFailure(error, stackTrace);
+      return;
+    }
     _recordCurrentHistory(immediate: true);
     _queueSessionId++;
-    _queue = tracks.map((e) => PlayQueueItem.fromSearchResult(e)).toList();
+    _queue = nextQueue;
     _currentIndex = index;
+    _persistPlaybackStateNow();
     notifyListeners();
     await _playCurrent();
   }
 
+  void _handleQueueAllocationFailure(Object error, StackTrace stackTrace) {
+    debugPrint('创建播放队列失败: $error');
+    debugPrintStack(stackTrace: stackTrace);
+    if (_disposed) return;
+    _errorMessage = '播放列表过大，无法继续加入队列';
+    _lastError = _errorMessage;
+    notifyListeners();
+  }
+
   /// 从历史记录重新播放，并在音源准备完成后跳回上次断点。
   Future<void> playFromHistory(PlaybackHistoryEntry entry) async {
+    _cancelPendingBilibiliPlay();
+    _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     _queueSessionId++;
     _queue = [PlayQueueItem.fromSearchResult(entry.song)];
     _currentIndex = 0;
+    _persistPlaybackStateNow();
     notifyListeners();
     await _playCurrent(resumePosition: entry.position);
+  }
+
+  /// 从历史列表播放，保留列表中其他歌曲作为后续队列。
+  ///
+  /// 单条列表继续走旧入口，便于车机遥控和旧调用方保持相同的行为。
+  Future<void> playFromHistoryEntries(
+    List<PlaybackHistoryEntry> entries,
+    int index,
+  ) async {
+    if (index < 0 || index >= entries.length) return;
+    _cancelPendingBilibiliPlay();
+    _cancelPendingPlaybackRestore();
+    if (entries.length == 1) {
+      await playFromHistory(entries.first);
+      return;
+    }
+    _recordCurrentHistory(immediate: true);
+    _queueSessionId++;
+    _queue = entries
+        .map((entry) => PlayQueueItem.fromSearchResult(entry.song))
+        .toList();
+    _currentIndex = index;
+    _persistPlaybackStateNow();
+    notifyListeners();
+    await _playCurrent(resumePosition: entries[index].position);
   }
 
   Future<void> _playCurrent({Duration? resumePosition}) async {
@@ -1175,6 +1809,7 @@ class PlayerProvider extends ChangeNotifier {
       final cachedPath = await AudioCacheService.getCachedPath(
         platformCode: item.platform.code,
         songId: _audioCacheSongId(item),
+        scope: dataScope,
       );
       if (!_isCurrentRequest(requestId, item)) return;
 
@@ -1194,7 +1829,7 @@ class PlayerProvider extends ChangeNotifier {
           if (resolvedUrl.isEmpty) {
             throw ApiException('404', '无法获取播放地址，可能是版权限制');
           }
-          _playUrlResolvedAt[itemKey] = DateTime.now();
+          _rememberPlayUrl(itemKey);
           shouldCacheAudio = true;
         }
         playPath = resolvedUrl;
@@ -1235,6 +1870,7 @@ class PlayerProvider extends ChangeNotifier {
       }
       _position = startPosition;
       _recordCurrentHistory(position: startPosition, immediate: true);
+      _schedulePlaybackStatePersist();
 
       // just_audio 的 play() Future 会在暂停、停止或播放结束时才完成。
       // 音源准备完成即结束“加载中”，播放过程放到后台等待。
@@ -1353,13 +1989,21 @@ class PlayerProvider extends ChangeNotifier {
     var description = item.bilibiliDescription;
     var videoTitle = item.bilibiliVideoTitle ?? item.album;
     var coverUrl = item.coverUrl;
-    if (pages.isEmpty || description == null) {
+    final concreteCid = item.bilibiliCid;
+    if ((concreteCid == null || concreteCid <= 0) &&
+        (pages.isEmpty || description == null)) {
       final info = await _api.bilibili.videoInfo(item.id);
       if (!_isCurrentRequest(requestId, item)) return item;
       pages = info.pages;
       description = info.description;
       videoTitle = info.title;
       coverUrl = _preferExisting(coverUrl, info.coverUrl);
+    }
+    if (concreteCid != null && concreteCid > 0) {
+      // Expanded queues already carry the authoritative page identity on
+      // every item. Do not request videoInfo again or attach the full page
+      // list to the active item; both would undo the linear queue layout.
+      return item;
     }
     if (pages.isEmpty) {
       throw const BilibiliApiException('VIDEO_NO_PAGE', '视频没有可播放的分P');
@@ -1458,7 +2102,7 @@ class PlayerProvider extends ChangeNotifier {
     int requestId,
     PlayQueueItem item,
   ) async {
-    if (!_bilibiliLyricAutoAttempted.add(_lyricKey(item))) return;
+    if (!_rememberBilibiliLyricAttempt(_lyricKey(item))) return;
     try {
       final query = lyricSearchQueryFor(item);
       final candidates = await _searchBilibiliLyricCandidates(item, query);
@@ -1502,7 +2146,7 @@ class PlayerProvider extends ChangeNotifier {
     final raw = item.lyric;
     if (raw == null || raw.trim().isEmpty) return null;
     final resolved = _ResolvedLyrics.fromPlainText(raw);
-    if (resolved != null) _lyricCache[_lyricKey(item)] = resolved;
+    if (resolved != null) _rememberLyric(_lyricKey(item), resolved);
     return resolved;
   }
 
@@ -1544,15 +2188,18 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   _ResolvedLyrics? _resolveLyricData(LyricData data) {
-    final enhanced = LyricParser.parseEnhanced(data.wordSynced);
+    final wordSynced = _boundLyricText(data.wordSynced);
+    final originalText = _boundLyricText(data.original);
+    final translatedText = _boundLyricText(data.translated);
+    final enhanced = LyricParser.parseEnhanced(wordSynced);
     final hasWordTiming = enhanced.any((line) => line.words.isNotEmpty);
     final original = hasWordTiming
         ? enhanced
-        : LyricParser.parseBestEffort(data.original);
+        : LyricParser.parseBestEffort(originalText);
     if (original.isEmpty) return null;
-    final translated = LyricParser.parse(data.translated);
+    final translated = LyricParser.parse(translatedText);
     return _ResolvedLyrics(
-      rawText: hasWordTiming ? data.wordSynced : data.original,
+      rawText: hasWordTiming ? wordSynced : originalText,
       lines: LyricParser.mergeTranslation(original, translated),
     );
   }
@@ -1583,7 +2230,7 @@ class PlayerProvider extends ChangeNotifier {
     _currentLyricIndex = LyricParser.findCurrentIndex(_lyrics, lyricPosition);
     _lyricsLoading = false;
     if (resolved != null) {
-      _lyricCache[_lyricKey(item)] = resolved;
+      _rememberLyric(_lyricKey(item), resolved);
       final current = _queue[_currentIndex];
       _queue[_currentIndex] = current.copyWith(lyric: resolved.rawText);
     }
@@ -1598,7 +2245,7 @@ class PlayerProvider extends ChangeNotifier {
       final detail = await _resolveSongDetail(item);
       if (!_isCurrentRequest(requestId, item)) return;
       if (detail.url.isNotEmpty) {
-        _playUrlResolvedAt[_itemKey(item)] = DateTime.now();
+        _rememberPlayUrl(_itemKey(item));
         final current = _queue[_currentIndex];
         _queue[_currentIndex] = current.copyWith(
           playUrl: detail.url,
@@ -1622,17 +2269,25 @@ class PlayerProvider extends ChangeNotifier {
     String url, {
     Map<String, String>? headers,
   }) async {
-    await Future<void>.delayed(const Duration(milliseconds: 1200));
-    if (!_isCurrentRequest(requestId, item)) return;
-    final localPath = await AudioCacheService.cacheAudio(
-      platformCode: item.platform.code,
-      songId: _audioCacheSongId(item),
-      url: url,
-      name: item.name,
-      artist: item.artist,
-      headers: headers,
-    );
-    if (localPath != null) debugPrint('后台缓存完成: $localPath');
+    try {
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      if (!_isCurrentRequest(requestId, item)) return;
+      final localPath = await AudioCacheService.cacheAudio(
+        platformCode: item.platform.code,
+        songId: _audioCacheSongId(item),
+        url: url,
+        name: item.name,
+        artist: item.artist,
+        headers: headers,
+        scope: dataScope,
+      );
+      if (localPath != null) debugPrint('后台缓存完成: $localPath');
+    } catch (error, stackTrace) {
+      // Caching is optional and must not surface as an unhandled background
+      // Future error after playback has already started.
+      debugPrint('后台缓存失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
   }
 
   Future<void> _startPlayback(int requestId, PlayQueueItem item) async {
@@ -1721,14 +2376,25 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> selectBilibiliPage(int pageIndex) async {
     final song = currentSong;
+    final targets = _currentBilibiliPageTargets();
     if (song == null ||
         song.platform != MusicPlatform.bilibili ||
         pageIndex < 0 ||
-        pageIndex >= song.bilibiliPages.length) {
+        pageIndex >= targets.length) {
       return;
     }
-    final page = song.bilibiliPages[pageIndex];
+    final target = targets[pageIndex];
+    final page = target.page;
     if (page.cid == song.bilibiliCid) return;
+    final queueIndex = target.queueIndex;
+    if (queueIndex != null && queueIndex != _currentIndex) {
+      await playQueueItem(queueIndex);
+      return;
+    }
+
+    // Compatibility for an old resource-level queue item that stores all
+    // pages inside one item instead of one concrete item per page.
+    _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     _queue[_currentIndex] = song.copyWith(
       name: page.title,
@@ -1739,10 +2405,67 @@ class PlayerProvider extends ChangeNotifier {
       clearPlaybackHeaders: true,
       clearLyric: true,
     );
+    _persistPlaybackStateNow();
     _lyrics.clear();
     _lyricsLoading = false;
     notifyListeners();
     await _playCurrent();
+  }
+
+  List<({BilibiliPageInfo page, int? queueIndex})>
+  _currentBilibiliPageTargets() {
+    final song = currentSong;
+    if (song == null || song.platform != MusicPlatform.bilibili) {
+      return const [];
+    }
+
+    final items = queue;
+    final concrete = <({BilibiliPageInfo page, int? queueIndex})>[];
+    final seenCids = <int>{};
+    for (var index = 0; index < items.length; index++) {
+      final item = items[index];
+      if (item.platform != MusicPlatform.bilibili || item.id != song.id) {
+        continue;
+      }
+      final cid = item.bilibiliCid;
+      if (cid == null || cid <= 0 || !seenCids.add(cid)) continue;
+      concrete.add((
+        page: BilibiliPageInfo(
+          cid: cid,
+          page: item.bilibiliPage ?? concrete.length + 1,
+          title: item.name,
+          duration: item.duration,
+        ),
+        queueIndex: index,
+      ));
+    }
+
+    if (concrete.length > 1 || song.bilibiliPages.isEmpty) {
+      concrete.sort(_compareBilibiliPageTargets);
+      return concrete;
+    }
+
+    final concreteIndexByCid = <int, int>{
+      for (final target in concrete)
+        if (target.queueIndex != null) target.page.cid: target.queueIndex!,
+    };
+    final legacy = song.bilibiliPages
+        .where((page) => page.cid > 0)
+        .map((page) => (page: page, queueIndex: concreteIndexByCid[page.cid]))
+        .toList(growable: false);
+    legacy.sort(_compareBilibiliPageTargets);
+    return legacy;
+  }
+
+  static int _compareBilibiliPageTargets(
+    ({BilibiliPageInfo page, int? queueIndex}) first,
+    ({BilibiliPageInfo page, int? queueIndex}) second,
+  ) {
+    final byPage = first.page.page.compareTo(second.page.page);
+    if (byPage != 0) return byPage;
+    return (first.queueIndex ?? 1 << 30).compareTo(
+      second.queueIndex ?? 1 << 30,
+    );
   }
 
   Future<BilibiliVideoSource> currentBilibiliVideoSource() async {
@@ -1772,51 +2495,227 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> playPause() async {
     if (currentSong == null || _isLoading) return;
+    _cancelPendingBilibiliPlay();
+    _cancelPendingPlaybackRestore();
     if (_isPlaying) {
       final paused = await _tryAudioCommand('暂停播放', _audioPlayer.pause);
-      if (paused) _recordCurrentHistory(immediate: true);
+      if (paused) {
+        _recordCurrentHistory(immediate: true);
+        _persistPlaybackStateNow();
+      }
     } else {
-      await _tryAudioCommand('继续播放', _audioPlayer.play);
+      if (_audioPlayer.processingState == ProcessingState.idle) {
+        await _playCurrent(resumePosition: _position);
+      } else {
+        await _tryAudioCommand('继续播放', _audioPlayer.play);
+      }
     }
   }
 
   Future<void> pause() async {
+    _cancelPendingBilibiliPlay();
+    _cancelPendingPlaybackRestore();
     final paused = await _tryAudioCommand('暂停播放', _audioPlayer.pause);
-    if (paused) _recordCurrentHistory(immediate: true);
+    if (paused) {
+      _recordCurrentHistory(immediate: true);
+      _persistPlaybackStateNow();
+    }
+  }
+
+  Future<bool> beginAssistantDucking(int reductionPercent) async {
+    if (_disposed) return false;
+    if (_volumeBeforeAssistantDucking != null) return true;
+    final before = _audioPlayer.volume.clamp(0.0, 1.0).toDouble();
+    final reduction = reductionPercent.clamp(0, 100) / 100;
+    final target = (before * (1 - reduction)).clamp(0.0, 1.0).toDouble();
+    final applied = await _tryAudioCommand(
+      '降低助手会话背景音量',
+      () => _audioPlayer.setVolume(target),
+    );
+    if (!applied || _disposed) return false;
+    _volumeBeforeAssistantDucking = before;
+    return true;
+  }
+
+  Future<bool> endAssistantDucking() async {
+    final before = _volumeBeforeAssistantDucking;
+    if (before == null) return true;
+    if (_disposed) {
+      _volumeBeforeAssistantDucking = null;
+      return false;
+    }
+    final restored = await _tryAudioCommand(
+      '恢复助手会话前音量',
+      () => _audioPlayer.setVolume(before),
+    );
+    if (restored) _volumeBeforeAssistantDucking = null;
+    return restored;
   }
 
   Future<void> stop() async {
+    _cancelPendingBilibiliPlay();
+    _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     await _tryAudioCommand('停止播放', _audioPlayer.stop);
+    _persistPlaybackStateNow();
+  }
+
+  /// Saves the last playable session and releases active playback before the
+  /// Android task is terminated. Repeated exit requests share one operation.
+  Future<void> prepareForAppExit() {
+    return _exitPreparationFuture ??= _prepareForSessionEnd(
+      waitForWrites: true,
+    );
+  }
+
+  Future<void> prepareForUserSwitch({bool waitForWrites = false}) =>
+      _prepareForSessionEnd(waitForWrites: waitForWrites);
+
+  Future<void> cancelPreparedUserSwitch() async {
+    if (_disposed || _exitPreparationFuture != null) return;
+    final shouldResume = _resumeAfterCancelledUserSwitch;
+    _resumeAfterCancelledUserSwitch = false;
+    _preparingForExit = false;
+    if (!shouldResume || currentSong == null) return;
+    if (_audioPlayer.processingState == ProcessingState.idle) {
+      await _tryAudioCommand(
+        '恢复用户切换前的播放',
+        () => _playCurrent(resumePosition: _position),
+      );
+    } else {
+      await _tryAudioCommand('恢复用户切换前的播放', _audioPlayer.play);
+    }
+  }
+
+  Future<void> _prepareForSessionEnd({required bool waitForWrites}) async {
+    if (_preparingForExit) return;
+    // Mark shutdown before restoration completes so an auto-resume cannot
+    // start while the final snapshot is being prepared. The queue itself is
+    // still restored and preserved below.
+    _preparingForExit = true;
+    if (waitForWrites) {
+      try {
+        await playbackStateReady;
+        await historyReady;
+      } catch (error, stackTrace) {
+        debugPrint('退出前等待播放器数据失败: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+    }
+    _resumeAfterCancelledUserSwitch = _isPlaying || _restoredPlaybackPending;
+    _cancelPendingPlaybackRestore();
+    if (_disposed) return;
+
+    _historyPersistTimer?.cancel();
+    _historyPersistTimer = null;
+    _historyPersistAgain = false;
+    _playbackStatePersistTimer?.cancel();
+    _playbackStatePersistTimer = null;
+    _playbackStatePersistAgain = false;
+
+    _recordCurrentHistory(position: _position);
+    final historySnapshot = _historyLoaded
+        ? List<PlaybackHistoryEntry>.of(_playbackHistory)
+        : null;
+    final playbackSnapshot = _playbackStateLoaded
+        ? _playbackStateSnapshot()
+        : null;
+
+    if (_queue.isNotEmpty ||
+        _audioPlayer.processingState != ProcessingState.idle) {
+      if (!waitForWrites) {
+        unawaited(
+          _audioPlayer.stop().catchError((error) {
+            debugPrint('切换用户时停止播放器失败: $error');
+          }),
+        );
+      } else {
+        try {
+          await _audioPlayer.stop().timeout(const Duration(seconds: 2));
+        } catch (error, stackTrace) {
+          debugPrint('退出前停止播放器失败: $error');
+          debugPrintStack(stackTrace: stackTrace);
+        }
+      }
+    }
+
+    final pendingWrites = <Future<void>>[
+      if (_historyPersistCompletion case final completion?) completion.future,
+      if (_playbackStatePersistCompletion case final completion?)
+        completion.future,
+    ];
+    if (waitForWrites && pendingWrites.isNotEmpty) {
+      try {
+        await Future.wait(pendingWrites).timeout(const Duration(seconds: 2));
+      } catch (error, stackTrace) {
+        debugPrint('退出前等待已有数据写入失败: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+    }
+    final writes = <Future<void>>[
+      if (historySnapshot != null) _saveExitHistory(historySnapshot),
+      if (playbackSnapshot != null) _saveExitPlaybackState(playbackSnapshot),
+    ];
+    if (waitForWrites) {
+      await Future.wait(writes);
+    } else {
+      unawaited(Future.wait(writes));
+    }
+  }
+
+  Future<void> _saveExitHistory(List<PlaybackHistoryEntry> snapshot) async {
+    try {
+      await PlaybackHistoryService.save(snapshot, scope: dataScope);
+    } catch (error, stackTrace) {
+      debugPrint('退出前保存播放历史失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  Future<void> _saveExitPlaybackState(PlaybackSessionSnapshot snapshot) async {
+    try {
+      await PlaybackStateService.save(snapshot, scope: dataScope);
+    } catch (error, stackTrace) {
+      debugPrint('退出前保存播放会话失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
   }
 
   Future<void> playNext() async {
     if (_queue.isEmpty) return;
+    _cancelPendingBilibiliPlay();
+    _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     if (_playMode == PlayMode.shuffle) {
       _currentIndex = DateTime.now().millisecondsSinceEpoch % _queue.length;
     } else {
       _currentIndex = (_currentIndex + 1) % _queue.length;
     }
+    _persistPlaybackStateNow();
     notifyListeners();
     await _playCurrent();
   }
 
   Future<void> playPrevious() async {
     if (_queue.isEmpty) return;
+    _cancelPendingBilibiliPlay();
+    _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     _currentIndex = (_currentIndex - 1 + _queue.length) % _queue.length;
+    _persistPlaybackStateNow();
     notifyListeners();
     await _playCurrent();
   }
 
   Future<void> seekTo(Duration position) async {
+    _cancelPendingPlaybackRestore();
     final succeeded = await _tryAudioCommand(
       '调整播放进度',
       () => _audioPlayer.seek(position),
     );
     if (!succeeded) return;
     _position = position;
+    _persistPlaybackStateNow();
     _updateLyricIndex();
     notifyListeners();
   }
@@ -1840,13 +2739,18 @@ class PlayerProvider extends ChangeNotifier {
     if (next == Duration.zero) {
       _lyricOffsets.remove(key);
     } else {
+      _lyricOffsets.remove(key);
       _lyricOffsets[key] = next;
+      while (_lyricOffsets.length > _maxCachedLyricOffsets) {
+        _lyricOffsets.remove(_lyricOffsets.keys.first);
+      }
     }
     _updateLyricIndex();
     notifyListeners();
   }
 
   void togglePlayMode() {
+    _cancelPendingPlaybackRestore();
     switch (_playMode) {
       case PlayMode.sequence:
         _playMode = PlayMode.repeat;
@@ -1858,6 +2762,7 @@ class PlayerProvider extends ChangeNotifier {
         _playMode = PlayMode.sequence;
         break;
     }
+    _persistPlaybackStateNow();
     notifyListeners();
   }
 
@@ -1868,14 +2773,19 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> playQueueItem(int index) async {
     if (index < 0 || index >= _queue.length) return;
+    _cancelPendingBilibiliPlay();
+    _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     _currentIndex = index;
+    _persistPlaybackStateNow();
     notifyListeners();
     await _playCurrent();
   }
 
   void removeFromQueue(int index) {
     if (index < 0 || index >= _queue.length) return;
+    _cancelPendingBilibiliPlay();
+    _cancelPendingPlaybackRestore();
     if (index == _currentIndex) _recordCurrentHistory(immediate: true);
     _queue.removeAt(index);
     if (index < _currentIndex) {
@@ -1889,10 +2799,14 @@ class PlayerProvider extends ChangeNotifier {
         _runAudioCommandInBackground('停止播放', _audioPlayer.stop);
       }
     }
+    _persistPlaybackStateNow();
     notifyListeners();
   }
 
   void clearQueue() {
+    _cancelPendingBilibiliPlay();
+    _bilibiliAddRequestId++;
+    _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     _playRequestId++;
     _queueSessionId++;
@@ -1908,6 +2822,7 @@ class PlayerProvider extends ChangeNotifier {
     _errorMessage = null;
     _runAudioCommandInBackground('停止播放', _audioPlayer.stop);
     unawaited(FloatingCapsuleService.hide());
+    _persistPlaybackStateNow();
     notifyListeners();
   }
 
@@ -1925,15 +2840,25 @@ class PlayerProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    if (_resourceDisposeFuture != null) return;
     // Mark the provider first so a final audio position event cannot schedule
     // another history persistence timer while the subscriptions are stopping.
     _disposed = true;
     _historyPersistTimer?.cancel();
     _historyPersistTimer = null;
     _historyPersistAgain = false;
-    unawaited(_persistPlaybackHistory());
+    _playbackStatePersistTimer?.cancel();
+    _playbackStatePersistTimer = null;
+    _playbackStatePersistAgain = false;
+    if (!_preparingForExit) {
+      unawaited(_persistPlaybackHistory());
+      unawaited(_persistPlaybackState());
+    }
     _playRequestId++;
     _queueSessionId++;
+    _bilibiliPlayRequestId++;
+    _bilibiliAddRequestId++;
+    _volumeBeforeAssistantDucking = null;
     final subscriptions = <StreamSubscription?>[
       _playerSub,
       _durationSub,
@@ -1943,8 +2868,20 @@ class PlayerProvider extends ChangeNotifier {
     ];
     _api.bilibili.removeListener(_handleBilibiliChanged);
     _api.close();
-    unawaited(_disposeAudioResources(subscriptions));
+    // Release ChangeNotifier listeners immediately; native audio teardown can
+    // continue asynchronously without retaining the old widget tree.
     super.dispose();
+    _resourceDisposeFuture = _disposeAudioResources(subscriptions);
+  }
+
+  /// Releases the native audio player and waits for every stream subscription
+  /// to finish cancelling. This is awaited during profile switches so two
+  /// players do not retain decoders and buffers at the same time.
+  Future<void> disposeResources() {
+    final existing = _resourceDisposeFuture;
+    if (existing != null) return existing;
+    dispose();
+    return _resourceDisposeFuture!;
   }
 
   Future<void> _disposeAudioResources(
@@ -1957,11 +2894,31 @@ class PlayerProvider extends ChangeNotifier {
         debugPrint('取消播放器订阅失败: $error');
       }
     }
-    try {
-      await _audioPlayer.dispose();
-    } catch (error) {
-      debugPrint('释放播放器失败: $error');
+    final playerDispose = _audioPlayer.dispose();
+    // An untouched AudioPlayer has no decoder or platform stream to wait for.
+    // Do not block a profile switch on a platform channel teardown in that
+    // case; active players still await the native release below.
+    if (_queue.isEmpty &&
+        _audioPlayer.processingState == ProcessingState.idle) {
+      unawaited(
+        playerDispose.catchError((error) {
+          debugPrint('释放播放器失败: $error');
+        }),
+      );
+    } else {
+      try {
+        await playerDispose;
+      } catch (error) {
+        debugPrint('释放播放器失败: $error');
+      }
     }
+    _queue.clear();
+    _lyrics.clear();
+    _lyricCache.clear();
+    _lyricOffsets.clear();
+    _bilibiliLyricAutoAttempted.clear();
+    _playUrlResolvedAt.clear();
+    _playbackHistory.clear();
   }
 }
 
@@ -1972,10 +2929,11 @@ class _ResolvedLyrics {
   const _ResolvedLyrics({required this.rawText, required this.lines});
 
   static _ResolvedLyrics? fromPlainText(String? rawText) {
-    if (rawText == null || rawText.trim().isEmpty) return null;
+    final boundedText = _boundLyricText(rawText);
+    if (boundedText == null || boundedText.trim().isEmpty) return null;
     return _ResolvedLyrics(
-      rawText: rawText,
-      lines: LyricParser.parseBestEffort(rawText),
+      rawText: boundedText,
+      lines: LyricParser.parseBestEffort(boundedText),
     );
   }
 }

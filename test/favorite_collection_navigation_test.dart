@@ -98,11 +98,21 @@ void main() {
 
       await tester.pageBack();
       await tester.pumpAndSettle();
-      await tester.tap(
-        find
-            .byKey(const ValueKey('home-favorite-playlists-header'))
-            .hitTestable(),
+      final homeScroll = find
+          .descendant(
+            of: find.byKey(const PageStorageKey('discover-portrait-scroll')),
+            matching: find.byType(Scrollable),
+          )
+          .first;
+      final playlistHeader = find.byKey(
+        const ValueKey('home-favorite-playlists-header'),
       );
+      await tester.scrollUntilVisible(
+        playlistHeader,
+        220,
+        scrollable: homeScroll,
+      );
+      await tester.tap(playlistHeader.hitTestable());
       await tester.pumpAndSettle();
       expect(find.byType(FavoritePlaylistsScreen), findsOneWidget);
       expect(
@@ -117,11 +127,15 @@ void main() {
 
       await tester.pageBack();
       await tester.pumpAndSettle();
-      await tester.tap(
-        find
-            .byKey(const ValueKey('home-bilibili-favorites-header'))
-            .hitTestable(),
+      final bilibiliHeader = find.byKey(
+        const ValueKey('home-bilibili-favorites-header'),
       );
+      await tester.scrollUntilVisible(
+        bilibiliHeader,
+        220,
+        scrollable: homeScroll,
+      );
+      await tester.tap(bilibiliHeader.hitTestable());
       await tester.pumpAndSettle();
       expect(find.byType(BilibiliFavoritesScreen), findsOneWidget);
       expect(
@@ -140,10 +154,16 @@ void main() {
     tester,
   ) async {
     final song = _song(MusicPlatform.qq, 'landscape-song', '横屏收藏歌曲');
+    final song2 = _song(MusicPlatform.netease, 'landscape-song-2', '第二首收藏歌曲');
     final bilibili = _song(
       MusicPlatform.bilibili,
       'landscape-video',
       '横屏 B 站收藏',
+    );
+    final bilibili2 = _song(
+      MusicPlatform.bilibili,
+      'landscape-video-2',
+      '第二个 B 站收藏',
     );
     final playlist = FavoritePlaylist(
       platform: MusicPlatform.qq,
@@ -155,9 +175,24 @@ void main() {
         tracks: const [],
       ),
     );
+    final playlist2 = FavoritePlaylist(
+      platform: MusicPlatform.netease,
+      playlist: PlaylistInfo(
+        id: 'landscape-playlist-2',
+        name: '第二个收藏歌单',
+        creator: '作者二',
+        trackCount: 5,
+        tracks: const [],
+      ),
+    );
     SharedPreferences.setMockInitialValues({
-      'favorites': jsonEncode([song.toJson(), bilibili.toJson()]),
-      'favorite_playlists': jsonEncode([playlist.toJson()]),
+      'favorites': jsonEncode([
+        song.toJson(),
+        song2.toJson(),
+        bilibili.toJson(),
+        bilibili2.toJson(),
+      ]),
+      'favorite_playlists': jsonEncode([playlist.toJson(), playlist2.toJson()]),
     });
     final player = PlayerProvider();
     final favorites = FavoriteService();
@@ -194,8 +229,19 @@ void main() {
         const ValueKey('favorite-song-qq-landscape-song'),
       );
       expect(songCard, findsOneWidget);
-      expect(_findCardDecoration(tester, songCard).border, isNotNull);
-      expect(find.byTooltip('取消收藏').hitTestable(), findsOneWidget);
+      expect(
+        find.descendant(of: songCard, matching: find.byType(ListTile)),
+        findsOneWidget,
+      );
+      final songTile = tester.widget<ListTile>(
+        find.descendant(of: songCard, matching: find.byType(ListTile)),
+      );
+      expect(
+        find
+            .descendant(of: songCard, matching: find.byTooltip('取消收藏'))
+            .hitTestable(),
+        findsOneWidget,
+      );
       expect(
         find
             .descendant(
@@ -205,7 +251,7 @@ void main() {
             .hitTestable(),
         findsOneWidget,
       );
-      final songCardSize = tester.getSize(songCard);
+      expect(find.byType(Divider), findsWidgets);
 
       await tester.pumpWidget(
         MultiProvider(
@@ -229,9 +275,22 @@ void main() {
         const ValueKey('favorite-playlist-list-qq-landscape-playlist'),
       );
       expect(playlistCard, findsOneWidget);
-      expect(_findCardDecoration(tester, playlistCard).border, isNotNull);
-      final playlistCardSize = tester.getSize(playlistCard);
-      expect(songCardSize.height, playlistCardSize.height);
+      expect(
+        find.descendant(of: playlistCard, matching: find.byType(ListTile)),
+        findsOneWidget,
+      );
+      final playlistTile = tester.widget<ListTile>(
+        find.descendant(of: playlistCard, matching: find.byType(ListTile)),
+      );
+      expect(playlistTile.minTileHeight, songTile.minTileHeight);
+      expect(playlistTile.contentPadding, songTile.contentPadding);
+      expect(
+        find
+            .descendant(of: playlistCard, matching: find.byTooltip('取消收藏歌单'))
+            .hitTestable(),
+        findsOneWidget,
+      );
+      expect(find.byType(Divider), findsWidgets);
 
       await tester.pumpWidget(
         MultiProvider(
@@ -254,9 +313,21 @@ void main() {
         const ValueKey('favorite-bilibili-landscape-video'),
       );
       expect(bilibiliCard, findsOneWidget);
-      expect(_findCardDecoration(tester, bilibiliCard).border, isNotNull);
-      expect(tester.getSize(bilibiliCard).height, playlistCardSize.height);
-      expect(find.byTooltip('取消收藏').hitTestable(), findsOneWidget);
+      expect(
+        find.descendant(of: bilibiliCard, matching: find.byType(ListTile)),
+        findsOneWidget,
+      );
+      final bilibiliTile = tester.widget<ListTile>(
+        find.descendant(of: bilibiliCard, matching: find.byType(ListTile)),
+      );
+      expect(bilibiliTile.minTileHeight, songTile.minTileHeight);
+      expect(bilibiliTile.contentPadding, songTile.contentPadding);
+      expect(
+        find
+            .descendant(of: bilibiliCard, matching: find.byTooltip('取消收藏'))
+            .hitTestable(),
+        findsOneWidget,
+      );
       expect(
         find
             .descendant(
@@ -266,19 +337,10 @@ void main() {
             .hitTestable(),
         findsOneWidget,
       );
+      expect(find.byType(Divider), findsWidgets);
       expect(tester.takeException(), isNull);
     }
   });
-}
-
-BoxDecoration _findCardDecoration(WidgetTester tester, Finder root) {
-  return tester
-      .widgetList<Container>(
-        find.descendant(of: root, matching: find.byType(Container)),
-      )
-      .map((container) => container.decoration)
-      .whereType<BoxDecoration>()
-      .firstWhere((decoration) => decoration.border != null);
 }
 
 SongSearchResult _song(MusicPlatform platform, String id, String name) {

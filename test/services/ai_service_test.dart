@@ -192,6 +192,65 @@ void main() {
       expect(result.playRequest?.artist, '周杰伦');
       expect(result.playRequest?.title, '夜曲');
     });
+
+    test('bounds text extracted from an unusually large response', () async {
+      final service = AiAssistantService(
+        client: MockClient((_) async {
+          final huge = '回答' * 100000;
+          return _jsonResponse({
+            'output': [
+              {
+                'content': [
+                  {'text': huge},
+                ],
+              },
+            ],
+            'choices': [
+              {
+                'message': {'content': huge},
+              },
+            ],
+          });
+        }),
+      );
+      addTearDown(service.close);
+
+      final result = await service.sendMessage(
+        _config(
+          provider: AiProviderKind.openAi,
+          protocol: AiRequestProtocol.openAiResponses,
+        ),
+        [_userMessage('请回答')],
+      );
+
+      expect(result.reply.length, lessThanOrEqualTo(128 * 1024));
+    });
+
+    test('bounds traversal of a deeply nested response', () async {
+      dynamic nested = {'text': 'ignored'};
+      for (var depth = 0; depth < 100; depth++) {
+        nested = {'nested': nested};
+      }
+      final service = AiAssistantService(
+        client: MockClient((_) async {
+          return _jsonResponse({
+            'output': [nested],
+          });
+        }),
+      );
+      addTearDown(service.close);
+
+      final result = await service.sendMessage(
+        _config(
+          provider: AiProviderKind.openAi,
+          protocol: AiRequestProtocol.openAiResponses,
+        ),
+        [_userMessage('请回答')],
+      );
+
+      expect(result.reply, isEmpty);
+      expect(result.playRequest, isNull);
+    });
   });
 
   group('MiMo request mapping', () {

@@ -7,14 +7,19 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
+import '../providers/search_session.dart';
+import '../providers/theme_controller.dart';
+import '../providers/user_controller.dart';
 import '../services/backup_service.dart';
 import '../services/favorite_file_service.dart';
 import '../services/favorite_service.dart';
 import '../services/lan_backup_service.dart';
 import '../services/webdav_backup_service.dart';
+import '../services/user_data_scope.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
+import '../widgets/backup_restore_options_dialog.dart';
 import '../widgets/remote_focusable.dart';
 
 class BackupRestoreScreen extends StatefulWidget {
@@ -33,6 +38,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
   LanBackupSession? _lanSession;
   bool _loadingConfig = true;
   bool _busy = false;
+  bool _restoreFlowActive = false;
   bool _obscurePassword = true;
   String? _status;
   bool _statusError = false;
@@ -45,7 +51,8 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
 
   @override
   void dispose() {
-    unawaited(_lanSession?.stop());
+    final session = _lanSession;
+    if (session != null) unawaited(_stopSessionQuietly(session));
     _urlController.dispose();
     _usernameController.dispose();
     _passwordController.dispose();
@@ -55,7 +62,9 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
 
   Future<void> _loadConfig() async {
     try {
-      final config = await WebDavConfig.load();
+      final config = await WebDavConfig.load(
+        dataScope: context.read<PlayerProvider>().dataScope,
+      );
       if (!mounted) return;
       setState(() {
         _urlController.text = config.url;
@@ -70,55 +79,81 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     }
   }
 
-  String _backupJson() {
+  Future<String> _prepareExport() async {
+    final users = context.read<UserController>();
     final favorites = context.read<FavoriteService>();
     final player = context.read<PlayerProvider>();
-    return BackupService.exportJson(
+    final aiConfig = context.read<AiConfigController>();
+    final theme = context.read<ThemeController>();
+    final search = context.read<SearchSession>();
+    final operationScope = player.dataScope;
+    final result = await BackupService.exportFullJson(
+      users: users,
       favorites: favorites,
       player: player,
-      aiConfig: context.read<AiConfigController?>(),
+      aiConfig: aiConfig,
+      theme: theme,
+      search: search,
     );
+    if (!mounted ||
+        !identical(context.read<UserController>(), users) ||
+        !identical(context.read<PlayerProvider>(), player) ||
+        player.dataScope != operationScope ||
+        users.activeUserId != operationScope.userId) {
+      throw StateError('用户已切换，请重试备份操作');
+    }
+    return result;
   }
 
-  Future<void> _prepareExport() async {
-    final favorites = context.read<FavoriteService>();
-    final player = context.read<PlayerProvider>();
-    final aiConfig = context.read<AiConfigController?>();
-    await Future.wait([
-      favorites.load(),
-      player.settingsReady,
-      if (aiConfig != null) aiConfig.ready,
-    ]);
+  Future<BackupRestoreSelection?> _chooseRestoreOptions(
+    String raw, {
+    required UserDataScope scope,
+  }) async {
+    try {
+      final contents = BackupService.inspect(raw);
+      final scoped = contents.forScope(scope);
+      return await showBackupRestoreSelectionDialog(context, scoped);
+    } on FormatException catch (error) {
+      _showStatus(error.message, error: true);
+      return null;
+    } catch (error) {
+      _showStatus('检查备份失败：$error', error: true);
+      return null;
+    }
   }
 
-  Future<FavoriteImportMode?> _chooseImportMode() {
-    return showDialog<FavoriteImportMode>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('导入方式'),
-        content: const Text(
-          '合并会保留现有收藏；覆盖会替换歌曲、B站收藏、歌单，并应用备份中的 API Key、AI 模型和播放器设置。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () =>
-                Navigator.pop(dialogContext, FavoriteImportMode.replace),
-            child: const Text('覆盖'),
-          ),
-          FilledButton(
-            onPressed: () =>
-                Navigator.pop(dialogContext, FavoriteImportMode.merge),
-            child: const Text('合并'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _restoreRaw(String raw, {String source = '备份'}) async {
+  Future<void> _restoreRaw(
+    String raw, {
+    String source = '备份',
+    FavoriteService? operationFavorites,
+    PlayerProvider? operationPlayer,
+    AiConfigController? operationAiConfig,
+    ThemeController? operationTheme,
+    SearchSession? operationSearch,
+    UserController? operationUsers,
+  }) async {
     if (!mounted || raw.trim().isEmpty) return;
-    final mode = await _chooseImportMode();
-    if (mode == null || !mounted) return;
+    if (_busy || _restoreFlowActive) {
+      _showStatus('已有备份或恢复操作正在进行，请稍候');
+      return;
+    }
+    final favorites = operationFavorites ?? context.read<FavoriteService>();
+    final player = operationPlayer ?? context.read<PlayerProvider>();
+    final aiConfig = operationAiConfig ?? context.read<AiConfigController?>();
+    final theme = operationTheme ?? context.read<ThemeController?>();
+    final search = operationSearch ?? context.read<SearchSession?>();
+    final users = operationUsers ?? context.read<UserController>();
+    final operationScope = player.dataScope;
+    _restoreFlowActive = true;
+    final selection = await _chooseRestoreOptions(raw, scope: operationScope);
+    if (selection == null ||
+        !mounted ||
+        player.dataScope != operationScope ||
+        users.activeUserId != operationScope.userId ||
+        !identical(context.read<PlayerProvider>(), player)) {
+      _restoreFlowActive = false;
+      return;
+    }
     setState(() {
       _busy = true;
       _status = '正在从$source恢复...';
@@ -127,21 +162,19 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     try {
       final result = await BackupService.importJson(
         raw: raw,
-        favorites: context.read<FavoriteService>(),
-        player: context.read<PlayerProvider>(),
-        aiConfig: context.read<AiConfigController?>(),
-        mode: mode,
+        favorites: favorites,
+        player: player,
+        aiConfig: aiConfig,
+        theme: theme,
+        search: search,
+        users: users,
+        mode: selection.mode,
+        sections: selection.sections,
       );
       if (!mounted) return;
       setState(() {
         _busy = false;
-        _status =
-            '恢复完成：歌曲 ${result.songsAdded} 首，B站 ${result.bilibiliAdded} 个，'
-            '歌单 ${result.playlistsAdded} 个'
-            '${result.apiKeyRestored ? '，播放 API Key 已恢复' : ''}'
-            '${result.aiConfigRestored ? '，AI 模型配置、中转站和 Key 已恢复' : ''}'
-            '${result.playerSettingsRestored ? '，音质、音源和播放器设置已恢复' : ''}'
-            '${result.songsSkipped + result.bilibiliSkipped + result.playlistsSkipped > 0 ? '（重复或无效项目已跳过）' : ''}';
+        _status = _restoreStatus(result, selection);
         _statusError = false;
       });
     } on FormatException catch (error) {
@@ -158,7 +191,40 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         _status = '恢复失败：$error';
         _statusError = true;
       });
+    } finally {
+      _restoreFlowActive = false;
     }
+  }
+
+  String _restoreStatus(
+    BackupRestoreResult result,
+    BackupRestoreSelection selection,
+  ) {
+    if (result.fullSnapshotRestored) {
+      return '恢复完成：全部用户数据和全局设置已恢复';
+    }
+    final parts = <String>[];
+    if (selection.sections.contains(BackupRestoreSection.songs)) {
+      parts.add('歌曲 ${result.songsAdded} 首');
+    }
+    if (selection.sections.contains(BackupRestoreSection.bilibili)) {
+      parts.add('B站 ${result.bilibiliAdded} 个');
+    }
+    if (selection.sections.contains(BackupRestoreSection.playlists)) {
+      parts.add('歌单 ${result.playlistsAdded} 个');
+    }
+    if (result.apiKeyRestored) parts.add('音乐 API Key');
+    if (result.appearanceRestored) parts.add('外观');
+    if (result.lyricDisplayRestored) parts.add('歌词显示');
+    if (result.bilibiliAccountRestored) parts.add('B站账号');
+    if (result.globalVoiceRestored) parts.add('全局语音设置');
+    if (result.aiConfigRestored) parts.add('AI 助手配置');
+    if (result.playerSettingsRestored) parts.add('播放器设置');
+    if (result.searchHistoryRestored) parts.add('搜索历史');
+    final skipped =
+        result.songsSkipped + result.bilibiliSkipped + result.playlistsSkipped;
+    final target = result.restoredToDefaultUser ? '默认用户：' : '';
+    return '恢复完成：$target${parts.join('，')}${skipped > 0 ? '（重复或无效项目已跳过）' : ''}';
   }
 
   Future<String?> _showPasteDialog() async {
@@ -174,6 +240,11 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
             autofocus: true,
             minLines: 6,
             maxLines: 12,
+            maxLength: BackupService.maxBackupBytes,
+            maxLengthEnforcement: MaxLengthEnforcement.enforced,
+            buildCounter:
+                (_, {required currentLength, required isFocused, maxLength}) =>
+                    null,
             decoration: const InputDecoration(hintText: 'JSON 内容'),
           ),
         ),
@@ -200,8 +271,9 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       _status = null;
     });
     try {
-      await _prepareExport();
-      final result = await FavoriteFileService.exportBackup(_backupJson());
+      final exportJson = await _prepareExport();
+      if (!mounted) return;
+      final result = await FavoriteFileService.exportBackup(exportJson);
       if (!mounted) return;
       setState(() {
         _busy = false;
@@ -229,8 +301,9 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       _status = null;
     });
     try {
-      await _prepareExport();
-      await Clipboard.setData(ClipboardData(text: _backupJson()));
+      final exportJson = await _prepareExport();
+      if (!mounted) return;
+      await Clipboard.setData(ClipboardData(text: exportJson));
       if (mounted) _showStatus('备份 JSON 已复制');
     } catch (error) {
       if (mounted) _showStatus('复制失败：$error', error: true);
@@ -263,6 +336,12 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         _status = error.message ?? '读取备份失败';
         _statusError = true;
       });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _status = '读取备份失败：$error';
+        _statusError = true;
+      });
     }
   }
 
@@ -274,6 +353,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       certificateSha256: WebDavConfig.normalizeFingerprint(
         _fingerprintController.text,
       ),
+      dataScope: context.read<PlayerProvider>().dataScope,
     );
   }
 
@@ -281,6 +361,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     try {
       final config = _configFromFields();
       await config.save();
+      if (!mounted) return null;
       return WebDavBackupService(config: config);
     } on WebDavException catch (error) {
       _showStatus(error.message, error: true);
@@ -308,6 +389,8 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       _showStatus('WebDAV 连接成功');
     } on WebDavException catch (error) {
       _showStatus(error.message, error: true);
+    } catch (error) {
+      _showStatus('WebDAV 连接失败：$error', error: true);
     } finally {
       service.close();
       if (mounted) setState(() => _busy = false);
@@ -327,11 +410,14 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       return;
     }
     try {
-      await _prepareExport();
-      await service.upload(_backupJson());
+      final exportJson = await _prepareExport();
+      if (!mounted) return;
+      await service.upload(exportJson);
       _showStatus('备份已上传到 WebDAV');
     } on WebDavException catch (error) {
       _showStatus(error.message, error: true);
+    } catch (error) {
+      _showStatus('WebDAV 上传失败：$error', error: true);
     } finally {
       service.close();
       if (mounted) setState(() => _busy = false);
@@ -352,10 +438,14 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     }
     try {
       final raw = await service.download();
-      if (mounted) setState(() => _busy = false);
+      if (!mounted) return;
+      setState(() => _busy = false);
       await _restoreRaw(raw, source: 'WebDAV');
     } on WebDavException catch (error) {
       _showStatus(error.message, error: true);
+      if (mounted) setState(() => _busy = false);
+    } catch (error) {
+      _showStatus('WebDAV 下载失败：$error', error: true);
       if (mounted) setState(() => _busy = false);
     } finally {
       service.close();
@@ -370,8 +460,18 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       _statusError = false;
     });
     try {
-      await _prepareExport();
-      final session = await LanBackupService.start(exportBackup: _backupJson);
+      final exportJson = await _prepareExport();
+      if (!mounted) return;
+      final operationFavorites = context.read<FavoriteService>();
+      final operationPlayer = context.read<PlayerProvider>();
+      final operationAiConfig = context.read<AiConfigController?>();
+      final operationTheme = context.read<ThemeController?>();
+      final operationSearch = context.read<SearchSession?>();
+      final operationUsers = context.read<UserController>();
+      final operationScope = operationPlayer.dataScope;
+      final session = await LanBackupService.start(
+        exportBackup: () => exportJson,
+      );
       if (!mounted) {
         await session.stop();
         return;
@@ -381,7 +481,18 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         _busy = false;
         _status = '手机打开下方地址并输入 PIN，即可下载或上传备份';
       });
-      unawaited(_watchLanRestore(session));
+      unawaited(
+        _watchLanRestore(
+          session,
+          operationScope,
+          operationFavorites,
+          operationPlayer,
+          operationAiConfig,
+          operationTheme,
+          operationSearch,
+          operationUsers,
+        ),
+      );
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -392,11 +503,32 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     }
   }
 
-  Future<void> _watchLanRestore(LanBackupSession session) async {
+  Future<void> _watchLanRestore(
+    LanBackupSession session,
+    UserDataScope operationScope,
+    FavoriteService operationFavorites,
+    PlayerProvider operationPlayer,
+    AiConfigController? operationAiConfig,
+    ThemeController? operationTheme,
+    SearchSession? operationSearch,
+    UserController operationUsers,
+  ) async {
     try {
       final raw = await session.restored;
+      if (raw == null || raw.isEmpty) return;
       if (!mounted || !identical(_lanSession, session)) return;
-      await _restoreRaw(raw, source: '手机');
+      if (operationPlayer.dataScope != operationScope) return;
+      await _restoreRaw(
+        raw,
+        source: '手机',
+        operationFavorites: operationFavorites,
+        operationPlayer: operationPlayer,
+        operationAiConfig: operationAiConfig,
+        operationTheme: operationTheme,
+        operationSearch: operationSearch,
+        operationUsers: operationUsers,
+      );
+      if (!mounted || !identical(_lanSession, session)) return;
       await _stopLanTransfer();
     } catch (_) {}
   }
@@ -404,9 +536,13 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
   Future<void> _stopLanTransfer() async {
     final session = _lanSession;
     if (session == null) return;
-    setState(() => _lanSession = null);
-    await session.stop();
-    if (mounted) _showStatus('局域网传输已关闭');
+    if (mounted) setState(() => _lanSession = null);
+    try {
+      await session.stop();
+      if (mounted) _showStatus('局域网传输已关闭');
+    } catch (error) {
+      if (mounted) _showStatus('关闭局域网传输失败：$error', error: true);
+    }
   }
 
   void _showStatus(String message, {bool error = false}) {
@@ -418,8 +554,18 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
   }
 
   Future<void> _copy(String value, String label) async {
-    await Clipboard.setData(ClipboardData(text: value));
-    if (mounted) _showStatus('$label已复制');
+    try {
+      await Clipboard.setData(ClipboardData(text: value));
+      if (mounted) _showStatus('$label已复制');
+    } catch (error) {
+      if (mounted) _showStatus('复制失败：$error', error: true);
+    }
+  }
+
+  Future<void> _stopSessionQuietly(LanBackupSession session) async {
+    try {
+      await session.stop();
+    } catch (_) {}
   }
 
   @override
@@ -618,7 +764,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
           ],
         ),
         Text(
-          '有效期约 10 分钟，上传后回到车机确认合并或覆盖。',
+          '有效期约 10 分钟，上传后回到车机确认恢复。',
           style: TextStyle(
             color: AppColors.textSecondary,
             fontSize: layout.secondarySize,
@@ -774,25 +920,15 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
   }
 
   Widget _buildSummary() {
-    return Consumer2<FavoriteService, PlayerProvider>(
-      builder: (context, favorites, player, _) {
+    return Consumer<UserController>(
+      builder: (context, users, _) {
         return Wrap(
           spacing: 8,
           runSpacing: 8,
           children: [
-            _summaryChip(Icons.favorite, '${favorites.favorites.length} 首歌曲'),
-            _summaryChip(
-              Icons.video_collection_outlined,
-              '${favorites.bilibiliFavorites.length} 个B站收藏',
-            ),
-            _summaryChip(
-              Icons.queue_music,
-              '${favorites.favoritePlaylists.length} 个歌单',
-            ),
-            _summaryChip(
-              Icons.key_outlined,
-              player.apiKey.isEmpty ? '未设置 API Key' : 'API Key 已设置',
-            ),
+            _summaryChip(Icons.people_outline, '${users.users.length} 个用户'),
+            _summaryChip(Icons.library_music_outlined, '全部音乐库与历史'),
+            _summaryChip(Icons.tune_rounded, '全部全局设置'),
           ],
         );
       },

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/song.dart';
+import 'user_data_scope.dart';
 
 enum FavoriteImportMode { merge, replace }
 
@@ -33,27 +34,60 @@ class FavoriteImportResult {
   });
 }
 
+class FavoriteAddResult {
+  final int added;
+  final int skipped;
+  final int total;
+
+  const FavoriteAddResult({
+    required this.added,
+    required this.skipped,
+    required this.total,
+  });
+}
+
 /// 收藏管理（本地持久化，SharedPreferences 存 JSON）。
 class FavoriteService extends ChangeNotifier {
   static const String _prefsKey = 'favorites';
   static const String _playlistPrefsKey = 'favorite_playlists';
   static const String exportFormat = 'kuzai_music_favorites';
-  static const int exportVersion = 3;
+  static const int exportVersion = 4;
 
   final List<SongSearchResult> _favorites = [];
   final List<FavoritePlaylist> _favoritePlaylists = [];
+  List<SongSearchResult>? _favoritesView;
+  List<SongSearchResult>? _bilibiliFavoritesView;
+  List<SongSearchResult>? _allFavoritesView;
+  List<FavoritePlaylist>? _favoritePlaylistsView;
   bool _loaded = false;
+  bool _disposed = false;
 
-  List<SongSearchResult> get favorites => List.unmodifiable(
+  final UserDataScope dataScope;
+
+  FavoriteService({this.dataScope = UserDataScope.defaultScope});
+
+  List<SongSearchResult> get favorites => _favoritesView ??= List.unmodifiable(
     _favorites.where((song) => song.platform != MusicPlatform.bilibili),
   );
-  List<SongSearchResult> get bilibiliFavorites => List.unmodifiable(
-    _favorites.where((song) => song.platform == MusicPlatform.bilibili),
-  );
-  List<SongSearchResult> get allFavorites => List.unmodifiable(_favorites);
+  List<SongSearchResult> get bilibiliFavorites =>
+      _bilibiliFavoritesView ??= List.unmodifiable(
+        _favorites.where((song) => song.platform == MusicPlatform.bilibili),
+      );
+  List<SongSearchResult> get allFavorites =>
+      _allFavoritesView ??= List.unmodifiable(_favorites);
   List<FavoritePlaylist> get favoritePlaylists =>
-      List.unmodifiable(_favoritePlaylists);
+      _favoritePlaylistsView ??= List.unmodifiable(_favoritePlaylists);
   bool get loaded => _loaded;
+
+  @override
+  void notifyListeners() {
+    if (_disposed) return;
+    _favoritesView = null;
+    _bilibiliFavoritesView = null;
+    _allFavoritesView = null;
+    _favoritePlaylistsView = null;
+    super.notifyListeners();
+  }
 
   static String songKey(MusicPlatform platform, String id) {
     return '${platform.code}\u001f$id';
@@ -73,10 +107,10 @@ class FavoriteService extends ChangeNotifier {
 
   /// 启动时加载一次，继续兼容上游使用的纯歌曲数组格式。
   Future<void> load() async {
-    if (_loaded) return;
+    if (_loaded || _disposed) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_prefsKey);
+      final raw = prefs.getString(dataScope.preferenceKey(_prefsKey));
       if (raw != null && raw.isNotEmpty) {
         final decoded = _decodeBackup(raw);
         _favorites
@@ -84,7 +118,9 @@ class FavoriteService extends ChangeNotifier {
           ..addAll(decoded.songs)
           ..addAll(decoded.bilibili);
       }
-      final playlistRaw = prefs.getString(_playlistPrefsKey);
+      final playlistRaw = prefs.getString(
+        dataScope.preferenceKey(_playlistPrefsKey),
+      );
       if (playlistRaw != null && playlistRaw.isNotEmpty) {
         _favoritePlaylists
           ..clear()
@@ -94,6 +130,7 @@ class FavoriteService extends ChangeNotifier {
       _favorites.clear();
       _favoritePlaylists.clear();
     }
+    if (_disposed) return;
     _loaded = true;
     notifyListeners();
   }
@@ -111,6 +148,7 @@ class FavoriteService extends ChangeNotifier {
   /// 切换收藏状态，返回操作后是否已收藏。
   Future<bool> toggle(SongSearchResult song) async {
     await load();
+    if (_disposed) return false;
     final key = keyOf(song);
     final index = _favorites.indexWhere((item) => keyOf(item) == key);
     if (index >= 0) {
@@ -126,12 +164,48 @@ class FavoriteService extends ChangeNotifier {
     return true;
   }
 
+  /// Adds songs without removing entries that are already favorites.
+  /// The complete batch is deduplicated and persisted in one write.
+  Future<FavoriteAddResult> addMany(Iterable<SongSearchResult> songs) async {
+    await load();
+    final batch = songs.toList(growable: false);
+    if (_disposed || batch.isEmpty) {
+      return FavoriteAddResult(
+        added: 0,
+        skipped: batch.length,
+        total: batch.length,
+      );
+    }
+
+    final existing = _favorites.map(keyOf).toSet();
+    final additions = <SongSearchResult>[];
+    var skipped = 0;
+    for (final song in batch) {
+      if (existing.add(keyOf(song))) {
+        additions.add(song);
+      } else {
+        skipped++;
+      }
+    }
+    if (additions.isNotEmpty) {
+      _favorites.insertAll(0, additions);
+      notifyListeners();
+      await _save();
+    }
+    return FavoriteAddResult(
+      added: additions.length,
+      skipped: skipped,
+      total: batch.length,
+    );
+  }
+
   /// 切换歌单收藏状态，返回操作后是否已收藏。
   Future<bool> togglePlaylist(
     MusicPlatform platform,
     PlaylistInfo playlist,
   ) async {
     await load();
+    if (_disposed) return false;
     final key = playlistKey(platform, playlist.id);
     final index = _favoritePlaylists.indexWhere(
       (item) => playlistKeyOf(item) == key,
@@ -160,6 +234,7 @@ class FavoriteService extends ChangeNotifier {
     PlaylistInfo playlist,
   ) async {
     await load();
+    if (_disposed) return false;
     final key = playlistKey(platform, playlist.id);
     final index = _favoritePlaylists.indexWhere(
       (item) => playlistKeyOf(item) == key,
@@ -180,6 +255,7 @@ class FavoriteService extends ChangeNotifier {
 
   Future<void> removePlaylist(MusicPlatform platform, String id) async {
     await load();
+    if (_disposed) return;
     final key = playlistKey(platform, id);
     final before = _favoritePlaylists.length;
     _favoritePlaylists.removeWhere(
@@ -192,11 +268,13 @@ class FavoriteService extends ChangeNotifier {
   }
 
   Future<void> remove(MusicPlatform platform, String id) async {
+    if (_disposed) return;
     await removeMany({songKey(platform, id)});
   }
 
   Future<int> removeMany(Set<String> keys) async {
     await load();
+    if (_disposed) return 0;
     final before = _favorites.length;
     _favorites.removeWhere((song) => keys.contains(keyOf(song)));
     final removed = before - _favorites.length;
@@ -209,6 +287,7 @@ class FavoriteService extends ChangeNotifier {
 
   Future<void> clear() async {
     await load();
+    if (_disposed) return;
     if (_favorites.isEmpty) return;
     _favorites.clear();
     notifyListeners();
@@ -218,6 +297,7 @@ class FavoriteService extends ChangeNotifier {
   /// 用匹配到的新平台歌曲替换收藏项，未匹配项保持不变。
   Future<int> replaceMany(Map<String, SongSearchResult> replacements) async {
     await load();
+    if (_disposed) return 0;
     if (replacements.isEmpty) return 0;
 
     final replacementKeys = replacements.keys.toSet();
@@ -258,39 +338,104 @@ class FavoriteService extends ChangeNotifier {
 
   /// 导出统一备份。API Key 由调用方传入，避免收藏服务直接依赖播放器。
   ///
-  /// 版本 3 将音乐歌曲与 B站收藏分开保存，同时保留歌单元数据和 API Key。
+  /// 版本 4 标记备份属于单个用户；版本 3 及更早版本还原到默认用户。
   /// 歌单曲目不写入备份，还原后会按平台重新获取最新曲目。
-  String exportJson({String? apiKey}) {
-    return const JsonEncoder.withIndent('  ').convert({
+  Map<String, dynamic> exportData({String? apiKey}) {
+    final songs = <Map<String, dynamic>>[];
+    final bilibili = <Map<String, dynamic>>[];
+    for (final song in _favorites) {
+      final data = song.toJson();
+      if (song.platform == MusicPlatform.bilibili) {
+        bilibili.add(data);
+      } else {
+        songs.add(data);
+      }
+    }
+    return {
       'format': exportFormat,
       'version': exportVersion,
+      'userDataVersion': 1,
       'exportedAt': DateTime.now().toUtc().toIso8601String(),
-      'songs': favorites.map((song) => song.toJson()).toList(),
-      'bilibili': bilibiliFavorites.map((song) => song.toJson()).toList(),
+      'songs': songs,
+      'bilibili': bilibili,
       'playlists': _favoritePlaylists
           .map((playlist) => playlist.toJson())
           .toList(),
       'apiKey': apiKey,
-    });
+    };
+  }
+
+  String exportJson({String? apiKey}) {
+    return const JsonEncoder.withIndent(
+      '  ',
+    ).convert(exportData(apiKey: apiKey));
+  }
+
+  static void validateDecodedBackup(dynamic decodedJson) {
+    final decoded = _decodeBackupValue(decodedJson);
+    if (decoded.skipped > 0 ||
+        decoded.bilibiliSkipped > 0 ||
+        decoded.playlistsSkipped > 0) {
+      throw const FormatException('备份文件中的收藏数据不完整');
+    }
   }
 
   /// 导入库仔音乐备份，也兼容旧版直接导出的歌曲数组。
   Future<FavoriteImportResult> importJson(
     String raw, {
     FavoriteImportMode mode = FavoriteImportMode.merge,
+    bool importSongs = true,
+    bool importBilibili = true,
+    bool importPlaylists = true,
+    bool importApiKey = true,
+  }) async {
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(raw);
+    } on FormatException {
+      throw const FormatException('备份文件不是有效的 JSON');
+    }
+    return importDecoded(
+      decoded,
+      mode: mode,
+      importSongs: importSongs,
+      importBilibili: importBilibili,
+      importPlaylists: importPlaylists,
+      importApiKey: importApiKey,
+    );
+  }
+
+  /// Imports an already decoded backup document.
+  ///
+  /// BackupService uses this entry point so the same JSON tree can be shared
+  /// with the AI/player sections instead of decoding a large backup again.
+  Future<FavoriteImportResult> importDecoded(
+    dynamic decodedJson, {
+    FavoriteImportMode mode = FavoriteImportMode.merge,
+    bool importSongs = true,
+    bool importBilibili = true,
+    bool importPlaylists = true,
+    bool importApiKey = true,
   }) async {
     await load();
-    final decoded = _decodeBackup(raw);
-    var skipped = decoded.skipped;
+    if (_disposed) {
+      return const FavoriteImportResult(added: 0, skipped: 0, total: 0);
+    }
+    final decoded = _decodeBackupValue(decodedJson);
+    var skipped = importSongs ? decoded.skipped : 0;
     var added = 0;
-    var bilibiliSkipped = decoded.bilibiliSkipped;
+    var bilibiliSkipped = importBilibili ? decoded.bilibiliSkipped : 0;
     var bilibiliAdded = 0;
 
     if (mode == FavoriteImportMode.replace) {
-      _favorites.removeWhere((song) => song.platform != MusicPlatform.bilibili);
-      _favorites.insertAll(0, decoded.songs);
-      added = decoded.songs.length;
-      if (decoded.hasBilibili) {
+      if (importSongs) {
+        _favorites.removeWhere(
+          (song) => song.platform != MusicPlatform.bilibili,
+        );
+        _favorites.insertAll(0, decoded.songs);
+        added = decoded.songs.length;
+      }
+      if (importBilibili && decoded.hasBilibili) {
         _favorites.removeWhere(
           (song) => song.platform == MusicPlatform.bilibili,
         );
@@ -299,26 +444,30 @@ class FavoriteService extends ChangeNotifier {
       }
     } else {
       final existing = _favorites.map(keyOf).toSet();
-      for (final song in decoded.songs) {
-        if (existing.add(keyOf(song))) {
-          _favorites.add(song);
-          added++;
-        } else {
-          skipped++;
+      if (importSongs) {
+        for (final song in decoded.songs) {
+          if (existing.add(keyOf(song))) {
+            _favorites.add(song);
+            added++;
+          } else {
+            skipped++;
+          }
         }
       }
-      for (final song in decoded.bilibili) {
-        if (existing.add(keyOf(song))) {
-          _favorites.add(song);
-          bilibiliAdded++;
-        } else {
-          bilibiliSkipped++;
+      if (importBilibili) {
+        for (final song in decoded.bilibili) {
+          if (existing.add(keyOf(song))) {
+            _favorites.add(song);
+            bilibiliAdded++;
+          } else {
+            bilibiliSkipped++;
+          }
         }
       }
     }
 
     var playlistsAdded = 0;
-    if (decoded.hasPlaylists) {
+    if (importPlaylists && decoded.hasPlaylists) {
       if (mode == FavoriteImportMode.replace) {
         _favoritePlaylists
           ..clear()
@@ -338,21 +487,33 @@ class FavoriteService extends ChangeNotifier {
       }
     }
 
-    notifyListeners();
-    await _save();
-    if (decoded.hasPlaylists) await _savePlaylists();
+    final favoritesSelected = importSongs || importBilibili;
+    final playlistsSelected = importPlaylists && decoded.hasPlaylists;
+    if (favoritesSelected || playlistsSelected) {
+      notifyListeners();
+      if (favoritesSelected) await _save();
+      if (playlistsSelected) await _savePlaylists();
+    }
     return FavoriteImportResult(
       added: added,
       skipped: skipped,
-      total: decoded.songs.length + decoded.skipped,
+      total: importSongs ? decoded.songs.length + decoded.skipped : 0,
       bilibiliAdded: bilibiliAdded,
       bilibiliSkipped: bilibiliSkipped,
-      bilibiliTotal: decoded.bilibili.length + decoded.bilibiliSkipped,
+      bilibiliTotal: importBilibili
+          ? decoded.bilibili.length + decoded.bilibiliSkipped
+          : 0,
       playlistsAdded: playlistsAdded,
-      playlistsSkipped: decoded.playlistsSkipped,
-      apiKeyPresent: decoded.apiKeyPresent,
-      apiKey: decoded.apiKey,
+      playlistsSkipped: importPlaylists ? decoded.playlistsSkipped : 0,
+      apiKeyPresent: importApiKey && decoded.apiKeyPresent,
+      apiKey: importApiKey ? decoded.apiKey : null,
     );
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 
   static _DecodedBackup _decodeBackup(String raw) {
@@ -362,7 +523,10 @@ class FavoriteService extends ChangeNotifier {
     } on FormatException {
       throw const FormatException('备份文件不是有效的 JSON');
     }
+    return _decodeBackupValue(decoded);
+  }
 
+  static _DecodedBackup _decodeBackupValue(dynamic decoded) {
     final List<dynamic> entries;
     List<dynamic> bilibiliEntries = const [];
     var hasPlaylists = false;
@@ -533,10 +697,12 @@ class FavoriteService extends ChangeNotifier {
   }
 
   Future<void> _save() async {
+    if (dataScope.isDeleted) return;
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (dataScope.isDeleted) return;
       await prefs.setString(
-        _prefsKey,
+        dataScope.preferenceKey(_prefsKey),
         jsonEncode(_favorites.map((song) => song.toJson()).toList()),
       );
     } catch (error) {
@@ -547,10 +713,12 @@ class FavoriteService extends ChangeNotifier {
   }
 
   Future<void> _savePlaylists() async {
+    if (dataScope.isDeleted) return;
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (dataScope.isDeleted) return;
       await prefs.setString(
-        _playlistPrefsKey,
+        dataScope.preferenceKey(_playlistPrefsKey),
         jsonEncode(
           _favoritePlaylists.map((playlist) => playlist.toJson()).toList(),
         ),

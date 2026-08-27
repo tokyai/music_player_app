@@ -12,6 +12,8 @@ import '../providers/search_session.dart';
 import '../services/api_service.dart';
 import '../services/bilibili_service.dart';
 import '../services/favorite_service.dart';
+import '../services/global_settings_service.dart';
+import '../services/user_data_scope.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
@@ -92,6 +94,7 @@ class _LyricSearchDialogState extends State<_LyricSearchDialog> {
   }
 
   Future<void> _search() async {
+    if (!mounted) return;
     final query = _queryController.text.trim();
     if (query.isEmpty) {
       setState(() {
@@ -666,8 +669,6 @@ class _KaraokeProgressText extends StatelessWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
-  static const _landscapeSplitRatioPreferenceKey =
-      'player_landscape_split_ratio';
   static const _lyricFontSizes = <double>[32, 36, 42, 48, 54, 60];
   static const _minimumLyricLineSpacing = 20.0;
   static const _maximumLyricLineSpacing = 160.0;
@@ -695,13 +696,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
   String? _lastAutoScrollSongKey;
   int? _lastAutoScrollLyricIndex;
   bool _forceLyricRecenter = false;
+  late final UserDataScope _dataScope;
 
   @override
   void initState() {
     super.initState();
+    _dataScope = context.read<PlayerProvider>().dataScope;
     unawaited(_loadLyricDisplaySettings());
     unawaited(_loadLandscapeSplitRatio());
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
       _updateColor(context.read<PlayerProvider>().currentSong);
     });
   }
@@ -803,8 +807,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _saveLyricFontSize(double size) async {
+    if (_dataScope.isDeleted) return;
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (_dataScope.isDeleted) return;
       await prefs.setDouble(LyricStylePreferences.fontSizeKey, size);
     } catch (_) {}
   }
@@ -830,8 +836,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _saveLyricLineSpacing(double spacing) async {
+    if (_dataScope.isDeleted) return;
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (_dataScope.isDeleted) return;
       await prefs.setDouble(LyricStylePreferences.lineSpacingKey, spacing);
     } catch (_) {}
   }
@@ -839,7 +847,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Future<void> _loadLandscapeSplitRatio() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final saved = prefs.getDouble(_landscapeSplitRatioPreferenceKey);
+      final saved = prefs.getDouble(
+        GlobalSettingsService.landscapeSplitRatioKey,
+      );
       if (!mounted ||
           _landscapeSplitChangedByUser ||
           saved == null ||
@@ -856,10 +866,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _saveLandscapeSplitRatio() async {
+    if (_dataScope.isDeleted) return;
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (_dataScope.isDeleted) return;
       await prefs.setDouble(
-        _landscapeSplitRatioPreferenceKey,
+        GlobalSettingsService.landscapeSplitRatioKey,
         _landscapeLeftRatio,
       );
     } catch (_) {}
@@ -876,6 +888,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   // 仅在歌曲切换时提取一次封面主色（防抖），避免每次重建都跑图像处理
   void _updateColor(PlayQueueItem? song) {
+    if (!mounted) return;
     // Hero 和页面淡入尚未结束时只绘制纯色背景；封面解码、调色板
     // 提取与全屏模糊都错峰到转场完成后。
     if (!_routeTransitionComplete || song == null) return;
@@ -901,7 +914,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _scrollToLyric(PlayerProvider player) {
-    if (!_lyricsAutoScroll) return;
+    if (!mounted || !_lyricsAutoScroll) return;
     final index = player.currentLyricIndex;
     final song = player.currentSong;
     final songKey = _lyricTargetKey(song);
@@ -2177,7 +2190,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     required bool landscape,
   }) {
     final subColor = textColor.withValues(alpha: 0.7);
-    final pages = song.bilibiliPages;
+    final pages = player.currentBilibiliPages;
     final currentPageIndex = pages.indexWhere(
       (page) => page.cid == song.bilibiliCid,
     );
@@ -3206,7 +3219,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   context: ctx,
                   compact: compact,
                   onPressed: isBilibili
-                      ? song == null || song.bilibiliPages.isEmpty
+                      ? player.currentBilibiliPages.isEmpty
                             ? null
                             : () => _showBilibiliPageSheet(ctx, player)
                       : () => _showQueueSheet(ctx, player),
@@ -3361,7 +3374,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       builder: (context, current, _) {
         final song = current.currentSong;
         final pages = song?.platform == MusicPlatform.bilibili
-            ? song!.bilibiliPages
+            ? current.currentBilibiliPages
             : const <BilibiliPageInfo>[];
         final selectedCid = song?.bilibiliCid;
         return Column(

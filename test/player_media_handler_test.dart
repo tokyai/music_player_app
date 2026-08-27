@@ -38,10 +38,27 @@ void main() {
     expect(player.lastQueueIndex, 1);
     expect(player.pauseCalls, 1);
   });
+
+  test('fingerprints very large queues without changing queue semantics', () {
+    final player = _MediaTestPlayer(itemCount: 3000, currentIndex: 2500);
+    final handler = PlayerMediaHandler(player);
+    addTearDown(() {
+      handler.dispose();
+      player.dispose();
+    });
+
+    player.loadQueue();
+
+    expect(handler.queue.value.length, 3000);
+    expect(handler.mediaItem.value?.title, 'Song 2501');
+    expect(handler.playbackState.value.queueIndex, 2500);
+  });
 }
 
 class _MediaTestPlayer extends PlayerProvider {
   final List<PlayQueueItem> _items = [];
+  final int itemCount;
+  final int initialIndex;
   int _index = -1;
   bool _playing = false;
   int playCalls = 0;
@@ -51,26 +68,45 @@ class _MediaTestPlayer extends PlayerProvider {
   Duration? lastSeek;
   int? lastQueueIndex;
 
+  _MediaTestPlayer({this.itemCount = 2, int currentIndex = 0})
+    : initialIndex = currentIndex;
+
   void loadQueue() {
-    _items.addAll([
-      PlayQueueItem(
-        platform: MusicPlatform.qq,
-        id: 'first',
-        name: 'First song',
-        artist: 'Artist',
-        album: 'Album',
-        duration: 180,
-      ),
-      PlayQueueItem(
-        platform: MusicPlatform.netease,
-        id: 'second',
-        name: 'Second song',
-        artist: 'Artist',
-        album: 'Album',
-        duration: 210,
-      ),
-    ]);
-    _index = 0;
+    if (itemCount == 2) {
+      _items.addAll([
+        PlayQueueItem(
+          platform: MusicPlatform.qq,
+          id: 'first',
+          name: 'First song',
+          artist: 'Artist',
+          album: 'Album',
+          duration: 180,
+        ),
+        PlayQueueItem(
+          platform: MusicPlatform.netease,
+          id: 'second',
+          name: 'Second song',
+          artist: 'Artist',
+          album: 'Album',
+          duration: 210,
+        ),
+      ]);
+    } else {
+      _items.addAll(
+        List.generate(
+          itemCount,
+          (index) => PlayQueueItem(
+            platform: MusicPlatform.qq,
+            id: '$index',
+            name: 'Song ${index + 1}',
+            artist: 'Artist',
+            album: 'Album',
+            duration: 180,
+          ),
+        ),
+      );
+    }
+    _index = initialIndex;
     notifyListeners();
   }
 

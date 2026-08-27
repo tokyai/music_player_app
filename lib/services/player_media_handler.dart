@@ -1,4 +1,5 @@
 import 'package:audio_service/audio_service.dart';
+import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../models/song.dart';
@@ -11,33 +12,53 @@ class PlayerMediaHandler extends BaseAudioHandler with SeekHandler {
     _syncFromPlayer();
   }
 
-  final PlayerProvider _player;
+  PlayerProvider _player;
   int? _publishedQueueFingerprint;
   int? _publishedPlaybackFingerprint;
   List<MediaItem> _publishedQueue = const [];
+  bool _disposed = false;
+
+  void bindPlayer(PlayerProvider player) {
+    if (_disposed || identical(_player, player)) return;
+    _player.removeListener(_syncFromPlayer);
+    _player = player;
+    _publishedQueueFingerprint = null;
+    _publishedPlaybackFingerprint = null;
+    _publishedQueue = const [];
+    _player.addListener(_syncFromPlayer);
+    _syncFromPlayer();
+  }
 
   void _syncFromPlayer() {
-    _publishQueue();
-    _publishCurrentItem();
-    _publishPlaybackState();
+    if (_disposed) return;
+    try {
+      _publishQueue();
+      _publishCurrentItem();
+      _publishPlaybackState();
+    } catch (error, stackTrace) {
+      // A just_audio callback can race handler teardown. Do not let a stale
+      // native callback terminate the Flutter isolate while its streams are
+      // being released.
+      if (!_disposed) {
+        debugPrint('系统媒体状态同步失败: $error');
+        debugPrintStack(stackTrace: stackTrace);
+      }
+    }
   }
 
   void _publishQueue() {
     final items = _player.queue;
-    final fingerprint = Object.hashAll([
+    final currentIndex = _player.currentIndex;
+    var fingerprint = Object.hash(
+      _player.queueSessionId,
       items.length,
-      for (final item in items)
-        Object.hash(
-          item.platform,
-          item.id,
-          item.name,
-          item.artist,
-          item.album,
-          item.coverUrl,
-          item.duration,
-          item.bilibiliCid,
-        ),
-    ]);
+      currentIndex,
+    );
+    // Fold the item metadata directly into the fingerprint. Object.hashAll
+    // first materialized a second list containing one hash per queue item.
+    for (final item in items) {
+      fingerprint = Object.hash(fingerprint, _itemFingerprint(item));
+    }
     if (_publishedQueueFingerprint == fingerprint) return;
 
     _publishedQueue = [
@@ -47,6 +68,17 @@ class PlayerMediaHandler extends BaseAudioHandler with SeekHandler {
     _publishedQueueFingerprint = fingerprint;
     queue.add(_publishedQueue);
   }
+
+  int _itemFingerprint(PlayQueueItem item) => Object.hash(
+    item.platform,
+    item.id,
+    item.name,
+    item.artist,
+    item.album,
+    item.coverUrl,
+    item.duration,
+    item.bilibiliCid,
+  );
 
   void _publishCurrentItem() {
     final index = _player.currentIndex;
@@ -187,6 +219,7 @@ class PlayerMediaHandler extends BaseAudioHandler with SeekHandler {
   Future<void> skipToQueueItem(int index) => _player.playQueueItem(index);
 
   void dispose() {
+    _disposed = true;
     _player.removeListener(_syncFromPlayer);
   }
 }

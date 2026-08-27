@@ -29,7 +29,12 @@ class FavoritePlaylistCard extends StatelessWidget {
     final playlist = favorite.playlist;
     final platformColor = PlatformColors.of(favorite.platform);
     final cardWidth = this.cardWidth ?? layout.mediaCardWidth;
-    final compactPreview = cardWidth < layout.mediaCardWidth;
+    final titleSize = layout.usesLargeTypography
+        ? 20.0
+        : (layout.isCompactLandscape ? 17.0 : 18.0);
+    final subtitleSize = layout.usesLargeTypography
+        ? 17.0
+        : (layout.isCompactLandscape ? 14.0 : 15.0);
     return SizedBox(
       key: ValueKey(
         'favorite-playlist-${favorite.platform.code}-${playlist.id}',
@@ -91,18 +96,18 @@ class FavoritePlaylistCard extends StatelessWidget {
                     ),
                   ],
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 Text(
                   playlist.name,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: AppColors.textPrimary,
-                    fontSize: compactPreview ? 15 : layout.mediaCardTitleSize,
-                    fontWeight: FontWeight.w600,
+                    fontSize: titleSize,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
-                const SizedBox(height: 3),
+                const SizedBox(height: 2),
                 Text(
                   playlist.creator != null && playlist.creator!.isNotEmpty
                       ? '${favorite.platform.label} · ${playlist.creator}'
@@ -111,9 +116,7 @@ class FavoritePlaylistCard extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: AppColors.textSecondary,
-                    fontSize: compactPreview
-                        ? 13
-                        : layout.mediaCardSubtitleSize,
+                    fontSize: subtitleSize,
                   ),
                 ),
               ],

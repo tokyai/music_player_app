@@ -7,13 +7,17 @@ import 'package:provider/provider.dart';
 import '../models/song.dart';
 import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
+import '../providers/search_session.dart';
+import '../providers/theme_controller.dart';
 import '../services/backup_service.dart';
 import '../services/favorite_file_service.dart';
 import '../services/favorite_service.dart';
+import '../services/global_settings_service.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_motion.dart';
 import '../theme/app_theme.dart';
 import '../utils/song_source_matcher.dart';
+import '../widgets/backup_restore_options_dialog.dart';
 import '../widgets/favorite_playlist_card.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/remote_focusable.dart';
@@ -230,22 +234,13 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           ),
           FavoriteCollectionView.all => const SizedBox.shrink(),
         };
-        final maxWidth = layout.isLandscape && layout.isWideLandscape
-            ? 980.0
-            : double.infinity;
         return Material(
           color: AppColors.background,
           child: SafeArea(
             top: false,
             child: Stack(
               children: [
-                Align(
-                  alignment: Alignment.topCenter,
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(maxWidth: maxWidth),
-                    child: content,
-                  ),
-                ),
+                Positioned.fill(child: content),
                 if (_switchingSources)
                   Positioned.fill(child: _buildSwitchProgress()),
               ],
@@ -279,15 +274,20 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       controller: _collectionScrollController,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.fromLTRB(
-        layout.isLandscape ? layout.pagePadding : 12,
-        10,
-        layout.isLandscape ? layout.pagePadding : 12,
-        20,
+        layout.isCompactLandscape ? 8 : 12,
+        8,
+        layout.isCompactLandscape ? 8 : 12,
+        24,
       ),
       itemCount: songs.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 8),
-      itemBuilder: (context, index) =>
-          _buildSongTile(songs, index, collectionCard: true),
+      separatorBuilder: (_, _) => const Divider(height: 1),
+      itemBuilder: (context, index) => _buildSongTile(
+        songs,
+        index,
+        itemKey: ValueKey(
+          'favorite-song-${songs[index].platform.code}-${songs[index].id}',
+        ),
+      ),
     );
   }
 
@@ -317,13 +317,13 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       controller: _collectionScrollController,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.fromLTRB(
-        layout.isLandscape ? layout.pagePadding : 12,
-        10,
-        layout.isLandscape ? layout.pagePadding : 12,
-        20,
+        layout.isCompactLandscape ? 8 : 12,
+        8,
+        layout.isCompactLandscape ? 8 : 12,
+        24,
       ),
       itemCount: playlists.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 8),
+      separatorBuilder: (_, _) => const Divider(height: 1),
       itemBuilder: (context, index) {
         final favorite = playlists[index];
         return _FavoritePlaylistListTile(
@@ -371,13 +371,13 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       controller: _collectionScrollController,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.fromLTRB(
-        layout.isLandscape ? layout.pagePadding : 12,
-        10,
-        layout.isLandscape ? layout.pagePadding : 12,
-        20,
+        layout.isCompactLandscape ? 8 : 12,
+        8,
+        layout.isCompactLandscape ? 8 : 12,
+        24,
       ),
       itemCount: videos.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 8),
+      separatorBuilder: (_, _) => const Divider(height: 1),
       itemBuilder: (context, index) {
         final video = videos[index];
         return SongTile(
@@ -385,14 +385,11 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
           song: video,
           showPlatformTag: true,
           showFavorite: true,
-          collectionCard: true,
+          historyListLayout: true,
           onTap: () =>
               context.read<PlayerProvider>().playFromPlaylist(videos, index),
           onAddToQueue: () {
-            context.read<PlayerProvider>().addToQueue(video);
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text('已添加: ${video.name}')));
+            unawaited(_addBilibiliToQueue(video));
           },
         );
       },
@@ -1034,20 +1031,18 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   Widget _buildSongTile(
     List<SongSearchResult> songs,
     int index, {
-    bool collectionCard = false,
+    Key? itemKey,
   }) {
     final song = songs[index];
     final favoriteKey = FavoriteService.keyOf(song);
     return SongTile(
-      key: collectionCard
-          ? ValueKey('favorite-song-${song.platform.code}-${song.id}')
-          : null,
+      key: itemKey,
       song: song,
       showPlatformTag: true,
       showFavorite: !_selecting,
+      historyListLayout: itemKey != null,
       selectionMode: _selecting,
       selected: _selectedKeys.contains(favoriteKey),
-      collectionCard: collectionCard,
       onSelectionChanged: (selected) => _setSelected(favoriteKey, selected),
       onLongPress: () => _startSelection(favoriteKey),
       onTap: () =>
@@ -1269,10 +1264,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                     index,
                   ),
                   onAddToQueue: () {
-                    context.read<PlayerProvider>().addToQueue(video);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('已添加: ${video.name}')),
-                    );
+                    unawaited(_addBilibiliToQueue(video));
                   },
                 ),
               );
@@ -1280,6 +1272,16 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _addBilibiliToQueue(SongSearchResult video) async {
+    final count = await context.read<PlayerProvider>().addToQueueAndGetCount(
+      video,
+    );
+    if (!mounted || count <= 0) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('已添加 $count 个分P: ${video.name}')));
   }
 
   Widget _buildSelectionBar(List<SongSearchResult> songs) {
@@ -1352,6 +1354,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   void _startSelection(String key) {
+    if (!mounted) return;
     setState(() {
       _selecting = true;
       _selectedKeys.add(key);
@@ -1359,6 +1362,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   void _setSelected(String key, bool selected) {
+    if (!mounted) return;
     setState(() {
       if (selected) {
         _selectedKeys.add(key);
@@ -1369,6 +1373,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   void _toggleSelectAll(List<SongSearchResult> songs) {
+    if (!mounted) return;
     setState(() {
       if (_selectedKeys.length == songs.length) {
         _selectedKeys.clear();
@@ -1381,6 +1386,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   void _exitSelection() {
+    if (!mounted) return;
     setState(() {
       _selecting = false;
       _selectedKeys.clear();
@@ -1388,6 +1394,7 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   Future<void> _deleteSelected() async {
+    if (!mounted) return;
     final count = _selectedKeys.length;
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1407,17 +1414,25 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       ),
     );
     if (confirmed != true || !mounted) return;
-    final removed = await context.read<FavoriteService>().removeMany(
-      Set.of(_selectedKeys),
-    );
-    if (!mounted) return;
-    _exitSelection();
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('已删除 $removed 首收藏')));
+    try {
+      final removed = await context.read<FavoriteService>().removeMany(
+        Set.of(_selectedKeys),
+      );
+      if (!mounted) return;
+      _exitSelection();
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已删除 $removed 首收藏')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('删除失败：$error')));
+    }
   }
 
   Future<void> _switchSelectedSources(List<SongSearchResult> allSongs) async {
+    if (!mounted) return;
     final target = await _chooseTargetPlatform();
     if (target == null || !mounted) return;
 
@@ -1507,14 +1522,21 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       for (final match in matches)
         FavoriteService.keyOf(match.original): match.replacement!,
     };
-    final replaced = await context.read<FavoriteService>().replaceMany(
-      replacements,
-    );
-    if (!mounted) return;
-    _exitSelection();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已将 $replaced 首歌曲切换为 ${target.label} 音源')),
-    );
+    try {
+      final replaced = await context.read<FavoriteService>().replaceMany(
+        replacements,
+      );
+      if (!mounted) return;
+      _exitSelection();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已将 $replaced 首歌曲切换为 ${target.label} 音源')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('换源失败：$error')));
+    }
   }
 
   Future<MusicPlatform?> _chooseTargetPlatform() {
@@ -1599,22 +1621,36 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   Future<void> _exportFavorites() async {
+    if (!mounted) return;
     final favorites = context.read<FavoriteService>();
     final player = context.read<PlayerProvider>();
     final messenger = ScaffoldMessenger.of(context);
     try {
       final aiConfig = context.read<AiConfigController?>();
+      final theme = context.read<ThemeController?>();
+      final search = context.read<SearchSession?>();
       await Future.wait([
         favorites.load(),
         player.settingsReady,
         if (aiConfig != null) aiConfig.ready,
+        if (theme != null) theme.ready,
+        if (search != null) search.historyReady,
       ]);
       if (!mounted) return;
+      final lyricDisplay = player.dataScope.isDefault
+          ? await GlobalSettingsService.exportLyricDisplay()
+          : null;
+      if (!mounted || !identical(context.read<PlayerProvider>(), player)) {
+        return;
+      }
       final result = await FavoriteFileService.exportBackup(
         BackupService.exportJson(
           favorites: favorites,
           player: player,
           aiConfig: aiConfig,
+          theme: theme,
+          search: search,
+          lyricDisplay: lyricDisplay,
         ),
       );
       if (!mounted || result == FavoriteExportResult.cancelled) return;
@@ -1628,10 +1664,14 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
     } on PlatformException catch (error) {
       if (!mounted) return;
       messenger.showSnackBar(SnackBar(content: Text(error.message ?? '导出失败')));
+    } catch (error) {
+      if (!mounted) return;
+      messenger.showSnackBar(SnackBar(content: Text('导出失败：$error')));
     }
   }
 
   Future<void> _importFavorites() async {
+    if (!mounted) return;
     String? raw;
     try {
       raw = await FavoriteFileService.importBackup();
@@ -1644,37 +1684,91 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
         context,
       ).showSnackBar(SnackBar(content: Text(error.message ?? '读取备份失败')));
       return;
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('读取备份失败：$error')));
+      return;
     }
     if (raw == null || raw.trim().isEmpty || !mounted) return;
 
-    final mode = await _chooseImportMode();
-    if (mode == null || !mounted) return;
+    final operationFavorites = context.read<FavoriteService>();
+    final operationPlayer = context.read<PlayerProvider>();
+    final operationAiConfig = context.read<AiConfigController?>();
+    final operationTheme = context.read<ThemeController?>();
+    final operationSearch = context.read<SearchSession?>();
+    final operationScope = operationPlayer.dataScope;
+
+    BackupRestoreSelection? selection;
     try {
-      final result = await BackupService.importJson(
-        raw: raw,
-        favorites: context.read<FavoriteService>(),
-        player: context.read<PlayerProvider>(),
-        aiConfig: context.read<AiConfigController?>(),
-        mode: mode,
-      );
-      if (!mounted) return;
-      _exitSelection();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '已导入 ${result.songsAdded} 首歌曲、${result.playlistsAdded} 个歌单',
-          ),
-        ),
+      final contents = BackupService.inspect(raw);
+      selection = await showBackupRestoreSelectionDialog(
+        context,
+        contents.forScope(operationScope),
       );
     } on FormatException catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(error.message)));
+      return;
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('检查备份失败：$error')));
+      return;
+    }
+    if (selection == null ||
+        !mounted ||
+        !identical(context.read<PlayerProvider>(), operationPlayer)) {
+      return;
+    }
+    try {
+      final result = await BackupService.importJson(
+        raw: raw,
+        favorites: operationFavorites,
+        player: operationPlayer,
+        aiConfig: operationAiConfig,
+        theme: operationTheme,
+        search: operationSearch,
+        mode: selection.mode,
+        sections: selection.sections,
+      );
+      if (!mounted) return;
+      _exitSelection();
+      final imported = <String>[];
+      if (selection.sections.contains(BackupRestoreSection.songs)) {
+        imported.add('${result.songsAdded} 首歌曲');
+      }
+      if (selection.sections.contains(BackupRestoreSection.bilibili)) {
+        imported.add('${result.bilibiliAdded} 个B站收藏');
+      }
+      if (selection.sections.contains(BackupRestoreSection.playlists)) {
+        imported.add('${result.playlistsAdded} 个歌单');
+      }
+      if (result.apiKeyRestored) imported.add('音乐 API Key');
+      if (result.aiConfigRestored) imported.add('AI 助手配置');
+      if (result.playerSettingsRestored) imported.add('播放器设置');
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已导入 ${imported.join('、')}')));
+    } on FormatException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('导入失败：$error')));
     }
   }
 
   Future<String?> _showPasteImportDialog() async {
+    if (!mounted) return null;
     final controller = TextEditingController();
     final value = await showDialog<String>(
       context: context,
@@ -1707,40 +1801,15 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
   }
 
   void _openBackupScreen() {
+    if (!mounted) return;
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const BackupRestoreScreen()),
     );
   }
-
-  Future<FavoriteImportMode?> _chooseImportMode() {
-    return showDialog<FavoriteImportMode>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('导入方式'),
-        content: const Text('合并会保留现有收藏；覆盖会先清空当前收藏。'),
-        actions: [
-          TextButton(
-            onPressed: () =>
-                Navigator.pop(dialogContext, FavoriteImportMode.replace),
-            child: const Text('覆盖'),
-          ),
-          FilledButton(
-            onPressed: () =>
-                Navigator.pop(dialogContext, FavoriteImportMode.merge),
-            child: const Text('合并'),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
-/// 纵向收藏歌单行。
-///
-/// 首页预览仍使用方形卡片；进入歌单页后改成一行一个条目，能在手机和
-/// 横屏车机上同时显示名称、平台、作者和曲目数，也避免横向轮播嵌套在
-/// 页面主滚动区域中。
+/// 收藏歌单行，与播放历史页使用相同的连续列表尺寸和留白。
 class _FavoritePlaylistListTile extends StatelessWidget {
   final FavoritePlaylist favorite;
   final VoidCallback onTap;
@@ -1759,8 +1828,8 @@ class _FavoritePlaylistListTile extends StatelessWidget {
     final playlist = favorite.playlist;
     final platformColor = PlatformColors.of(favorite.platform);
     final coverSize = layout.usesLargeTypography
-        ? 88.0
-        : (layout.isCompactLandscape ? 58.0 : 72.0);
+        ? 78.0
+        : (layout.isCompactLandscape ? 54.0 : 66.0);
     return RemoteFocusable(
       key: ValueKey(
         'favorite-playlist-list-${favorite.platform.code}-${playlist.id}',
@@ -1768,64 +1837,54 @@ class _FavoritePlaylistListTile extends StatelessWidget {
       onPressed: onTap,
       semanticLabel: '打开歌单 ${playlist.name}',
       borderRadius: BorderRadius.circular(AppRadius.card),
-      child: Container(
-        padding: EdgeInsets.all(layout.isCompactLandscape ? 8 : 10),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(AppRadius.card),
-          border: Border.all(color: AppColors.outline),
+      child: ListTile(
+        minTileHeight: layout.usesLargeTypography
+            ? 104
+            : (layout.isCompactLandscape ? 70 : 86),
+        contentPadding: EdgeInsets.symmetric(
+          horizontal: layout.isCompactLandscape ? 8 : 14,
+          vertical: layout.usesLargeTypography ? 8 : 4,
         ),
-        child: Row(
+        leading: ClipRRect(
+          borderRadius: BorderRadius.circular(AppRadius.media),
+          child: SizedBox.square(
+            dimension: coverSize,
+            child: playlist.coverUrl != null && playlist.coverUrl!.isNotEmpty
+                ? SmartCover(
+                    url: playlist.coverUrl,
+                    fit: BoxFit.cover,
+                    maxDecodeWidth: 512,
+                    placeholder: () => _placeholder(platformColor),
+                  )
+                : _placeholder(platformColor),
+          ),
+        ),
+        title: Text(
+          playlist.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: layout.songTitleSize,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        subtitle: Text(
+          [
+            favorite.platform.label,
+            if (playlist.creator?.isNotEmpty ?? false) playlist.creator!,
+            if (playlist.trackCount > 0) '${playlist.trackCount} 首',
+          ].join(' · '),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: layout.songSubtitleSize,
+          ),
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(AppRadius.media),
-              child: SizedBox.square(
-                dimension: coverSize,
-                child:
-                    playlist.coverUrl != null && playlist.coverUrl!.isNotEmpty
-                    ? SmartCover(
-                        url: playlist.coverUrl,
-                        fit: BoxFit.cover,
-                        maxDecodeWidth: 512,
-                        placeholder: () => _placeholder(platformColor),
-                      )
-                    : _placeholder(platformColor),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    playlist.name,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: layout.songTitleSize,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
-                    [
-                      favorite.platform.label,
-                      if (playlist.creator?.isNotEmpty ?? false)
-                        playlist.creator!,
-                      if (playlist.trackCount > 0) '${playlist.trackCount} 首',
-                    ].join(' · '),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: layout.songSubtitleSize,
-                    ),
-                  ),
-                ],
-              ),
-            ),
             IconButton(
               tooltip: '取消收藏歌单',
               onPressed: onFavoritePressed,
@@ -1834,6 +1893,7 @@ class _FavoritePlaylistListTile extends StatelessWidget {
             Icon(Icons.chevron_right_rounded, color: AppColors.textHint),
           ],
         ),
+        onTap: onTap,
       ),
     );
   }

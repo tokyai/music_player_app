@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -121,14 +122,26 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     expect(find.byKey(const ValueKey('kuzai-pet-wave-active')), findsNothing);
 
-    await tester.longPress(find.byKey(const ValueKey('test-kuzai-pet')));
-    await tester.pump();
-    expect(tapCount, 1);
-    expect(
-      find.byKey(const ValueKey('kuzai-pet-petting-active')),
-      findsOneWidget,
-    );
-    expect(tester.takeException(), isNull);
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'HapticFeedback.vibrate') {
+        throw StateError('haptic channel unavailable');
+      }
+      return null;
+    });
+    try {
+      await tester.longPress(find.byKey(const ValueKey('test-kuzai-pet')));
+      await tester.pump();
+      expect(tapCount, 1);
+      expect(
+        find.byKey(const ValueKey('kuzai-pet-petting-active')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    } finally {
+      messenger.setMockMethodCallHandler(SystemChannels.platform, null);
+    }
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
@@ -202,6 +215,23 @@ void main() {
             findsOneWidget,
           );
           expect(
+            find.byKey(const ValueKey('ai-assistant-pet-avatar')),
+            findsOneWidget,
+          );
+          expect(find.text('库仔 AI 宠物'), findsOneWidget);
+          expect(
+            tester
+                .getSize(
+                  find.byKey(const ValueKey('ai-assistant-voice-action')),
+                )
+                .height,
+            size == const Size(640, 360) ? 62 : 72,
+          );
+          expect(
+            tester.getSize(find.byKey(const ValueKey('ai-assistant-close'))),
+            Size.square(size == const Size(640, 360) ? 58 : 62),
+          );
+          expect(
             find.byKey(const ValueKey('ai-assistant-text-field')),
             findsNothing,
           );
@@ -245,6 +275,42 @@ void main() {
       }, _mockClient);
     },
   );
+
+  testWidgets('AI pet panel keeps a distinct surface in the dark car theme', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      for (final size in const [Size(640, 360), Size(1280, 800)]) {
+        SharedPreferences.setMockInitialValues({});
+        final fixture = await _MainFixture.create();
+        _setViewSize(tester, size);
+        await tester.pumpWidget(fixture.app(themeMode: ThemeMode.dark));
+        await _pumpFrames(tester);
+        await tester.tap(find.byKey(const ValueKey('ai-assistant-fab')));
+        await _pumpFrames(tester);
+
+        final dialog = find.byKey(const ValueKey('ai-assistant-dialog'));
+        expect(dialog, findsOneWidget);
+        expect(find.text('库仔 AI 宠物'), findsOneWidget);
+        expect(AppColors.isDark, isTrue);
+        expect(
+          tester
+              .getSize(find.byKey(const ValueKey('ai-assistant-voice-action')))
+              .height,
+          size == const Size(640, 360) ? 62 : 72,
+        );
+        await tester.tap(find.byKey(const ValueKey('ai-assistant-close')));
+        await _pumpFrames(tester);
+        expect(dialog, findsNothing);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        fixture.dispose();
+      }
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    }, _mockClient);
+  });
 
   testWidgets(
     'successful voice playback closes the dialog in both landscapes',
@@ -608,6 +674,64 @@ void main() {
           isFalse,
         );
 
+        var globalVoiceEngine = find.byKey(
+          ValueKey(
+            'global-voice-engine-${AiVoiceModelKind.zipformerChinese.value}',
+          ),
+        );
+        await tester.scrollUntilVisible(
+          globalVoiceEngine,
+          160,
+          scrollable: systemScroll,
+        );
+        expect(globalVoiceEngine.hitTestable(), findsOneWidget);
+        await tester.tap(globalVoiceEngine);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text(AiVoiceModelKind.doubaoIme.label).last);
+        await tester.pumpAndSettle();
+        expect(config.voiceModel, AiVoiceModelKind.doubaoIme);
+
+        globalVoiceEngine = find.byKey(
+          ValueKey('global-voice-engine-${AiVoiceModelKind.doubaoIme.value}'),
+        );
+        await tester.tap(globalVoiceEngine);
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.text(AiVoiceModelKind.zipformerChinese.label).last,
+        );
+        await tester.pumpAndSettle();
+        final loadMode = find.byKey(const ValueKey('global-voice-load-mode'));
+        expect(loadMode.hitTestable(), findsOneWidget);
+        await tester.tap(find.text(AiVoiceLoadMode.startupPreload.label));
+        await tester.pumpAndSettle();
+        expect(config.voiceLoadMode, AiVoiceLoadMode.startupPreload);
+
+        final playbackMode = find.byKey(
+          const ValueKey('global-voice-playback-mode'),
+        );
+        await tester.scrollUntilVisible(
+          playbackMode,
+          160,
+          scrollable: systemScroll,
+        );
+        expect(playbackMode.hitTestable(), findsOneWidget);
+        await tester.tap(find.text(AiAssistantPlaybackMode.duck.label));
+        await tester.pumpAndSettle();
+        expect(config.assistantPlaybackMode, AiAssistantPlaybackMode.duck);
+        final duckingSlider = find.byKey(
+          const ValueKey('global-voice-ducking-reduction'),
+        );
+        expect(duckingSlider.hitTestable(), findsOneWidget);
+        expect(tester.widget<Slider>(duckingSlider).onChanged, isNotNull);
+
+        final bargeIn = find.byKey(const ValueKey('global-voice-barge-in'));
+        await tester.scrollUntilVisible(bargeIn, 160, scrollable: systemScroll);
+        expect(bargeIn.hitTestable(), findsOneWidget);
+        expect(tester.widget<SwitchListTile>(bargeIn).value, isFalse);
+        await tester.tap(bargeIn);
+        await tester.pumpAndSettle();
+        expect(config.bargeInMode, AiBargeInMode.voiceActivity);
+
         final originalProfileId = config.activeProfileId;
         final profileAdd = find.byKey(const ValueKey('ai-profile-add'));
         await tester.scrollUntilVisible(
@@ -696,28 +820,13 @@ void main() {
           'https://example.test/v1',
         );
 
-        final voiceModel = find.byKey(
-          ValueKey('ai-voice-model-${AiVoiceModelKind.zipformerChinese.value}'),
-        );
-        await tester.scrollUntilVisible(
-          voiceModel,
-          160,
-          scrollable: editorScroll,
-        );
-        expect(voiceModel.hitTestable(), findsOneWidget);
-        await tester.tap(voiceModel);
-        await tester.pumpAndSettle();
-        await tester.tap(
-          find.text(AiVoiceModelKind.paraformerBilingual.label).last,
-        );
-        await tester.pumpAndSettle();
         expect(
           find.byKey(
             ValueKey(
-              'ai-voice-model-${AiVoiceModelKind.paraformerBilingual.value}',
+              'ai-voice-model-${AiVoiceModelKind.zipformerChinese.value}',
             ),
           ),
-          findsOneWidget,
+          findsNothing,
         );
 
         for (final key in const [
@@ -738,7 +847,6 @@ void main() {
         await tester.scrollUntilVisible(save, 160, scrollable: editorScroll);
         await tester.tap(save);
         await tester.pumpAndSettle();
-        expect(config.config.voiceModel, AiVoiceModelKind.paraformerBilingual);
         expect(config.config.model, 'car-test-model');
         expect(config.activeProfile?.name, '车机备用模型');
 
@@ -854,7 +962,10 @@ class _MainFixture {
     );
   }
 
-  Widget app({Widget home = const MainScreen()}) => MultiProvider(
+  Widget app({
+    Widget home = const MainScreen(),
+    ThemeMode themeMode = ThemeMode.light,
+  }) => MultiProvider(
     providers: [
       ChangeNotifierProvider<PlayerProvider>.value(value: player),
       ChangeNotifierProvider<AiConfigController>.value(value: config),
@@ -866,6 +977,8 @@ class _MainFixture {
     child: Consumer<ThemeController>(
       builder: (context, controller, _) => MaterialApp(
         theme: AppTheme.light(),
+        darkTheme: AppTheme.dark(),
+        themeMode: themeMode,
         builder: (context, child) => MediaQuery(
           data: AppLayout.adaptiveMediaQueryOf(
             context,

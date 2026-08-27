@@ -23,6 +23,7 @@ class _BilibiliLoginDialogState extends State<BilibiliLoginDialog> {
   int _secondsLeft = 180;
   String _status = '正在获取二维码';
   String? _error;
+  int _refreshGeneration = 0;
 
   @override
   void initState() {
@@ -31,30 +32,36 @@ class _BilibiliLoginDialogState extends State<BilibiliLoginDialog> {
   }
 
   Future<void> _refresh() async {
+    if (!mounted) return;
+    final generation = ++_refreshGeneration;
     _timer?.cancel();
     setState(() {
       _loading = true;
       _error = null;
       _status = '正在获取二维码';
       _secondsLeft = 180;
+      _qrCode = null;
     });
     try {
       final code = await context.read<PlayerProvider>().createBilibiliQrCode();
-      if (!mounted) return;
+      if (!mounted || generation != _refreshGeneration) return;
       setState(() {
         _qrCode = code;
         _loading = false;
         _status = '请使用哔哩哔哩 App 扫码';
       });
       _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-        if (!mounted) return;
+        if (!mounted || generation != _refreshGeneration) {
+          timer.cancel();
+          return;
+        }
         final seconds = 180 - timer.tick;
         setState(() => _secondsLeft = seconds.clamp(0, 180));
         if (seconds <= 0) {
           timer.cancel();
           setState(() => _status = '二维码已过期');
         } else if (timer.tick.isEven) {
-          unawaited(_poll());
+          unawaited(_poll(generation));
         }
       });
     } catch (error) {
@@ -67,15 +74,20 @@ class _BilibiliLoginDialogState extends State<BilibiliLoginDialog> {
     }
   }
 
-  Future<void> _poll() async {
+  Future<void> _poll(int generation) async {
     final code = _qrCode;
-    if (_polling || code == null) return;
+    if (!mounted ||
+        generation != _refreshGeneration ||
+        _polling ||
+        code == null) {
+      return;
+    }
     _polling = true;
     try {
       final result = await context.read<PlayerProvider>().pollBilibiliQrCode(
         code.key,
       );
-      if (!mounted) return;
+      if (!mounted || generation != _refreshGeneration) return;
       switch (result.status) {
         case BilibiliQrStatus.success:
           _timer?.cancel();
@@ -102,6 +114,7 @@ class _BilibiliLoginDialogState extends State<BilibiliLoginDialog> {
 
   @override
   void dispose() {
+    _refreshGeneration++;
     _timer?.cancel();
     super.dispose();
   }
