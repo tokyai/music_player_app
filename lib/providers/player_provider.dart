@@ -175,6 +175,16 @@ class PlayerProvider extends ChangeNotifier {
       _currentIndex >= 0 && _currentIndex < _queue.length
       ? _queue[_currentIndex]
       : null;
+  List<BilibiliPageInfo> get currentBilibiliPages {
+    final song = currentSong;
+    if (song == null || song.platform != MusicPlatform.bilibili) {
+      return const [];
+    }
+    return List<BilibiliPageInfo>.unmodifiable(
+      _currentBilibiliPageTargets().map((target) => target.page),
+    );
+  }
+
   bool get isPlaying => _isPlaying;
   bool get isLoading => _isLoading;
   Duration get position => _position;
@@ -1573,7 +1583,6 @@ class PlayerProvider extends ChangeNotifier {
             bilibiliDescription: description,
             bilibiliCid: page.cid,
             bilibiliPage: page.page,
-            bilibiliPages: pages,
           ),
         )
         .toList(growable: false);
@@ -1903,13 +1912,21 @@ class PlayerProvider extends ChangeNotifier {
     var description = item.bilibiliDescription;
     var videoTitle = item.bilibiliVideoTitle ?? item.album;
     var coverUrl = item.coverUrl;
-    if (pages.isEmpty || description == null) {
+    final concreteCid = item.bilibiliCid;
+    if ((concreteCid == null || concreteCid <= 0) &&
+        (pages.isEmpty || description == null)) {
       final info = await _api.bilibili.videoInfo(item.id);
       if (!_isCurrentRequest(requestId, item)) return item;
       pages = info.pages;
       description = info.description;
       videoTitle = info.title;
       coverUrl = _preferExisting(coverUrl, info.coverUrl);
+    }
+    if (concreteCid != null && concreteCid > 0) {
+      // Expanded queues already carry the authoritative page identity on
+      // every item. Do not request videoInfo again or attach the full page
+      // list to the active item; both would undo the linear queue layout.
+      return item;
     }
     if (pages.isEmpty) {
       throw const BilibiliApiException('VIDEO_NO_PAGE', '视频没有可播放的分P');
@@ -2282,14 +2299,24 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> selectBilibiliPage(int pageIndex) async {
     final song = currentSong;
+    final targets = _currentBilibiliPageTargets();
     if (song == null ||
         song.platform != MusicPlatform.bilibili ||
         pageIndex < 0 ||
-        pageIndex >= song.bilibiliPages.length) {
+        pageIndex >= targets.length) {
       return;
     }
-    final page = song.bilibiliPages[pageIndex];
+    final target = targets[pageIndex];
+    final page = target.page;
     if (page.cid == song.bilibiliCid) return;
+    final queueIndex = target.queueIndex;
+    if (queueIndex != null && queueIndex != _currentIndex) {
+      await playQueueItem(queueIndex);
+      return;
+    }
+
+    // Compatibility for an old resource-level queue item that stores all
+    // pages inside one item instead of one concrete item per page.
     _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     _queue[_currentIndex] = song.copyWith(
@@ -2306,6 +2333,62 @@ class PlayerProvider extends ChangeNotifier {
     _lyricsLoading = false;
     notifyListeners();
     await _playCurrent();
+  }
+
+  List<({BilibiliPageInfo page, int? queueIndex})>
+  _currentBilibiliPageTargets() {
+    final song = currentSong;
+    if (song == null || song.platform != MusicPlatform.bilibili) {
+      return const [];
+    }
+
+    final items = queue;
+    final concrete = <({BilibiliPageInfo page, int? queueIndex})>[];
+    final seenCids = <int>{};
+    for (var index = 0; index < items.length; index++) {
+      final item = items[index];
+      if (item.platform != MusicPlatform.bilibili || item.id != song.id) {
+        continue;
+      }
+      final cid = item.bilibiliCid;
+      if (cid == null || cid <= 0 || !seenCids.add(cid)) continue;
+      concrete.add((
+        page: BilibiliPageInfo(
+          cid: cid,
+          page: item.bilibiliPage ?? concrete.length + 1,
+          title: item.name,
+          duration: item.duration,
+        ),
+        queueIndex: index,
+      ));
+    }
+
+    if (concrete.length > 1 || song.bilibiliPages.isEmpty) {
+      concrete.sort(_compareBilibiliPageTargets);
+      return concrete;
+    }
+
+    final concreteIndexByCid = <int, int>{
+      for (final target in concrete)
+        if (target.queueIndex != null) target.page.cid: target.queueIndex!,
+    };
+    final legacy = song.bilibiliPages
+        .where((page) => page.cid > 0)
+        .map((page) => (page: page, queueIndex: concreteIndexByCid[page.cid]))
+        .toList(growable: false);
+    legacy.sort(_compareBilibiliPageTargets);
+    return legacy;
+  }
+
+  static int _compareBilibiliPageTargets(
+    ({BilibiliPageInfo page, int? queueIndex}) first,
+    ({BilibiliPageInfo page, int? queueIndex}) second,
+  ) {
+    final byPage = first.page.page.compareTo(second.page.page);
+    if (byPage != 0) return byPage;
+    return (first.queueIndex ?? 1 << 30).compareTo(
+      second.queueIndex ?? 1 << 30,
+    );
   }
 
   Future<BilibiliVideoSource> currentBilibiliVideoSource() async {

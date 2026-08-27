@@ -67,11 +67,13 @@ void main() {
   test(
     'Bilibili list playback expands only the selected resource pages',
     () async {
+      final viewRequests = <String, int>{};
       final player = _bilibiliQueuePlayer(
         infos: {
           'BVfirst': _bilibiliInfo('BVfirst', 100),
           'BVsecond': _bilibiliInfo('BVsecond', 200),
         },
+        viewRequests: viewRequests,
       );
       addTearDown(player.dispose);
 
@@ -84,8 +86,17 @@ void main() {
       expect(player.queue.map((item) => item.id), ['BVsecond', 'BVsecond']);
       expect(player.queue.map((item) => item.bilibiliCid), [201, 202]);
       expect(player.queue.map((item) => item.name), ['第一P', '第二P']);
+      expect(player.queue.every((item) => item.bilibiliPages.isEmpty), isTrue);
+      expect(player.currentBilibiliPages.map((page) => page.cid), [201, 202]);
       expect(player.currentIndex, 0);
       expect(player.currentSong?.bilibiliCid, 201);
+      expect(viewRequests['BVsecond'], 1);
+
+      await player.selectBilibiliPage(1);
+
+      expect(player.currentIndex, 1);
+      expect(player.currentSong?.bilibiliCid, 202);
+      expect(viewRequests['BVsecond'], 1);
     },
   );
 
@@ -107,6 +118,10 @@ void main() {
       'BVappend',
     ]);
     expect(player.queue.skip(1).map((item) => item.bilibiliCid), [301, 302]);
+    expect(
+      player.queue.skip(1).every((item) => item.bilibiliPages.isEmpty),
+      isTrue,
+    );
   });
 
   test(
@@ -180,6 +195,67 @@ void main() {
     expect(player.playMode, PlayMode.repeat);
     expect(player.isPlaying, isFalse);
   });
+
+  test(
+    'restores old expanded Bilibili queues without repeated page lists',
+    () async {
+      final pages = List<BilibiliPageInfo>.generate(
+        3,
+        (index) => BilibiliPageInfo(
+          cid: 700 + index,
+          page: index + 1,
+          title: '旧分P ${index + 1}',
+          duration: 120 + index,
+        ),
+        growable: false,
+      );
+      final oldQueue = pages
+          .map(
+            (page) => SongSearchResult(
+              platform: MusicPlatform.bilibili,
+              id: 'BVlegacy',
+              name: page.title,
+              artist: '旧UP主',
+              album: '旧视频',
+              duration: page.duration,
+              bilibiliVideoTitle: '旧视频',
+              bilibiliDescription: '旧版重复保存的简介',
+              bilibiliCid: page.cid,
+              bilibiliPage: page.page,
+              bilibiliPages: pages,
+            ).toJson(),
+          )
+          .toList(growable: false);
+      SharedPreferences.setMockInitialValues({
+        PlaybackStateService.preferenceKey: jsonEncode({
+          'queue': oldQueue,
+          'currentIndex': 1,
+          'positionMs': 0,
+          'isPlaying': false,
+          'playMode': 'sequence',
+        }),
+      });
+      final player = PlayerProvider(activateRestoredSession: false);
+      addTearDown(player.dispose);
+
+      await player.playbackStateReady;
+
+      expect(player.queue, hasLength(3));
+      expect(player.queue.every((item) => item.bilibiliPages.isEmpty), isTrue);
+      expect(player.currentBilibiliPages.map((page) => page.cid), [
+        700,
+        701,
+        702,
+      ]);
+      expect(player.currentIndex, 1);
+      expect(player.currentSong?.name, '旧分P 2');
+      final prefs = await SharedPreferences.getInstance();
+      expect(
+        prefs.getString(PlaybackStateService.preferenceKey),
+        isNot(contains('bilibiliPages')),
+      );
+    },
+  );
 
   test(
     'persists the selected queue and play mode after a queue change',
@@ -278,6 +354,7 @@ PlayerProvider _bilibiliQueuePlayer({
   Map<String, BilibiliVideoInfo> infos = const {},
   Map<String, String> errors = const {},
   Map<String, Completer<http.Response>> deferred = const {},
+  Map<String, int>? viewRequests,
 }) {
   return PlayerProvider(
     bilibiliService: BilibiliService(
@@ -285,6 +362,7 @@ PlayerProvider _bilibiliQueuePlayer({
         infos: infos,
         errors: errors,
         deferred: deferred,
+        viewRequests: viewRequests,
       ),
     ),
   );
@@ -294,6 +372,7 @@ http.Client _bilibiliPlaybackClient({
   Map<String, BilibiliVideoInfo> infos = const {},
   Map<String, String> errors = const {},
   Map<String, Completer<http.Response>> deferred = const {},
+  Map<String, int>? viewRequests,
 }) {
   return MockClient((request) async {
     if (request.url.path == '/x/web-interface/nav') {
@@ -311,6 +390,9 @@ http.Client _bilibiliPlaybackClient({
     }
     if (request.url.path == '/x/web-interface/view') {
       final bvid = request.url.queryParameters['bvid'] ?? '';
+      if (viewRequests != null) {
+        viewRequests[bvid] = (viewRequests[bvid] ?? 0) + 1;
+      }
       final pending = deferred[bvid];
       if (pending != null) return pending.future;
       final error = errors[bvid];

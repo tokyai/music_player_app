@@ -21,7 +21,7 @@ class PlaybackHistoryEntry {
   String get key => PlaybackHistoryService.keyForSong(song);
 
   Map<String, dynamic> toJson() => {
-    'song': song.toJson(),
+    'song': song.compactForPlaybackPersistence().toJson(),
     'positionMs': position.inMilliseconds,
     'playedAtMs': playedAt.toUtc().millisecondsSinceEpoch,
   };
@@ -31,7 +31,18 @@ class PlaybackHistoryEntry {
     final songMap = rawSong is Map
         ? Map<String, dynamic>.from(rawSong)
         : Map<String, dynamic>.from(json);
-    final song = SongSearchResult.fromJson(songMap);
+    final rawCid = songMap['bilibiliCid'];
+    final cid = rawCid is num
+        ? rawCid.toInt()
+        : int.tryParse(rawCid?.toString() ?? '');
+    final concreteBilibiliPage =
+        songMap['platform']?.toString() == MusicPlatform.bilibili.code &&
+        cid != null &&
+        cid > 0;
+    final song = SongSearchResult.fromJson(
+      songMap,
+      includeBilibiliPages: !concreteBilibiliPage,
+    );
     if (song.id.trim().isEmpty || song.name.trim().isEmpty) {
       throw const FormatException('播放历史歌曲数据不完整');
     }
@@ -79,19 +90,48 @@ class PlaybackHistoryService {
       if (raw == null || raw.trim().isEmpty) return [];
       final decoded = jsonDecode(raw);
       if (decoded is! List) return [];
+      var needsCompaction = false;
       final entries = <PlaybackHistoryEntry>[];
       for (final item in decoded) {
         if (item is! Map) continue;
         try {
-          entries.add(
-            PlaybackHistoryEntry.fromJson(Map<String, dynamic>.from(item)),
-          );
+          final rawEntry = Map<String, dynamic>.from(item);
+          final rawSong = rawEntry['song'];
+          final songMap = rawSong is Map
+              ? Map<String, dynamic>.from(rawSong)
+              : rawEntry;
+          final pages = songMap['bilibiliPages'];
+          final rawCid = songMap['bilibiliCid'];
+          final cid = rawCid is num
+              ? rawCid.toInt()
+              : int.tryParse(rawCid?.toString() ?? '');
+          if (songMap['platform']?.toString() == MusicPlatform.bilibili.code &&
+              cid != null &&
+              cid > 0 &&
+              pages is List &&
+              pages.isNotEmpty) {
+            needsCompaction = true;
+          }
+          entries.add(PlaybackHistoryEntry.fromJson(rawEntry));
         } on FormatException {
           // Ignore one malformed entry instead of hiding the whole history.
         }
       }
       entries.sort((a, b) => b.playedAt.compareTo(a.playedAt));
-      return entries.take(maxEntries).toList(growable: true);
+      final normalized = entries.take(maxEntries).toList(growable: true);
+      if (needsCompaction && !scope.isDeleted) {
+        try {
+          await prefs.setString(
+            scope.preferenceKey(preferenceKey),
+            jsonEncode(
+              normalized.map((entry) => entry.toJson()).toList(growable: false),
+            ),
+          );
+        } catch (_) {
+          // Keep the successfully restored history available in memory.
+        }
+      }
+      return normalized;
     } catch (_) {
       return [];
     }

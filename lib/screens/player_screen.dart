@@ -2190,7 +2190,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     required bool landscape,
   }) {
     final subColor = textColor.withValues(alpha: 0.7);
-    final pages = song.bilibiliPages;
+    final pages = player.currentBilibiliPages;
     final currentPageIndex = pages.indexWhere(
       (page) => page.cid == song.bilibiliCid,
     );
@@ -3219,7 +3219,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   context: ctx,
                   compact: compact,
                   onPressed: isBilibili
-                      ? song == null || song.bilibiliPages.isEmpty
+                      ? player.currentBilibiliPages.isEmpty
                             ? null
                             : () => _showBilibiliPageSheet(ctx, player)
                       : () => _showQueueSheet(ctx, player),
@@ -3374,7 +3374,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       builder: (context, current, _) {
         final song = current.currentSong;
         final pages = song?.platform == MusicPlatform.bilibili
-            ? song!.bilibiliPages
+            ? current.currentBilibiliPages
             : const <BilibiliPageInfo>[];
         final selectedCid = song?.bilibiliCid;
         return Column(
