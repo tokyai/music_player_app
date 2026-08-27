@@ -74,6 +74,21 @@ void main() {
     expect(focus.events, ['request', 'abandon']);
   });
 
+  test('requests duck-compatible focus for background playback', () async {
+    final focus = _FakeAudioFocus();
+    final engine = PlatformAiSpeechEngine(
+      speech: _FakeRecognizer(),
+      microphonePermission: _FakeMicrophonePermission(granted: true),
+      audioFocus: focus,
+    );
+    engine.setAllowBackgroundPlayback(true);
+    await engine.initialize(onError: (_) {}, onStatus: (_) {});
+
+    await engine.listen((_, _) {});
+
+    expect(focus.allowDucking, isTrue);
+  });
+
   test(
     'automatic barge-in hands bounded preroll to the next recognizer',
     () async {
@@ -596,9 +611,13 @@ class _FakeAudioFocus implements AiAudioFocusCoordinator {
   void Function()? _onFocusLost;
   int requestCalls = 0;
   int abandonCalls = 0;
+  bool allowDucking = false;
 
   @override
   void setOnFocusLost(void Function()? callback) => _onFocusLost = callback;
+
+  @override
+  void setAllowDucking(bool allowed) => allowDucking = allowed;
 
   @override
   Future<bool> request() async {

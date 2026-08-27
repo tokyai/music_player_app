@@ -509,6 +509,65 @@ void main() {
     expect(fixture.player.isPlaying, isTrue);
   });
 
+  test('duck mode keeps music playing and restores its volume', () async {
+    final oldSong = _queueItem(id: 'old-song', name: '原来播放的歌');
+    final player = _TestPlayer(song: oldSong, playing: true);
+    final fixture = await _Fixture.create(player: player);
+    addTearDown(fixture.dispose);
+    await fixture.config.setAssistantPlaybackMode(AiAssistantPlaybackMode.duck);
+    await fixture.config.setDuckingReductionPercent(70);
+
+    await fixture.controller.startSession();
+
+    expect(player.pauseCalls, 0);
+    expect(player.playing, isTrue);
+    expect(player.beginDuckingCalls, 1);
+    expect(player.duckingPercent, 70);
+
+    await fixture.controller.stopSession();
+
+    expect(player.endDuckingCalls, 1);
+    expect(player.playPauseCalls, 0);
+    expect(player.playing, isTrue);
+  });
+
+  test('shutdown path restores ducking without resuming music', () async {
+    final player = _TestPlayer(
+      song: _queueItem(id: 'old-song', name: '原来播放的歌'),
+      playing: true,
+    );
+    final fixture = await _Fixture.create(player: player);
+    addTearDown(fixture.dispose);
+    await fixture.config.setAssistantPlaybackMode(AiAssistantPlaybackMode.duck);
+
+    await fixture.controller.startSession();
+    await fixture.controller.stopSession(restoreMusic: false);
+
+    expect(player.endDuckingCalls, 1);
+    expect(player.playPauseCalls, 0);
+    expect(player.playing, isTrue);
+  });
+
+  test('duck failure falls back to pausing and resumes the old song', () async {
+    final oldSong = _queueItem(id: 'old-song', name: '原来播放的歌');
+    final player = _TestPlayer(
+      song: oldSong,
+      playing: true,
+      duckingSucceeds: false,
+    );
+    final fixture = await _Fixture.create(player: player);
+    addTearDown(fixture.dispose);
+    await fixture.config.setAssistantPlaybackMode(AiAssistantPlaybackMode.duck);
+
+    await fixture.controller.startSession();
+    expect(player.pauseCalls, 1);
+    expect(player.playing, isFalse);
+
+    await fixture.controller.stopSession();
+    expect(player.playPauseCalls, 1);
+    expect(player.playing, isTrue);
+  });
+
   test(
     'successful song playback exits without restoring the old song',
     () async {
@@ -885,10 +944,14 @@ class _TestResolver implements AiSongPlaybackResolver {
 class _TestPlayer extends PlayerProvider {
   PlayQueueItem? song;
   bool playing;
+  final bool duckingSucceeds;
   int pauseCalls = 0;
   int playPauseCalls = 0;
+  int beginDuckingCalls = 0;
+  int endDuckingCalls = 0;
+  int? duckingPercent;
 
-  _TestPlayer({this.song, this.playing = false});
+  _TestPlayer({this.song, this.playing = false, this.duckingSucceeds = true});
 
   @override
   PlayQueueItem? get currentSong => song;
@@ -914,6 +977,19 @@ class _TestPlayer extends PlayerProvider {
     playPauseCalls++;
     playing = !playing;
     notifyListeners();
+  }
+
+  @override
+  Future<bool> beginAssistantDucking(int reductionPercent) async {
+    beginDuckingCalls++;
+    duckingPercent = reductionPercent;
+    return duckingSucceeds;
+  }
+
+  @override
+  Future<bool> endAssistantDucking() async {
+    endDuckingCalls++;
+    return true;
   }
 }
 

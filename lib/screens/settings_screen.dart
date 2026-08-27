@@ -51,6 +51,9 @@ class _SettingsScreenState extends State<SettingsScreen>
   late final UserDataScope _dataScope;
   late final bool _ownsAiConfigController;
   double _petScaleDraft = AiConfigController.minPetScale + 0.35;
+  double _duckingReductionDraft = AiConfigController
+      .defaultDuckingReductionPercent
+      .toDouble();
 
   String _versionName = '';
   String _versionCode = '';
@@ -84,11 +87,15 @@ class _SettingsScreenState extends State<SettingsScreen>
           secretStore: MemoryAiSecretStore(),
         );
     _petScaleDraft = _aiConfigController.petScale;
-    _aiConfigController.addListener(_syncPetScaleDraft);
+    _duckingReductionDraft = _aiConfigController.duckingReductionPercent
+        .toDouble();
+    _aiConfigController.addListener(_syncAiConfigDrafts);
     _aiConfigController.ready.then((_) {
       if (mounted) {
         setState(() {
           _petScaleDraft = _aiConfigController.petScale;
+          _duckingReductionDraft = _aiConfigController.duckingReductionPercent
+              .toDouble();
         });
       }
     });
@@ -103,11 +110,19 @@ class _SettingsScreenState extends State<SettingsScreen>
     _loadLyricStyleSettings();
   }
 
-  void _syncPetScaleDraft() {
+  void _syncAiConfigDrafts() {
     if (!mounted) return;
     final scale = _aiConfigController.petScale;
-    if ((_petScaleDraft - scale).abs() < 0.001) return;
-    setState(() => _petScaleDraft = scale);
+    final duckingReduction = _aiConfigController.duckingReductionPercent
+        .toDouble();
+    if ((_petScaleDraft - scale).abs() < 0.001 &&
+        (_duckingReductionDraft - duckingReduction).abs() < 0.001) {
+      return;
+    }
+    setState(() {
+      _petScaleDraft = scale;
+      _duckingReductionDraft = duckingReduction;
+    });
   }
 
   Future<void> _setGlobalVoiceModel(AiVoiceModelKind model) async {
@@ -163,6 +178,49 @@ class _SettingsScreenState extends State<SettingsScreen>
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('自动打断设置保存失败：$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _savingVoiceSettings = false);
+    }
+  }
+
+  Future<void> _setAssistantPlaybackMode(AiAssistantPlaybackMode mode) async {
+    if (_savingVoiceSettings ||
+        mode == _aiConfigController.assistantPlaybackMode) {
+      return;
+    }
+    setState(() => _savingVoiceSettings = true);
+    try {
+      await _aiConfigController.setAssistantPlaybackMode(mode);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('助手播放方式保存失败：$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _savingVoiceSettings = false);
+    }
+  }
+
+  Future<void> _setDuckingReductionPercent(double value) async {
+    final percent = value.round();
+    if (_savingVoiceSettings ||
+        percent == _aiConfigController.duckingReductionPercent) {
+      return;
+    }
+    setState(() => _savingVoiceSettings = true);
+    try {
+      await _aiConfigController.setDuckingReductionPercent(percent);
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _duckingReductionDraft = _aiConfigController.duckingReductionPercent
+              .toDouble();
+        });
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('后台音量降低比例保存失败：$error')));
       }
     } finally {
       if (mounted) setState(() => _savingVoiceSettings = false);
@@ -615,7 +673,7 @@ class _SettingsScreenState extends State<SettingsScreen>
     if (activeFavoriteImport != null) unawaited(activeFavoriteImport.stop());
     WidgetsBinding.instance.removeObserver(this);
     _apiKeyController.dispose();
-    _aiConfigController.removeListener(_syncPetScaleDraft);
+    _aiConfigController.removeListener(_syncAiConfigDrafts);
     if (_ownsAiConfigController) _aiConfigController.dispose();
     super.dispose();
   }
@@ -2162,6 +2220,8 @@ class _SettingsScreenState extends State<SettingsScreen>
     final voiceModel = _aiConfigController.voiceModel;
     final loadMode = _aiConfigController.voiceLoadMode;
     final bargeInMode = _aiConfigController.bargeInMode;
+    final playbackMode = _aiConfigController.assistantPlaybackMode;
+    final ducksPlayback = playbackMode == AiAssistantPlaybackMode.duck;
     final supportsPreload = voiceModel == AiVoiceModelKind.zipformerChinese;
     final supportsBargeIn =
         voiceModel == AiVoiceModelKind.zipformerChinese ||
@@ -2247,6 +2307,90 @@ class _SettingsScreenState extends State<SettingsScreen>
                   color: AppColors.textHint,
                   fontSize: layout.secondarySize,
                 ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                '触发助手时的音乐状态',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: layout.secondarySize,
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: SegmentedButton<AiAssistantPlaybackMode>(
+                  key: const ValueKey('global-voice-playback-mode'),
+                  segments: AiAssistantPlaybackMode.values
+                      .map(
+                        (mode) => ButtonSegment<AiAssistantPlaybackMode>(
+                          value: mode,
+                          label: Text(
+                            mode.label,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  selected: {playbackMode},
+                  showSelectedIcon: false,
+                  expandedInsets: EdgeInsets.zero,
+                  onSelectionChanged: _savingVoiceSettings
+                      ? null
+                      : (selection) {
+                          if (selection.isNotEmpty) {
+                            unawaited(
+                              _setAssistantPlaybackMode(selection.first),
+                            );
+                          }
+                        },
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '后台播放降低比例',
+                      style: TextStyle(
+                        color: ducksPlayback
+                            ? AppColors.textPrimary
+                            : AppColors.textHint,
+                        fontSize: layout.secondarySize,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    '${_duckingReductionDraft.round()}%',
+                    key: const ValueKey('global-voice-ducking-reduction-value'),
+                    style: TextStyle(
+                      color: ducksPlayback
+                          ? AppColors.primary
+                          : AppColors.textHint,
+                      fontSize: layout.secondarySize,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+              Slider.adaptive(
+                key: const ValueKey('global-voice-ducking-reduction'),
+                value: _duckingReductionDraft,
+                min: AiConfigController.minDuckingReductionPercent.toDouble(),
+                max: AiConfigController.maxDuckingReductionPercent.toDouble(),
+                divisions:
+                    (AiConfigController.maxDuckingReductionPercent -
+                        AiConfigController.minDuckingReductionPercent) ~/
+                    10,
+                label: '降低 ${_duckingReductionDraft.round()}%',
+                onChanged: !ducksPlayback || _savingVoiceSettings
+                    ? null
+                    : (value) {
+                        setState(() => _duckingReductionDraft = value);
+                      },
+                onChangeEnd: !ducksPlayback || _savingVoiceSettings
+                    ? null
+                    : (value) => unawaited(_setDuckingReductionPercent(value)),
               ),
               const SizedBox(height: 8),
               SwitchListTile.adaptive(

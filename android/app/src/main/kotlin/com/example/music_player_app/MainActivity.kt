@@ -114,6 +114,7 @@ class MainActivity : AudioServiceActivity() {
     private val pendingAiModelResults = mutableListOf<PendingAiModelResult>()
     private var aiAudioFocusRequest: AudioFocusRequest? = null
     private var aiAudioFocusHeld = false
+    private var aiAudioFocusAllowsDucking = false
     private var aiTts: TextToSpeech? = null
     private var aiTtsReady = false
     private var aiTtsInitializing = false
@@ -229,7 +230,11 @@ class MainActivity : AudioServiceActivity() {
         ).also { channel ->
             channel.setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "requestFocus" -> result.success(requestAiAudioFocus())
+                    "requestFocus" -> result.success(
+                        requestAiAudioFocus(
+                            call.argument<Boolean>("allowDucking") == true
+                        )
+                    )
                     "abandonFocus" -> result.success(abandonAiAudioFocus())
                     else -> result.notImplemented()
                 }
@@ -597,8 +602,9 @@ class MainActivity : AudioServiceActivity() {
      * the microphone. This is public Android audio policy and does not select
      * an OEM-only AudioRecord source or alter Bluetooth routing.
      */
-    private fun requestAiAudioFocus(): Boolean {
-        if (aiAudioFocusHeld) return true
+    private fun requestAiAudioFocus(allowDucking: Boolean): Boolean {
+        if (aiAudioFocusHeld && aiAudioFocusAllowsDucking == allowDucking) return true
+        if (aiAudioFocusHeld || aiAudioFocusRequest != null) abandonAiAudioFocus()
         val manager = getSystemService(AUDIO_SERVICE) as? AudioManager ?: return false
         return try {
             val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -607,10 +613,14 @@ class MainActivity : AudioServiceActivity() {
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
                 val request = AudioFocusRequest.Builder(
-                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                    if (allowDucking) {
+                        AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+                    } else {
+                        AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                    }
                 )
                     .setAudioAttributes(attributes)
-                    .setWillPauseWhenDucked(true)
+                    .setWillPauseWhenDucked(!allowDucking)
                     .setOnAudioFocusChangeListener(aiAudioFocusListener)
                     .build()
                 aiAudioFocusRequest = request
@@ -620,19 +630,26 @@ class MainActivity : AudioServiceActivity() {
                 manager.requestAudioFocus(
                     aiAudioFocusListener,
                     AudioManager.STREAM_MUSIC,
-                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                    if (allowDucking) {
+                        AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+                    } else {
+                        AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                    }
                 ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
             }
             aiAudioFocusHeld = granted
+            aiAudioFocusAllowsDucking = granted && allowDucking
             if (!granted) aiAudioFocusRequest = null
             granted
         } catch (_: SecurityException) {
             aiAudioFocusRequest = null
             aiAudioFocusHeld = false
+            aiAudioFocusAllowsDucking = false
             false
         } catch (_: Exception) {
             aiAudioFocusRequest = null
             aiAudioFocusHeld = false
+            aiAudioFocusAllowsDucking = false
             false
         }
     }
@@ -650,10 +667,12 @@ class MainActivity : AudioServiceActivity() {
             }
             aiAudioFocusRequest = null
             aiAudioFocusHeld = false
+            aiAudioFocusAllowsDucking = false
             abandoned == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         } catch (_: Exception) {
             aiAudioFocusRequest = null
             aiAudioFocusHeld = false
+            aiAudioFocusAllowsDucking = false
             false
         }
     }

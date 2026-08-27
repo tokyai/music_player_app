@@ -103,6 +103,8 @@ void main() {
     await source.setVoiceModel(AiVoiceModelKind.doubaoIme);
     await source.setVoiceLoadMode(AiVoiceLoadMode.startupPreload);
     await source.setBargeInMode(AiBargeInMode.voiceActivity);
+    await source.setAssistantPlaybackMode(AiAssistantPlaybackMode.duck);
+    await source.setDuckingReductionPercent(80);
     final primaryId = source.activeProfileId;
     await source.renameProfile(primaryId, '主力模型');
     final backupProfile = await source.createProfile(
@@ -137,6 +139,8 @@ void main() {
     expect(exportedVoice['model'], AiVoiceModelKind.doubaoIme.value);
     expect(exportedVoice['loadMode'], AiVoiceLoadMode.startupPreload.value);
     expect(exportedVoice['bargeInMode'], AiBargeInMode.voiceActivity.value);
+    expect(exportedVoice['playbackMode'], AiAssistantPlaybackMode.duck.value);
+    expect(exportedVoice['duckingReductionPercent'], 80);
     expect(exportedAi['activeProfileId'], primaryId);
     final profiles = exportedAi['profiles'] as List<dynamic>;
     expect(profiles, hasLength(2));
@@ -169,6 +173,8 @@ void main() {
     expect(restored.voiceModel, AiVoiceModelKind.doubaoIme);
     expect(restored.voiceLoadMode, AiVoiceLoadMode.startupPreload);
     expect(restored.bargeInMode, AiBargeInMode.voiceActivity);
+    expect(restored.assistantPlaybackMode, AiAssistantPlaybackMode.duck);
+    expect(restored.duckingReductionPercent, 80);
     expect(restored.profiles.map((profile) => profile.name), ['主力模型', '备用中转站']);
     expect(restored.activeProfileId, primaryId);
     await restored.selectProfile(backupProfile.id);

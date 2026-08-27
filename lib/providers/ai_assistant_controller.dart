@@ -72,6 +72,13 @@ class AiAssistantController extends ChangeNotifier {
   bool _wasPlayingBeforeSession = false;
   bool _startedMusic = false;
   ({MusicPlatform platform, String id})? _songBeforeSession;
+  AiAssistantPlaybackMode? _sessionPlaybackMode;
+  int _sessionDuckingReductionPercent =
+      AiConfigController.defaultDuckingReductionPercent;
+  bool _sessionMusicDucked = false;
+  bool _sessionPausedMusic = false;
+  bool _sessionAllowsBackgroundPlayback = false;
+  Future<void>? _sessionPlaybackPreparation;
   bool _disposed = false;
   Future<void>? _resourceDisposeFuture;
   AiVoiceModelKind? _sessionVoiceModel;
@@ -162,9 +169,15 @@ class AiAssistantController extends ChangeNotifier {
       _setState(AiSessionState.error, error: '请先在设置中配置 AI URL、Key 和模型');
       return;
     }
+    if (_sessionMusicDucked) {
+      _sessionMusicDucked = !await player.endAssistantDucking();
+      if (_disposed || _active) return;
+    }
     _active = true;
     _sessionVoiceModel = configController.voiceModel;
     _sessionBargeInMode = configController.bargeInMode;
+    _sessionPlaybackMode = configController.assistantPlaybackMode;
+    _sessionDuckingReductionPercent = configController.duckingReductionPercent;
     _generation++;
     _turnGeneration++;
     _messages.clear();
@@ -176,10 +189,16 @@ class AiAssistantController extends ChangeNotifier {
     _songBeforeSession = before == null
         ? null
         : (platform: before.platform, id: before.id);
-    if (_wasPlayingBeforeSession) {
-      await player.pause();
+    final playbackPreparation = _prepareSessionPlayback();
+    _sessionPlaybackPreparation = playbackPreparation;
+    try {
+      await playbackPreparation;
+    } finally {
+      if (identical(_sessionPlaybackPreparation, playbackPreparation)) {
+        _sessionPlaybackPreparation = null;
+      }
     }
-    if (_disposed) return;
+    if (_disposed || !_active) return;
     _setState(AiSessionState.initializing);
 
     var speechReady = false;
@@ -189,6 +208,11 @@ class AiAssistantController extends ChangeNotifier {
         (modelSelector as AiVoiceModelSelector).setVoiceModel(
           configController.voiceModel,
         );
+      }
+      final playbackPolicy = speech;
+      if (playbackPolicy is AiSpeechPlaybackPolicySelector) {
+        (playbackPolicy as AiSpeechPlaybackPolicySelector)
+            .setAllowBackgroundPlayback(_sessionAllowsBackgroundPlayback);
       }
       speechReady = await speech.initialize(
         onError: _handleSpeechError,
@@ -291,7 +315,13 @@ class AiAssistantController extends ChangeNotifier {
   }
 
   Future<void> stopSession({bool restoreMusic = true}) async {
-    if (_disposed || (!_active && _state == AiSessionState.idle)) return;
+    if (_disposed) return;
+    if (!_active &&
+        _state == AiSessionState.idle &&
+        !_sessionMusicDucked &&
+        _sessionPlaybackPreparation == null) {
+      return;
+    }
     _generation++;
     _turnGeneration++;
     final wasActive = _active;
@@ -299,13 +329,68 @@ class AiAssistantController extends ChangeNotifier {
     _ignoreSpeechEvents = true;
     _invalidateBargeIn();
     _setState(AiSessionState.stopping);
+    await _awaitSessionPlaybackPreparation();
     await _stopBargeInMonitor();
     await _awaitBargeInTask();
     await _stopRecognition();
     await _stopSpeaking();
     await _releaseIdleVoiceResources();
+    await _restoreSessionPlayback(
+      restoreMusic: restoreMusic,
+      wasActive: wasActive,
+    );
+    _resetSpeechBuffer();
+    _sessionVoiceModel = null;
+    _sessionBargeInMode = null;
+    _sessionPlaybackMode = null;
+    _sessionAllowsBackgroundPlayback = false;
+    final playbackPolicy = speech;
+    if (playbackPolicy is AiSpeechPlaybackPolicySelector) {
+      (playbackPolicy as AiSpeechPlaybackPolicySelector)
+          .setAllowBackgroundPlayback(false);
+    }
+    _setState(AiSessionState.idle);
+  }
+
+  Future<void> _prepareSessionPlayback() async {
+    _sessionMusicDucked = false;
+    _sessionPausedMusic = false;
+    _sessionAllowsBackgroundPlayback =
+        _sessionPlaybackMode == AiAssistantPlaybackMode.duck;
+    if (!_wasPlayingBeforeSession) return;
+    if (_sessionPlaybackMode == AiAssistantPlaybackMode.duck) {
+      final ducked = await player.beginAssistantDucking(
+        _sessionDuckingReductionPercent,
+      );
+      _sessionMusicDucked = ducked;
+      if (ducked) return;
+      _sessionAllowsBackgroundPlayback = false;
+    }
+    await player.pause();
+    _sessionPausedMusic = true;
+  }
+
+  Future<void> _awaitSessionPlaybackPreparation() async {
+    final pending = _sessionPlaybackPreparation;
+    if (pending == null) return;
+    try {
+      await pending;
+    } catch (error, stackTrace) {
+      debugPrint('准备助手会话播放状态失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  Future<void> _restoreSessionPlayback({
+    required bool restoreMusic,
+    required bool wasActive,
+  }) async {
+    if (_sessionMusicDucked) {
+      _sessionMusicDucked = !await player.endAssistantDucking();
+    }
     if (restoreMusic &&
         wasActive &&
+        _sessionPausedMusic &&
         _wasPlayingBeforeSession &&
         !_startedMusic) {
       final current = player.currentSong;
@@ -317,10 +402,7 @@ class AiAssistantController extends ChangeNotifier {
         await player.playPause();
       }
     }
-    _resetSpeechBuffer();
-    _sessionVoiceModel = null;
-    _sessionBargeInMode = null;
-    _setState(AiSessionState.idle);
+    _sessionPausedMusic = false;
   }
 
   Future<void> _releaseIdleVoiceResources() async {
@@ -989,6 +1071,13 @@ class AiAssistantController extends ChangeNotifier {
     _ttsReady = false;
     _sessionVoiceModel = null;
     _sessionBargeInMode = null;
+    _sessionPlaybackMode = null;
+    _sessionAllowsBackgroundPlayback = false;
+    final playbackPolicy = speech;
+    if (playbackPolicy is AiSpeechPlaybackPolicySelector) {
+      (playbackPolicy as AiSpeechPlaybackPolicySelector)
+          .setAllowBackgroundPlayback(false);
+    }
     _invalidateBargeIn();
     _generation++;
     _turnGeneration++;
@@ -1010,6 +1099,7 @@ class AiAssistantController extends ChangeNotifier {
   }
 
   Future<void> _finishResourceDispose() async {
+    await _awaitSessionPlaybackPreparation();
     try {
       await _disposeSpeechResources();
     } catch (error, stackTrace) {
@@ -1020,6 +1110,12 @@ class AiAssistantController extends ChangeNotifier {
       await _stopSpeaking();
     } catch (error, stackTrace) {
       debugPrint('停止 AI 播报失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+    try {
+      await _restoreSessionPlayback(restoreMusic: false, wasActive: false);
+    } catch (error, stackTrace) {
+      debugPrint('恢复 AI 会话背景音量失败: $error');
       debugPrintStack(stackTrace: stackTrace);
     }
     try {

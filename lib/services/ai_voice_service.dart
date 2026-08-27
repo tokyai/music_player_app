@@ -53,6 +53,12 @@ abstract class AiVoiceModelSelector {
   void setVoiceModel(AiVoiceModelKind model);
 }
 
+/// Selects whether the recognizer may coexist with low-volume music from the
+/// app. Implementations use this to choose a non-pausing audio-focus request.
+abstract class AiSpeechPlaybackPolicySelector {
+  void setAllowBackgroundPlayback(bool allowed);
+}
+
 /// Optional control surface for keeping the bundled offline recognizer warm.
 /// Preloading never requests microphone permission or audio focus.
 abstract class AiSpeechModelWarmup {
@@ -2147,6 +2153,10 @@ class PlatformAiMicrophonePermission implements AiMicrophonePermission {
 
 abstract class AiAudioFocusCoordinator {
   void setOnFocusLost(void Function()? callback);
+
+  /// Optional policy hook kept concrete so lightweight test/desktop
+  /// implementations remain source-compatible.
+  void setAllowDucking(bool allowed) {}
   Future<bool> request();
   Future<void> abandon();
 }
@@ -2160,11 +2170,17 @@ class PlatformAiAudioFocusCoordinator implements AiAudioFocusCoordinator {
   bool _supported = true;
   bool _held = false;
   bool _handlerInstalled = false;
+  bool _allowDucking = false;
   void Function()? _onFocusLost;
 
   @override
   void setOnFocusLost(void Function()? callback) {
     _onFocusLost = callback;
+  }
+
+  @override
+  void setAllowDucking(bool allowed) {
+    _allowDucking = allowed;
   }
 
   void _installHandler() {
@@ -2198,7 +2214,7 @@ class PlatformAiAudioFocusCoordinator implements AiAudioFocusCoordinator {
     _installHandler();
     try {
       final granted = await _channel
-          .invokeMethod<bool>('requestFocus')
+          .invokeMethod<bool>('requestFocus', {'allowDucking': _allowDucking})
           .timeout(const Duration(seconds: 2));
       _held = granted == true;
       return granted == true;
@@ -2241,6 +2257,7 @@ class PlatformAiSpeechEngine
     implements
         AiSpeechEngine,
         AiVoiceModelSelector,
+        AiSpeechPlaybackPolicySelector,
         AiSpeechModelWarmup,
         AiSpeechResourceOwner,
         AiSpeechIdleResourceOwner,
@@ -2251,6 +2268,7 @@ class PlatformAiSpeechEngine
   late final AiBargeInMonitor _bargeInMonitor;
   bool _initialized = false;
   bool _focusHeld = false;
+  bool _allowBackgroundPlayback = false;
   bool _retainIdleModel = false;
   AiVoiceModelKind _voiceModel = AiVoiceModelKind.zipformerChinese;
   bool _disposed = false;
@@ -2288,6 +2306,12 @@ class PlatformAiSpeechEngine
     if (speech is AiVoiceModelSelector) {
       (speech as AiVoiceModelSelector).setVoiceModel(model);
     }
+  }
+
+  @override
+  void setAllowBackgroundPlayback(bool allowed) {
+    if (_disposed) return;
+    _allowBackgroundPlayback = allowed;
   }
 
   @override
@@ -2412,6 +2436,7 @@ class PlatformAiSpeechEngine
     // the controller schedules its next listening segment.
     await _focusReleaseFuture;
     if (_disposed) throw StateError('语音识别服务已释放');
+    _audioFocus.setAllowDucking(_allowBackgroundPlayback);
     final granted = await _audioFocus.request();
     if (_disposed) {
       if (granted) await _audioFocus.abandon();

@@ -150,6 +150,21 @@ enum AiBargeInMode {
   );
 }
 
+enum AiAssistantPlaybackMode {
+  pause(label: '停止播放', value: 'pause'),
+  duck(label: '低音量播放', value: 'duck');
+
+  const AiAssistantPlaybackMode({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  static AiAssistantPlaybackMode fromValue(String? value) => values.firstWhere(
+    (item) => item.value == value,
+    orElse: () => AiAssistantPlaybackMode.pause,
+  );
+}
+
 class AiAssistantConfig {
   final AiProviderKind provider;
   final AiRequestProtocol protocol;

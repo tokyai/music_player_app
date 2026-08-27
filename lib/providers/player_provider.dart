@@ -101,6 +101,7 @@ class PlayerProvider extends ChangeNotifier {
   bool _resumeAfterCancelledUserSwitch = false;
   Future<void>? _exitPreparationFuture;
   Future<void>? _resourceDisposeFuture;
+  double? _volumeBeforeAssistantDucking;
 
   // 音质
   NeteaseLevel _neteaseLevel = NeteaseLevel.jymaster;
@@ -2361,6 +2362,36 @@ class PlayerProvider extends ChangeNotifier {
     }
   }
 
+  Future<bool> beginAssistantDucking(int reductionPercent) async {
+    if (_disposed) return false;
+    if (_volumeBeforeAssistantDucking != null) return true;
+    final before = _audioPlayer.volume.clamp(0.0, 1.0).toDouble();
+    final reduction = reductionPercent.clamp(0, 100) / 100;
+    final target = (before * (1 - reduction)).clamp(0.0, 1.0).toDouble();
+    final applied = await _tryAudioCommand(
+      '降低助手会话背景音量',
+      () => _audioPlayer.setVolume(target),
+    );
+    if (!applied || _disposed) return false;
+    _volumeBeforeAssistantDucking = before;
+    return true;
+  }
+
+  Future<bool> endAssistantDucking() async {
+    final before = _volumeBeforeAssistantDucking;
+    if (before == null) return true;
+    if (_disposed) {
+      _volumeBeforeAssistantDucking = null;
+      return false;
+    }
+    final restored = await _tryAudioCommand(
+      '恢复助手会话前音量',
+      () => _audioPlayer.setVolume(before),
+    );
+    if (restored) _volumeBeforeAssistantDucking = null;
+    return restored;
+  }
+
   Future<void> stop() async {
     _cancelPendingBilibiliPlay();
     _cancelPendingPlaybackRestore();
@@ -2666,6 +2697,7 @@ class PlayerProvider extends ChangeNotifier {
     _queueSessionId++;
     _bilibiliPlayRequestId++;
     _bilibiliAddRequestId++;
+    _volumeBeforeAssistantDucking = null;
     final subscriptions = <StreamSubscription?>[
       _playerSub,
       _durationSub,

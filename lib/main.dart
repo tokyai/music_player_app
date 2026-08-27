@@ -462,6 +462,7 @@ class _UserSession {
 
   Future<void> _releaseResources() async {
     try {
+      await aiAssistant.stopSession(restoreMusic: false);
       await Future.wait([
         aiAssistant.disposeResources(),
         player.disposeResources(),

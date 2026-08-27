@@ -706,6 +706,24 @@ void main() {
         await tester.pumpAndSettle();
         expect(config.voiceLoadMode, AiVoiceLoadMode.startupPreload);
 
+        final playbackMode = find.byKey(
+          const ValueKey('global-voice-playback-mode'),
+        );
+        await tester.scrollUntilVisible(
+          playbackMode,
+          160,
+          scrollable: systemScroll,
+        );
+        expect(playbackMode.hitTestable(), findsOneWidget);
+        await tester.tap(find.text(AiAssistantPlaybackMode.duck.label));
+        await tester.pumpAndSettle();
+        expect(config.assistantPlaybackMode, AiAssistantPlaybackMode.duck);
+        final duckingSlider = find.byKey(
+          const ValueKey('global-voice-ducking-reduction'),
+        );
+        expect(duckingSlider.hitTestable(), findsOneWidget);
+        expect(tester.widget<Slider>(duckingSlider).onChanged, isNotNull);
+
         final bargeIn = find.byKey(const ValueKey('global-voice-barge-in'));
         await tester.scrollUntilVisible(bargeIn, 160, scrollable: systemScroll);
         expect(bargeIn.hitTestable(), findsOneWidget);

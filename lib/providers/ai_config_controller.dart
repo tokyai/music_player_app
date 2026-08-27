@@ -85,9 +85,16 @@ class AiConfigController extends ChangeNotifier {
   static const voiceModelPreferenceKey = 'ai_voice_model_global_v1';
   static const voiceLoadModePreferenceKey = 'ai_voice_load_mode_global_v1';
   static const bargeInModePreferenceKey = 'ai_voice_barge_in_global_v1';
+  static const assistantPlaybackModePreferenceKey =
+      'ai_voice_playback_mode_global_v1';
+  static const duckingReductionPercentPreferenceKey =
+      'ai_voice_ducking_reduction_percent_global_v1';
 
   static const minPetScale = 0.65;
   static const maxPetScale = 2.0;
+  static const minDuckingReductionPercent = 10;
+  static const maxDuckingReductionPercent = 90;
+  static const defaultDuckingReductionPercent = 70;
 
   final AiSecretStore _secretStore;
   final UserDataScope dataScope;
@@ -103,6 +110,9 @@ class AiConfigController extends ChangeNotifier {
   AiVoiceModelKind _voiceModel = AiVoiceModelKind.zipformerChinese;
   AiVoiceLoadMode _voiceLoadMode = AiVoiceLoadMode.onDemand;
   AiBargeInMode _bargeInMode = AiBargeInMode.disabled;
+  AiAssistantPlaybackMode _assistantPlaybackMode =
+      AiAssistantPlaybackMode.pause;
+  int _duckingReductionPercent = defaultDuckingReductionPercent;
   bool _disposed = false;
 
   AiConfigController({AiSecretStore? secretStore, UserDataScope? dataScope})
@@ -133,6 +143,8 @@ class AiConfigController extends ChangeNotifier {
   AiVoiceModelKind get voiceModel => _voiceModel;
   AiVoiceLoadMode get voiceLoadMode => _voiceLoadMode;
   AiBargeInMode get bargeInMode => _bargeInMode;
+  AiAssistantPlaybackMode get assistantPlaybackMode => _assistantPlaybackMode;
+  int get duckingReductionPercent => _duckingReductionPercent;
 
   /// Serializes all AI settings for an explicit user-created backup.
   ///
@@ -156,16 +168,20 @@ class AiConfigController extends ChangeNotifier {
   };
 
   Map<String, dynamic> toVoiceBackupJson() => {
-    'version': 2,
+    'version': 3,
     'model': _voiceModel.value,
     'loadMode': _voiceLoadMode.value,
     'bargeInMode': _bargeInMode.value,
+    'playbackMode': _assistantPlaybackMode.value,
+    'duckingReductionPercent': _duckingReductionPercent,
   };
 
   void validateVoiceBackupJson(Map<String, dynamic> json) {
     final model = json['model'];
     final loadMode = json['loadMode'];
     final bargeInMode = json['bargeInMode'];
+    final playbackMode = json['playbackMode'];
+    final duckingReduction = json['duckingReductionPercent'];
     if (model is! String ||
         !AiVoiceModelKind.values.any((item) => item.value == model)) {
       throw const FormatException('备份文件中的语音模型无效');
@@ -179,6 +195,21 @@ class AiConfigController extends ChangeNotifier {
             !AiBargeInMode.values.any((item) => item.value == bargeInMode))) {
       throw const FormatException('备份文件中的语音自动打断设置无效');
     }
+    if (playbackMode != null &&
+        (playbackMode is! String ||
+            !AiAssistantPlaybackMode.values.any(
+              (item) => item.value == playbackMode,
+            ))) {
+      throw const FormatException('备份文件中的助手播放方式无效');
+    }
+    if (duckingReduction != null &&
+        (duckingReduction is! num ||
+            !duckingReduction.isFinite ||
+            duckingReduction.round() != duckingReduction ||
+            duckingReduction < minDuckingReductionPercent ||
+            duckingReduction > maxDuckingReductionPercent)) {
+      throw const FormatException('备份文件中的后台音量降低比例无效');
+    }
   }
 
   Future<void> restoreVoiceBackupJson(Map<String, dynamic> json) async {
@@ -190,21 +221,40 @@ class AiConfigController extends ChangeNotifier {
     final bargeInMode = AiBargeInMode.fromValue(
       json['bargeInMode']?.toString(),
     );
+    final playbackMode = AiAssistantPlaybackMode.fromValue(
+      json['playbackMode']?.toString(),
+    );
+    final duckingReduction = _normalizeDuckingReductionPercent(
+      json['duckingReductionPercent'],
+    );
     final prefs = await SharedPreferences.getInstance();
-    final previous = <String, String?>{
+    final previous = <String, Object?>{
       voiceModelPreferenceKey: prefs.getString(voiceModelPreferenceKey),
       voiceLoadModePreferenceKey: prefs.getString(voiceLoadModePreferenceKey),
       bargeInModePreferenceKey: prefs.getString(bargeInModePreferenceKey),
+      assistantPlaybackModePreferenceKey: prefs.getString(
+        assistantPlaybackModePreferenceKey,
+      ),
+      duckingReductionPercentPreferenceKey: prefs.get(
+        duckingReductionPercentPreferenceKey,
+      ),
     };
     try {
       for (final entry in {
         voiceModelPreferenceKey: model.value,
         voiceLoadModePreferenceKey: loadMode.value,
         bargeInModePreferenceKey: bargeInMode.value,
+        assistantPlaybackModePreferenceKey: playbackMode.value,
       }.entries) {
         if (!await prefs.setString(entry.key, entry.value)) {
           throw StateError('保存全局语音设置失败');
         }
+      }
+      if (!await prefs.setInt(
+        duckingReductionPercentPreferenceKey,
+        duckingReduction,
+      )) {
+        throw StateError('保存全局语音设置失败');
       }
     } catch (error) {
       // SharedPreferences normally persists atomically per key, but restoring
@@ -215,8 +265,10 @@ class AiConfigController extends ChangeNotifier {
           final value = entry.value;
           if (value == null) {
             await prefs.remove(entry.key);
+          } else if (value is int) {
+            await prefs.setInt(entry.key, value);
           } else {
-            await prefs.setString(entry.key, value);
+            await prefs.setString(entry.key, value as String);
           }
         } catch (_) {}
       }
@@ -225,6 +277,8 @@ class AiConfigController extends ChangeNotifier {
     _voiceModel = model;
     _voiceLoadMode = loadMode;
     _bargeInMode = bargeInMode;
+    _assistantPlaybackMode = playbackMode;
+    _duckingReductionPercent = duckingReduction;
     if (!_disposed) notifyListeners();
   }
 
@@ -500,6 +554,25 @@ class AiConfigController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> setAssistantPlaybackMode(AiAssistantPlaybackMode mode) async {
+    await ready;
+    if (_disposed || _assistantPlaybackMode == mode) return;
+    await _persistGlobalVoiceSetting(assistantPlaybackMode: mode);
+    if (_disposed) return;
+    _assistantPlaybackMode = mode;
+    notifyListeners();
+  }
+
+  Future<void> setDuckingReductionPercent(int percent) async {
+    await ready;
+    final normalized = _normalizeDuckingReductionPercent(percent);
+    if (_disposed || _duckingReductionPercent == normalized) return;
+    await _persistGlobalVoiceSetting(duckingReductionPercent: normalized);
+    if (_disposed) return;
+    _duckingReductionPercent = normalized;
+    notifyListeners();
+  }
+
   Future<void> resetPetPosition() => setPetPosition(AiPetPosition.centered);
 
   Future<void> _load() async {
@@ -519,6 +592,12 @@ class AiConfigController extends ChangeNotifier {
       );
       _bargeInMode = AiBargeInMode.fromValue(
         prefs.getString(bargeInModePreferenceKey),
+      );
+      _assistantPlaybackMode = AiAssistantPlaybackMode.fromValue(
+        prefs.getString(assistantPlaybackModePreferenceKey),
+      );
+      _duckingReductionPercent = _normalizeDuckingReductionPercent(
+        prefs.get(duckingReductionPercentPreferenceKey),
       );
       _apiKeys.addAll(_decodeSecretMap(results[1] as String?));
       _showAssistantOnAllPages =
@@ -649,19 +728,52 @@ class AiConfigController extends ChangeNotifier {
     AiVoiceModelKind? voiceModel,
     AiVoiceLoadMode? loadMode,
     AiBargeInMode? bargeInMode,
+    AiAssistantPlaybackMode? assistantPlaybackMode,
+    int? duckingReductionPercent,
   }) async {
     if (_disposed) return;
     final prefs = await SharedPreferences.getInstance();
     if (_disposed) return;
-    final saved = voiceModel != null
-        ? await prefs.setString(voiceModelPreferenceKey, voiceModel.value)
-        : loadMode != null
-        ? await prefs.setString(voiceLoadModePreferenceKey, loadMode.value)
-        : await prefs.setString(
-            bargeInModePreferenceKey,
-            (bargeInMode ?? _bargeInMode).value,
-          );
-    if (!saved) throw StateError('保存全局语音设置失败');
+    final saved = switch ((
+      voiceModel,
+      loadMode,
+      bargeInMode,
+      assistantPlaybackMode,
+      duckingReductionPercent,
+    )) {
+      (final model?, _, _, _, _) => prefs.setString(
+        voiceModelPreferenceKey,
+        model.value,
+      ),
+      (_, final mode?, _, _, _) => prefs.setString(
+        voiceLoadModePreferenceKey,
+        mode.value,
+      ),
+      (_, _, final mode?, _, _) => prefs.setString(
+        bargeInModePreferenceKey,
+        mode.value,
+      ),
+      (_, _, _, final mode?, _) => prefs.setString(
+        assistantPlaybackModePreferenceKey,
+        mode.value,
+      ),
+      (_, _, _, _, final percent?) => prefs.setInt(
+        duckingReductionPercentPreferenceKey,
+        percent,
+      ),
+      _ => Future<bool>.value(false),
+    };
+    final persisted = await saved;
+    if (!persisted) throw StateError('保存全局语音设置失败');
+  }
+
+  static int _normalizeDuckingReductionPercent(Object? value) {
+    final parsed = value is num && value.isFinite
+        ? value.round()
+        : int.tryParse(value?.toString() ?? '');
+    return (parsed ?? defaultDuckingReductionPercent)
+        .clamp(minDuckingReductionPercent, maxDuckingReductionPercent)
+        .toInt();
   }
 
   Future<void> _persist() async {

@@ -102,6 +102,8 @@ void main() {
     await controller.setVoiceModel(AiVoiceModelKind.doubaoIme);
     await controller.setVoiceLoadMode(AiVoiceLoadMode.startupPreload);
     await controller.setBargeInMode(AiBargeInMode.voiceActivity);
+    await controller.setAssistantPlaybackMode(AiAssistantPlaybackMode.duck);
+    await controller.setDuckingReductionPercent(80);
     await controller.createProfile(
       name: '备用模型',
       config: _config(
@@ -122,6 +124,8 @@ void main() {
     expect(reloaded.voiceModel, AiVoiceModelKind.doubaoIme);
     expect(reloaded.voiceLoadMode, AiVoiceLoadMode.startupPreload);
     expect(reloaded.bargeInMode, AiBargeInMode.voiceActivity);
+    expect(reloaded.assistantPlaybackMode, AiAssistantPlaybackMode.duck);
+    expect(reloaded.duckingReductionPercent, 80);
     final preferences = await SharedPreferences.getInstance();
     expect(
       preferences.getString('ai_assistant_profiles_v1'),
@@ -147,6 +151,11 @@ void main() {
       });
 
       expect(controller.bargeInMode, AiBargeInMode.disabled);
+      expect(controller.assistantPlaybackMode, AiAssistantPlaybackMode.pause);
+      expect(
+        controller.duckingReductionPercent,
+        AiConfigController.defaultDuckingReductionPercent,
+      );
     },
   );
 
