@@ -291,7 +291,10 @@ class AiConfigController extends ChangeNotifier {
     _parseBackupJson(json);
   }
 
-  Future<void> restoreBackupJson(Map<String, dynamic> json) async {
+  Future<void> restoreBackupJson(
+    Map<String, dynamic> json, {
+    bool requirePersistence = false,
+  }) async {
     await ready;
     if (_disposed) throw StateError('AI 助手配置已释放');
     final restored = _parseBackupJson(json);
@@ -308,7 +311,7 @@ class AiConfigController extends ChangeNotifier {
     _showPetOnPlayerPage = restored.showPetOnPlayerPage;
     _petScale = restored.petScale;
     _petPosition = restored.petPosition;
-    await _persist();
+    await _persist(propagateErrors: requirePersistence);
     if (!_disposed) notifyListeners();
   }
 
@@ -776,7 +779,7 @@ class AiConfigController extends ChangeNotifier {
         .toInt();
   }
 
-  Future<void> _persist() async {
+  Future<void> _persist({bool propagateErrors = false}) async {
     if (_disposed) return;
     // Settings callbacks are allowed to return a Future, but Flutter does
     // not await callback results. A storage/plugin failure must therefore be
@@ -785,6 +788,9 @@ class AiConfigController extends ChangeNotifier {
     try {
       prefs = await SharedPreferences.getInstance();
     } catch (error, stackTrace) {
+      if (propagateErrors) {
+        Error.throwWithStackTrace(error, stackTrace);
+      }
       debugPrint('保存 AI 助理偏好失败: $error\n$stackTrace');
       return;
     }
@@ -792,11 +798,14 @@ class AiConfigController extends ChangeNotifier {
     try {
       await _secretStore.write(jsonEncode(_apiKeys));
     } catch (error, stackTrace) {
+      if (propagateErrors) {
+        Error.throwWithStackTrace(error, stackTrace);
+      }
       debugPrint('保存 AI 助理密钥失败: $error\n$stackTrace');
     }
 
     try {
-      await Future.wait([
+      final saved = await Future.wait([
         prefs.setString(
           _profilesPreferencesKey,
           jsonEncode(
@@ -813,7 +822,13 @@ class AiConfigController extends ChangeNotifier {
         prefs.setDouble(petPositionXPreferenceKey, _petPosition.x),
         prefs.setDouble(petPositionYPreferenceKey, _petPosition.y),
       ]);
+      if (saved.any((value) => !value)) {
+        throw StateError('保存 AI 助理偏好失败');
+      }
     } catch (error, stackTrace) {
+      if (propagateErrors) {
+        Error.throwWithStackTrace(error, stackTrace);
+      }
       debugPrint('保存 AI 助理偏好失败: $error\n$stackTrace');
     }
   }

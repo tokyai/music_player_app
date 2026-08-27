@@ -23,6 +23,7 @@ class UserController extends ChangeNotifier {
   bool _switching = false;
   bool _disposed = false;
   Future<void> Function(String userId)? _sessionSwitcher;
+  Future<void> Function()? _sessionReloader;
 
   UserController({UserAvatarStorage? avatarStorage})
     : _avatarStorage = avatarStorage ?? UserAvatarStorage.shared {
@@ -32,6 +33,7 @@ class UserController extends ChangeNotifier {
   late final Future<void> ready;
 
   List<AppUserProfile> get users => List.unmodifiable(_users);
+  UserAvatarStorage get avatarStorage => _avatarStorage;
   bool get switching => _switching;
   String get activeUserId => _activeUserId;
   UserDataScope get activeScope => UserDataScope(_activeUserId);
@@ -54,6 +56,17 @@ class UserController extends ChangeNotifier {
 
   void detachSessionSwitcher() {
     _sessionSwitcher = null;
+    _sessionReloader = null;
+  }
+
+  void attachSessionReloader(Future<void> Function() reloader) {
+    _sessionReloader = reloader;
+  }
+
+  Future<void> reloadActiveSession() async {
+    await ready;
+    if (_disposed) throw StateError('用户管理已释放');
+    await _sessionReloader?.call();
   }
 
   Future<AppUserProfile> createUser({
@@ -206,6 +219,117 @@ class UserController extends ChangeNotifier {
     }
   }
 
+  Future<void> restoreBackupProfiles(
+    List<AppUserProfile> profiles, {
+    required String backupActiveUserId,
+  }) async {
+    await ready;
+    if (_disposed) throw StateError('用户管理已释放');
+    if (profiles.isEmpty || profiles.length > maxUsers) {
+      throw const FormatException('备份文件中的用户数量无效');
+    }
+    final next = List<AppUserProfile>.of(profiles, growable: true);
+    final ids = <String>{};
+    final names = <String>{};
+    for (final profile in next) {
+      if (!ids.add(profile.id) ||
+          !names.add(profile.name.trim().toLowerCase())) {
+        throw const FormatException('备份文件中存在重复用户');
+      }
+    }
+    if (next.where((profile) => profile.isDefault).length != 1 ||
+        !ids.contains(backupActiveUserId)) {
+      throw const FormatException('备份文件中的用户信息不完整');
+    }
+    final defaultIndex = next.indexWhere((profile) => profile.isDefault);
+    if (defaultIndex > 0) {
+      final defaultUser = next.removeAt(defaultIndex);
+      next.insert(0, defaultUser);
+    }
+
+    final previous = List<AppUserProfile>.of(_users, growable: false);
+    final previousActiveUserId = _activeUserId;
+    final removed = previous
+        .where((profile) => !ids.contains(profile.id))
+        .toList(growable: false);
+    final obsoleteAvatars = previous
+        .where((profile) {
+          AppUserProfile? replacement;
+          for (final candidate in next) {
+            if (candidate.id == profile.id) {
+              replacement = candidate;
+              break;
+            }
+          }
+          return replacement == null ||
+              replacement.avatarFileName != profile.avatarFileName;
+        })
+        .map((profile) => profile.avatarFileName)
+        .whereType<String>()
+        .toList(growable: false);
+    try {
+      await _persistUsers(next);
+      _users
+        ..clear()
+        ..addAll(next);
+      for (final profile in next) {
+        UserDataScope.markRestored(profile.id);
+      }
+      if (_activeUserId != backupActiveUserId) {
+        await switchUser(backupActiveUserId);
+      } else {
+        final prefs = await SharedPreferences.getInstance();
+        final saved = await prefs.setString(_activeUserKey, _activeUserId);
+        if (!saved) throw StateError('保存当前用户失败');
+        await reloadActiveSession();
+      }
+    } catch (_) {
+      final failedActiveUserId = _activeUserId;
+      try {
+        await _persistUsers(previous);
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_activeUserKey, previousActiveUserId);
+      } catch (_) {}
+      _users
+        ..clear()
+        ..addAll(previous);
+      _activeUserId = previousActiveUserId;
+      for (final profile in previous) {
+        UserDataScope.markRestored(profile.id);
+      }
+      for (final profile in next) {
+        if (!previous.any((item) => item.id == profile.id)) {
+          UserDataScope.markDeleted(profile.id);
+        }
+      }
+      try {
+        if (failedActiveUserId == previousActiveUserId) {
+          await reloadActiveSession();
+        } else {
+          await _sessionSwitcher?.call(previousActiveUserId);
+        }
+      } catch (_) {}
+      _notify();
+      rethrow;
+    }
+
+    // The user/session commit above is the only fallible boundary. Cleanup is
+    // deliberately best-effort and happens afterward so a cache or file
+    // problem cannot make a successfully restored user list look failed.
+    for (final profile in next) {
+      UserDataScope.markRestored(profile.id);
+    }
+    for (final profile in removed) {
+      UserDataScope.markDeleted(profile.id);
+    }
+    for (final fileName in obsoleteAvatars) {
+      await _tryDeleteAvatar(fileName);
+    }
+    for (final profile in removed) {
+      await _deleteUserData(UserDataScope(profile.id));
+    }
+  }
+
   Future<void> _load() async {
     final loaded = <AppUserProfile>[];
     try {
@@ -353,6 +477,7 @@ class UserController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _sessionSwitcher = null;
+    _sessionReloader = null;
     super.dispose();
   }
 }

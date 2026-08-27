@@ -10,7 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'bounded_http_response.dart';
 import 'user_data_scope.dart';
 
-const _maxBackupBytes = 5 * 1024 * 1024;
+const _maxBackupBytes = 12 * 1024 * 1024;
 
 class WebDavConfig {
   static const defaultUrl = 'https://23.254.235.247:8443/kuzai-dav/';
@@ -179,7 +179,7 @@ class WebDavBackupService {
         timeout: const Duration(seconds: 15),
       );
     } on HttpResponseTooLargeException {
-      throw const WebDavException('TOO_LARGE', '备份文件不能超过 5 MB');
+      throw const WebDavException('TOO_LARGE', '备份文件不能超过 12 MB');
     } on TimeoutException {
       throw const WebDavException('TIMEOUT', 'WebDAV 请求超时');
     } on HandshakeException catch (error) {
@@ -302,7 +302,7 @@ class WebDavBackupService {
   static void _validateSize(String content) {
     final bytes = utf8.encode(content).length;
     if (bytes > _maxBackupBytes) {
-      throw const WebDavException('TOO_LARGE', '备份文件不能超过 5 MB');
+      throw const WebDavException('TOO_LARGE', '备份文件不能超过 12 MB');
     }
   }
 }

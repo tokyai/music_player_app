@@ -263,6 +263,73 @@ class PlayerProvider extends ChangeNotifier {
     'videoPlayerMode': _videoPlayerMode.value,
   };
 
+  static void validateBackupJson(Map<String, dynamic> json) {
+    bool containsValue<T>(Iterable<T> values, String value) => values.any(
+      (item) => switch (item) {
+        NeteaseLevel item => item.value == value,
+        CommonLevel item => item.value == value,
+        PlaybackSource item => item.value == value,
+        VideoPlayerMode item => item.value == value,
+        _ => false,
+      },
+    );
+
+    final neteaseLevel = json['neteaseLevel'];
+    final commonLevel = json['commonLevel'];
+    final sources = json['playbackSources'];
+    final audioQuality = json['bilibiliAudioQuality'];
+    final videoQuality = json['bilibiliVideoQuality'];
+    final rawOrder = json['bilibiliLyricPlatformOrder'];
+    final lyricStep = json['lyricOffsetStepMs'];
+    final videoMode = json['videoPlayerMode'];
+    if (neteaseLevel is! String ||
+        !containsValue(NeteaseLevel.values, neteaseLevel) ||
+        commonLevel is! String ||
+        !containsValue(CommonLevel.values, commonLevel) ||
+        sources is! Map ||
+        audioQuality is! num ||
+        !audioQuality.isFinite ||
+        audioQuality.toInt() != audioQuality ||
+        audioQuality <= 0 ||
+        videoQuality is! num ||
+        !videoQuality.isFinite ||
+        videoQuality.toInt() != videoQuality ||
+        videoQuality <= 0 ||
+        rawOrder is! List ||
+        rawOrder.any((item) => item is! String) ||
+        lyricStep is! num ||
+        !lyricStep.isFinite ||
+        lyricStep.toInt() != lyricStep ||
+        lyricStep <= 0 ||
+        videoMode is! String ||
+        !containsValue(VideoPlayerMode.values, videoMode)) {
+      throw const FormatException('备份文件中的播放器设置无效');
+    }
+    for (final platform in const [
+      MusicPlatform.netease,
+      MusicPlatform.qq,
+      MusicPlatform.kugou,
+    ]) {
+      final value = sources[platform.code];
+      if (value is! String || !containsValue(PlaybackSource.values, value)) {
+        throw const FormatException('备份文件中的播放音源设置无效');
+      }
+    }
+    final order = rawOrder.cast<String>();
+    const lyricPlatforms = {
+      MusicPlatform.netease,
+      MusicPlatform.qq,
+      MusicPlatform.kugou,
+    };
+    if (order.length != lyricPlatforms.length ||
+        order.toSet().length != order.length ||
+        order.any(
+          (value) => !lyricPlatforms.any((platform) => platform.code == value),
+        )) {
+      throw const FormatException('备份文件中的歌词匹配顺序无效');
+    }
+  }
+
   /// Restores playback preferences in one batch so an import does not cause
   /// several intermediate player rebuilds or repeated URL resolution.
   Future<void> restoreBackupJson(Map<String, dynamic> json) async {
@@ -449,6 +516,16 @@ class PlayerProvider extends ChangeNotifier {
   List<PlaybackHistoryEntry> get playbackHistory =>
       List.unmodifiable(_playbackHistory);
   int get playbackHistoryRevision => _playbackHistoryRevision;
+
+  Map<String, dynamic> toUserBackupJson() {
+    final json = <String, dynamic>{
+      'playbackHistory': PlaybackHistoryService.toBackupJson(_playbackHistory),
+    };
+    if (_playbackStateLoaded && _queue.isNotEmpty) {
+      json['playbackState'] = _playbackStateSnapshot().toJson();
+    }
+    return json;
+  }
 
   String get apiKey => _apiKey;
   AudioPlayer get audioPlayer => _audioPlayer;
@@ -2491,8 +2568,8 @@ class PlayerProvider extends ChangeNotifier {
     );
   }
 
-  Future<void> prepareForUserSwitch() =>
-      _prepareForSessionEnd(waitForWrites: false);
+  Future<void> prepareForUserSwitch({bool waitForWrites = false}) =>
+      _prepareForSessionEnd(waitForWrites: waitForWrites);
 
   Future<void> cancelPreparedUserSwitch() async {
     if (_disposed || _exitPreparationFuture != null) return;
@@ -2511,6 +2588,7 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   Future<void> _prepareForSessionEnd({required bool waitForWrites}) async {
+    if (_preparingForExit) return;
     // Mark shutdown before restoration completes so an auto-resume cannot
     // start while the final snapshot is being prepared. The queue itself is
     // still restored and preserved below.

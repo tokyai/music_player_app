@@ -189,6 +189,7 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
       sharedTheme: _sharedTheme,
     );
     widget.users.attachSessionSwitcher(_switchUserSession);
+    widget.users.attachSessionReloader(_reloadActiveUserSession);
     FloatingCapsuleService.onPlayPauseTap = () => _session.player.playPause();
     FloatingCapsuleService.onCapsuleTap = () {
       final context = _navigatorKey.currentContext;
@@ -250,7 +251,18 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
   }
 
   Future<void> _switchUserSession(String userId) async {
-    if (userId == _session.scope.userId) return;
+    await _replaceUserSession(userId, activateUser: true);
+  }
+
+  Future<void> _reloadActiveUserSession() async {
+    await _replaceUserSession(widget.users.activeUserId, activateUser: false);
+  }
+
+  Future<void> _replaceUserSession(
+    String userId, {
+    required bool activateUser,
+  }) async {
+    if (activateUser && userId == _session.scope.userId) return;
     final previous = _session;
     var previousPrepared = false;
     _UserSession? target;
@@ -275,7 +287,7 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
         }),
       );
       if (!mounted) throw StateError('应用正在关闭，无法切换用户');
-      await widget.users.activatePreparedUser(userId);
+      if (activateUser) await widget.users.activatePreparedUser(userId);
       // Mark the old session disposed without waiting on a potentially slow
       // native platform-channel teardown. Its release future continues in the
       // background and drops the old cache index when complete.
@@ -303,7 +315,8 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
         debugPrintStack(stackTrace: stackTrace);
       }
     } catch (error) {
-      if (previousPrepared && _session.scope.userId != userId) {
+      if (previousPrepared &&
+          (activateUser ? _session.scope.userId != userId : true)) {
         await previous.player.cancelPreparedUserSwitch();
       }
       if (target != null && !identical(_session, target)) {

@@ -26,6 +26,12 @@ class UserDataScope {
     }
   }
 
+  static void markRestored(String userId) {
+    _deletedUserIds.remove(userId);
+  }
+
+  static bool isScopedPreferenceKey(String key) => key.startsWith(_prefix);
+
   String preferenceKey(String legacyKey) {
     return isDefault ? legacyKey : '$_prefix$userId.$legacyKey';
   }

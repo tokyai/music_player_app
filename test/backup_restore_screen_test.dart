@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:music_player_app/providers/ai_config_controller.dart';
 import 'package:music_player_app/providers/player_provider.dart';
+import 'package:music_player_app/providers/search_session.dart';
+import 'package:music_player_app/providers/theme_controller.dart';
+import 'package:music_player_app/providers/user_controller.dart';
 import 'package:music_player_app/screens/backup_restore_screen.dart';
 import 'package:music_player_app/services/backup_service.dart';
 import 'package:music_player_app/services/favorite_service.dart';
@@ -21,13 +25,28 @@ void main() {
       tester.view.physicalSize = size;
       final player = PlayerProvider();
       final favorites = FavoriteService();
-      await Future.wait([player.settingsReady, favorites.load()]);
+      final users = UserController();
+      final ai = AiConfigController(secretStore: MemoryAiSecretStore());
+      final theme = ThemeController();
+      final search = SearchSession();
+      await Future.wait([
+        player.settingsReady,
+        favorites.load(),
+        users.ready,
+        ai.ready,
+        theme.ready,
+        search.historyReady,
+      ]);
 
       await tester.pumpWidget(
         MultiProvider(
           providers: [
             ChangeNotifierProvider<PlayerProvider>.value(value: player),
             ChangeNotifierProvider<FavoriteService>.value(value: favorites),
+            ChangeNotifierProvider<UserController>.value(value: users),
+            ChangeNotifierProvider<AiConfigController>.value(value: ai),
+            ChangeNotifierProvider<ThemeController>.value(value: theme),
+            ChangeNotifierProvider<SearchSession>.value(value: search),
           ],
           child: MaterialApp(
             theme: AppTheme.light(),
@@ -58,6 +77,10 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
       player.dispose();
       favorites.dispose();
+      users.dispose();
+      ai.dispose();
+      theme.dispose();
+      search.dispose();
     }
     tester.view.resetPhysicalSize();
     tester.view.resetDevicePixelRatio();
@@ -66,7 +89,7 @@ void main() {
   testWidgets('restore scope defaults to all and supports individual choices', (
     tester,
   ) async {
-    final contents = const BackupRestoreContents(
+    const contents = BackupRestoreContents(
       songs: true,
       bilibili: true,
       playlists: true,
@@ -151,6 +174,76 @@ void main() {
       expect(
         find.byKey(const ValueKey('backup-restore-options-dialog')),
         findsNothing,
+      );
+    }
+    tester.view.resetPhysicalSize();
+    tester.view.resetDevicePixelRatio();
+  });
+
+  testWidgets('full snapshot restore only offers complete replacement', (
+    tester,
+  ) async {
+    const contents = BackupRestoreContents(
+      songs: true,
+      bilibili: true,
+      playlists: true,
+      searchHistory: true,
+      appearance: true,
+      lyricDisplay: true,
+      bilibiliAccount: true,
+      apiKey: true,
+      globalVoice: true,
+      aiAssistant: true,
+      playerSettings: true,
+      fullSnapshot: true,
+    );
+
+    for (final size in const [Size(640, 360), Size(1280, 800)]) {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = size;
+      BackupRestoreSelection? selection;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light(),
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => FilledButton(
+                key: const ValueKey('open-full-restore-dialog'),
+                onPressed: () async {
+                  selection = await showBackupRestoreSelectionDialog(
+                    context,
+                    contents,
+                  );
+                },
+                child: const Text('打开'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('open-full-restore-dialog')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('恢复全部用户'), findsOneWidget);
+      expect(find.textContaining('默认用户只会被覆盖，不会删除'), findsOneWidget);
+      expect(find.byKey(const ValueKey('backup-restore-merge')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('backup-restore-replace')),
+        findsNothing,
+      );
+      final replace = find.byKey(const ValueKey('backup-restore-full-replace'));
+      expect(replace, findsOneWidget);
+      expect(replace.hitTestable(), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      await tester.tap(replace);
+      await tester.pumpAndSettle();
+      expect(selection?.mode, FavoriteImportMode.replace);
+      expect(selection?.sections, containsAll(BackupRestoreSection.values));
+      expect(
+        selection?.sections,
+        hasLength(BackupRestoreSection.values.length),
       );
     }
     tester.view.resetPhysicalSize();

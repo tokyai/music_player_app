@@ -157,6 +157,36 @@ class PlaybackStateService {
 
   const PlaybackStateService._();
 
+  static void validateBackupJson(Map<String, dynamic> json) {
+    final rawQueue = json['queue'];
+    final rawIndex = json['currentIndex'];
+    final rawPosition = json['positionMs'];
+    final rawPlaying = json['isPlaying'];
+    final rawMode = json['playMode'];
+    if (rawQueue is! List ||
+        rawQueue.isEmpty ||
+        rawQueue.length > maxQueueEntries ||
+        rawQueue.any((item) => item is! Map) ||
+        rawIndex is! num ||
+        !rawIndex.isFinite ||
+        rawIndex.toInt() != rawIndex ||
+        rawIndex < 0 ||
+        rawIndex >= rawQueue.length ||
+        rawPosition is! num ||
+        !rawPosition.isFinite ||
+        rawPosition.toInt() != rawPosition ||
+        rawPosition < 0 ||
+        rawPlaying is! bool ||
+        rawMode is! String ||
+        !validPlayModes.contains(rawMode)) {
+      throw const FormatException('备份文件中的播放队列格式错误');
+    }
+    final parsed = PlaybackSessionSnapshot.fromJson(json);
+    if (parsed.queue.length != rawQueue.length) {
+      throw const FormatException('备份文件中的播放队列数据不完整');
+    }
+  }
+
   static Future<PlaybackSessionSnapshot?> load({
     UserDataScope scope = UserDataScope.defaultScope,
   }) async {

@@ -98,7 +98,7 @@ void main() {
     'rejects an oversized download while reading the response stream',
     () async {
       final client = MockClient(
-        (_) async => http.Response.bytes(Uint8List(5 * 1024 * 1024 + 1), 200),
+        (_) async => http.Response.bytes(Uint8List(12 * 1024 * 1024 + 1), 200),
       );
       const config = WebDavConfig(
         url: 'https://example.com/dav/',

@@ -371,6 +371,15 @@ class FavoriteService extends ChangeNotifier {
     ).convert(exportData(apiKey: apiKey));
   }
 
+  static void validateDecodedBackup(dynamic decodedJson) {
+    final decoded = _decodeBackupValue(decodedJson);
+    if (decoded.skipped > 0 ||
+        decoded.bilibiliSkipped > 0 ||
+        decoded.playlistsSkipped > 0) {
+      throw const FormatException('备份文件中的收藏数据不完整');
+    }
+  }
+
   /// 导入库仔音乐备份，也兼容旧版直接导出的歌曲数组。
   Future<FavoriteImportResult> importJson(
     String raw, {

@@ -324,6 +324,93 @@ void main() {
   });
 
   test(
+    'restoring profiles reloads the current session without switching users',
+    () async {
+      final users = UserController();
+      addTearDown(users.dispose);
+      await users.ready;
+      var reloads = 0;
+      var switches = 0;
+      users.attachSessionReloader(() async => reloads++);
+      users.attachSessionSwitcher((_) async => switches++);
+
+      await users.restoreBackupProfiles(const [
+        AppUserProfile(
+          id: AppUserProfile.defaultUserId,
+          name: '恢复后的默认用户',
+          avatarId: 'music',
+          avatarColorIndex: 2,
+        ),
+      ], backupActiveUserId: AppUserProfile.defaultUserId);
+
+      expect(users.activeUserId, AppUserProfile.defaultUserId);
+      expect(users.activeUser.name, '恢复后的默认用户');
+      expect(reloads, 1);
+      expect(switches, 0);
+    },
+  );
+
+  test('restoring profiles switches to the backup active user', () async {
+    final users = UserController();
+    addTearDown(users.dispose);
+    await users.ready;
+    const restoredUser = AppUserProfile(
+      id: 'restored-passenger',
+      name: '恢复的副驾驶',
+      avatarId: 'person',
+      avatarColorIndex: 1,
+    );
+    final switched = <String>[];
+    users.attachSessionSwitcher((userId) async {
+      switched.add(userId);
+      await users.activatePreparedUser(userId);
+    });
+
+    await users.restoreBackupProfiles(const [
+      AppUserProfile.defaultUser,
+      restoredUser,
+    ], backupActiveUserId: restoredUser.id);
+
+    expect(switched, [restoredUser.id]);
+    expect(users.activeUserId, restoredUser.id);
+    expect(users.activeUser, restoredUser);
+  });
+
+  test(
+    'failed restored-session reload rolls profiles and active user back',
+    () async {
+      final users = UserController();
+      addTearDown(users.dispose);
+      await users.ready;
+      final previousUsers = users.users;
+      final previousActiveUserId = users.activeUserId;
+      var reloads = 0;
+      users.attachSessionReloader(() async {
+        reloads++;
+        throw StateError('reload failed');
+      });
+
+      await expectLater(
+        users.restoreBackupProfiles(const [
+          AppUserProfile(
+            id: AppUserProfile.defaultUserId,
+            name: '不应保留的名称',
+            avatarId: 'star',
+            avatarColorIndex: 4,
+          ),
+        ], backupActiveUserId: AppUserProfile.defaultUserId),
+        throwsA(isA<StateError>()),
+      );
+
+      expect(reloads, 2);
+      expect(users.users, previousUsers);
+      expect(users.activeUserId, previousActiveUserId);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('kuzai_active_user_v1'), previousActiveUserId);
+    },
+  );
+
+  test(
     'custom avatars persist, replace, clear, and delete with users',
     () async {
       const secureStorageChannel = MethodChannel(
@@ -671,16 +758,34 @@ void main() {
 
     mainContext = tester.element(find.byType(MainScreen));
     final switchedPlayer = mainContext.read<PlayerProvider>();
+    final switchedFavorites = mainContext.read<FavoriteService>();
+    final switchedSearch = mainContext.read<SearchSession>();
     expect(users.activeUserId, second.id);
     expect(switchedPlayer, isNot(same(initialPlayer)));
     expect(switchedPlayer.dataScope.userId, second.id);
-    expect(mainContext.read<FavoriteService>().dataScope.userId, second.id);
-    expect(mainContext.read<SearchSession>().dataScope.userId, second.id);
+    expect(switchedFavorites.dataScope.userId, second.id);
+    expect(switchedSearch.dataScope.userId, second.id);
     expect(mainContext.read<ThemeController>(), same(sharedTheme));
     expect(mainContext.read<ThemeController>().dataScope.isDefault, isTrue);
     expect(mainContext.read<AiConfigController>(), same(sharedAiConfig));
     expect(mainContext.read<AiConfigController>().dataScope.isDefault, isTrue);
     expect(systemPlayer, same(switchedPlayer));
+    expect(tester.takeException(), isNull);
+
+    await users.reloadActiveSession();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    mainContext = tester.element(find.byType(MainScreen));
+    final reloadedPlayer = mainContext.read<PlayerProvider>();
+    expect(users.activeUserId, second.id);
+    expect(reloadedPlayer, isNot(same(switchedPlayer)));
+    expect(reloadedPlayer.dataScope.userId, second.id);
+    expect(mainContext.read<FavoriteService>(), isNot(same(switchedFavorites)));
+    expect(mainContext.read<SearchSession>(), isNot(same(switchedSearch)));
+    expect(mainContext.read<ThemeController>(), same(sharedTheme));
+    expect(mainContext.read<AiConfigController>(), same(sharedAiConfig));
+    expect(systemPlayer, same(reloadedPlayer));
     expect(tester.takeException(), isNull);
 
     await tester.pumpWidget(const SizedBox.shrink());

@@ -137,6 +137,38 @@ class PlaybackHistoryService {
     }
   }
 
+  static Map<String, dynamic> toBackupJson(
+    Iterable<PlaybackHistoryEntry> entries,
+  ) => {
+    'version': 1,
+    'items': entries
+        .take(maxEntries)
+        .map((entry) => entry.toJson())
+        .toList(growable: false),
+  };
+
+  static List<PlaybackHistoryEntry> decodeBackupJson(
+    Map<String, dynamic> json,
+  ) {
+    final rawItems = json['items'];
+    if (rawItems is! List || rawItems.length > maxEntries) {
+      throw const FormatException('备份文件中的播放历史格式错误');
+    }
+    final entries = <PlaybackHistoryEntry>[];
+    final seen = <String>{};
+    for (final raw in rawItems) {
+      if (raw is! Map) {
+        throw const FormatException('备份文件中的播放历史格式错误');
+      }
+      final entry = PlaybackHistoryEntry.fromJson(
+        Map<String, dynamic>.from(raw),
+      );
+      if (seen.add(entry.key)) entries.add(entry);
+    }
+    entries.sort((a, b) => b.playedAt.compareTo(a.playedAt));
+    return entries;
+  }
+
   static Future<void> save(
     List<PlaybackHistoryEntry> entries, {
     UserDataScope scope = UserDataScope.defaultScope,

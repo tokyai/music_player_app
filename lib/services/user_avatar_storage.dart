@@ -54,6 +54,14 @@ class UserAvatarStorage {
     }
   }
 
+  Future<Uint8List?> read(String? fileName) async {
+    final file = await resolve(fileName);
+    if (file == null) return null;
+    final bytes = await file.readAsBytes();
+    validateJpeg(bytes);
+    return bytes;
+  }
+
   Future<void> delete(String? fileName) async {
     if (!AppUserProfile.isValidAvatarFileName(fileName)) return;
     final directory = await _avatarDirectory();

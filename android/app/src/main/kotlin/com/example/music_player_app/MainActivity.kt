@@ -67,7 +67,7 @@ class MainActivity : AudioServiceActivity() {
         const val CAR_AUDIO_MAX_BATCH_BYTES = 16 * 1024
         const val REQUEST_IMPORT_FAVORITES = 4101
         const val REQUEST_EXPORT_FAVORITES = 4102
-        const val MAX_BACKUP_BYTES = 5 * 1024 * 1024
+        const val MAX_BACKUP_BYTES = 12 * 1024 * 1024
     }
 
     private var pendingFileResult: MethodChannel.Result? = null
@@ -1662,7 +1662,7 @@ class MainActivity : AudioServiceActivity() {
                 if (count < 0) break
                 total += count
                 if (total > MAX_BACKUP_BYTES) {
-                    throw IllegalArgumentException("收藏备份不能超过 5 MB")
+                    throw IllegalArgumentException("备份文件不能超过 12 MB")
                 }
                 output.write(buffer, 0, count)
             }

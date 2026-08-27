@@ -9,10 +9,10 @@ import '../providers/ai_config_controller.dart';
 import '../providers/player_provider.dart';
 import '../providers/search_session.dart';
 import '../providers/theme_controller.dart';
+import '../providers/user_controller.dart';
 import '../services/backup_service.dart';
 import '../services/favorite_file_service.dart';
 import '../services/favorite_service.dart';
-import '../services/global_settings_service.dart';
 import '../services/lan_backup_service.dart';
 import '../services/webdav_backup_service.dart';
 import '../services/user_data_scope.dart';
@@ -38,6 +38,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
   LanBackupSession? _lanSession;
   bool _loadingConfig = true;
   bool _busy = false;
+  bool _restoreFlowActive = false;
   bool _obscurePassword = true;
   String? _status;
   bool _statusError = false;
@@ -79,40 +80,29 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
   }
 
   Future<String> _prepareExport() async {
+    final users = context.read<UserController>();
     final favorites = context.read<FavoriteService>();
     final player = context.read<PlayerProvider>();
-    final aiConfig = context.read<AiConfigController?>();
-    final theme = context.read<ThemeController?>();
-    final search = context.read<SearchSession?>();
+    final aiConfig = context.read<AiConfigController>();
+    final theme = context.read<ThemeController>();
+    final search = context.read<SearchSession>();
     final operationScope = player.dataScope;
-    await Future.wait([
-      favorites.load(),
-      player.settingsReady,
-      if (aiConfig != null) aiConfig.ready,
-      if (theme != null) theme.ready,
-      if (search != null) search.historyReady,
-    ]);
-    if (!mounted ||
-        !identical(context.read<PlayerProvider>(), player) ||
-        player.dataScope != operationScope) {
-      throw StateError('用户已切换，请重试备份操作');
-    }
-    final lyricDisplay = operationScope.isDefault
-        ? await GlobalSettingsService.exportLyricDisplay()
-        : null;
-    if (!mounted ||
-        !identical(context.read<PlayerProvider>(), player) ||
-        player.dataScope != operationScope) {
-      throw StateError('用户已切换，请重试备份操作');
-    }
-    return BackupService.exportJson(
+    final result = await BackupService.exportFullJson(
+      users: users,
       favorites: favorites,
       player: player,
       aiConfig: aiConfig,
       theme: theme,
       search: search,
-      lyricDisplay: lyricDisplay,
     );
+    if (!mounted ||
+        !identical(context.read<UserController>(), users) ||
+        !identical(context.read<PlayerProvider>(), player) ||
+        player.dataScope != operationScope ||
+        users.activeUserId != operationScope.userId) {
+      throw StateError('用户已切换，请重试备份操作');
+    }
+    return result;
   }
 
   Future<BackupRestoreSelection?> _chooseRestoreOptions(
@@ -140,19 +130,28 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     AiConfigController? operationAiConfig,
     ThemeController? operationTheme,
     SearchSession? operationSearch,
+    UserController? operationUsers,
   }) async {
     if (!mounted || raw.trim().isEmpty) return;
+    if (_busy || _restoreFlowActive) {
+      _showStatus('已有备份或恢复操作正在进行，请稍候');
+      return;
+    }
     final favorites = operationFavorites ?? context.read<FavoriteService>();
     final player = operationPlayer ?? context.read<PlayerProvider>();
     final aiConfig = operationAiConfig ?? context.read<AiConfigController?>();
     final theme = operationTheme ?? context.read<ThemeController?>();
     final search = operationSearch ?? context.read<SearchSession?>();
+    final users = operationUsers ?? context.read<UserController>();
     final operationScope = player.dataScope;
+    _restoreFlowActive = true;
     final selection = await _chooseRestoreOptions(raw, scope: operationScope);
     if (selection == null ||
         !mounted ||
         player.dataScope != operationScope ||
+        users.activeUserId != operationScope.userId ||
         !identical(context.read<PlayerProvider>(), player)) {
+      _restoreFlowActive = false;
       return;
     }
     setState(() {
@@ -168,6 +167,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         aiConfig: aiConfig,
         theme: theme,
         search: search,
+        users: users,
         mode: selection.mode,
         sections: selection.sections,
       );
@@ -191,6 +191,8 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         _status = '恢复失败：$error';
         _statusError = true;
       });
+    } finally {
+      _restoreFlowActive = false;
     }
   }
 
@@ -198,6 +200,9 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     BackupRestoreResult result,
     BackupRestoreSelection selection,
   ) {
+    if (result.fullSnapshotRestored) {
+      return '恢复完成：全部用户数据和全局设置已恢复';
+    }
     final parts = <String>[];
     if (selection.sections.contains(BackupRestoreSection.songs)) {
       parts.add('歌曲 ${result.songsAdded} 首');
@@ -462,6 +467,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
       final operationAiConfig = context.read<AiConfigController?>();
       final operationTheme = context.read<ThemeController?>();
       final operationSearch = context.read<SearchSession?>();
+      final operationUsers = context.read<UserController>();
       final operationScope = operationPlayer.dataScope;
       final session = await LanBackupService.start(
         exportBackup: () => exportJson,
@@ -484,6 +490,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
           operationAiConfig,
           operationTheme,
           operationSearch,
+          operationUsers,
         ),
       );
     } catch (error) {
@@ -504,6 +511,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
     AiConfigController? operationAiConfig,
     ThemeController? operationTheme,
     SearchSession? operationSearch,
+    UserController operationUsers,
   ) async {
     try {
       final raw = await session.restored;
@@ -518,6 +526,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
         operationAiConfig: operationAiConfig,
         operationTheme: operationTheme,
         operationSearch: operationSearch,
+        operationUsers: operationUsers,
       );
       if (!mounted || !identical(_lanSession, session)) return;
       await _stopLanTransfer();
@@ -755,7 +764,7 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
           ],
         ),
         Text(
-          '有效期约 10 分钟，上传后回到车机确认合并或覆盖。',
+          '有效期约 10 分钟，上传后回到车机确认恢复。',
           style: TextStyle(
             color: AppColors.textSecondary,
             fontSize: layout.secondarySize,
@@ -911,25 +920,15 @@ class _BackupRestoreScreenState extends State<BackupRestoreScreen> {
   }
 
   Widget _buildSummary() {
-    return Consumer2<FavoriteService, PlayerProvider>(
-      builder: (context, favorites, player, _) {
+    return Consumer<UserController>(
+      builder: (context, users, _) {
         return Wrap(
           spacing: 8,
           runSpacing: 8,
           children: [
-            _summaryChip(Icons.favorite, '${favorites.favorites.length} 首歌曲'),
-            _summaryChip(
-              Icons.video_collection_outlined,
-              '${favorites.bilibiliFavorites.length} 个B站收藏',
-            ),
-            _summaryChip(
-              Icons.queue_music,
-              '${favorites.favoritePlaylists.length} 个歌单',
-            ),
-            _summaryChip(
-              Icons.key_outlined,
-              player.apiKey.isEmpty ? '未设置 API Key' : 'API Key 已设置',
-            ),
+            _summaryChip(Icons.people_outline, '${users.users.length} 个用户'),
+            _summaryChip(Icons.library_music_outlined, '全部音乐库与历史'),
+            _summaryChip(Icons.tune_rounded, '全部全局设置'),
           ],
         );
       },

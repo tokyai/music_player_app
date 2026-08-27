@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-const _lanMaxBackupBytes = 5 * 1024 * 1024;
+const _lanMaxBackupBytes = 12 * 1024 * 1024;
 const _lanSessionDuration = Duration(minutes: 10);
 
 /// 临时局域网备份服务。手机只需要浏览器，不需要安装客户端或调用车机文件管理器。
@@ -177,11 +177,11 @@ class LanBackupSession {
   Future<void> _serveHome(HttpRequest request) async {
     const html = '''<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>库仔音乐备份</title><style>
+  <title>库仔音乐备份</title><style>
 body{font-family:system-ui,-apple-system,"Microsoft Yahei",sans-serif;max-width:680px;margin:0 auto;padding:24px;line-height:1.6;color:#20242b;background:#f7f8fa}
 main{background:#fff;border:1px solid #e3e7ec;border-radius:16px;padding:24px;box-shadow:0 4px 16px #00000012}h1{font-size:24px;margin-top:0}
 label{display:block;font-weight:600;margin:14px 0 6px}input,button,textarea{font:inherit;box-sizing:border-box;width:100%;padding:11px;border:1px solid #d8dde5;border-radius:10px}button{background:#2196f3;color:white;border:0;font-weight:700;cursor:pointer;margin-top:10px}button.secondary{background:#eef1f4;color:#20242b}small{color:#646a73}.status{margin-top:14px;white-space:pre-wrap}
-</style></head><body><main><h1>库仔音乐备份</h1><p>请输入车机上显示的 6 位 PIN。备份包含收藏、播放 API Key，以及全部 AI 模型配置、中转站、选项和 Key。</p>
+  </style></head><body><main><h1>库仔音乐备份</h1><p>请输入车机上显示的 6 位 PIN。备份包含全部用户资料、音乐库、历史记录、播放队列以及全局设置。</p>
 <label for="pin">PIN</label><input id="pin" inputmode="numeric" maxlength="6" placeholder="6 位数字">
 <button class="secondary" onclick="downloadBackup()">从车机下载备份</button>
 <label for="file">向车机恢复 JSON 文件</label><input id="file" type="file" accept="application/json,.json">
@@ -190,7 +190,7 @@ label{display:block;font-weight:600;margin:14px 0 6px}input,button,textarea{font
 const initialPin=new URLSearchParams(location.search).get('pin')||'';if(/^\\d{6}\$/.test(initialPin))document.getElementById('pin').value=initialPin;
 const pin=()=>document.getElementById('pin').value.trim();const status=t=>document.getElementById('status').textContent=t;
 function downloadBackup(){if(!/^\\d{6}\$/.test(pin())){status('请输入 6 位 PIN');return;}location.href='backup?pin='+encodeURIComponent(pin());}
-async function uploadBackup(){if(!/^\\d{6}\$/.test(pin())){status('请输入 6 位 PIN');return;}const f=document.getElementById('file').files[0];if(!f){status('请选择 JSON 文件');return;}if(f.size>5242880){status('文件不能超过 5 MB');return;}status('正在上传…');try{const r=await fetch('restore?pin='+encodeURIComponent(pin()),{method:'POST',headers:{'Content-Type':'application/json'},body:await f.text()});status(await r.text());}catch(e){status('上传失败：'+e);}}
+  async function uploadBackup(){if(!/^\\d{6}\$/.test(pin())){status('请输入 6 位 PIN');return;}const f=document.getElementById('file').files[0];if(!f){status('请选择 JSON 文件');return;}if(f.size>12582912){status('文件不能超过 12 MB');return;}status('正在上传…');try{const r=await fetch('restore?pin='+encodeURIComponent(pin()),{method:'POST',headers:{'Content-Type':'application/json'},body:await f.text()});status(await r.text());}catch(e){status('上传失败：'+e);}}
 </script></body></html>''';
     final response = request.response;
     response.headers.set('Content-Type', 'text/html; charset=utf-8');
@@ -207,7 +207,7 @@ async function uploadBackup(){if(!/^\\d{6}\$/.test(pin())){status('请输入 6 �
     final content = _exportBackup();
     final bytes = utf8.encode(content);
     if (bytes.length > _lanMaxBackupBytes) {
-      await _respond(request, 413, '备份文件不能超过 5 MB');
+      await _respond(request, 413, '备份文件不能超过 12 MB');
       return;
     }
     final response = request.response;
@@ -227,14 +227,14 @@ async function uploadBackup(){if(!/^\\d{6}\$/.test(pin())){status('请输入 6 �
       return;
     }
     if (request.headers.contentLength > _lanMaxBackupBytes) {
-      await _respond(request, 413, '备份文件不能超过 5 MB');
+      await _respond(request, 413, '备份文件不能超过 12 MB');
       return;
     }
     final bytes = <int>[];
     await for (final chunk in request.timeout(const Duration(seconds: 20))) {
       bytes.addAll(chunk);
       if (bytes.length > _lanMaxBackupBytes) {
-        await _respond(request, 413, '备份文件不能超过 5 MB');
+        await _respond(request, 413, '备份文件不能超过 12 MB');
         return;
       }
     }
@@ -253,7 +253,7 @@ async function uploadBackup(){if(!/^\\d{6}\$/.test(pin())){status('请输入 6 �
       return;
     }
     if (!_restoreCompleter.isCompleted) _restoreCompleter.complete(raw);
-    await _respond(request, 200, '上传成功，请回到车机选择合并或覆盖。');
+    await _respond(request, 200, '上传成功，请回到车机确认恢复。');
   }
 
   bool _authorize(HttpRequest request) {

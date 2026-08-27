@@ -71,6 +71,37 @@ class _BackupRestoreOptionsDialogState
   @override
   Widget build(BuildContext context) {
     final layout = AppLayout.fromContext(context);
+    if (widget.contents.fullSnapshot) {
+      return AlertDialog(
+        key: const ValueKey('backup-restore-options-dialog'),
+        title: const Text('恢复全部用户'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Text(
+            '将按用户 ID 完整覆盖资料、音乐库、历史、播放队列和全局设置。默认用户只会被覆盖，不会删除；其他现有用户若不在备份中将被移除。',
+            style: TextStyle(fontSize: layout.bodySize),
+          ),
+        ),
+        actions: [
+          TextButton(
+            key: const ValueKey('backup-restore-cancel'),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            key: const ValueKey('backup-restore-full-replace'),
+            onPressed: () => Navigator.pop(
+              context,
+              BackupRestoreSelection(
+                mode: FavoriteImportMode.replace,
+                sections: widget.contents.availableSections,
+              ),
+            ),
+            child: const Text('完整覆盖还原'),
+          ),
+        ],
+      );
+    }
     final maxHeight = (MediaQuery.sizeOf(context).height * 0.52)
         .clamp(180.0, 420.0)
         .toDouble();
