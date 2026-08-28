@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -106,8 +107,13 @@ class _SpriteAssistantPet extends StatefulWidget {
 
 class _SpriteAssistantPetState extends State<_SpriteAssistantPet>
     with WidgetsBindingObserver, TickerProviderStateMixin {
+  static const _idleFirstActionDelay = Duration(seconds: 6);
+  static const _idleActionMinDelay = Duration(seconds: 10);
+  static const _idleActionDelayRange = 9;
+
   late final AnimationController _timeline;
   late final AnimationController _transition;
+  final math.Random _random = math.Random();
   late _PetClip _requestedClip;
   _PetClip? _clip;
   _PetClip? _previousClip;
@@ -119,6 +125,10 @@ class _SpriteAssistantPetState extends State<_SpriteAssistantPet>
   bool _appResumed = true;
   bool _tickerEnabled = true;
   bool _active = true;
+  Timer? _idleTimer;
+  _PetClip? _idleOverride;
+  String? _lastIdleActionKey;
+  bool _idleFirstActionPending = true;
 
   @override
   void initState() {
@@ -134,6 +144,7 @@ class _SpriteAssistantPetState extends State<_SpriteAssistantPet>
       duration: const Duration(milliseconds: 140),
       value: 1,
     )..addStatusListener(_handleTransitionStatus);
+    _timeline.addStatusListener(_handleTimelineStatus);
     _requestedClip = _desiredClip;
     _loadClip(_requestedClip, animate: false);
   }
@@ -148,10 +159,24 @@ class _SpriteAssistantPetState extends State<_SpriteAssistantPet>
   @override
   void didUpdateWidget(covariant _SpriteAssistantPet oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final wasIdle = _isIdleContext(oldWidget);
+    final isIdle = _isIdleContext();
+    if (!isIdle) {
+      _cancelIdleSchedule();
+      _idleOverride = null;
+      _idleFirstActionPending = true;
+    } else if (!wasIdle || oldWidget.appearance != widget.appearance) {
+      _cancelIdleSchedule();
+      _idleOverride = null;
+      _idleFirstActionPending = true;
+    }
     final next = _desiredClip;
     if (_requestedClip.key != next.key || _requestedClip.asset != next.asset) {
       _requestedClip = next;
       _loadClip(next, animate: true);
+    }
+    if (isIdle && _idleOverride == null && _clip?.isIdleRest == true) {
+      _scheduleIdleAction();
     }
   }
 
@@ -169,10 +194,24 @@ class _SpriteAssistantPetState extends State<_SpriteAssistantPet>
     if (_active) {
       _startTimeline();
       if (_transition.value < 1) _transition.forward();
+      if (_isIdleContext() && _idleOverride == null) {
+        _scheduleIdleAction();
+      }
     } else {
+      _cancelIdleSchedule();
       _timeline.stop(canceled: false);
       _transition.stop(canceled: false);
     }
+  }
+
+  void _handleTimelineStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed || !mounted) return;
+    final clip = _clip;
+    if (clip?.isIdleAction != true || !_isIdleContext()) return;
+    _idleOverride = null;
+    final rest = _PetClips.idleRest(widget.appearance);
+    _requestedClip = rest;
+    unawaited(_loadClip(rest, animate: true));
   }
 
   void _handleTransitionStatus(AnimationStatus status) {
@@ -210,8 +249,20 @@ class _SpriteAssistantPetState extends State<_SpriteAssistantPet>
       }
       if (mounted) setState(() {});
       _scheduleWarmup(next);
+      if (next.isIdleRest && _isIdleContext()) {
+        _scheduleIdleAction();
+      }
     } catch (error, stackTrace) {
-      if (generation == _loadGeneration) _requestedClip = _clip ?? next;
+      if (generation == _loadGeneration) {
+        if (next.isIdleAction) {
+          _idleOverride = null;
+          final rest = _PetClips.idleRest(widget.appearance);
+          _requestedClip = rest;
+          if (_isIdleContext()) unawaited(_loadClip(rest, animate: true));
+        } else {
+          _requestedClip = _clip ?? next;
+        }
+      }
       debugPrint('加载宠物动画失败: ${next.asset}: $error');
       debugPrintStack(stackTrace: stackTrace);
     }
@@ -221,7 +272,54 @@ class _SpriteAssistantPetState extends State<_SpriteAssistantPet>
     final clip = _clip;
     if (!_active || clip == null || clip.frameCount <= 1) return;
     _timeline.duration = clip.totalDuration;
-    _timeline.repeat();
+    if (clip.loop) {
+      _timeline.repeat();
+    } else if (_timeline.value < 1) {
+      _timeline.forward();
+    }
+  }
+
+  bool _isIdleContext([_SpriteAssistantPet? source]) {
+    final current = source ?? widget;
+    return current.interactive &&
+        current.appearance != AiPetAppearance.kuzai &&
+        current.mode == AssistantPetMode.idle &&
+        current.interaction == AssistantPetInteraction.none &&
+        !current.dragging;
+  }
+
+  void _cancelIdleSchedule() {
+    _idleTimer?.cancel();
+    _idleTimer = null;
+  }
+
+  void _scheduleIdleAction() {
+    if (!_active || !_isIdleContext() || _idleOverride != null) return;
+    if (_idleTimer != null) return;
+    final delay = _idleFirstActionPending
+        ? _idleFirstActionDelay
+        : _idleActionMinDelay +
+              Duration(seconds: _random.nextInt(_idleActionDelayRange));
+    _idleFirstActionPending = false;
+    _idleTimer = Timer(delay, _runIdleAction);
+  }
+
+  void _runIdleAction() {
+    _idleTimer = null;
+    if (!_active || !_isIdleContext()) return;
+    final actions = _PetClips.idleActions(widget.appearance);
+    if (actions.isEmpty) {
+      _scheduleIdleAction();
+      return;
+    }
+    final candidates = actions.length == 1
+        ? actions
+        : actions.where((clip) => clip.key != _lastIdleActionKey).toList();
+    final selected = candidates[_random.nextInt(candidates.length)];
+    _lastIdleActionKey = selected.key;
+    _idleOverride = selected;
+    _requestedClip = selected;
+    unawaited(_loadClip(selected, animate: true));
   }
 
   void _scheduleWarmup(_PetClip clip) {
@@ -243,18 +341,23 @@ class _SpriteAssistantPetState extends State<_SpriteAssistantPet>
     });
   }
 
-  _PetClip get _desiredClip => _PetClips.resolve(
-    appearance: widget.appearance,
-    mode: widget.mode,
-    interaction: widget.interaction,
-    dragging: widget.dragging,
-  );
+  _PetClip get _desiredClip {
+    if (_isIdleContext() && _idleOverride != null) return _idleOverride!;
+    return _PetClips.resolve(
+      appearance: widget.appearance,
+      mode: widget.mode,
+      interaction: widget.interaction,
+      dragging: widget.dragging,
+    );
+  }
 
   @override
   void dispose() {
     _loadGeneration++;
     _warmGeneration++;
+    _cancelIdleSchedule();
     WidgetsBinding.instance.removeObserver(this);
+    _timeline.removeStatusListener(_handleTimelineStatus);
     _timeline.dispose();
     _transition.dispose();
     _image?.dispose();
@@ -385,13 +488,13 @@ class _SpritePetPainter extends CustomPainter {
       clip.frameWidth,
       clip.frameHeight,
     );
-    final scale = (size.width / clip.frameWidth).clamp(
+    final scale = (size.height / clip.frameHeight).clamp(
       0.0,
-      size.height / clip.frameHeight,
+      size.width / clip.frameWidth,
     );
     final destination = Rect.fromLTWH(
       (size.width - clip.frameWidth * scale) / 2,
-      size.height - clip.frameHeight * scale,
+      (size.height - clip.frameHeight * scale) / 2,
       clip.frameWidth * scale,
       clip.frameHeight * scale,
     );
@@ -479,7 +582,9 @@ class _PetImageCache {
     ui.Codec? codec;
     try {
       final data = await rootBundle.load(asset);
-      codec = await ui.instantiateImageCodec(data.buffer.asUint8List());
+      codec = await ui.instantiateImageCodec(
+        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+      );
       final frame = await codec.getNextFrame();
       return frame.image;
     } finally {
@@ -518,13 +623,22 @@ class _PetClip {
     required this.key,
     required this.asset,
     required this.frameDurations,
+    this.loop = true,
+    this.idleRest = false,
+    this.idleAction = false,
   });
 
   final String key;
   final String asset;
   final List<int> frameDurations;
+  final bool loop;
+  final bool idleRest;
+  final bool idleAction;
 
   int get frameCount => frameDurations.length;
+
+  bool get isIdleRest => idleRest;
+  bool get isIdleAction => idleAction;
 
   double get frameWidth => 256;
   double get frameHeight => 256;
@@ -547,10 +661,31 @@ class _PetClip {
 
 abstract final class _PetClips {
   static const _moomew = <String, _PetClip>{
-    'idle': _PetClip(
-      key: 'moomew-idle',
+    'rest': _PetClip(
+      key: 'moomew-rest',
+      asset: 'assets/pets/moomew/rest.webp',
+      frameDurations: [1000],
+      idleRest: true,
+      loop: false,
+    ),
+    'idle-loop': _PetClip(
+      key: 'moomew-idle-loop',
       asset: 'assets/pets/moomew/idle.webp',
       frameDurations: [280, 110, 110, 140, 140, 320],
+    ),
+    'idle-blink': _PetClip(
+      key: 'moomew-idle-blink',
+      asset: 'assets/pets/moomew/idle-blink.webp',
+      frameDurations: [180, 160, 520],
+      loop: false,
+      idleAction: true,
+    ),
+    'idle-glance': _PetClip(
+      key: 'moomew-idle-glance',
+      asset: 'assets/pets/moomew/idle-glance.webp',
+      frameDurations: [180, 220, 520],
+      loop: false,
+      idleAction: true,
     ),
     'wave': _PetClip(
       key: 'moomew-wave',
@@ -585,8 +720,29 @@ abstract final class _PetClips {
   };
 
   static const _xiaohei = <String, _PetClip>{
-    'idle': _PetClip(
-      key: 'xiaohei-idle',
+    'rest': _PetClip(
+      key: 'xiaohei-rest',
+      asset: 'assets/pets/xiaohei/rest.webp',
+      frameDurations: [1000],
+      idleRest: true,
+      loop: false,
+    ),
+    'idle-glance': _PetClip(
+      key: 'xiaohei-idle-glance',
+      asset: 'assets/pets/xiaohei/idle-glance.webp',
+      frameDurations: [180, 220, 520],
+      loop: false,
+      idleAction: true,
+    ),
+    'idle-tilt': _PetClip(
+      key: 'xiaohei-idle-tilt',
+      asset: 'assets/pets/xiaohei/idle-tilt.webp',
+      frameDurations: [180, 260, 520],
+      loop: false,
+      idleAction: true,
+    ),
+    'idle-loop': _PetClip(
+      key: 'xiaohei-idle-loop',
       asset: 'assets/pets/xiaohei/idle.webp',
       frameDurations: [70, 70, 70, 70, 70, 70, 70, 70, 70, 70],
     ),
@@ -658,8 +814,22 @@ abstract final class _PetClips {
   };
 
   static const _whale = <String, _PetClip>{
-    'idle': _PetClip(
-      key: 'whale-idle',
+    'rest': _PetClip(
+      key: 'whale-rest',
+      asset: 'assets/pets/whale_girl/rest.webp',
+      frameDurations: [1000],
+      idleRest: true,
+      loop: false,
+    ),
+    'idle-blink': _PetClip(
+      key: 'whale-idle-blink',
+      asset: 'assets/pets/whale_girl/idle-blink.webp',
+      frameDurations: [180, 140, 520],
+      loop: false,
+      idleAction: true,
+    ),
+    'idle-loop': _PetClip(
+      key: 'whale-idle-loop',
       asset: 'assets/pets/whale_girl/idle.webp',
       frameDurations: [1500, 160, 320],
     ),
@@ -736,6 +906,27 @@ abstract final class _PetClips {
     };
   }
 
+  static _PetClip idleRest(AiPetAppearance appearance) => switch (appearance) {
+    AiPetAppearance.moomew => _moomew['rest']!,
+    AiPetAppearance.xiaohei => _xiaohei['rest']!,
+    AiPetAppearance.whaleGirl => _whale['rest']!,
+    AiPetAppearance.kuzai => throw StateError('Kuzai uses its vector painter'),
+  };
+
+  static List<_PetClip> idleActions(AiPetAppearance appearance) =>
+      switch (appearance) {
+        AiPetAppearance.moomew => [
+          _moomew['idle-blink']!,
+          _moomew['idle-glance']!,
+        ],
+        AiPetAppearance.xiaohei => [
+          _xiaohei['idle-glance']!,
+          _xiaohei['idle-tilt']!,
+        ],
+        AiPetAppearance.whaleGirl => [_whale['idle-blink']!],
+        AiPetAppearance.kuzai => const [],
+      };
+
   static Iterable<String> warmupAssets({
     required AiPetAppearance appearance,
     required AssistantPetMode mode,
@@ -756,34 +947,53 @@ abstract final class _PetClips {
 
     final clips = switch (appearance) {
       AiPetAppearance.moomew => _clipsForKeys(_moomew, switch (mode) {
-        AssistantPetMode.idle => const ['wave', 'jump', 'drag-left', 'wait'],
+        AssistantPetMode.idle => const [
+          'rest',
+          'wave',
+          'jump',
+          'drag-left',
+          'idle-blink',
+          'idle-glance',
+        ],
         AssistantPetMode.waking => const ['wait'],
         AssistantPetMode.listening ||
         AssistantPetMode.textOnly ||
         AssistantPetMode.paused => const ['review'],
         AssistantPetMode.thinking => const ['wave', 'wait'],
         AssistantPetMode.speaking => const ['wait'],
-        AssistantPetMode.stopping || AssistantPetMode.error => const ['idle'],
+        AssistantPetMode.stopping || AssistantPetMode.error => const ['rest'],
       }),
       AiPetAppearance.xiaohei => _clipsForKeys(_xiaohei, switch (mode) {
-        AssistantPetMode.idle => const ['play', 'groom'],
-        AssistantPetMode.waking => const ['idle'],
+        AssistantPetMode.idle => const [
+          'rest',
+          'play',
+          'groom',
+          'idle-glance',
+          'idle-tilt',
+        ],
+        AssistantPetMode.waking => const ['idle-loop'],
         AssistantPetMode.listening ||
         AssistantPetMode.textOnly ||
         AssistantPetMode.paused => const ['groom'],
         AssistantPetMode.thinking => const ['guitar'],
-        AssistantPetMode.speaking => const ['idle', 'bye'],
-        AssistantPetMode.stopping || AssistantPetMode.error => const ['idle'],
+        AssistantPetMode.speaking => const ['idle-loop', 'bye'],
+        AssistantPetMode.stopping || AssistantPetMode.error => const ['rest'],
       }),
       AiPetAppearance.whaleGirl => _clipsForKeys(_whale, switch (mode) {
-        AssistantPetMode.idle => const ['welcome', 'joy', 'drag', 'wake'],
+        AssistantPetMode.idle => const [
+          'rest',
+          'welcome',
+          'joy',
+          'drag',
+          'idle-blink',
+        ],
         AssistantPetMode.waking => const ['wait'],
         AssistantPetMode.listening ||
         AssistantPetMode.textOnly ||
         AssistantPetMode.paused => const ['think'],
         AssistantPetMode.thinking => const ['working'],
         AssistantPetMode.speaking => const ['wait', 'welcome'],
-        AssistantPetMode.stopping || AssistantPetMode.error => const ['idle'],
+        AssistantPetMode.stopping || AssistantPetMode.error => const ['rest'],
       }),
       AiPetAppearance.kuzai => const <_PetClip>[],
     };
@@ -814,7 +1024,7 @@ abstract final class _PetClips {
       AssistantPetMode.speaking => _moomew['wave']!,
       AssistantPetMode.stopping => _moomew['wave']!,
       AssistantPetMode.error => _moomew['error']!,
-      AssistantPetMode.idle => _moomew['idle']!,
+      AssistantPetMode.idle => _moomew['rest']!,
     };
   }
 
@@ -836,8 +1046,8 @@ abstract final class _PetClips {
       AssistantPetMode.error => _xiaohei['bye']!,
       AssistantPetMode.listening ||
       AssistantPetMode.textOnly ||
-      AssistantPetMode.paused ||
-      AssistantPetMode.idle => _xiaohei['idle']!,
+      AssistantPetMode.paused => _xiaohei['idle-loop']!,
+      AssistantPetMode.idle => _xiaohei['rest']!,
     };
   }
 
@@ -858,7 +1068,7 @@ abstract final class _PetClips {
       AssistantPetMode.speaking => _whale['working']!,
       AssistantPetMode.stopping => _whale['welcome']!,
       AssistantPetMode.error => _whale['error']!,
-      AssistantPetMode.idle => _whale['idle']!,
+      AssistantPetMode.idle => _whale['rest']!,
     };
   }
 }
