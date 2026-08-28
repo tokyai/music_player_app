@@ -39,6 +39,7 @@ abstract final class GlobalSettingsService {
     'ai_assistant_show_on_all_pages',
     'ai_assistant_show_pet_on_player_page',
     'ai_assistant_pet_scale',
+    'ai_assistant_pet_appearance_v1',
     'ai_assistant_pet_position_x',
     'ai_assistant_pet_position_y',
     'ai_voice_model_global_v1',

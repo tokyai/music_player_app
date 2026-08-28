@@ -80,6 +80,7 @@ class AiConfigController extends ChangeNotifier {
   static const showPetOnPlayerPagePreferenceKey =
       'ai_assistant_show_pet_on_player_page';
   static const petScalePreferenceKey = 'ai_assistant_pet_scale';
+  static const petAppearancePreferenceKey = 'ai_assistant_pet_appearance_v1';
   static const petPositionXPreferenceKey = 'ai_assistant_pet_position_x';
   static const petPositionYPreferenceKey = 'ai_assistant_pet_position_y';
   static const voiceModelPreferenceKey = 'ai_voice_model_global_v1';
@@ -106,6 +107,7 @@ class AiConfigController extends ChangeNotifier {
   bool _showAssistantOnAllPages = true;
   bool _showPetOnPlayerPage = true;
   double _petScale = 1;
+  AiPetAppearance _petAppearance = AiPetAppearance.kuzai;
   AiPetPosition _petPosition = AiPetPosition.centered;
   AiVoiceModelKind _voiceModel = AiVoiceModelKind.zipformerChinese;
   AiVoiceLoadMode _voiceLoadMode = AiVoiceLoadMode.onDemand;
@@ -139,6 +141,7 @@ class AiConfigController extends ChangeNotifier {
   bool get showAssistantOnAllPages => _showAssistantOnAllPages;
   bool get showPetOnPlayerPage => _showPetOnPlayerPage;
   double get petScale => _petScale;
+  AiPetAppearance get petAppearance => _petAppearance;
   AiPetPosition get petPosition => _petPosition;
   AiVoiceModelKind get voiceModel => _voiceModel;
   AiVoiceLoadMode get voiceLoadMode => _voiceLoadMode;
@@ -151,7 +154,7 @@ class AiConfigController extends ChangeNotifier {
   /// API keys are intentionally included here because a backup is the user's
   /// chosen portable copy. They remain absent from ordinary preferences.
   Map<String, dynamic> toBackupJson() => {
-    'version': 2,
+    'version': 3,
     'activeProfileId': _activeProfileId,
     'profiles': _profiles.map((profile) {
       final key = _apiKeys[profile.id] ?? profile.config.apiKey;
@@ -164,6 +167,7 @@ class AiConfigController extends ChangeNotifier {
     'showAssistantOnAllPages': _showAssistantOnAllPages,
     'showPetOnPlayerPage': _showPetOnPlayerPage,
     'petScale': _petScale,
+    'petAppearance': _petAppearance.value,
     'petPosition': _petPosition.toJson(),
   };
 
@@ -310,6 +314,7 @@ class AiConfigController extends ChangeNotifier {
     _showAssistantOnAllPages = restored.showAssistantOnAllPages;
     _showPetOnPlayerPage = restored.showPetOnPlayerPage;
     _petScale = restored.petScale;
+    _petAppearance = restored.petAppearance;
     _petPosition = restored.petPosition;
     await _persist(propagateErrors: requirePersistence);
     if (!_disposed) notifyListeners();
@@ -390,6 +395,17 @@ class AiConfigController extends ChangeNotifier {
     final petScale = rawScale is num
         ? _normalizePetScale(rawScale.toDouble())
         : _petScale;
+    final rawAppearance = json['petAppearance'];
+    if (rawAppearance != null &&
+        (rawAppearance is! String ||
+            !AiPetAppearance.values.any(
+              (appearance) => appearance.value == rawAppearance,
+            ))) {
+      throw const FormatException('备份文件中的 petAppearance 格式错误');
+    }
+    final petAppearance = rawAppearance is String
+        ? AiPetAppearance.fromValue(rawAppearance)
+        : _petAppearance;
     final petPosition = json.containsKey('petPosition')
         ? AiPetPosition.fromJson(json['petPosition'])
         : _petPosition;
@@ -401,6 +417,7 @@ class AiConfigController extends ChangeNotifier {
       showAssistantOnAllPages: showAssistantOnAllPages,
       showPetOnPlayerPage: showPetOnPlayerPage,
       petScale: petScale,
+      petAppearance: petAppearance,
       petPosition: petPosition,
     );
   }
@@ -517,6 +534,14 @@ class AiConfigController extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
+  Future<void> setPetAppearance(AiPetAppearance appearance) async {
+    await ready;
+    if (_disposed || _petAppearance == appearance) return;
+    _petAppearance = appearance;
+    await _persist();
+    if (!_disposed) notifyListeners();
+  }
+
   Future<void> setPetPosition(AiPetPosition position) async {
     await ready;
     final normalized = position.normalized();
@@ -609,6 +634,9 @@ class AiConfigController extends ChangeNotifier {
           prefs.getBool(showPetOnPlayerPagePreferenceKey) ?? true;
       _petScale = _normalizePetScale(
         prefs.getDouble(petScalePreferenceKey) ?? 1,
+      );
+      _petAppearance = AiPetAppearance.fromValue(
+        prefs.getString(petAppearancePreferenceKey),
       );
       _petPosition = AiPetPosition(
         x: prefs.getDouble(petPositionXPreferenceKey) ?? 1,
@@ -819,6 +847,7 @@ class AiConfigController extends ChangeNotifier {
         ),
         prefs.setBool(showPetOnPlayerPagePreferenceKey, _showPetOnPlayerPage),
         prefs.setDouble(petScalePreferenceKey, _petScale),
+        prefs.setString(petAppearancePreferenceKey, _petAppearance.value),
         prefs.setDouble(petPositionXPreferenceKey, _petPosition.x),
         prefs.setDouble(petPositionYPreferenceKey, _petPosition.y),
       ]);
@@ -915,6 +944,7 @@ class _AiConfigBackupState {
   final bool showAssistantOnAllPages;
   final bool showPetOnPlayerPage;
   final double petScale;
+  final AiPetAppearance petAppearance;
   final AiPetPosition petPosition;
 
   const _AiConfigBackupState({
@@ -924,6 +954,7 @@ class _AiConfigBackupState {
     required this.showAssistantOnAllPages,
     required this.showPetOnPlayerPage,
     required this.petScale,
+    required this.petAppearance,
     required this.petPosition,
   });
 }

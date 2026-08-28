@@ -2465,6 +2465,40 @@ class _SettingsScreenState extends State<SettingsScreen>
                 builder: (context, _) => _buildAiProfileList(layout),
               ),
               const SizedBox(height: 12),
+              AnimatedBuilder(
+                animation: _aiConfigController,
+                builder: (context, _) => DropdownButtonFormField<AiPetAppearance>(
+                  key: ValueKey(
+                    'ai-pet-appearance-${_aiConfigController.petAppearance.value}',
+                  ),
+                  initialValue: _aiConfigController.petAppearance,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: '宠物外形',
+                    helperText: '浮标和横屏助理头像同步切换',
+                  ),
+                  items: AiPetAppearance.values
+                      .map(
+                        (appearance) => DropdownMenuItem(
+                          value: appearance,
+                          child: Text(
+                            appearance.label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (appearance) {
+                    if (appearance != null) {
+                      unawaited(
+                        _aiConfigController.setPetAppearance(appearance),
+                      );
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(height: 16),
               Row(
                 children: [
                   const Icon(Icons.open_in_full_rounded, size: 20),

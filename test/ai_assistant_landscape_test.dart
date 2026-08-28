@@ -23,6 +23,7 @@ import 'package:music_player_app/services/favorite_service.dart';
 import 'package:music_player_app/theme/app_layout.dart';
 import 'package:music_player_app/theme/app_theme.dart';
 import 'package:music_player_app/widgets/ai_assistant_overlay.dart';
+import 'package:music_player_app/widgets/assistant_pet.dart';
 import 'package:music_player_app/widgets/kuzai_pet.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -147,6 +148,46 @@ void main() {
     await tester.pump();
   });
 
+  testWidgets('sprite pet appearances load, interact and dispose safely', (
+    tester,
+  ) async {
+    for (final appearance in AiPetAppearance.values) {
+      var taps = 0;
+      var longPresses = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: AssistantPet(
+                key: ValueKey('appearance-${appearance.value}'),
+                appearance: appearance,
+                size: 96,
+                mode: AssistantPetMode.idle,
+                interaction: AssistantPetInteraction.none,
+                onTap: () => taps++,
+                onLongPressStart: (_) => longPresses++,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
+      final pet = find.byKey(ValueKey('appearance-${appearance.value}'));
+      expect(pet, findsOneWidget);
+      await tester.tap(pet);
+      await tester.pump(const Duration(milliseconds: 40));
+      expect(taps, 1);
+      await tester.longPress(pet);
+      await tester.pump(const Duration(milliseconds: 40));
+      expect(longPresses, 1);
+      await tester.pump(const Duration(seconds: 2));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(tester.takeException(), isNull);
+    }
+  });
+
   testWidgets(
     'AI assistant remains usable without hiding playback paths in both landscapes',
     (tester) async {
@@ -218,7 +259,7 @@ void main() {
             find.byKey(const ValueKey('ai-assistant-pet-avatar')),
             findsOneWidget,
           );
-          expect(find.text('库仔 AI 宠物'), findsOneWidget);
+          expect(find.text('AI 音乐助理'), findsOneWidget);
           expect(
             tester
                 .getSize(
@@ -238,7 +279,10 @@ void main() {
           expect(find.byKey(const ValueKey('ai-assistant-send')), findsNothing);
           expect(find.text('正在听，请说话'), findsOneWidget);
           expect(
-            find.byKey(const ValueKey('kuzai-pet-mode-listening')),
+            find.descendant(
+              of: find.byKey(const ValueKey('ai-assistant-pet-avatar')),
+              matching: find.byKey(const ValueKey('kuzai-pet-mode-listening')),
+            ),
             findsOneWidget,
           );
           expect(tester.takeException(), isNull);
@@ -291,7 +335,7 @@ void main() {
 
         final dialog = find.byKey(const ValueKey('ai-assistant-dialog'));
         expect(dialog, findsOneWidget);
-        expect(find.text('库仔 AI 宠物'), findsOneWidget);
+        expect(find.text('AI 音乐助理'), findsOneWidget);
         expect(AppColors.isDark, isTrue);
         expect(
           tester
@@ -771,6 +815,26 @@ void main() {
 
         final petScaleSlider = find.byKey(
           const ValueKey('ai-pet-scale-slider'),
+        );
+        final petAppearance = find.byKey(
+          ValueKey('ai-pet-appearance-${config.petAppearance.value}'),
+        );
+        await tester.scrollUntilVisible(
+          petAppearance,
+          160,
+          scrollable: systemScroll,
+        );
+        expect(petAppearance.hitTestable(), findsOneWidget);
+        await tester.tap(petAppearance);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text(AiPetAppearance.xiaohei.label).last);
+        await tester.pumpAndSettle();
+        expect(config.petAppearance, AiPetAppearance.xiaohei);
+        expect(
+          (await SharedPreferences.getInstance()).getString(
+            AiConfigController.petAppearancePreferenceKey,
+          ),
+          AiPetAppearance.xiaohei.value,
         );
         await tester.scrollUntilVisible(
           petScaleSlider,

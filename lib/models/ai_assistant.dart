@@ -165,6 +165,23 @@ enum AiAssistantPlaybackMode {
   );
 }
 
+enum AiPetAppearance {
+  kuzai(label: '库仔', value: 'kuzai'),
+  moomew(label: 'MooMew 编程猫', value: 'moomew'),
+  xiaohei(label: '罗小黑', value: 'xiaohei'),
+  whaleGirl(label: '鲸鱼女仆', value: 'whale-girl');
+
+  const AiPetAppearance({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  static AiPetAppearance fromValue(String? value) => values.firstWhere(
+    (item) => item.value == value,
+    orElse: () => AiPetAppearance.kuzai,
+  );
+}
+
 class AiAssistantConfig {
   final AiProviderKind provider;
   final AiRequestProtocol protocol;

@@ -8,12 +8,31 @@ import '../providers/ai_assistant_controller.dart';
 import '../providers/ai_config_controller.dart';
 import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
-import 'kuzai_pet.dart';
+import 'assistant_pet.dart';
+
+AssistantPetMode _assistantPetMode(AiSessionState? state) => switch (state) {
+  AiSessionState.initializing => AssistantPetMode.waking,
+  AiSessionState.listening => AssistantPetMode.listening,
+  AiSessionState.processing => AssistantPetMode.thinking,
+  AiSessionState.speaking => AssistantPetMode.speaking,
+  AiSessionState.textOnly => AssistantPetMode.textOnly,
+  AiSessionState.paused => AssistantPetMode.paused,
+  AiSessionState.stopping => AssistantPetMode.stopping,
+  AiSessionState.error => AssistantPetMode.error,
+  _ => AssistantPetMode.idle,
+};
 
 class AiAssistantFloatingButton extends StatefulWidget {
   final double? size;
+  final AiPetAppearance appearance;
+  final bool dragging;
 
-  const AiAssistantFloatingButton({super.key, this.size});
+  const AiAssistantFloatingButton({
+    super.key,
+    this.size,
+    this.appearance = AiPetAppearance.kuzai,
+    this.dragging = false,
+  });
 
   @override
   State<AiAssistantFloatingButton> createState() =>
@@ -23,10 +42,13 @@ class AiAssistantFloatingButton extends StatefulWidget {
 class _AiAssistantFloatingButtonState extends State<AiAssistantFloatingButton> {
   AiAssistantController? _controller;
   bool _opening = false;
+  AssistantPetInteraction _interaction = AssistantPetInteraction.none;
+  Timer? _interactionTimer;
 
   @override
   void dispose() {
     _controller?.removeListener(_handleControllerChange);
+    _interactionTimer?.cancel();
     super.dispose();
   }
 
@@ -60,27 +82,42 @@ class _AiAssistantFloatingButtonState extends State<AiAssistantFloatingButton> {
     }
   }
 
-  KuzaiPetMode get _petMode => switch (_controller?.state) {
-    AiSessionState.initializing => KuzaiPetMode.waking,
-    AiSessionState.listening => KuzaiPetMode.listening,
-    AiSessionState.processing => KuzaiPetMode.thinking,
-    AiSessionState.speaking => KuzaiPetMode.speaking,
-    AiSessionState.textOnly => KuzaiPetMode.textOnly,
-    AiSessionState.paused => KuzaiPetMode.paused,
-    AiSessionState.stopping => KuzaiPetMode.stopping,
-    AiSessionState.error => KuzaiPetMode.error,
-    _ => KuzaiPetMode.idle,
-  };
+  AssistantPetMode get _petMode => _assistantPetMode(_controller?.state);
+
+  void _showInteraction(AssistantPetInteraction interaction) {
+    if (!mounted) return;
+    _interactionTimer?.cancel();
+    setState(() => _interaction = interaction);
+    final duration = interaction == AssistantPetInteraction.petting
+        ? const Duration(milliseconds: 1100)
+        : const Duration(milliseconds: 800);
+    _interactionTimer = Timer(duration, () {
+      if (mounted) setState(() => _interaction = AssistantPetInteraction.none);
+    });
+  }
+
+  void _handleTap() {
+    _showInteraction(AssistantPetInteraction.wave);
+    unawaited(_openAssistant());
+  }
+
+  void _handleLongPress(LongPressStartDetails _) {
+    _showInteraction(AssistantPetInteraction.petting);
+  }
 
   @override
   Widget build(BuildContext context) {
     final layout = AppLayout.fromContext(context);
     final baseSize = layout.isCompactLandscape ? 68.0 : 88.0;
-    return KuzaiPet(
+    return AssistantPet(
       key: const ValueKey('ai-assistant-fab'),
+      appearance: widget.appearance,
       size: widget.size ?? baseSize,
       mode: _petMode,
-      onTap: () => unawaited(_openAssistant()),
+      interaction: _interaction,
+      dragging: widget.dragging,
+      onTap: _handleTap,
+      onLongPressStart: _handleLongPress,
     );
   }
 }
@@ -102,6 +139,7 @@ class AiAssistantPetOverlay extends StatefulWidget {
 
 class _AiAssistantPetOverlayState extends State<AiAssistantPetOverlay> {
   Offset? _dragOffset;
+  bool _dragging = false;
 
   @override
   Widget build(BuildContext context) {
@@ -140,7 +178,10 @@ class _AiAssistantPetOverlayState extends State<AiAssistantPetOverlay> {
                     behavior: HitTestBehavior.translucent,
                     onPanStart: (_) {
                       if (!mounted) return;
-                      setState(() => _dragOffset = current);
+                      setState(() {
+                        _dragOffset = current;
+                        _dragging = true;
+                      });
                     },
                     onPanUpdate: (details) {
                       if (!mounted) return;
@@ -155,11 +196,26 @@ class _AiAssistantPetOverlayState extends State<AiAssistantPetOverlay> {
                     onPanEnd: (_) {
                       if (!mounted) return;
                       final offset = _dragOffset ?? current;
-                      setState(() => _dragOffset = null);
+                      setState(() {
+                        _dragOffset = null;
+                        _dragging = false;
+                      });
                       if (config == null) return;
                       unawaited(_savePetPosition(config, offset, maxX, maxY));
                     },
-                    child: AiAssistantFloatingButton(size: petSize),
+                    onPanCancel: () {
+                      if (!mounted) return;
+                      setState(() {
+                        _dragOffset = null;
+                        _dragging = false;
+                      });
+                    },
+                    child: AiAssistantFloatingButton(
+                      size: petSize,
+                      appearance:
+                          config?.petAppearance ?? AiPetAppearance.kuzai,
+                      dragging: _dragging,
+                    ),
                   ),
                 ),
               ],
@@ -409,6 +465,7 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
     final compact = layout.isCompactLandscape;
     final landscape = layout.isLandscape;
     final avatarSize = compact ? 46.0 : 58.0;
+    final config = Provider.of<AiConfigController?>(context);
     return Padding(
       padding: EdgeInsets.fromLTRB(
         landscape ? (compact ? 12 : 18) : 18,
@@ -431,11 +488,15 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
                 ),
               ),
               child: IgnorePointer(
-                child: KuzaiPet(
+                child: AssistantPet(
                   key: const ValueKey('ai-assistant-pet-avatar'),
+                  appearance: config?.petAppearance ?? AiPetAppearance.kuzai,
                   size: avatarSize,
-                  mode: KuzaiPetMode.idle,
+                  mode: _assistantPetMode(controller.state),
+                  interaction: AssistantPetInteraction.none,
+                  interactive: false,
                   onTap: () {},
+                  onLongPressStart: (_) {},
                 ),
               ),
             )
@@ -457,7 +518,7 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
             child: landscape
                 ? _buildLandscapeIdentity(compact)
                 : Text(
-                    'AI 小助理',
+                    'AI 音乐助理',
                     style: TextStyle(
                       color: AppColors.textPrimary,
                       fontSize: compact ? 18 : 21,
@@ -514,7 +575,7 @@ class _AiAssistantPanelState extends State<AiAssistantPanel> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          '库仔 AI 宠物',
+          'AI 音乐助理',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(

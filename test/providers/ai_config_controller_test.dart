@@ -219,15 +219,17 @@ void main() {
     );
   });
 
-  test('persists normalized pet scale and position', () async {
+  test('persists pet appearance, normalized scale and position', () async {
     final secrets = MemoryAiSecretStore();
     final controller = AiConfigController(secretStore: secrets);
     await controller.ready;
 
     await controller.setPetScale(3);
+    await controller.setPetAppearance(AiPetAppearance.whaleGirl);
     await controller.setPetPosition(const AiPetPosition(x: -0.4, y: 1.8));
 
     expect(controller.petScale, AiConfigController.maxPetScale);
+    expect(controller.petAppearance, AiPetAppearance.whaleGirl);
     expect(controller.petPosition.x, 0);
     expect(controller.petPosition.y, 1);
     controller.dispose();
@@ -236,9 +238,35 @@ void main() {
     addTearDown(reloaded.dispose);
     await reloaded.ready;
     expect(reloaded.petScale, AiConfigController.maxPetScale);
+    expect(reloaded.petAppearance, AiPetAppearance.whaleGirl);
     expect(reloaded.petPosition.x, 0);
     expect(reloaded.petPosition.y, 1);
+    expect(
+      (await SharedPreferences.getInstance()).getString(
+        AiConfigController.petAppearancePreferenceKey,
+      ),
+      AiPetAppearance.whaleGirl.value,
+    );
   });
+
+  test(
+    'rejects an invalid backed-up pet appearance without mutation',
+    () async {
+      final controller = AiConfigController(secretStore: MemoryAiSecretStore());
+      addTearDown(controller.dispose);
+      await controller.ready;
+      await controller.setPetAppearance(AiPetAppearance.moomew);
+      final backup = controller.toBackupJson();
+      backup['petAppearance'] = 'unknown-pet';
+
+      await expectLater(
+        controller.restoreBackupJson(backup),
+        throwsA(isA<FormatException>()),
+      );
+
+      expect(controller.petAppearance, AiPetAppearance.moomew);
+    },
+  );
 
   test('disposed controller cannot mutate or persist profiles', () async {
     final secrets = MemoryAiSecretStore();

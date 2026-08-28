@@ -34,12 +34,16 @@ class KuzaiPet extends StatefulWidget {
   final double size;
   final KuzaiPetMode mode;
   final VoidCallback onTap;
+  final GestureLongPressStartCallback? onLongPressStart;
+  final bool interactive;
 
   const KuzaiPet({
     super.key,
     required this.size,
     required this.mode,
     required this.onTap,
+    this.onLongPressStart,
+    this.interactive = true,
   });
 
   @override
@@ -235,6 +239,7 @@ class _KuzaiPetState extends State<KuzaiPet> with TickerProviderStateMixin {
     // platform channel, and teardown can race the callback; never let that
     // best-effort effect become an uncaught Future error.
     unawaited(HapticFeedback.lightImpact().catchError((_) {}));
+    widget.onLongPressStart?.call(details);
   }
 
   void _handleInteractionStatus(AnimationStatus status) {
@@ -261,18 +266,22 @@ class _KuzaiPetState extends State<KuzaiPet> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     return Semantics(
-      button: true,
+      button: widget.interactive,
       label: '打开库仔 AI 助手',
-      hint: '点击对话，拖动可移动位置，长按摸摸库仔',
+      hint: widget.interactive ? '点击对话，拖动可移动位置，长按摸摸库仔' : null,
       value: _semanticValue,
-      onTap: _handleTap,
-      onLongPress: () => _handleLongPress(
-        LongPressStartDetails(localPosition: Offset(widget.size * 0.56, 0)),
-      ),
+      onTap: widget.interactive ? _handleTap : null,
+      onLongPress: widget.interactive
+          ? () => _handleLongPress(
+              LongPressStartDetails(
+                localPosition: Offset(widget.size * 0.56, 0),
+              ),
+            )
+          : null,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: _handleTap,
-        onLongPressStart: _handleLongPress,
+        onTap: widget.interactive ? _handleTap : null,
+        onLongPressStart: widget.interactive ? _handleLongPress : null,
         child: RepaintBoundary(
           child: SizedBox(
             width: widget.size * 1.12,

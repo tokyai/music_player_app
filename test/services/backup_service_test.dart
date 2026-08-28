@@ -123,6 +123,7 @@ void main() {
     await source.setShowAssistantOnAllPages(false);
     await source.setShowPetOnPlayerPage(false);
     await source.setPetScale(1.6);
+    await source.setPetAppearance(AiPetAppearance.xiaohei);
     await source.setPetPosition(const AiPetPosition(x: 0.25, y: 0.75));
 
     final raw = BackupService.exportJson(
@@ -184,6 +185,7 @@ void main() {
     expect(restored.showAssistantOnAllPages, isFalse);
     expect(restored.showPetOnPlayerPage, isFalse);
     expect(restored.petScale, closeTo(1.6, 0.001));
+    expect(restored.petAppearance, AiPetAppearance.xiaohei);
     expect(restored.petPosition.x, closeTo(0.25, 0.001));
     expect(restored.petPosition.y, closeTo(0.75, 0.001));
   });
