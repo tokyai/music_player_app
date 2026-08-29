@@ -300,7 +300,9 @@ class _SpriteAssistantPetState extends State<_SpriteAssistantPet>
   }
 
   bool _shouldSettleMode(AssistantPetMode mode) => switch (mode) {
-    AssistantPetMode.waking || AssistantPetMode.error => true,
+    AssistantPetMode.waking ||
+    AssistantPetMode.error ||
+    AssistantPetMode.stopping => true,
     _ => false,
   };
 
@@ -547,6 +549,12 @@ class _SpriteAssistantPetState extends State<_SpriteAssistantPet>
 }
 
 class _SpritePetPainter extends CustomPainter {
+  // Keep the outgoing silhouette present through most of the hand-off.  The
+  // incoming pose is already nearly opaque when the outgoing one starts to
+  // leave, so gaps between transparent sprite bounds cannot flash the page
+  // background while the final pose still settles.
+  static const _outgoingHoldFraction = 0.76;
+
   _SpritePetPainter({
     required this.image,
     required this.clip,
@@ -574,8 +582,10 @@ class _SpritePetPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final transitionValue = Curves.easeInOutCubic.transform(transition.value);
-    if (previousImage != null && previousClip != null && transitionValue < 1) {
+    final rawTransition = transition.value.clamp(0.0, 1.0).toDouble();
+    final transitionValue = Curves.easeInOutCubic.transform(rawTransition);
+    final hasPrevious = previousImage != null && previousClip != null;
+    if (hasPrevious && transitionValue < 1) {
       _paintSample(
         canvas,
         size,
@@ -586,7 +596,7 @@ class _SpritePetPainter extends CustomPainter {
           nextFrame: previousNextFrame,
           blend: previousFrameBlend,
         ),
-        1 - transitionValue,
+        _outgoingOpacity(rawTransition),
       );
     }
     final currentImage = image;
@@ -598,8 +608,17 @@ class _SpritePetPainter extends CustomPainter {
       currentImage,
       currentClip,
       currentClip.sampleAt(progress.value),
-      transitionValue,
+      hasPrevious ? transitionValue : 1,
     );
+  }
+
+  double _outgoingOpacity(double progress) {
+    if (progress <= _outgoingHoldFraction) return 1;
+    final fadeProgress =
+        ((progress - _outgoingHoldFraction) / (1 - _outgoingHoldFraction))
+            .clamp(0.0, 1.0)
+            .toDouble();
+    return 1 - Curves.easeInCubic.transform(fadeProgress);
   }
 
   void _paintSample(
@@ -611,7 +630,11 @@ class _SpritePetPainter extends CustomPainter {
     double opacity,
   ) {
     final blend = sample.blend.clamp(0.0, 1.0).toDouble();
-    _paintFrame(canvas, size, image, clip, sample.frame, opacity * (1 - blend));
+    // The base frame remains opaque while the next frame is laid over it.
+    // This preserves silhouette coverage during both intra-clip frame
+    // blending and cross-clip transitions. It is intentionally an overlay,
+    // not an alpha split, because the source frames have different bounds.
+    _paintFrame(canvas, size, image, clip, sample.frame, opacity);
     final nextFrame = sample.nextFrame;
     if (nextFrame != null && blend > 0) {
       _paintFrame(canvas, size, image, clip, nextFrame, opacity * blend);
@@ -626,8 +649,15 @@ class _SpritePetPainter extends CustomPainter {
     int frame,
     double opacity,
   ) {
+    final availableFrames = image.width ~/ clip.frameWidth;
+    if (availableFrames <= 0 || image.height < clip.frameHeight) return;
+    final safeFrame = frame.clamp(0, availableFrames - 1).toInt();
+    assert(
+      safeFrame == frame,
+      '${clip.key} requested frame $frame from a $availableFrames-frame strip',
+    );
     final source = Rect.fromLTWH(
-      frame * clip.frameWidth,
+      safeFrame * clip.frameWidth,
       0,
       clip.frameWidth,
       clip.frameHeight,
@@ -650,11 +680,13 @@ class _SpritePetPainter extends CustomPainter {
   bool shouldRepaint(covariant _SpritePetPainter oldDelegate) =>
       oldDelegate.image != image ||
       oldDelegate.clip != clip ||
+      oldDelegate.progress != progress ||
       oldDelegate.previousImage != previousImage ||
       oldDelegate.previousClip != previousClip ||
       oldDelegate.previousFrame != previousFrame ||
       oldDelegate.previousNextFrame != previousNextFrame ||
-      oldDelegate.previousFrameBlend != previousFrameBlend;
+      oldDelegate.previousFrameBlend != previousFrameBlend ||
+      oldDelegate.transition != transition;
 }
 
 class _PetImageCache {
@@ -894,6 +926,14 @@ abstract final class _PetClips {
       loop: false,
       idleAction: true,
     ),
+    'idle-yarn': _PetClip(
+      key: 'moomew-idle-yarn',
+      asset: 'assets/pets/moomew/yarn.webp',
+      frameOrder: [0, 1, 2, 3, 4, 5, 4, 3, 2, 1, 0],
+      frameDurations: [180, 120, 120, 160, 260, 420, 260, 160, 120, 120, 420],
+      loop: false,
+      idleAction: true,
+    ),
     'idle-blink': _PetClip(
       key: 'moomew-idle-blink',
       asset: 'assets/pets/moomew/idle-blink.webp',
@@ -987,52 +1027,72 @@ abstract final class _PetClips {
       idleRest: true,
       loop: false,
     ),
-    'idle-glance': _PetClip(
-      key: 'xiaohei-idle-glance',
-      asset: 'assets/pets/xiaohei/idle-glance.webp',
-      frameDurations: [260, 360, 520],
+    'idle-tail-flick': _PetClip(
+      key: 'xiaohei-idle-tail-flick',
+      asset: 'assets/pets/xiaohei/idle-tail-flick.webp',
+      frameDurations: [720, 180, 620],
       loop: false,
       idleAction: true,
     ),
-    'idle-tilt': _PetClip(
-      key: 'xiaohei-idle-tilt',
-      asset: 'assets/pets/xiaohei/idle-tilt.webp',
-      frameDurations: [260, 420, 520],
+    'idle-settle': _PetClip(
+      key: 'xiaohei-idle-settle',
+      asset: 'assets/pets/xiaohei/idle-settle.webp',
+      frameDurations: [680, 160, 190, 170, 720],
       loop: false,
       idleAction: true,
     ),
-    'idle-loop': _PetClip(
-      key: 'xiaohei-idle-loop',
-      asset: 'assets/pets/xiaohei/idle.webp',
-      frameOrder: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+    'idle-awake-tail': _PetClip(
+      key: 'xiaohei-idle-awake-tail',
+      asset: 'assets/pets/xiaohei/lounge-awake.webp',
+      frameOrder: [0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1, 0],
       frameDurations: [
+        360,
+        120,
+        120,
+        120,
+        140,
+        140,
+        120,
+        220,
+        120,
+        140,
+        140,
+        120,
+        120,
+        120,
         520,
-        110,
-        110,
-        110,
-        110,
-        110,
-        110,
-        110,
-        110,
-        150,
-        110,
-        110,
-        110,
-        110,
-        110,
-        110,
-        110,
-        110,
+      ],
+      loop: false,
+      idleAction: true,
+    ),
+    'idle-roll': _PetClip(
+      key: 'xiaohei-idle-roll',
+      asset: 'assets/pets/xiaohei/lounge.webp',
+      frameOrder: [7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5, 6, 7],
+      frameDurations: [
+        420,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
         620,
       ],
+      loop: false,
+      idleAction: true,
     ),
-    'idle-look': _PetClip(
-      key: 'xiaohei-idle-look',
-      asset: 'assets/pets/xiaohei/idle.webp',
-      frameOrder: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+    'idle-curious': _PetClip(
+      key: 'xiaohei-idle-curious',
+      asset: 'assets/pets/xiaohei/lounge-curious.webp',
+      frameOrder: [0, 1, 2, 3, 4, 5, 6, 7, 8, 7, 6, 5, 4, 3, 2, 1, 0],
       frameDurations: [
-        240,
+        320,
         130,
         130,
         130,
@@ -1040,9 +1100,7 @@ abstract final class _PetClips {
         130,
         130,
         130,
-        130,
-        180,
-        130,
+        220,
         130,
         130,
         130,
@@ -1050,32 +1108,86 @@ abstract final class _PetClips {
         130,
         130,
         130,
-        480,
+        520,
       ],
+      loop: false,
+      idleAction: true,
+    ),
+    'idle-stretch': _PetClip(
+      key: 'xiaohei-idle-stretch',
+      asset: 'assets/pets/xiaohei/lounge-stretch.webp',
+      frameOrder: [0, 1, 2, 3, 2, 1, 0],
+      frameDurations: [420, 180, 180, 260, 180, 180, 560],
+      loop: false,
+      idleAction: true,
+    ),
+    'idle-cloud': _PetClip(
+      key: 'xiaohei-idle-cloud',
+      asset: 'assets/pets/xiaohei/idle-cloud.webp',
+      frameDurations: [220, 140, 680, 160, 320],
+      loop: false,
+      idleAction: true,
+    ),
+    'idle-sun': _PetClip(
+      key: 'xiaohei-idle-sun',
+      asset: 'assets/pets/xiaohei/idle-sun.webp',
+      frameDurations: [220, 140, 680, 160, 320],
       loop: false,
       idleAction: true,
     ),
     'text-wait': _PetClip(
       key: 'xiaohei-text-wait',
-      asset: 'assets/pets/xiaohei/idle-tilt.webp',
-      frameOrder: [0, 1],
-      frameDurations: [260, 1000],
-      loop: false,
+      asset: 'assets/pets/xiaohei/lounge-curious.webp',
+      // Thinking and text-only sessions can last arbitrarily long. This slow
+      // lying loop keeps the daily posture calm and returns through the same
+      // tail position before repeating.
+      frameOrder: [0, 1, 2, 3, 4, 5, 6, 7, 8, 7, 6, 5, 4, 3, 2, 1],
+      frameDurations: [
+        620,
+        180,
+        180,
+        180,
+        180,
+        180,
+        180,
+        180,
+        420,
+        180,
+        180,
+        180,
+        180,
+        180,
+        180,
+        420,
+      ],
+      loop: true,
+    ),
+    'listen': _PetClip(
+      key: 'xiaohei-listen',
+      asset: 'assets/pets/xiaohei/lounge-awake.webp',
+      frameOrder: [0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1],
+      frameDurations: [
+        520,
+        170,
+        170,
+        170,
+        200,
+        200,
+        170,
+        320,
+        170,
+        200,
+        200,
+        170,
+        170,
+        380,
+      ],
     ),
     'error-shake': _PetClip(
       key: 'xiaohei-error-shake',
-      asset: 'assets/pets/xiaohei/idle.webp',
+      asset: 'assets/pets/xiaohei/error-shake.webp',
       frameOrder: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
       frameDurations: [
-        180,
-        120,
-        120,
-        120,
-        120,
-        120,
-        120,
-        120,
-        120,
         160,
         120,
         120,
@@ -1085,13 +1197,22 @@ abstract final class _PetClips {
         120,
         120,
         120,
-        700,
+        180,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        120,
+        620,
       ],
       loop: false,
     ),
     'error-hold': _PetClip(
       key: 'xiaohei-error-hold',
-      asset: 'assets/pets/xiaohei/idle.webp',
+      asset: 'assets/pets/xiaohei/error-shake.webp',
       frameOrder: [0],
       frameDurations: [1000],
       loop: false,
@@ -1107,30 +1228,31 @@ abstract final class _PetClips {
     'groom': _PetClip(
       key: 'xiaohei-groom',
       asset: 'assets/pets/xiaohei/groom.webp',
-      frameOrder: [0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1, 0],
+      frameOrder: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
       frameDurations: [
-        120,
-        100,
-        100,
-        100,
-        100,
-        100,
-        100,
-        140,
-        100,
-        100,
-        100,
-        100,
-        100,
-        100,
-        350,
+        160,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        420,
       ],
       loop: false,
     ),
     'idle-groom': _PetClip(
       key: 'xiaohei-idle-groom',
       asset: 'assets/pets/xiaohei/groom.webp',
-      frameOrder: [0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1, 0],
+      frameOrder: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
       frameDurations: [
         180,
         120,
@@ -1139,7 +1261,8 @@ abstract final class _PetClips {
         120,
         120,
         120,
-        180,
+        120,
+        120,
         120,
         120,
         120,
@@ -1151,29 +1274,6 @@ abstract final class _PetClips {
       loop: false,
       idleAction: true,
     ),
-    'bye': _PetClip(
-      key: 'xiaohei-bye',
-      asset: 'assets/pets/xiaohei/bye.webp',
-      frameDurations: [
-        100,
-        100,
-        100,
-        100,
-        100,
-        100,
-        100,
-        100,
-        100,
-        100,
-        100,
-        100,
-        100,
-        100,
-        100,
-        400,
-      ],
-      loop: false,
-    ),
     'play': _PetClip(
       key: 'xiaohei-play',
       asset: 'assets/pets/xiaohei/play.webp',
@@ -1183,38 +1283,67 @@ abstract final class _PetClips {
     ),
     'drag': _PetClip(
       key: 'xiaohei-drag',
-      asset: 'assets/pets/xiaohei/play.webp',
-      frameOrder: [0, 1, 2, 3, 4, 3, 2, 1],
-      frameDurations: [120, 120, 120, 120, 140, 120, 120, 120],
+      asset: 'assets/pets/xiaohei/walk.webp',
+      frameOrder: [0, 1, 2, 3, 4, 5, 6],
+      frameDurations: [170, 170, 170, 170, 170, 170, 170],
     ),
-    'eat': _PetClip(
-      key: 'xiaohei-eat',
-      asset: 'assets/pets/xiaohei/eat.webp',
+    'eat-watermelon': _PetClip(
+      key: 'xiaohei-eat-watermelon',
+      asset: 'assets/pets/xiaohei/eat-watermelon.webp',
       frameDurations: [
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
-        70,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
+        90,
       ],
       loop: false,
+    ),
+    'eat-burger': _PetClip(
+      key: 'xiaohei-eat-burger',
+      asset: 'assets/pets/xiaohei/eat-burger.webp',
+      frameDurations: [
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+      ],
+      loop: false,
+      idleAction: true,
     ),
   };
 
@@ -1265,10 +1394,10 @@ abstract final class _PetClips {
     ),
     'error-hold': _PetClip(
       key: 'whale-error-hold',
-      asset: 'assets/pets/whale_girl/error.webp',
-      frameOrder: [1],
-      frameDurations: [1000],
-      loop: false,
+      asset: 'assets/pets/whale_girl/disappointed.webp',
+      frameOrder: [0, 1, 0],
+      frameDurations: [900, 220, 1100],
+      loop: true,
     ),
     'disappointed': _PetClip(
       key: 'whale-disappointed',
@@ -1358,16 +1487,19 @@ abstract final class _PetClips {
     AiPetAppearance.moomew => switch (mode) {
       AssistantPetMode.waking => _moomew['wait-still']!,
       AssistantPetMode.error => _moomew['error-hold']!,
+      AssistantPetMode.stopping => _moomew['rest']!,
       _ => _moomew['rest']!,
     },
     AiPetAppearance.xiaohei => switch (mode) {
-      AssistantPetMode.waking => _xiaohei['idle-loop']!,
+      AssistantPetMode.waking => _xiaohei['listen']!,
       AssistantPetMode.error => _xiaohei['error-hold']!,
+      AssistantPetMode.stopping => _xiaohei['rest']!,
       _ => _xiaohei['rest']!,
     },
     AiPetAppearance.whaleGirl => switch (mode) {
       AssistantPetMode.waking => _whale['wait']!,
       AssistantPetMode.error => _whale['error-hold']!,
+      AssistantPetMode.stopping => _whale['rest']!,
       _ => _whale['rest']!,
     },
     AiPetAppearance.kuzai => throw StateError('Kuzai uses its vector painter'),
@@ -1380,8 +1512,9 @@ abstract final class _PetClips {
           _moomew['idle-glance']!,
         ],
         AiPetAppearance.xiaohei => [
-          _xiaohei['idle-glance']!,
-          _xiaohei['idle-tilt']!,
+          _xiaohei['idle-tail-flick']!,
+          _xiaohei['idle-settle']!,
+          _xiaohei['idle-awake-tail']!,
         ],
         AiPetAppearance.whaleGirl => [_whale['idle-blink']!],
         AiPetAppearance.kuzai => const [],
@@ -1389,12 +1522,25 @@ abstract final class _PetClips {
 
   static List<_PetClip> largeIdleActions(AiPetAppearance appearance) =>
       switch (appearance) {
-        AiPetAppearance.moomew => [_moomew['idle-focus']!],
-        AiPetAppearance.xiaohei => [
-          _xiaohei['idle-look']!,
-          _xiaohei['idle-groom']!,
+        AiPetAppearance.moomew => [
+          _moomew['idle-focus']!,
+          _moomew['idle-yarn']!,
         ],
-        AiPetAppearance.whaleGirl => [_whale['idle-drowsy']!],
+        AiPetAppearance.xiaohei => [
+          _xiaohei['idle-roll']!,
+          _xiaohei['idle-curious']!,
+          _xiaohei['idle-stretch']!,
+          _xiaohei['idle-groom']!,
+          _xiaohei['eat-burger']!,
+          _xiaohei['eat-watermelon']!,
+          _xiaohei['idle-cloud']!,
+          _xiaohei['idle-sun']!,
+        ],
+        AiPetAppearance.whaleGirl => [
+          _whale['idle-drowsy']!,
+          _whale['sleep']!,
+          _whale['celebrate']!,
+        ],
         AiPetAppearance.kuzai => const [],
       };
 
@@ -1429,6 +1575,7 @@ abstract final class _PetClips {
           'idle-blink',
           'idle-glance',
           'idle-focus',
+          'idle-yarn',
         ],
         AssistantPetMode.waking => const ['wait-still'],
         AssistantPetMode.listening => const ['review', 'wait-still'],
@@ -1444,17 +1591,20 @@ abstract final class _PetClips {
           'play',
           'groom',
           'drag',
-          'idle-glance',
-          'idle-tilt',
-          'idle-look',
+          'idle-tail-flick',
+          'idle-settle',
+          'idle-awake-tail',
         ],
-        AssistantPetMode.waking => const ['idle-loop'],
-        AssistantPetMode.listening => const ['text-wait'],
-        AssistantPetMode.textOnly ||
-        AssistantPetMode.thinking => const ['guitar', 'error-shake'],
-        AssistantPetMode.paused => const ['idle-loop'],
-        AssistantPetMode.speaking => const ['guitar', 'idle-loop'],
-        AssistantPetMode.stopping => const ['bye', 'rest'],
+        AssistantPetMode.waking => const ['listen'],
+        AssistantPetMode.listening => const ['listen', 'rest'],
+        AssistantPetMode.textOnly || AssistantPetMode.thinking => const [
+          'text-wait',
+          'guitar',
+          'error-shake',
+        ],
+        AssistantPetMode.paused => const ['rest'],
+        AssistantPetMode.speaking => const ['guitar', 'listen'],
+        AssistantPetMode.stopping => const ['idle-roll', 'rest'],
         AssistantPetMode.error => const ['error-shake', 'error-hold', 'rest'],
       }),
       AiPetAppearance.whaleGirl => _clipsForKeys(_whale, switch (mode) {
@@ -1465,6 +1615,8 @@ abstract final class _PetClips {
           'drag',
           'idle-blink',
           'idle-drowsy',
+          'sleep',
+          'celebrate',
         ],
         AssistantPetMode.waking => const ['wait'],
         AssistantPetMode.listening ||
@@ -1534,9 +1686,9 @@ abstract final class _PetClips {
       AssistantPetMode.waking => _xiaohei['play']!,
       AssistantPetMode.thinking => _xiaohei['text-wait']!,
       AssistantPetMode.speaking => _xiaohei['guitar']!,
-      AssistantPetMode.stopping => _xiaohei['bye']!,
+      AssistantPetMode.stopping => _xiaohei['idle-roll']!,
       AssistantPetMode.error => _xiaohei['error-shake']!,
-      AssistantPetMode.listening => _xiaohei['idle-loop']!,
+      AssistantPetMode.listening => _xiaohei['listen']!,
       AssistantPetMode.textOnly => _xiaohei['text-wait']!,
       AssistantPetMode.paused => _xiaohei['rest']!,
       AssistantPetMode.idle => _xiaohei['rest']!,

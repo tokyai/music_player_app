@@ -10,7 +10,24 @@ current and near-future strips are kept decoded.
   revision `66215311b74a2b8816ff250b0ba35126b468d303`.
 - IXiaoHei / Luo Xiaohei: `jiang-taibai/IXiaoHei`, revision
   `94d7eb55b85dcf10e47ad002d0417d0fb4d91436`.
+- Relaxed Luo Xiaohei desktop-pet set:
+  `winterqin/DesktopPet_Winter_luoxiaohei`, Apache-2.0, revision
+  `157709812463a28f7fc2145f2e5dffab11a89395`.
 - Whale Girl: `vlln/whale-girl`, character credit `ZipZipPipe`, revision
   `267e64fa61e6429bdd7cc06bf32cc53e559ff71c`.
+
+XiaoHei's default and daily states use the relaxed set's closed-eye lying,
+awake tail, curious lying, stretch, grooming, guitar, walking and
+hamburger sequences. The older IXiaoHei head shake remains the cleaner error
+feedback because the new angry sequence depends on a dangling toy. Detached
+scene props are removed during generation, and
+the 44-frame hamburger sequence is evenly sampled to stay below common mobile
+GPU texture limits. The short tail and settling actions are exported as small
+derived strips so the full roll texture is not kept warm during ordinary
+idle. The older IXiaoHei set remains the source for the playful
+tap response, watermelon action, smiling cloud and emotion sun. Cloud and sun
+are composited onto the closed-eye lying pose so they share the same 256 px
+stage and do not need a second runtime layer. MooMew's yarn-ball row is
+exported as `yarn.webp` for the same low-frequency idle slot.
 
 The project owner confirmed authorization to bundle these three appearances.

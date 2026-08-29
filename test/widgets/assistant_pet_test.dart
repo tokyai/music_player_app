@@ -9,19 +9,43 @@ import 'package:music_player_app/widgets/assistant_pet.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('idle sprite strips decode with the expected frame count', () async {
+  test('bundled sprite strips decode with the expected frame count', () async {
     const assets = <String, int>{
       'assets/pets/moomew/rest.webp': 1,
       'assets/pets/moomew/idle.webp': 6,
       'assets/pets/moomew/idle-blink.webp': 3,
       'assets/pets/moomew/idle-glance.webp': 3,
+      'assets/pets/moomew/yarn.webp': 6,
       'assets/pets/xiaohei/rest.webp': 1,
-      'assets/pets/xiaohei/idle.webp': 10,
-      'assets/pets/xiaohei/idle-glance.webp': 3,
-      'assets/pets/xiaohei/idle-tilt.webp': 3,
+      'assets/pets/xiaohei/lounge.webp': 12,
+      'assets/pets/xiaohei/idle-tail-flick.webp': 3,
+      'assets/pets/xiaohei/idle-settle.webp': 5,
+      'assets/pets/xiaohei/lounge-awake.webp': 8,
+      'assets/pets/xiaohei/lounge-curious.webp': 9,
+      'assets/pets/xiaohei/lounge-stretch.webp': 4,
+      'assets/pets/xiaohei/guitar.webp': 6,
+      'assets/pets/xiaohei/groom.webp': 16,
+      'assets/pets/xiaohei/error-shake.webp': 10,
+      'assets/pets/xiaohei/play.webp': 5,
+      'assets/pets/xiaohei/walk.webp': 7,
+      'assets/pets/xiaohei/eat-burger.webp': 22,
+      'assets/pets/xiaohei/eat-watermelon.webp': 21,
+      'assets/pets/xiaohei/idle-cloud.webp': 5,
+      'assets/pets/xiaohei/idle-sun.webp': 5,
       'assets/pets/whale_girl/rest.webp': 1,
       'assets/pets/whale_girl/idle.webp': 3,
       'assets/pets/whale_girl/idle-blink.webp': 3,
+      'assets/pets/whale_girl/celebrate.webp': 3,
+      'assets/pets/whale_girl/disappointed.webp': 2,
+      'assets/pets/whale_girl/drag.webp': 1,
+      'assets/pets/whale_girl/error.webp': 2,
+      'assets/pets/whale_girl/joy.webp': 2,
+      'assets/pets/whale_girl/sleep.webp': 2,
+      'assets/pets/whale_girl/think.webp': 1,
+      'assets/pets/whale_girl/wait.webp': 1,
+      'assets/pets/whale_girl/wake.webp': 2,
+      'assets/pets/whale_girl/welcome.webp': 2,
+      'assets/pets/whale_girl/working.webp': 3,
     };
 
     for (final MapEntry(key: asset, value: frameCount) in assets.entries) {
@@ -40,6 +64,96 @@ void main() {
         codec?.dispose();
       }
     }
+  });
+
+  testWidgets('sprite transition keeps a valid clip during hand-off', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_pet(AiPetAppearance.moomew));
+    await _pumpUntilFound(tester, _clip('moomew', 'rest'));
+
+    await tester.pumpWidget(
+      _pet(
+        AiPetAppearance.moomew,
+        interaction: AssistantPetInteraction.wave,
+        interactionRevision: 1,
+      ),
+    );
+    await _pumpUntilFound(tester, _clip('moomew', 'wave'));
+
+    for (var index = 0; index < 16; index++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(find.byType(AssistantPet), findsOneWidget);
+      expect(_clip('moomew', 'wave'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    }
+  });
+
+  testWidgets('sprite survives rapid switches, lifecycle pauses and disposal', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_pet(AiPetAppearance.xiaohei));
+    await _pumpLoaded(tester);
+
+    const sequence = <(AiPetAppearance, AssistantPetMode)>[
+      (AiPetAppearance.xiaohei, AssistantPetMode.waking),
+      (AiPetAppearance.moomew, AssistantPetMode.thinking),
+      (AiPetAppearance.whaleGirl, AssistantPetMode.speaking),
+      (AiPetAppearance.xiaohei, AssistantPetMode.textOnly),
+      (AiPetAppearance.moomew, AssistantPetMode.error),
+      (AiPetAppearance.xiaohei, AssistantPetMode.stopping),
+    ];
+    for (final (appearance, mode) in sequence) {
+      await tester.pumpWidget(_pet(appearance, mode: mode));
+      await tester.pump(const Duration(milliseconds: 12));
+    }
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('XiaoHei uses the relaxed action set for daily states', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_pet(AiPetAppearance.xiaohei));
+    await _pumpUntilFound(tester, _clip('xiaohei', 'rest'));
+
+    const states = <(AssistantPetMode, String)>[
+      (AssistantPetMode.listening, 'listen'),
+      (AssistantPetMode.thinking, 'text-wait'),
+      (AssistantPetMode.speaking, 'guitar'),
+      (AssistantPetMode.error, 'error-shake'),
+      (AssistantPetMode.stopping, 'idle-roll'),
+    ];
+    for (final (mode, clip) in states) {
+      await tester.pumpWidget(_pet(AiPetAppearance.xiaohei, mode: mode));
+      await _pumpUntilFound(tester, _clip('xiaohei', clip));
+      expect(tester.takeException(), isNull);
+    }
+
+    await tester.pumpWidget(
+      _pet(
+        AiPetAppearance.xiaohei,
+        interaction: AssistantPetInteraction.petting,
+        interactionRevision: 1,
+      ),
+    );
+    await _pumpUntilFound(tester, _clip('xiaohei', 'groom'));
+
+    await tester.pumpWidget(
+      _pet(
+        AiPetAppearance.xiaohei,
+        dragging: true,
+        dragDirection: AssistantPetDragDirection.right,
+      ),
+    );
+    await _pumpUntilFound(tester, _clip('xiaohei', 'drag'));
+    expect(tester.takeException(), isNull);
   });
 
   const pets = <(AiPetAppearance, String)>[
@@ -243,6 +357,7 @@ void main() {
 
 Widget _pet(
   AiPetAppearance appearance, {
+  AssistantPetMode mode = AssistantPetMode.idle,
   AssistantPetInteraction interaction = AssistantPetInteraction.none,
   int interactionRevision = 0,
   bool dragging = false,
@@ -254,7 +369,7 @@ Widget _pet(
       child: AssistantPet(
         appearance: appearance,
         size: 96,
-        mode: AssistantPetMode.idle,
+        mode: mode,
         interaction: interaction,
         interactionRevision: interactionRevision,
         dragging: dragging,
