@@ -8,26 +8,35 @@ current and near-future strips are kept decoded.
 
 - MooMew Coder Cat: `legeling/awesome-codex-pet`, pet submitted by `ping`,
   revision `66215311b74a2b8816ff250b0ba35126b468d303`.
-- IXiaoHei / Luo Xiaohei: `jiang-taibai/IXiaoHei`, revision
+- Luo Xiaohei action family: `opensetk/dsh-xiaohei`, revision
+  `1fcd72ad24b1472fb74e2806b04a6392b055dbd9`. The project owner confirmed
+  authorization to bundle these assets.
+- Xiaohei's optional cloud, sun and watermelon source art:
+  `jiang-taibai/IXiaoHei`, revision
   `94d7eb55b85dcf10e47ad002d0417d0fb4d91436`.
-- Relaxed Luo Xiaohei desktop-pet set:
-  `winterqin/DesktopPet_Winter_luoxiaohei`, Apache-2.0, revision
-  `157709812463a28f7fc2145f2e5dffab11a89395`.
 - Whale Girl: `vlln/whale-girl`, character credit `ZipZipPipe`, revision
   `267e64fa61e6429bdd7cc06bf32cc53e559ff71c`.
 
-XiaoHei's default and daily states use the relaxed set's closed-eye lying,
-awake tail, curious lying, stretch, grooming, guitar, walking and
-hamburger sequences. The older IXiaoHei head shake remains the cleaner error
-feedback because the new angry sequence depends on a dangling toy. Detached
-scene props are removed during generation, and
-the 44-frame hamburger sequence is evenly sampled to stay below common mobile
-GPU texture limits. The short tail and settling actions are exported as small
-derived strips so the full roll texture is not kept warm during ordinary
-idle. The older IXiaoHei set remains the source for the playful
-tap response, watermelon action, smiling cloud and emotion sun. Cloud and sun
-are composited onto the closed-eye lying pose so they share the same 256 px
-stage and do not need a second runtime layer. MooMew's yarn-ball row is
-exported as `yarn.webp` for the same low-frequency idle slot.
+XiaoHei now uses dsh's `main-base` as its single neutral/rest pose. The opening
+upright section of `main-wave` supplies a restrained blink cycle; it is the
+only normal-frequency idle action. Cloud and sun are composited directly onto
+`main-base`, while play, food, pillow, bored and daze appear only in the rare
+idle tier. Food actions compose as `eat`/`sneak-eat` -> `full` -> `main-base`.
+`main-wiggle` is bundled as an explicit opt-in action but is deliberately not
+scheduled for idle or long-press feedback because its low pose reads as a
+collapsed character in the assistant slot. The stylistically different
+watermelon strip is also optional and is not part of the automatic idle pool.
 
-The project owner confirmed authorization to bundle these three appearances.
+All dsh strips share `main-base`'s scale, a 256 px stage and one baseline. The
+34-frame source wave is sampled to 31 representative frames (7936 px wide) so
+it remains below the 8192 px texture limit of older Android GPUs while keeping
+the complete greeting and its upright return. The exported wave's first and
+last stage are replaced with the exact `main-base` stage, eliminating a
+one-pixel pose drift at the greeting boundary. Runtime keeps the outgoing
+decoded image until the incoming image is ready and cross-fades on the same
+stable paint layer, avoiding a transparent/white intermediate frame.
+
+MooMew's yarn-ball row is exported as `yarn.webp` for its low-frequency idle
+slot.
+
+The project owner confirmed authorization to bundle all three appearances.

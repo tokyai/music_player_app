@@ -25,7 +25,11 @@ PET_EDGE_ALPHA_CUTOFF = 8
 
 MOOMEW_COMMIT = "66215311b74a2b8816ff250b0ba35126b468d303"
 XIAOHEI_COMMIT = "94d7eb55b85dcf10e47ad002d0417d0fb4d91436"
-XIAOHEI_LOUNGE_COMMIT = "157709812463a28f7fc2145f2e5dffab11a89395"
+# The dsh-xiaohei project is the canonical source for the current XiaoHei
+# action set.  Keep the revision pinned: unlike a live GitHub URL this makes a
+# regenerated bundle visually reproducible and lets reviewers verify exactly
+# which authorised files were used.
+XIAOHEI_DSH_COMMIT = "1fcd72ad24b1472fb74e2806b04a6392b055dbd9"
 WHALE_COMMIT = "267e64fa61e6429bdd7cc06bf32cc53e559ff71c"
 
 MOOMEW_DURATIONS = {
@@ -57,11 +61,6 @@ WHALE_STATES = (
     "wait",
 )
 
-XIAOHEI_FILES = {
-    "play": "play heixiu.gif",
-    "error-shake": "shake-head-txt.gif",
-}
-
 XIAOHEI_EXTRA_FILES = {
     "eat-watermelon": "eat-watermelon-txt.gif",
 }
@@ -71,32 +70,65 @@ XIAOHEI_EFFECT_FILES = {
     "sun": "emotion increasing animation.png",
 }
 
-XIAOHEI_LOUNGE_FILES = {
-    "lounge": "pet1/罗小黑w0.gif",
-    "lounge-awake": "pet1/罗小黑11.gif",
-    "lounge-curious": "pet1/罗小黑0.gif",
-    "lounge-stretch": "pet1/罗小黑4.gif",
-    "groom": "pet1/init/start.gif",
-    "guitar": "pet1/罗小黑5.gif",
-    "eat-burger": "pet1/罗小黑9.gif",
-    "walk": "pet1/罗小黑w1.gif",
+# dsh's GIFs are deliberately kept as GIF inputs here (rather than decoding
+# the prebuilt animated WebP files).  Flutter's sprite painter consumes one
+# bounded horizontal strip, so the generator extracts and aligns the frames.
+XIAOHEI_DSH_FILES = {
+    "wave": "main-wave.gif",
+    "run": "main-run.gif",
+    "wiggle": "main-wiggle.gif",
+    "roll": "main-roll.gif",
+    "play": "main-play-heixiu.gif",
+    "pillow": "main-pillow.gif",
+    "full": "main-full.gif",
+    "eat": "main-eat.gif",
+    "sneak-eat": "main-sneak-eat.gif",
+    "celebrate": "main-celebrate.gif",
 }
 
-# These sources include detached thought bubbles, a small duplicate pet or a
-# dangling ball. They work in the desktop-pet scene but read as visual debris
-# in the assistant slot, so only the main connected character is retained.
-XIAOHEI_KEEP_MAIN_COMPONENT = {
-    "lounge-awake",
-    "lounge-curious",
-    "lounge-stretch",
-    "guitar",
+XIAOHEI_DSH_STATIC_FILES = {
+    "base": "main-base.png",
+    "bored": "main-bored.png",
+    "daze": "main-daze.png",
 }
 
-XIAOHEI_FRAME_SELECTIONS = {
-    # 44 source frames would create an 11264 px texture, beyond the 8192 px
-    # limit on some Android GPUs. Even sampling preserves the full action and
-    # original 4.4 second duration in a 5632 px strip.
-    "eat-burger": [*range(0, 42, 2), 43],
+# main-wave contains a useful upright blink/settle lead-in followed by a long
+# side-wave section.  The source GIF currently decodes to 34 frames. A
+# 31-frame selection keeps the resulting 7936 px strip below the 8192 px
+# texture limit on older Android GPUs while retaining every meaningful pose
+# change (including both upright end frames).
+XIAOHEI_DSH_FRAME_SELECTIONS = {
+    "wave": [
+        *range(0, 11),
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        26,
+        28,
+        30,
+        31,
+        32,
+        33,
+    ],
+}
+
+# The source's small companion animations are intentionally scaled up a bit
+# when placed on the common stage.  This keeps a toy/sleeping pose readable in
+# the 68–96 px assistant slot without changing the canonical base size.
+XIAOHEI_DSH_SCALE_OVERRIDES = {
+    "play": 2.2,
+    "pillow": 2.2,
 }
 
 
@@ -116,13 +148,19 @@ def download(url: str, cache_path: Path) -> bytes:
     return payload
 
 
-def normalize_frames(frames: list[Image.Image]) -> list[Image.Image]:
+def normalize_frames(
+    frames: list[Image.Image],
+    *,
+    scale_hint: float | None = None,
+) -> list[Image.Image]:
     """Put a strip on one stable stage and align every frame to its baseline.
 
     The scale is calculated once from the strip's union alpha bounds rather
     than independently per frame.  That avoids an artificial zoom when a
     character changes pose, while the fixed baseline prevents the feet from
-    hopping when switching between actions.
+    hopping when switching between actions.  ``scale_hint`` lets a family of
+    strips share the neutral pose's scale; it is still capped by the stage
+    width so a wide roll cannot overflow the texture.
     """
     if not frames:
         raise ValueError("No frames to normalize")
@@ -136,10 +174,13 @@ def normalize_frames(frames: list[Image.Image]) -> list[Image.Image]:
     bottom = max(box[3] for box in boxes if box is not None)
     union_width = right - left
     union_height = bottom - top
-    scale = min(
-        PET_TARGET_HEIGHT / union_height,
-        (PET_STAGE - 12) / union_width,
-    )
+    if scale_hint is None:
+        scale = min(
+            PET_TARGET_HEIGHT / union_height,
+            (PET_STAGE - 12) / union_width,
+        )
+    else:
+        scale = min(scale_hint, (PET_STAGE - 12) / union_width)
     normalized: list[Image.Image] = []
     for frame in rgba_frames:
         width = max(1, round(frame.width * scale))
@@ -164,10 +205,15 @@ def normalize_frames(frames: list[Image.Image]) -> list[Image.Image]:
     return normalized
 
 
-def save_strip(frames: list[Image.Image], output: Path) -> None:
+def save_strip(
+    frames: list[Image.Image],
+    output: Path,
+    *,
+    scale_hint: float | None = None,
+) -> None:
     if not frames:
         raise ValueError(f"No frames for {output}")
-    frames = normalize_frames(frames)
+    frames = normalize_frames(frames, scale_hint=scale_hint)
     width, height = frames[0].size
     if any(frame.size != (width, height) for frame in frames):
         raise ValueError(f"Mismatched frame sizes for {output}")
@@ -223,52 +269,6 @@ def _scaled_alpha(image: Image.Image, alpha: float) -> Image.Image:
     )
     result.putalpha(channel)
     return result
-
-
-def _keep_largest_alpha_component(image: Image.Image) -> Image.Image:
-    """Remove detached props while preserving the main connected drawing."""
-    rgba = image.convert("RGBA")
-    alpha = rgba.getchannel("A")
-    width, height = rgba.size
-    visible = alpha.load()
-    visited = bytearray(width * height)
-    largest: list[tuple[int, int]] = []
-
-    for start_y in range(height):
-        for start_x in range(width):
-            start_index = start_y * width + start_x
-            if visited[start_index] or visible[start_x, start_y] == 0:
-                continue
-            component: list[tuple[int, int]] = []
-            stack = [(start_x, start_y)]
-            visited[start_index] = 1
-            while stack:
-                x, y = stack.pop()
-                component.append((x, y))
-                for next_x, next_y in (
-                    (x - 1, y),
-                    (x + 1, y),
-                    (x, y - 1),
-                    (x, y + 1),
-                ):
-                    if not (0 <= next_x < width and 0 <= next_y < height):
-                        continue
-                    next_index = next_y * width + next_x
-                    if visited[next_index] or visible[next_x, next_y] == 0:
-                        continue
-                    visited[next_index] = 1
-                    stack.append((next_x, next_y))
-            if len(component) > len(largest):
-                largest = component
-
-    if not largest:
-        raise ValueError("A pet frame has no visible pixels")
-    mask = Image.new("L", rgba.size, 0)
-    mask_pixels = mask.load()
-    for x, y in largest:
-        mask_pixels[x, y] = visible[x, y]
-    rgba.putalpha(mask)
-    return rgba
 
 
 def _load_gif_frames(payload: bytes) -> list[Image.Image]:
@@ -380,19 +380,97 @@ def build_moomew() -> None:
     )
 
 
-def build_xiaohei() -> None:
-    for state, filename in XIAOHEI_FILES.items():
-        source = download(
-            raw_url(
-                "jiang-taibai/IXiaoHei",
-                XIAOHEI_COMMIT,
-                f"src/org/taibai/hellohei/img/{filename}",
-            ),
-            CACHE / f"xiaohei-{state}.gif",
-        )
-        frames = _load_gif_frames(source)
-        save_strip(frames, OUTPUT / "xiaohei" / f"{state}.webp")
+def _image_from_payload(payload: bytes) -> Image.Image:
+    """Decode one static image and detach it from the input stream."""
+    with Image.open(io.BytesIO(payload)) as opened:
+        return opened.convert("RGBA")
 
+
+def _preferred_scale(frame: Image.Image) -> float:
+    """Return the canonical XiaoHei scale derived from main-base."""
+    rgba = frame.convert("RGBA")
+    box = rgba.getchannel("A").getbbox()
+    if box is None:
+        raise ValueError("XiaoHei main-base has no visible pixels")
+    width = box[2] - box[0]
+    height = box[3] - box[1]
+    return min(PET_TARGET_HEIGHT / height, (PET_STAGE - 12) / width)
+
+
+def _download_dsh_xiaohei(filename: str) -> bytes:
+    return download(
+        raw_url("opensetk/dsh-xiaohei", XIAOHEI_DSH_COMMIT, f"assets/{filename}"),
+        CACHE / "xiaohei-dsh" / filename,
+    )
+
+
+def build_xiaohei() -> None:
+    """Build XiaoHei from the dsh-pet action family.
+
+    The old lounge set used a separate half-lidded drawing for its neutral
+    pose.  That made every state switch look like a character replacement.
+    main-base is now the canonical neutral frame; every dsh action is aligned
+    to its scale and baseline before being exported as a Flutter-friendly
+    strip. Cloud/sun effects and the optional, stylistically different
+    watermelon action still come from IXiaoHei.
+    """
+    output = OUTPUT / "xiaohei"
+    base = _image_from_payload(_download_dsh_xiaohei("main-base.png"))
+    reference_scale = _preferred_scale(base)
+
+    # main-wave starts and ends on the exact base drawing.  Its first ten
+    # frames are a restrained blink/settle cycle, so reuse them as the normal
+    # low-frequency idle feedback instead of showing a full wave on idle.
+    wave_frames = _load_gif_frames(_download_dsh_xiaohei("main-wave.gif"))
+    idle_source = [base, *wave_frames[1:10]]
+    idle_normalized = normalize_frames(
+        idle_source,
+        scale_hint=reference_scale,
+    )
+    neutral = idle_normalized[0]
+    # The GIF's last upright drawing is visually the same pose but retains
+    # palette/compression differences from main-base.  Reuse the canonical
+    # pixels at both boundaries so the quiet idle cue settles without a
+    # one-frame outline shimmer before returning to rest.
+    idle_normalized[-1] = neutral.copy()
+    save_stage_strip([neutral], output / "rest.webp")
+    save_stage_strip(idle_normalized, output / "idle-blink.webp")
+
+    for state, filename in XIAOHEI_DSH_FILES.items():
+        if state == "wave":
+            frames = wave_frames
+            selection = XIAOHEI_DSH_FRAME_SELECTIONS["wave"]
+            if max(selection, default=-1) >= len(frames):
+                raise ValueError("main-wave frame selection exceeds source length")
+            frames = [frames[index] for index in selection]
+            normalized_wave = normalize_frames(
+                frames,
+                scale_hint=reference_scale,
+            )
+            # The source's first/last drawings are the same neutral pose as
+            # main-base, but independent GIF normalization can move an edge
+            # pixel by one device pixel. Publish the exact canonical stage at
+            # both ends so a greeting can always cross-fade back to rest.
+            normalized_wave[0] = neutral.copy()
+            normalized_wave[-1] = neutral.copy()
+            save_stage_strip(normalized_wave, output / "wave.webp")
+            continue
+        else:
+            frames = _load_gif_frames(_download_dsh_xiaohei(filename))
+        scale_hint = XIAOHEI_DSH_SCALE_OVERRIDES.get(state, reference_scale)
+        save_strip(frames, output / f"{state}.webp", scale_hint=scale_hint)
+
+    # Static long-idle expressions are exported as one-frame strips so they
+    # use the same painter/transition path as every other action.
+    for state, filename in XIAOHEI_DSH_STATIC_FILES.items():
+        if state == "base":
+            continue  # already emitted as the neutral rest strip above
+        image = _image_from_payload(_download_dsh_xiaohei(filename))
+        save_strip([image], output / f"{state}.webp", scale_hint=reference_scale)
+
+    # Keep the authorized IXiaoHei watermelon action available for an explicit
+    # future interaction. Its purple palette does not match the dsh family, so
+    # the runtime deliberately excludes it from automatic idle scheduling.
     for state, filename in XIAOHEI_EXTRA_FILES.items():
         source = download(
             raw_url(
@@ -402,49 +480,15 @@ def build_xiaohei() -> None:
             ),
             CACHE / f"xiaohei-{state}.gif",
         )
-        frames = _load_gif_frames(source)
-        save_strip(frames, OUTPUT / "xiaohei" / f"{state}.webp")
-
-    lounge_frames: dict[str, list[Image.Image]] = {}
-    for state, path in XIAOHEI_LOUNGE_FILES.items():
-        source = download(
-            raw_url(
-                "winterqin/DesktopPet_Winter_luoxiaohei",
-                XIAOHEI_LOUNGE_COMMIT,
-                path,
-            ),
-            CACHE / "xiaohei-lounge-set" / f"{state}.gif",
+        save_strip(
+            _load_gif_frames(source),
+            output / f"{state}.webp",
+            scale_hint=reference_scale,
         )
-        frames = _load_gif_frames(source)
-        if state in XIAOHEI_KEEP_MAIN_COMPONENT:
-            frames = [_keep_largest_alpha_component(frame) for frame in frames]
-        selection = XIAOHEI_FRAME_SELECTIONS.get(state)
-        if selection is not None:
-            frames = [frames[index] for index in selection]
-        lounge_frames[state] = frames
 
-    normalized_lounge = normalize_frames(lounge_frames["lounge"])
-    save_stage_strip(normalized_lounge, OUTPUT / "xiaohei" / "lounge.webp")
-    save_stage_strip(
-        [normalized_lounge[7]], OUTPUT / "xiaohei" / "rest.webp"
-    )
-    save_stage_strip(
-        [normalized_lounge[index] for index in (7, 6, 7)],
-        OUTPUT / "xiaohei" / "idle-tail-flick.webp",
-    )
-    save_stage_strip(
-        [normalized_lounge[index] for index in (7, 8, 9, 8, 7)],
-        OUTPUT / "xiaohei" / "idle-settle.webp",
-    )
-    for state, frames in lounge_frames.items():
-        if state == "lounge":
-            continue
-        save_strip(frames, OUTPUT / "xiaohei" / f"{state}.webp")
-
-    # Cloud and sun are decorative source images, not replacement poses.  We
-    # bake them onto the relaxed XiaoHei stage so the runtime still owns one
-    # bounded sprite image per action and all transitions remain opaque.
-    neutral = normalized_lounge[7]
+    # Cloud and sun are decorative source images, not replacement poses.  Bake
+    # them onto the dsh main-base stage so the runtime owns one bounded image
+    # and never has to reveal a transparent/white intermediate layer.
     for effect_name, filename in XIAOHEI_EFFECT_FILES.items():
         source = download(
             raw_url(
@@ -454,8 +498,7 @@ def build_xiaohei() -> None:
             ),
             CACHE / f"xiaohei-{effect_name}.png",
         )
-        with Image.open(io.BytesIO(source)) as opened:
-            effect = opened.convert("RGBA")
+        effect = _image_from_payload(source)
         if effect_name == "cloud":
             make_xiaohei_effect_strip(
                 neutral,
@@ -463,7 +506,7 @@ def build_xiaohei() -> None:
                 target_width=106,
                 right=238,
                 top=10,
-                output=OUTPUT / "xiaohei" / "idle-cloud.webp",
+                output=output / "idle-cloud.webp",
             )
         else:
             make_xiaohei_effect_strip(
@@ -472,7 +515,7 @@ def build_xiaohei() -> None:
                 target_width=76,
                 right=236,
                 top=12,
-                output=OUTPUT / "xiaohei" / "idle-sun.webp",
+                output=output / "idle-sun.webp",
             )
 
 

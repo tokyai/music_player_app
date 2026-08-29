@@ -17,18 +17,19 @@ void main() {
       'assets/pets/moomew/idle-glance.webp': 3,
       'assets/pets/moomew/yarn.webp': 6,
       'assets/pets/xiaohei/rest.webp': 1,
-      'assets/pets/xiaohei/lounge.webp': 12,
-      'assets/pets/xiaohei/idle-tail-flick.webp': 3,
-      'assets/pets/xiaohei/idle-settle.webp': 5,
-      'assets/pets/xiaohei/lounge-awake.webp': 8,
-      'assets/pets/xiaohei/lounge-curious.webp': 9,
-      'assets/pets/xiaohei/lounge-stretch.webp': 4,
-      'assets/pets/xiaohei/guitar.webp': 6,
-      'assets/pets/xiaohei/groom.webp': 16,
-      'assets/pets/xiaohei/error-shake.webp': 10,
-      'assets/pets/xiaohei/play.webp': 5,
-      'assets/pets/xiaohei/walk.webp': 7,
-      'assets/pets/xiaohei/eat-burger.webp': 22,
+      'assets/pets/xiaohei/idle-blink.webp': 10,
+      'assets/pets/xiaohei/wave.webp': 31,
+      'assets/pets/xiaohei/run.webp': 12,
+      'assets/pets/xiaohei/wiggle.webp': 11,
+      'assets/pets/xiaohei/roll.webp': 12,
+      'assets/pets/xiaohei/play.webp': 8,
+      'assets/pets/xiaohei/pillow.webp': 12,
+      'assets/pets/xiaohei/full.webp': 24,
+      'assets/pets/xiaohei/eat.webp': 22,
+      'assets/pets/xiaohei/sneak-eat.webp': 28,
+      'assets/pets/xiaohei/celebrate.webp': 10,
+      'assets/pets/xiaohei/bored.webp': 1,
+      'assets/pets/xiaohei/daze.webp': 1,
       'assets/pets/xiaohei/eat-watermelon.webp': 21,
       'assets/pets/xiaohei/idle-cloud.webp': 5,
       'assets/pets/xiaohei/idle-sun.webp': 5,
@@ -66,6 +67,28 @@ void main() {
     }
   });
 
+  test('XiaoHei rare idle registry composes food and excludes wiggle', () {
+    final keys = debugXiaoheiLargeIdleActionKeys();
+    expect(
+      keys,
+      containsAll(<String>[
+        'xiaohei-idle-cloud',
+        'xiaohei-idle-sun',
+        'xiaohei-idle-play',
+        'xiaohei-idle-sneak-eat',
+        'xiaohei-idle-eat',
+        'xiaohei-idle-pillow',
+        'xiaohei-idle-bored',
+        'xiaohei-idle-daze',
+      ]),
+    );
+    expect(keys, isNot(contains('xiaohei-wiggle')));
+    expect(keys, isNot(contains('xiaohei-eat-watermelon')));
+    expect(debugXiaoheiIdleFollowUp('idle-eat'), 'xiaohei-idle-full');
+    expect(debugXiaoheiIdleFollowUp('idle-sneak-eat'), 'xiaohei-idle-full');
+    expect(debugXiaoheiIdleFollowUp('idle-play'), isNull);
+  });
+
   testWidgets('sprite transition keeps a valid clip during hand-off', (
     tester,
   ) async {
@@ -87,6 +110,45 @@ void main() {
       expect(_clip('moomew', 'wave'), findsOneWidget);
       expect(tester.takeException(), isNull);
     }
+  });
+
+  testWidgets('XiaoHei rapid transitions keep one stable painter', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_pet(AiPetAppearance.xiaohei));
+    await _pumpUntilFound(tester, _clip('xiaohei', 'rest'));
+    final painter = find.byKey(const ValueKey('assistant-pet-painter'));
+    final initialPainter = tester.element(painter);
+
+    const sequence = <(AssistantPetMode, String)>[
+      (AssistantPetMode.waking, 'wave'),
+      (AssistantPetMode.thinking, 'eat'),
+      (AssistantPetMode.speaking, 'run'),
+      (AssistantPetMode.error, 'roll'),
+      (AssistantPetMode.stopping, 'celebrate'),
+      (AssistantPetMode.listening, 'listen'),
+      (AssistantPetMode.idle, 'rest'),
+    ];
+    for (final (mode, clip) in sequence) {
+      await tester.pumpWidget(_pet(AiPetAppearance.xiaohei, mode: mode));
+      // The old sprite must remain visible while a new strip is decoding.
+      expect(tester.element(painter), same(initialPainter));
+      await tester.pump(const Duration(milliseconds: 12));
+      expect(tester.element(painter), same(initialPainter));
+
+      await _pumpUntilFound(tester, _clip('xiaohei', clip));
+      // Sample the entire 180 ms hand-off. Replacing this render object was
+      // the one-frame layer invalidation that produced the white flash.
+      for (var frame = 0; frame < 13; frame++) {
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(
+          tester.element(painter),
+          same(initialPainter),
+          reason: '${mode.name} transition frame $frame',
+        );
+      }
+    }
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('sprite survives rapid switches, lifecycle pauses and disposal', (
@@ -125,10 +187,10 @@ void main() {
 
     const states = <(AssistantPetMode, String)>[
       (AssistantPetMode.listening, 'listen'),
-      (AssistantPetMode.thinking, 'text-wait'),
-      (AssistantPetMode.speaking, 'guitar'),
-      (AssistantPetMode.error, 'error-shake'),
-      (AssistantPetMode.stopping, 'idle-roll'),
+      (AssistantPetMode.thinking, 'eat'),
+      (AssistantPetMode.speaking, 'run'),
+      (AssistantPetMode.error, 'roll'),
+      (AssistantPetMode.stopping, 'celebrate'),
     ];
     for (final (mode, clip) in states) {
       await tester.pumpWidget(_pet(AiPetAppearance.xiaohei, mode: mode));
@@ -143,7 +205,7 @@ void main() {
         interactionRevision: 1,
       ),
     );
-    await _pumpUntilFound(tester, _clip('xiaohei', 'groom'));
+    await _pumpUntilFound(tester, _clip('xiaohei', 'play'));
 
     await tester.pumpWidget(
       _pet(
@@ -153,6 +215,26 @@ void main() {
       ),
     );
     await _pumpUntilFound(tester, _clip('xiaohei', 'drag'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('XiaoHei idle keeps main-base and excludes main-wiggle', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_pet(AiPetAppearance.xiaohei));
+    await _pumpUntilFound(tester, _clip('xiaohei', 'rest'));
+    expect(_clip('xiaohei', 'rest'), findsOneWidget);
+
+    // The first low-frequency response is deliberately the upright blink
+    // extracted from main-wave. main-wiggle must never enter the default idle
+    // chain, even after several scheduler cycles.
+    for (var cycle = 0; cycle < 3; cycle++) {
+      await tester.pump(Duration(seconds: cycle == 0 ? 12 : 21));
+      await _pumpUntilFound(tester, _clip('xiaohei', 'idle-blink'));
+      expect(_clip('xiaohei', 'wiggle'), findsNothing);
+      await tester.pump(const Duration(seconds: 4));
+      await _pumpUntilFound(tester, _clip('xiaohei', 'rest'));
+    }
     expect(tester.takeException(), isNull);
   });
 
@@ -171,10 +253,13 @@ void main() {
 
       await _pumpUntilFound(tester, _clip(name, 'rest'));
       expect(_clip(name, 'rest'), findsOneWidget);
-      await tester.pump(const Duration(seconds: 7));
+      final firstIdleDelay = appearance == AiPetAppearance.xiaohei
+          ? const Duration(seconds: 12)
+          : const Duration(seconds: 8);
+      await tester.pump(firstIdleDelay - const Duration(milliseconds: 900));
       expect(_idleAction(name), findsNothing);
 
-      await tester.pump(const Duration(seconds: 1, milliseconds: 100));
+      await tester.pump(const Duration(seconds: 1));
       await _pumpUntilFound(tester, _idleAction(name));
       expect(_idleAction(name), findsOneWidget);
 
