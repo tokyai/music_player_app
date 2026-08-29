@@ -35,6 +35,8 @@ class KuzaiPet extends StatefulWidget {
   final KuzaiPetMode mode;
   final VoidCallback onTap;
   final GestureLongPressStartCallback? onLongPressStart;
+  final bool dragging;
+  final double dragDirection;
   final bool interactive;
 
   const KuzaiPet({
@@ -43,6 +45,8 @@ class KuzaiPet extends StatefulWidget {
     required this.mode,
     required this.onTap,
     this.onLongPressStart,
+    this.dragging = false,
+    this.dragDirection = 0,
     this.interactive = true,
   });
 
@@ -50,7 +54,8 @@ class KuzaiPet extends StatefulWidget {
   State<KuzaiPet> createState() => _KuzaiPetState();
 }
 
-class _KuzaiPetState extends State<KuzaiPet> with TickerProviderStateMixin {
+class _KuzaiPetState extends State<KuzaiPet>
+    with WidgetsBindingObserver, TickerProviderStateMixin {
   static bool _entryPlayed = false;
 
   final math.Random _random = math.Random();
@@ -66,10 +71,19 @@ class _KuzaiPetState extends State<KuzaiPet> with TickerProviderStateMixin {
   _KuzaiInteraction _interaction = _KuzaiInteraction.none;
   DateTime _nextLargeAction = DateTime.now();
   double _petLeanDirection = -1;
+  bool _appResumed = true;
+  bool _tickerEnabled = true;
+  bool _active = true;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _appResumed = switch (WidgetsBinding.instance.lifecycleState) {
+      null || AppLifecycleState.resumed => true,
+      _ => false,
+    };
+    _active = _appResumed;
     _idleController = AnimationController(vsync: this)
       ..addStatusListener(_handleIdleStatus);
     _interactionController = AnimationController(vsync: this)
@@ -104,29 +118,50 @@ class _KuzaiPetState extends State<KuzaiPet> with TickerProviderStateMixin {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _tickerEnabled = TickerMode.valuesOf(context).enabled;
+    _updateActive();
+  }
+
+  @override
   void didUpdateWidget(covariant KuzaiPet oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.mode == widget.mode) return;
-    if (_modeUsesHeadphones(widget.mode)) {
-      _headphonesController.forward();
-    } else {
-      _headphonesController.reverse();
+    final modeChanged = oldWidget.mode != widget.mode;
+    if (modeChanged) {
+      if (_modeUsesHeadphones(widget.mode)) {
+        _headphonesController.forward();
+      } else {
+        _headphonesController.reverse();
+      }
+      _startStatePulse();
     }
-    _idleTimer?.cancel();
-    _idleController.stop();
-    if (_idleAction != _KuzaiIdleAction.none) {
-      _idleAction = _KuzaiIdleAction.none;
-    }
-    if (widget.mode == KuzaiPetMode.idle) {
+    final wasIdle = _isIdleContext(oldWidget);
+    final isIdle = _isIdleContext();
+    if (!isIdle) {
+      _cancelIdleAction();
+    } else if (!wasIdle) {
       _scheduleIdle();
     }
-    _startStatePulse();
+    if (!oldWidget.dragging && widget.dragging) {
+      _interactionController.stop(canceled: false);
+      if (_interaction != _KuzaiInteraction.none) {
+        _interaction = _KuzaiInteraction.none;
+      }
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appResumed = state == AppLifecycleState.resumed;
+    _updateActive();
   }
 
   @override
   void dispose() {
     _idleTimer?.cancel();
     _stateTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _idleController.dispose();
     _interactionController.dispose();
     _headphonesController.dispose();
@@ -135,21 +170,78 @@ class _KuzaiPetState extends State<KuzaiPet> with TickerProviderStateMixin {
     super.dispose();
   }
 
+  void _updateActive() => _setActive(_appResumed && _tickerEnabled);
+
+  void _setActive(bool value) {
+    if (_active == value) return;
+    _active = value;
+    if (!_active) {
+      _idleTimer?.cancel();
+      _idleTimer = null;
+      _stateTimer?.cancel();
+      _stateTimer = null;
+      _idleController.stop(canceled: false);
+      _interactionController.stop(canceled: false);
+      _headphonesController.stop(canceled: false);
+      _stateController.stop(canceled: false);
+      _entryController.stop(canceled: false);
+      return;
+    }
+    if (_modeUsesHeadphones(widget.mode)) {
+      _headphonesController.forward();
+    } else {
+      _headphonesController.reverse();
+    }
+    if (_entryController.value < 1) _entryController.forward();
+    if (_interaction != _KuzaiInteraction.none &&
+        _interactionController.value < 1) {
+      _interactionController.forward();
+    }
+    if (_idleAction != _KuzaiIdleAction.none && _idleController.value < 1) {
+      _idleController.forward();
+    } else if (_isIdleContext()) {
+      _scheduleIdle();
+    }
+    _startStatePulse();
+  }
+
   bool _modeUsesHeadphones(KuzaiPetMode mode) =>
       mode != KuzaiPetMode.idle && mode != KuzaiPetMode.stopping;
+
+  bool _isIdleContext([KuzaiPet? source]) {
+    final current = source ?? widget;
+    return _active &&
+        current.interactive &&
+        current.mode == KuzaiPetMode.idle &&
+        !current.dragging &&
+        _interaction == _KuzaiInteraction.none;
+  }
+
+  void _cancelIdleAction() {
+    _idleTimer?.cancel();
+    _idleTimer = null;
+    _idleController.stop(canceled: false);
+    if (_idleAction == _KuzaiIdleAction.none) return;
+    if (mounted) {
+      setState(() => _idleAction = _KuzaiIdleAction.none);
+    } else {
+      _idleAction = _KuzaiIdleAction.none;
+    }
+  }
 
   DateTime _futureLargeAction() =>
       DateTime.now().add(Duration(seconds: 50 + _random.nextInt(31)));
 
   void _scheduleIdle({bool initial = false}) {
     _idleTimer?.cancel();
-    if (widget.mode != KuzaiPetMode.idle) return;
+    if (!_isIdleContext()) return;
     final seconds = initial ? 8 : 7 + _random.nextInt(6);
     _idleTimer = Timer(Duration(seconds: seconds), _runIdleAction);
   }
 
   void _runIdleAction() {
-    if (!mounted || widget.mode != KuzaiPetMode.idle) return;
+    _idleTimer = null;
+    if (!mounted || !_isIdleContext()) return;
     final now = DateTime.now();
     final action = now.isAfter(_nextLargeAction)
         ? _largeAction()
@@ -196,12 +288,14 @@ class _KuzaiPetState extends State<KuzaiPet> with TickerProviderStateMixin {
   void _handleIdleStatus(AnimationStatus status) {
     if (status != AnimationStatus.completed || !mounted) return;
     setState(() => _idleAction = _KuzaiIdleAction.none);
-    _scheduleIdle();
+    if (_isIdleContext()) _scheduleIdle();
   }
 
   void _startStatePulse() {
     _stateTimer?.cancel();
-    _stateController.stop();
+    _stateTimer = null;
+    _stateController.stop(canceled: false);
+    if (!_active) return;
     final interval = switch (widget.mode) {
       KuzaiPetMode.listening => const Duration(milliseconds: 1550),
       KuzaiPetMode.thinking => const Duration(milliseconds: 1800),
@@ -215,14 +309,15 @@ class _KuzaiPetState extends State<KuzaiPet> with TickerProviderStateMixin {
     _stateController.duration = interval * 0.55;
     _stateController.forward(from: 0);
     _stateTimer = Timer.periodic(interval, (_) {
-      if (mounted && !_stateController.isAnimating) {
+      if (mounted && _active && !_stateController.isAnimating) {
         _stateController.forward(from: 0);
       }
     });
   }
 
   void _handleTap() {
-    if (!mounted) return;
+    if (!mounted || !_active || !widget.interactive || widget.dragging) return;
+    _cancelIdleAction();
     setState(() => _interaction = _KuzaiInteraction.wave);
     _interactionController.duration = const Duration(milliseconds: 950);
     _interactionController.forward(from: 0);
@@ -230,7 +325,8 @@ class _KuzaiPetState extends State<KuzaiPet> with TickerProviderStateMixin {
   }
 
   void _handleLongPress(LongPressStartDetails details) {
-    if (!mounted) return;
+    if (!mounted || !_active || !widget.interactive || widget.dragging) return;
+    _cancelIdleAction();
     _petLeanDirection = details.localPosition.dx < widget.size * 0.56 ? -1 : 1;
     setState(() => _interaction = _KuzaiInteraction.petting);
     _interactionController.duration = const Duration(milliseconds: 1600);
@@ -245,6 +341,7 @@ class _KuzaiPetState extends State<KuzaiPet> with TickerProviderStateMixin {
   void _handleInteractionStatus(AnimationStatus status) {
     if (status != AnimationStatus.completed || !mounted) return;
     setState(() => _interaction = _KuzaiInteraction.none);
+    if (_isIdleContext()) _scheduleIdle();
   }
 
   String get _semanticValue {
@@ -304,6 +401,8 @@ class _KuzaiPetState extends State<KuzaiPet> with TickerProviderStateMixin {
                         stateProgress: _stateController.value,
                         entryProgress: _entryController.value,
                         petLeanDirection: _petLeanDirection,
+                        dragging: widget.dragging,
+                        dragDirection: widget.dragDirection,
                       ),
                     ),
                   ),
@@ -317,6 +416,10 @@ class _KuzaiPetState extends State<KuzaiPet> with TickerProviderStateMixin {
                   if (_interaction == _KuzaiInteraction.petting)
                     const SizedBox.expand(
                       key: ValueKey('kuzai-pet-petting-active'),
+                    ),
+                  if (_idleAction != _KuzaiIdleAction.none)
+                    SizedBox.expand(
+                      key: ValueKey('kuzai-pet-idle-${_idleAction.name}'),
                     ),
                 ],
               ),
@@ -348,6 +451,8 @@ class _KuzaiPetPainter extends CustomPainter {
   final double stateProgress;
   final double entryProgress;
   final double petLeanDirection;
+  final bool dragging;
+  final double dragDirection;
 
   const _KuzaiPetPainter({
     required this.mode,
@@ -359,6 +464,8 @@ class _KuzaiPetPainter extends CustomPainter {
     required this.stateProgress,
     required this.entryProgress,
     required this.petLeanDirection,
+    required this.dragging,
+    required this.dragDirection,
   });
 
   @override
@@ -373,6 +480,13 @@ class _KuzaiPetPainter extends CustomPainter {
     canvas.translate(56, 100);
     canvas.scale(entryScale, entryScale);
     canvas.translate(-56, -100);
+
+    if (dragging) {
+      final direction = dragDirection.clamp(-1.0, 1.0).toDouble();
+      // Keep the drag pose subtle: movement communicates direction without
+      // changing the pet's apparent size or lifting its baseline.
+      canvas.translate(direction * 1.8, 0);
+    }
 
     final idleWave = math.sin(math.pi * idleProgress);
     final interactionWave = math.sin(math.pi * interactionProgress);
@@ -393,6 +507,14 @@ class _KuzaiPetPainter extends CustomPainter {
     var pupilX = 0.0;
     var pupilY = 0.0;
     var headphoneGlow = 0.0;
+
+    if (dragging) {
+      final direction = dragDirection.clamp(-1.0, 1.0).toDouble();
+      headAngle += direction * 0.045;
+      leftPawAngle = direction * 0.28;
+      rightPawAngle = direction * 0.18;
+      tailAngle -= direction * 0.08;
+    }
 
     switch (idleAction) {
       case _KuzaiIdleAction.blink:

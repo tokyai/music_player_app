@@ -12,12 +12,15 @@ void main() {
   test('idle sprite strips decode with the expected frame count', () async {
     const assets = <String, int>{
       'assets/pets/moomew/rest.webp': 1,
+      'assets/pets/moomew/idle.webp': 6,
       'assets/pets/moomew/idle-blink.webp': 3,
       'assets/pets/moomew/idle-glance.webp': 3,
       'assets/pets/xiaohei/rest.webp': 1,
+      'assets/pets/xiaohei/idle.webp': 10,
       'assets/pets/xiaohei/idle-glance.webp': 3,
       'assets/pets/xiaohei/idle-tilt.webp': 3,
       'assets/pets/whale_girl/rest.webp': 1,
+      'assets/pets/whale_girl/idle.webp': 3,
       'assets/pets/whale_girl/idle-blink.webp': 3,
     };
 
@@ -54,14 +57,15 @@ void main() {
 
       await _pumpUntilFound(tester, _clip(name, 'rest'));
       expect(_clip(name, 'rest'), findsOneWidget);
-      await tester.pump(const Duration(seconds: 5));
+      await tester.pump(const Duration(seconds: 7));
       expect(_idleAction(name), findsNothing);
 
       await tester.pump(const Duration(seconds: 1, milliseconds: 100));
       await _pumpUntilFound(tester, _idleAction(name));
       expect(_idleAction(name), findsOneWidget);
 
-      await tester.pump(const Duration(seconds: 1, milliseconds: 100));
+      await tester.pump(const Duration(seconds: 10));
+      await tester.pump(const Duration(seconds: 2));
       await _pumpUntilFound(tester, _clip(name, 'rest'));
       expect(_clip(name, 'rest'), findsOneWidget);
       expect(_idleAction(name), findsNothing);
@@ -110,11 +114,140 @@ void main() {
     await tester.pump(const Duration(seconds: 20));
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('sprite interaction completes after the full clip', (
+    tester,
+  ) async {
+    var completions = 0;
+    await tester.pumpWidget(
+      _pet(AiPetAppearance.moomew, onInteractionComplete: () => completions++),
+    );
+    await _pumpLoaded(tester);
+    await _pumpUntilFound(tester, _clip('moomew', 'rest'));
+
+    await tester.pumpWidget(
+      _pet(
+        AiPetAppearance.moomew,
+        interaction: AssistantPetInteraction.wave,
+        interactionRevision: 1,
+        onInteractionComplete: () => completions++,
+      ),
+    );
+    await _pumpUntilFound(tester, _clip('moomew', 'wave'));
+    expect(completions, 0);
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(completions, 0);
+    await tester.pump(const Duration(seconds: 1));
+    expect(completions, 1);
+
+    await tester.pumpWidget(
+      _pet(AiPetAppearance.moomew, onInteractionComplete: () => completions++),
+    );
+    await _pumpUntilFound(tester, _clip('moomew', 'rest'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('repeated sprite interaction ignores stale completion', (
+    tester,
+  ) async {
+    var completions = 0;
+    await tester.pumpWidget(_pet(AiPetAppearance.moomew));
+    await _pumpLoaded(tester);
+    await _pumpUntilFound(tester, _clip('moomew', 'rest'));
+
+    await tester.pumpWidget(
+      _pet(
+        AiPetAppearance.moomew,
+        interaction: AssistantPetInteraction.wave,
+        interactionRevision: 1,
+        onInteractionComplete: () => completions++,
+      ),
+    );
+    await _pumpUntilFound(tester, _clip('moomew', 'wave'));
+    await tester.pump(const Duration(milliseconds: 500));
+
+    await tester.pumpWidget(
+      _pet(
+        AiPetAppearance.moomew,
+        interaction: AssistantPetInteraction.wave,
+        interactionRevision: 2,
+        onInteractionComplete: () => completions++,
+      ),
+    );
+    await _pumpLoaded(tester);
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(completions, 0);
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(completions, 1);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('MooMew waits for drag direction before running', (tester) async {
+    await tester.pumpWidget(_pet(AiPetAppearance.moomew));
+    await _pumpLoaded(tester);
+    await _pumpUntilFound(tester, _clip('moomew', 'rest'));
+
+    await tester.pumpWidget(_pet(AiPetAppearance.moomew, dragging: true));
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(_clip('moomew', 'rest'), findsOneWidget);
+
+    await tester.pumpWidget(
+      _pet(
+        AiPetAppearance.moomew,
+        dragging: true,
+        dragDirection: AssistantPetDragDirection.right,
+      ),
+    );
+    await _pumpUntilFound(tester, _clip('moomew', 'drag-right'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Kuzai resumes idle actions after petting', (tester) async {
+    await tester.pumpWidget(_pet(AiPetAppearance.kuzai));
+    await tester.pump();
+    await tester.longPress(find.byKey(const ValueKey('kuzai-pet-canvas')));
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('kuzai-pet-petting-active')),
+      findsOneWidget,
+    );
+
+    await tester.pump(const Duration(milliseconds: 1700));
+    expect(
+      find.byKey(const ValueKey('kuzai-pet-petting-active')),
+      findsNothing,
+    );
+    await tester.pump(const Duration(seconds: 13));
+    expect(_kuzaiIdleAction(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('sprite idle scheduling follows TickerMode', (tester) async {
+    await tester.pumpWidget(
+      TickerMode(enabled: false, child: _pet(AiPetAppearance.whaleGirl)),
+    );
+    await _pumpLoaded(tester);
+    await tester.pump(const Duration(seconds: 12));
+    expect(_idleAction('whale'), findsNothing);
+
+    await tester.pumpWidget(
+      TickerMode(enabled: true, child: _pet(AiPetAppearance.whaleGirl)),
+    );
+    await tester.pump(const Duration(seconds: 7));
+    expect(_idleAction('whale'), findsNothing);
+    await tester.pump(const Duration(seconds: 1, milliseconds: 100));
+    await _pumpUntilFound(tester, _idleAction('whale'));
+    expect(tester.takeException(), isNull);
+  });
 }
 
 Widget _pet(
   AiPetAppearance appearance, {
   AssistantPetInteraction interaction = AssistantPetInteraction.none,
+  int interactionRevision = 0,
+  bool dragging = false,
+  AssistantPetDragDirection dragDirection = AssistantPetDragDirection.none,
+  VoidCallback? onInteractionComplete,
 }) => MaterialApp(
   home: Scaffold(
     body: Center(
@@ -123,8 +256,12 @@ Widget _pet(
         size: 96,
         mode: AssistantPetMode.idle,
         interaction: interaction,
+        interactionRevision: interactionRevision,
+        dragging: dragging,
+        dragDirection: dragDirection,
         onTap: _noop,
         onLongPressStart: _noopLongPress,
+        onInteractionComplete: onInteractionComplete,
       ),
     ),
   ),
@@ -143,13 +280,18 @@ Finder _idleAction(String name) => find.byWidgetPredicate((widget) {
       key.value.startsWith('assistant-pet-clip-$name-idle-');
 });
 
+Finder _kuzaiIdleAction() => find.byWidgetPredicate((widget) {
+  final key = widget.key;
+  return key is ValueKey<String> && key.value.startsWith('kuzai-pet-idle-');
+});
+
 Future<void> _pumpLoaded(WidgetTester tester) async {
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 300));
 }
 
 Future<void> _pumpUntilFound(WidgetTester tester, Finder finder) async {
-  for (var attempt = 0; attempt < 100; attempt++) {
+  for (var attempt = 0; attempt < 300; attempt++) {
     if (finder.evaluate().isNotEmpty) return;
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 10)),

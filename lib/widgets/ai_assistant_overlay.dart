@@ -26,12 +26,14 @@ class AiAssistantFloatingButton extends StatefulWidget {
   final double? size;
   final AiPetAppearance appearance;
   final bool dragging;
+  final AssistantPetDragDirection dragDirection;
 
   const AiAssistantFloatingButton({
     super.key,
     this.size,
     this.appearance = AiPetAppearance.kuzai,
     this.dragging = false,
+    this.dragDirection = AssistantPetDragDirection.none,
   });
 
   @override
@@ -43,7 +45,17 @@ class _AiAssistantFloatingButtonState extends State<AiAssistantFloatingButton> {
   AiAssistantController? _controller;
   bool _opening = false;
   AssistantPetInteraction _interaction = AssistantPetInteraction.none;
+  int _interactionRevision = 0;
   Timer? _interactionTimer;
+
+  @override
+  void didUpdateWidget(covariant AiAssistantFloatingButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.dragging || !widget.dragging) return;
+    _interactionTimer?.cancel();
+    _interactionTimer = null;
+    _interaction = AssistantPetInteraction.none;
+  }
 
   @override
   void dispose() {
@@ -87,13 +99,23 @@ class _AiAssistantFloatingButtonState extends State<AiAssistantFloatingButton> {
   void _showInteraction(AssistantPetInteraction interaction) {
     if (!mounted) return;
     _interactionTimer?.cancel();
-    setState(() => _interaction = interaction);
-    final duration = interaction == AssistantPetInteraction.petting
-        ? const Duration(milliseconds: 1100)
-        : const Duration(milliseconds: 800);
-    _interactionTimer = Timer(duration, () {
-      if (mounted) setState(() => _interaction = AssistantPetInteraction.none);
+    setState(() {
+      _interaction = interaction;
+      _interactionRevision++;
     });
+    final duration = interaction == AssistantPetInteraction.petting
+        ? const Duration(milliseconds: 3800)
+        : const Duration(milliseconds: 3200);
+    _interactionTimer = Timer(duration, () {
+      _finishInteraction();
+    });
+  }
+
+  void _finishInteraction() {
+    _interactionTimer?.cancel();
+    _interactionTimer = null;
+    if (!mounted || _interaction == AssistantPetInteraction.none) return;
+    setState(() => _interaction = AssistantPetInteraction.none);
   }
 
   void _handleTap() {
@@ -115,9 +137,12 @@ class _AiAssistantFloatingButtonState extends State<AiAssistantFloatingButton> {
       size: widget.size ?? baseSize,
       mode: _petMode,
       interaction: _interaction,
+      interactionRevision: _interactionRevision,
       dragging: widget.dragging,
+      dragDirection: widget.dragDirection,
       onTap: _handleTap,
       onLongPressStart: _handleLongPress,
+      onInteractionComplete: _finishInteraction,
     );
   }
 }
@@ -140,6 +165,7 @@ class AiAssistantPetOverlay extends StatefulWidget {
 class _AiAssistantPetOverlayState extends State<AiAssistantPetOverlay> {
   Offset? _dragOffset;
   bool _dragging = false;
+  AssistantPetDragDirection _dragDirection = AssistantPetDragDirection.none;
 
   @override
   Widget build(BuildContext context) {
@@ -181,11 +207,17 @@ class _AiAssistantPetOverlayState extends State<AiAssistantPetOverlay> {
                       setState(() {
                         _dragOffset = current;
                         _dragging = true;
+                        _dragDirection = AssistantPetDragDirection.none;
                       });
                     },
                     onPanUpdate: (details) {
                       if (!mounted) return;
                       setState(() {
+                        if (details.delta.dx.abs() >= 1) {
+                          _dragDirection = details.delta.dx < 0
+                              ? AssistantPetDragDirection.left
+                              : AssistantPetDragDirection.right;
+                        }
                         _dragOffset = _clampOffset(
                           (_dragOffset ?? current) + details.delta,
                           maxX,
@@ -199,6 +231,7 @@ class _AiAssistantPetOverlayState extends State<AiAssistantPetOverlay> {
                       setState(() {
                         _dragOffset = null;
                         _dragging = false;
+                        _dragDirection = AssistantPetDragDirection.none;
                       });
                       if (config == null) return;
                       unawaited(_savePetPosition(config, offset, maxX, maxY));
@@ -208,6 +241,7 @@ class _AiAssistantPetOverlayState extends State<AiAssistantPetOverlay> {
                       setState(() {
                         _dragOffset = null;
                         _dragging = false;
+                        _dragDirection = AssistantPetDragDirection.none;
                       });
                     },
                     child: AiAssistantFloatingButton(
@@ -215,6 +249,7 @@ class _AiAssistantPetOverlayState extends State<AiAssistantPetOverlay> {
                       appearance:
                           config?.petAppearance ?? AiPetAppearance.kuzai,
                       dragging: _dragging,
+                      dragDirection: _dragDirection,
                     ),
                   ),
                 ),
