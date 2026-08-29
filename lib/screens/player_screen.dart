@@ -482,12 +482,9 @@ class _AnimatedLyricLineText extends StatelessWidget {
   final int index;
   final String text;
   final bool isCurrent;
-  final bool wordTimingReliable;
-  final double progress;
   final double currentFontSize;
   final double inactiveFontSize;
-  final Color playedColor;
-  final Color unplayedColor;
+  final Color activeColor;
   final Color inactiveColor;
   final LyricFontFamilyPreset fontFamily;
   final LyricFontWeightPreset fontWeight;
@@ -496,12 +493,9 @@ class _AnimatedLyricLineText extends StatelessWidget {
     required this.index,
     required this.text,
     required this.isCurrent,
-    required this.wordTimingReliable,
-    required this.progress,
     required this.currentFontSize,
     required this.inactiveFontSize,
-    required this.playedColor,
-    required this.unplayedColor,
+    required this.activeColor,
     required this.inactiveColor,
     required this.fontFamily,
     required this.fontWeight,
@@ -510,7 +504,7 @@ class _AnimatedLyricLineText extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final style = TextStyle(
-      color: isCurrent ? unplayedColor : inactiveColor,
+      color: isCurrent ? activeColor : inactiveColor,
       fontSize: isCurrent ? currentFontSize : inactiveFontSize,
       fontWeight: isCurrent ? fontWeight.currentLineWeight : fontWeight.weight,
       fontFamily: fontFamily.fontFamily,
@@ -522,148 +516,16 @@ class _AnimatedLyricLineText extends StatelessWidget {
       curve: Curves.easeOutCubic,
       style: style,
       textAlign: TextAlign.center,
-      child: isCurrent
-          ? wordTimingReliable
-                // Do not tween toward an already sampled audio position.  The
-                // previous 180 ms tween made the karaoke cursor permanently
-                // trail the singer even when the source timestamps were exact.
-                ? _KaraokeProgressText(
-                    index: index,
-                    text: text,
-                    progress: progress,
-                    playedColor: playedColor,
-                    unplayedColor: unplayedColor,
-                  )
-                : _SolidCurrentLyricText(
-                    index: index,
-                    text: text,
-                    color: playedColor,
-                  )
-          : Builder(
-              builder: (context) => Text(
-                text,
-                key: ValueKey('lyric-text-$index'),
-                textAlign: TextAlign.center,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: DefaultTextStyle.of(context).style,
-              ),
-            ),
-    );
-  }
-}
-
-/// Current-line fallback for plain LRC and coarse word/phrase timestamps.
-///
-/// There is deliberately no time-based transition here: the entire active
-/// line is rendered in the stronger color.  A single-color shader keeps the
-/// same glyph rendering path as karaoke lines without pretending that a
-/// phrase-level timestamp identifies the currently sung character.
-class _SolidCurrentLyricText extends StatelessWidget {
-  final int index;
-  final String text;
-  final Color color;
-
-  const _SolidCurrentLyricText({
-    required this.index,
-    required this.text,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final style = DefaultTextStyle.of(context).style;
-    return Text(
-      text,
-      key: ValueKey('lyric-text-$index'),
-      textAlign: TextAlign.center,
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
-      style: style.copyWith(color: color),
-    );
-  }
-}
-
-class _KaraokeProgressText extends StatelessWidget {
-  final int index;
-  final String text;
-  final double progress;
-  final Color playedColor;
-  final Color unplayedColor;
-
-  const _KaraokeProgressText({
-    required this.index,
-    required this.text,
-    required this.progress,
-    required this.playedColor,
-    required this.unplayedColor,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final style = DefaultTextStyle.of(context).style;
-    final textDirection = Directionality.of(context);
-    final textScaler = MediaQuery.textScalerOf(context);
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final maxWidth = constraints.maxWidth.isFinite
-            ? constraints.maxWidth
-            : MediaQuery.sizeOf(context).width;
-        final painter = TextPainter(
-          text: TextSpan(text: text, style: style),
+      child: Builder(
+        builder: (context) => Text(
+          text,
+          key: ValueKey('lyric-text-$index'),
+          textAlign: TextAlign.center,
           maxLines: 1,
-          ellipsis: '…',
-          textDirection: textDirection,
-          textScaler: textScaler,
-        )..layout(maxWidth: maxWidth);
-        final textWidth = painter.width.clamp(1.0, maxWidth);
-        final resolvedProgress = progress.clamp(0.0, 1.0);
-        return SizedBox(
-          width: textWidth,
-          child: Semantics(
-            key: ValueKey('lyric-progress-$index'),
-            value: '${(resolvedProgress * 100).round()}%',
-            child: ShaderMask(
-              blendMode: BlendMode.srcIn,
-              shaderCallback: (bounds) {
-                if (resolvedProgress <= 0) {
-                  return LinearGradient(
-                    colors: [unplayedColor, unplayedColor],
-                  ).createShader(bounds);
-                }
-                if (resolvedProgress >= 1) {
-                  return LinearGradient(
-                    colors: [playedColor, playedColor],
-                  ).createShader(bounds);
-                }
-                return LinearGradient(
-                  begin: Alignment.centerLeft,
-                  end: Alignment.centerRight,
-                  colors: [
-                    playedColor,
-                    playedColor,
-                    unplayedColor,
-                    unplayedColor,
-                  ],
-                  stops: [0, resolvedProgress, resolvedProgress, 1],
-                ).createShader(bounds);
-              },
-              child: Text(
-                text,
-                key: ValueKey('lyric-text-$index'),
-                textAlign: TextAlign.center,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                // ShaderMask 用字形 alpha 做遮罩；前景设为不透明，才能让
-                // 已唱部分真正显示为高亮色，而不是被未唱色的 alpha 再压暗。
-                style: style.copyWith(
-                  foreground: Paint()..color = Colors.white,
-                ),
-              ),
-            ),
-          ),
-        );
-      },
+          overflow: TextOverflow.ellipsis,
+          style: DefaultTextStyle.of(context).style,
+        ),
+      ),
     );
   }
 }
@@ -1933,17 +1795,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
     required double footerHeight,
     required double footerBottomPadding,
   }) {
-    return Selector<
-      PlayerProvider,
-      (int, int, bool, Duration, Duration, String?)
-    >(
+    return Selector<PlayerProvider, (int, int, bool, Duration, String?)>(
       selector: (_, p) {
         final song = p.currentSong;
         return (
           p.lyrics.length,
           p.currentLyricIndex,
           p.lyricsLoading,
-          p.lyricPosition,
           p.lyricOffset,
           _lyricTargetKey(song),
         );
@@ -2503,10 +2361,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     Color textColor, {
     bool landscape = false,
   }) {
-    return Selector<
-      PlayerProvider,
-      (bool, int, int, bool, Duration, Duration, String?)
-    >(
+    return Selector<PlayerProvider, (bool, int, int, bool, Duration, String?)>(
       selector: (_, p) {
         final song = p.currentSong;
         return (
@@ -2514,7 +2369,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
           p.currentLyricIndex,
           p.lyrics.length,
           p.lyricsLoading,
-          p.showLyric ? p.lyricPosition : Duration.zero,
           p.showLyric ? p.lyricOffset : Duration.zero,
           _lyricTargetKey(song),
         );
@@ -2752,17 +2606,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
             itemBuilder: (ctx, i) {
               final lyric = player.lyrics[i];
               final isCurrent = i == player.currentLyricIndex;
-              final fallbackEnd = i + 1 < player.lyrics.length
-                  ? player.lyrics[i + 1].time
-                  : player.duration > lyric.time
-                  ? player.duration
-                  : null;
-              final progress = isCurrent
-                  ? lyric.progressAt(
-                      player.lyricPosition,
-                      fallbackEnd: fallbackEnd,
-                    )
-                  : 0.0;
               final inactiveFontSize = (_lyricFontSize * 0.82).clamp(
                 20.0,
                 52.0,
@@ -2800,12 +2643,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         index: i,
                         text: lyric.primaryText,
                         isCurrent: isCurrent,
-                        wordTimingReliable: lyric.hasReliableWordTiming,
-                        progress: progress,
                         currentFontSize: _lyricFontSize,
                         inactiveFontSize: inactiveFontSize,
-                        playedColor: textColor,
-                        unplayedColor: textColor.withValues(alpha: 0.42),
+                        activeColor: textColor,
                         inactiveColor: textColor.withValues(
                           alpha: i < player.currentLyricIndex ? 0.62 : 0.48,
                         ),

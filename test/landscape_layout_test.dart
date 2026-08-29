@@ -1024,7 +1024,7 @@ void main() {
     },
   );
 
-  testWidgets('karaoke lyrics highlight by word and slide between lines', (
+  testWidgets('enhanced lyrics highlight the whole active line', (
     tester,
   ) async {
     await http.runWithClient(() async {
@@ -1040,25 +1040,14 @@ void main() {
         );
         expect(currentText.style?.fontSize, 42);
         expect(currentText.style?.fontWeight, FontWeight.w800);
-        expect(
-          tester
-              .widget<Semantics>(find.byKey(const ValueKey('lyric-progress-0')))
-              .properties
-              .value,
-          '25%',
-        );
+        expect(find.byType(ShaderMask), findsNothing);
+        expect(find.byKey(const ValueKey('lyric-progress-0')), findsNothing);
         expect(find.byKey(const ValueKey('player-lyric-list')), findsOneWidget);
         _expectNoException(tester);
 
         player.moveTo(const Duration(milliseconds: 2500));
         await tester.pumpAndSettle();
-        expect(
-          tester
-              .widget<Semantics>(find.byKey(const ValueKey('lyric-progress-0')))
-              .properties
-              .value,
-          '75%',
-        );
+        expect(find.byKey(const ValueKey('lyric-progress-0')), findsNothing);
 
         if (size == const Size(640, 360)) {
           final list = tester.widget<ListView>(
@@ -1082,10 +1071,7 @@ void main() {
             controller.offset,
             closeTo(controller.position.maxScrollExtent, 0.5),
           );
-          expect(
-            find.byKey(const ValueKey('lyric-progress-1')),
-            findsOneWidget,
-          );
+          expect(find.byKey(const ValueKey('lyric-progress-1')), findsNothing);
           _expectNoException(tester);
         }
 
@@ -1215,13 +1201,7 @@ void main() {
           ),
           findsOneWidget,
         );
-        expect(
-          tester
-              .widget<Semantics>(find.byKey(const ValueKey('lyric-progress-0')))
-              .properties
-              .value,
-          '0%',
-        );
+        expect(find.byKey(const ValueKey('lyric-progress-0')), findsNothing);
 
         await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
         await tester.pump();
@@ -1243,13 +1223,7 @@ void main() {
           ),
           findsOneWidget,
         );
-        expect(
-          tester
-              .widget<Semantics>(find.byKey(const ValueKey('lyric-progress-0')))
-              .properties
-              .value,
-          '50%',
-        );
+        expect(find.byKey(const ValueKey('lyric-progress-0')), findsNothing);
 
         player.setLyricOffset(const Duration(minutes: 2));
         await tester.pump();
@@ -1373,7 +1347,7 @@ void main() {
   });
 
   testWidgets(
-    'coarse lyric timing falls back to a solid active line in landscape',
+    'all enhanced lyric timing uses a solid active line in landscape',
     (tester) async {
       await http.runWithClient(() async {
         for (final size in const [Size(640, 360), Size(1280, 800)]) {
@@ -2847,7 +2821,7 @@ void main() {
               .first,
         )
         .style;
-    expect(darkLyricStyle.color, Colors.white.withValues(alpha: 0.42));
+    expect(darkLyricStyle.color, Colors.white);
     expect(
       tester
           .widget<Text>(find.byKey(const ValueKey('lyric-text-0')))
@@ -2874,10 +2848,7 @@ void main() {
               .first,
         )
         .style;
-    expect(
-      lightLyricStyle.color,
-      const Color(0xFF171A1F).withValues(alpha: 0.42),
-    );
+    expect(lightLyricStyle.color, const Color(0xFF171A1F));
     expect(
       tester
           .widget<Text>(find.byKey(const ValueKey('lyric-text-0')))
