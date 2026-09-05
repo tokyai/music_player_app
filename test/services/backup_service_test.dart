@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:music_player_app/models/ai_assistant.dart';
+import 'package:music_player_app/models/playback_source_config.dart';
 import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/providers/ai_config_controller.dart';
 import 'package:music_player_app/providers/player_provider.dart';
@@ -245,6 +246,12 @@ void main() {
       MusicPlatform.kugou,
       PlaybackSource.qingMusic,
     );
+    final sourceConfig = PlaybackSourceConfig.defaults().copyWith(
+      qingMusicEnabled: false,
+      gdStudioUrl: 'https://backup-gd.test/api.php',
+      xinghaiDeviceId: 'backup-device',
+    );
+    await source.setPlaybackSourceConfig(sourceConfig);
     await source.setBilibiliAudioQuality(30232);
     await source.setBilibiliVideoQuality(64);
     await source.setBilibiliLyricPlatformOrder([
@@ -269,6 +276,11 @@ void main() {
       PlaybackSource.qingMusic.value,
     );
     expect(playerSettings['videoPlayerMode'], VideoPlayerMode.mpv.value);
+    expect(
+      (playerSettings['playbackSourceConfig']
+          as Map<String, dynamic>)['gdStudioUrl'],
+      'https://backup-gd.test/api.php',
+    );
 
     // Start the destination from clean defaults so the import, rather than
     // SharedPreferences left by the source player, applies every value.
@@ -303,6 +315,7 @@ void main() {
     ]);
     expect(restored.lyricOffsetStep, const Duration(milliseconds: 800));
     expect(restored.videoPlayerMode, VideoPlayerMode.mpv);
+    expect(restored.playbackSourceConfig, sourceConfig);
   });
 
   test(

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:music_player_app/models/playback_source_config.dart';
 import 'package:music_player_app/models/song.dart';
 
 void main() {
@@ -20,12 +21,35 @@ void main() {
       expect(song.duration, 215);
     });
 
+    test('preserves album identifiers for aggregators', () {
+      final qq = SongSearchResult.fromQQMusicu({
+        'mid': 'qq-mid',
+        'name': 'QQ 歌曲',
+        'singer': [
+          {'name': '歌手'},
+        ],
+        'album': {'name': '专辑', 'mid': 'album-mid'},
+      });
+      expect(qq.albumId, 'album-mid');
+
+      final netease = SongSearchResult.fromNetease({
+        'id': 163,
+        'name': '网易歌曲',
+        'ar': [
+          {'name': '歌手'},
+        ],
+        'al': {'name': '专辑', 'id': 2468},
+      });
+      expect(netease.albumId, '2468');
+    });
+
     test('parses official Kugou search response', () {
       final song = SongSearchResult.fromKugouSearchSong({
         'hash': 'ABC',
         'songname': 'Search Song',
         'singername': 'Singer',
         'album_name': 'Album',
+        'album_id': 'album-123',
         'album_sizable_cover': 'http://imge.kugou.com/{size}/cover.jpg',
         'duration': '189',
       });
@@ -33,6 +57,8 @@ void main() {
       expect(song.id, 'ABC');
       expect(song.coverUrl, 'http://imge.kugou.com/500/cover.jpg');
       expect(song.duration, 189);
+      expect(song.albumId, 'album-123');
+      expect(SongSearchResult.fromJson(song.toJson()).albumId, 'album-123');
     });
 
     test('parses official Kugou rank response authors', () {
@@ -49,6 +75,39 @@ void main() {
       expect(song.artist, 'First / Second');
       expect(song.duration, 201);
     });
+  });
+
+  group('PlaybackSourceConfig', () {
+    test('exposes the analyzed JS defaults and round-trips them', () {
+      final defaults = PlaybackSourceConfig.defaults();
+
+      expect(defaults.chkszBaseUrl, PlaybackSourceConfig.defaultChkszBaseUrl);
+      expect(defaults.qingMusicUrl, PlaybackSourceConfig.defaultQingMusicUrl);
+      expect(defaults.hywBaseUrl, PlaybackSourceConfig.defaultHywBaseUrl);
+      expect(defaults.hywCardKey, PlaybackSourceConfig.defaultHywCardKey);
+      expect(defaults.xinghaiUrl, PlaybackSourceConfig.defaultXinghaiUrl);
+      expect(defaults.gdStudioUrl, PlaybackSourceConfig.defaultGdStudioUrl);
+      expect(defaults.xinghaiDeviceId, startsWith('lx-online-'));
+      expect(PlaybackSourceConfig.fromJson(defaults.toJson()), defaults);
+    });
+
+    test(
+      'rejects invalid enabled endpoints but permits blank disabled ones',
+      () {
+        final defaults = PlaybackSourceConfig.defaults();
+        expect(
+          () => defaults.copyWith(qingMusicUrl: 'javascript:bad').validated(),
+          throwsFormatException,
+        );
+        expect(
+          defaults
+              .copyWith(qingMusicEnabled: false, qingMusicUrl: '')
+              .validated()
+              .qingMusicUrl,
+          isEmpty,
+        );
+      },
+    );
   });
 
   test('PlayQueueItem can clear a previous error', () {

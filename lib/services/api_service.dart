@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import '../models/playback_source_config.dart';
 import '../models/song.dart';
 import 'bilibili_service.dart';
 import 'bounded_http_response.dart';
@@ -10,17 +12,26 @@ import 'bounded_http_response.dart';
 /// - 网易云: interface.music.163.com 官方公开目录接口
 /// - 酷狗: mobilecdn.kugou.com 官方公开目录接口
 /// - QQ音乐: u.y.qq.com musicu 官方公开目录接口
-/// - 三平台播放地址解析: 按用户选择使用 ChKSz 或 QingMusic
+/// - 三平台播放地址解析: 支持手动指定音源，或按有界顺序自动回退
 ///
 /// 搜索、歌单、歌词、MV 等功能优先直连平台接口，旧 nginx 反代仅在直连
-/// 失败时兜底。播放地址解析不参与自动切换，仍按设置中的音源选择。
+/// 失败时兜底。播放地址解析在选择“自动备用”时按固定分组并行竞速、分组
+/// 回退和有界降音质；手动选择时只请求指定源。
 class ApiService {
   // 播放解析等请求保留一次重试；目录直连使用更短的单次超时后快速降级。
   static const _requestTimeout = Duration(seconds: 10);
+  static const _resolverTimeout = Duration(seconds: 7);
+  static const _xinghaiIpTimeout = Duration(seconds: 3);
+  static const _xinghaiTokenLifetime = Duration(minutes: 5);
   static const _catalogTimeout = Duration(seconds: 5);
   static const _catalogFallbackTimeout = Duration(seconds: 8);
+  static const _probeTimeout = Duration(seconds: 4);
+  static const _automaticPlaybackTimeout = Duration(seconds: 20);
   static const _retryDelay = Duration(milliseconds: 350);
   static const _maxJsonResponseBytes = 5 * 1024 * 1024;
+  static const _maxProbeResponseBytes = 64 * 1024;
+  static const _maxQualityDowngrades = 3;
+  static const _racePollInterval = Duration(milliseconds: 60);
   // A playlist index may contain up to 100,000 IDs. Retain only the active
   // index so visiting several large playlists cannot keep their ID arrays
   // alive for the lifetime of the player.
@@ -29,10 +40,6 @@ class ApiService {
       'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
       'Chrome/120 Mobile Safari/537.36';
 
-  // ChKSz API 经服务器中转，避免移动网络直连 HTTPS 不稳定。
-  static const String _chkszUrl = 'http://161.118.252.183/api-chksz';
-  static const String _qingMusicUrl =
-      'https://musicserver.haitangw.cc/v1/music/resolve-url';
   // 官方公开目录入口。
   static const String _neteaseCatalogUrl = 'https://interface.music.163.com';
   static const String _neteaseLyricUrl = 'https://interface3.music.163.com';
@@ -44,6 +51,35 @@ class ApiService {
     'Origin': 'https://y.qq.com',
   };
 
+  // 高优先级源共同参与竞速；GDStudio 是低优先级的独立兜底组。保持分组
+  // 固定且规模有界，避免一次播放把所有后端同时打满。
+  static const List<List<PlaybackSource>> _playbackSourceGroups = [
+    [
+      PlaybackSource.chksz,
+      PlaybackSource.qingMusic,
+      PlaybackSource.hyw,
+      PlaybackSource.xinghai,
+    ],
+    [PlaybackSource.gdStudio],
+  ];
+
+  static const List<String> _neteaseQualityOrder = [
+    'jymaster',
+    'sky',
+    'jyeffect',
+    'hires',
+    'lossless',
+    'exhigh',
+    'standard',
+  ];
+  static const List<String> _commonQualityOrder = [
+    'master',
+    'hires',
+    'flac',
+    '320k',
+    '128k',
+  ];
+
   // 旧 API 中转仅作网络兼容兜底。
   static const String neteaseBaseUrl = 'http://161.118.252.183/api-netease';
   static const String kugouSearchBase =
@@ -54,20 +90,65 @@ class ApiService {
   final Map<String, Future<_NeteasePlaylistIndex>> _neteasePlaylistIndexes = {};
   final BilibiliService bilibili;
   String apiKey;
+  PlaybackSourceConfig _playbackSourceConfig;
+  String? _xinghaiIp;
+  Future<String?>? _xinghaiIpRequest;
+  String? _xinghaiToken;
+  DateTime? _xinghaiTokenCreatedAt;
+  String? _xinghaiTokenDeviceId;
+  String? _xinghaiTokenIp;
+  bool _closed = false;
+  int _playbackGeneration = 0;
+  _PlaybackCancellation? _activePlaybackCancellation;
 
-  ApiService({required this.apiKey, BilibiliService? bilibili})
-    : bilibili = bilibili ?? BilibiliService();
+  ApiService({
+    required this.apiKey,
+    BilibiliService? bilibili,
+    PlaybackSourceConfig? playbackSourceConfig,
+  }) : bilibili = bilibili ?? BilibiliService(),
+       _playbackSourceConfig =
+           (playbackSourceConfig ?? PlaybackSourceConfig.defaults())
+               .validated();
 
   void setApiKey(String key) {
+    if (apiKey == key) return;
     apiKey = key;
+    _playbackGeneration++;
+    _activePlaybackCancellation?.cancel();
+  }
+
+  void setPlaybackSourceConfig(PlaybackSourceConfig config) {
+    final validated = config.validated();
+    _playbackGeneration++;
+    _activePlaybackCancellation?.cancel();
+    _playbackSourceConfig = validated;
+    _xinghaiIp = null;
+    _xinghaiIpRequest = null;
+    _xinghaiToken = null;
+    _xinghaiTokenCreatedAt = null;
+    _xinghaiTokenDeviceId = null;
+    _xinghaiTokenIp = null;
   }
 
   void close() {
+    if (_closed) return;
     // Playlist indexes can contain tens of thousands of IDs. Release them
     // together with the HTTP client when the owning player is disposed.
     _neteasePlaylistIndexes.clear();
+    _closed = true;
+    _playbackGeneration++;
+    _activePlaybackCancellation?.cancel();
+    _activePlaybackCancellation = null;
+    _xinghaiIpRequest = null;
+    _xinghaiToken = null;
     _client.close();
     bilibili.dispose();
+  }
+
+  void _ensureOpen() {
+    if (_closed) {
+      throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
+    }
   }
 
   Future<http.Response> _get(
@@ -75,10 +156,14 @@ class ApiService {
     Duration timeout = _requestTimeout,
     int maxAttempts = 2,
     Map<String, String> headers = const {},
+    int maxBytes = _maxJsonResponseBytes,
+    Future<void>? cancelSignal,
   }) async {
+    _ensureOpen();
     Exception? lastError;
     final attempts = maxAttempts < 1 ? 1 : maxAttempts;
     for (var attempt = 0; attempt < attempts; attempt++) {
+      _ensureOpen();
       try {
         final request = http.Request('GET', uri)
           ..headers.addAll({
@@ -89,20 +174,28 @@ class ApiService {
         final response = await sendBoundedHttpRequest(
           _client,
           request,
-          maxBytes: _maxJsonResponseBytes,
+          maxBytes: maxBytes,
           timeout: timeout,
+          cancelSignal: cancelSignal,
         );
         if (attempt < attempts - 1 && response.statusCode >= 500) {
           await Future<void>.delayed(_retryDelay);
+          _ensureOpen();
           continue;
         }
         return response;
+      } on HttpRequestCancelledException {
+        throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
       } on HttpResponseTooLargeException {
         throw const ApiException('RESPONSE_TOO_LARGE', '服务返回的数据过大');
       } on Exception catch (error) {
+        if (_closed) {
+          throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
+        }
         lastError = error;
         if (attempt < attempts - 1) {
           await Future<void>.delayed(_retryDelay);
+          _ensureOpen();
           continue;
         }
       }
@@ -116,10 +209,14 @@ class ApiService {
     Map<String, String> headers = const {},
     Duration timeout = _requestTimeout,
     int maxAttempts = 2,
+    int maxBytes = _maxJsonResponseBytes,
+    Future<void>? cancelSignal,
   }) async {
+    _ensureOpen();
     Exception? lastError;
     final attempts = maxAttempts < 1 ? 1 : maxAttempts;
     for (var attempt = 0; attempt < attempts; attempt++) {
+      _ensureOpen();
       try {
         final request = http.Request('POST', uri)
           ..headers.addAll({
@@ -132,20 +229,28 @@ class ApiService {
         final response = await sendBoundedHttpRequest(
           _client,
           request,
-          maxBytes: _maxJsonResponseBytes,
+          maxBytes: maxBytes,
           timeout: timeout,
+          cancelSignal: cancelSignal,
         );
         if (attempt < attempts - 1 && response.statusCode >= 500) {
           await Future<void>.delayed(_retryDelay);
+          _ensureOpen();
           continue;
         }
         return response;
+      } on HttpRequestCancelledException {
+        throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
       } on HttpResponseTooLargeException {
         throw const ApiException('RESPONSE_TOO_LARGE', '服务返回的数据过大');
       } on Exception catch (error) {
+        if (_closed) {
+          throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
+        }
         lastError = error;
         if (attempt < attempts - 1) {
           await Future<void>.delayed(_retryDelay);
+          _ensureOpen();
           continue;
         }
       }
@@ -163,12 +268,25 @@ class ApiService {
 
   Future<Map<String, dynamic>> _chkszGet(
     String path,
-    Map<String, dynamic> params,
-  ) async {
+    Map<String, dynamic> params, {
+    Future<void>? cancelSignal,
+  }) async {
     final uri = Uri.parse(
-      '$_chkszUrl$path',
+      _joinUrl(_playbackSourceConfig.chkszBaseUrl, path),
     ).replace(queryParameters: _chkszQuery(params));
-    final res = await _get(uri);
+    final http.Response res;
+    try {
+      res = await _get(
+        uri,
+        timeout: _resolverTimeout,
+        maxAttempts: 1,
+        cancelSignal: cancelSignal,
+      );
+    } on ApiException {
+      rethrow;
+    } catch (_) {
+      throw const ApiException('CHKSZ_NETWORK', 'ChKSz 网络请求失败');
+    }
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw ApiException('HTTP_${res.statusCode}', '服务暂时不可用');
     }
@@ -176,7 +294,7 @@ class ApiService {
     try {
       body = json.decode(utf8.decode(res.bodyBytes));
     } on FormatException {
-      throw ApiException('INVALID_RESPONSE', '服务返回了无效数据');
+      throw const ApiException('INVALID_RESPONSE', '服务返回了无效数据');
     }
     if (body is Map<String, dynamic>) {
       if (body['code'] != null && body['code'].toString() != '200') {
@@ -196,17 +314,31 @@ class ApiService {
     MusicPlatform platform,
     String id, {
     required String quality,
+    Future<void>? cancelSignal,
   }) async {
-    final response = await _postJson(Uri.parse(_qingMusicUrl), {
-      'source': switch (platform) {
-        MusicPlatform.qq => 'tx',
-        MusicPlatform.netease => 'wy',
-        MusicPlatform.kugou => 'kg',
-        MusicPlatform.bilibili => throw UnsupportedError('B站使用官方播放接口'),
-      },
-      'rid': id,
-      'level': _qingMusicLevel(platform, quality),
-    });
+    final http.Response response;
+    try {
+      response = await _postJson(
+        Uri.parse(_playbackSourceConfig.qingMusicUrl),
+        {
+          'source': switch (platform) {
+            MusicPlatform.qq => 'tx',
+            MusicPlatform.netease => 'wy',
+            MusicPlatform.kugou => 'kg',
+            MusicPlatform.bilibili => throw UnsupportedError('B站使用官方播放接口'),
+          },
+          'rid': id,
+          'level': _qingMusicLevel(platform, quality),
+        },
+        timeout: _resolverTimeout,
+        maxAttempts: 1,
+        cancelSignal: cancelSignal,
+      );
+    } on ApiException {
+      rethrow;
+    } catch (_) {
+      throw const ApiException('QING_NETWORK', 'QingMusic 网络请求失败');
+    }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw ApiException(
         'QING_HTTP_${response.statusCode}',
@@ -217,10 +349,10 @@ class ApiService {
     try {
       body = jsonDecode(utf8.decode(response.bodyBytes));
     } on FormatException {
-      throw ApiException('QING_INVALID_RESPONSE', 'QingMusic 返回了无效数据');
+      throw const ApiException('QING_INVALID_RESPONSE', 'QingMusic 返回了无效数据');
     }
     if (body is! Map) {
-      throw ApiException('QING_INVALID_RESPONSE', 'QingMusic 返回格式错误');
+      throw const ApiException('QING_INVALID_RESPONSE', 'QingMusic 返回格式错误');
     }
     final result = Map<String, dynamic>.from(body);
     if (result['code']?.toString() != '0') {
@@ -235,7 +367,7 @@ class ApiService {
         : <String, dynamic>{};
     final url = data['url']?.toString() ?? '';
     if (url.isEmpty) {
-      throw ApiException('QING_EMPTY_URL', 'QingMusic 未返回播放地址');
+      throw const ApiException('QING_EMPTY_URL', 'QingMusic 未返回播放地址');
     }
     final rawHeaders = data['playbackHeaders'] ?? data['headers'];
     final headers = rawHeaders is Map
@@ -282,6 +414,1118 @@ class ApiService {
       case MusicPlatform.bilibili:
         throw UnsupportedError('B站不使用第三方音质参数');
     }
+  }
+
+  /// 按设置解析播放地址。
+  ///
+  /// 自动模式按质量从高到低逐档处理：每一档先让高优先级源并行竞速，
+  /// 全部失败后才进入低优先级 GDStudio 组，再失败才降一档。每个竞速组、
+  /// 质量降级次数和请求响应体都有固定上限，旧播放请求失效后会取消其
+  /// 余请求并阻止迟到结果继续推进回退链。
+  Future<SongDetail> resolvePlayback({
+    required PlaybackSource source,
+    required MusicPlatform platform,
+    required String id,
+    required String quality,
+    required String name,
+    required String artist,
+    required String album,
+    String? albumId,
+    int? duration,
+    bool Function()? isCancelled,
+  }) async {
+    _ensureOpen();
+    if (platform == MusicPlatform.bilibili) {
+      throw const ApiException('SOURCE_UNSUPPORTED', 'B站使用官方播放接口');
+    }
+    if (_isExternalPlaybackCancellation(isCancelled)) {
+      throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
+    }
+    final operation = _beginPlaybackOperation();
+    Timer? overallTimeout;
+    try {
+      if (source != PlaybackSource.automatic) {
+        if (!_playbackSourceConfig.isEnabled(source)) {
+          throw ApiException('SOURCE_DISABLED', '${source.label} 已在备用源配置中停用');
+        }
+        final detail = await _resolveWithSource(
+          source,
+          platform: platform,
+          id: id,
+          quality: quality,
+          name: name,
+          artist: artist,
+          album: album,
+          albumId: albumId,
+          duration: duration,
+          cancelSignal: operation.future,
+        );
+        _ensurePlaybackOperationActive(operation, isCancelled);
+        _requirePlayableUrl(detail, source);
+        return detail;
+      }
+
+      final candidates = _enabledPlaybackSources();
+      if (candidates.isEmpty) {
+        throw const ApiException('NO_PLAYBACK_SOURCE', '没有可用的备用源，请检查备用源配置');
+      }
+
+      final failures = <String>[];
+      final qualityCandidates = _qualityCandidates(platform, quality);
+      overallTimeout = Timer(
+        _automaticPlaybackTimeout,
+        () => operation.cancel(reason: 'timeout'),
+      );
+      for (final candidateQuality in qualityCandidates) {
+        _ensurePlaybackOperationActive(operation, isCancelled);
+        for (
+          var groupIndex = 0;
+          groupIndex < _playbackSourceGroups.length;
+          groupIndex++
+        ) {
+          final group = _playbackSourceGroups[groupIndex]
+              .where(candidates.contains)
+              .toList(growable: false);
+          if (group.isEmpty) continue;
+          try {
+            final detail = await _racePlaybackGroup(
+              group,
+              operation: operation,
+              generation: _playbackGeneration,
+              isCancelled: isCancelled,
+              platform: platform,
+              id: id,
+              quality: candidateQuality,
+              name: name,
+              artist: artist,
+              album: album,
+              albumId: albumId,
+              duration: duration,
+            );
+            _ensurePlaybackOperationActive(operation, isCancelled);
+            return detail;
+          } on _PlaybackGroupFailure catch (error) {
+            if (failures.length < 12) {
+              final groupLabel = groupIndex == 0 ? '主竞速组' : '低优先级兜底组';
+              failures.add(
+                '$candidateQuality/$groupLabel：${error.failures.join('；')}',
+              );
+            }
+          }
+        }
+      }
+      _ensurePlaybackOperationActive(operation, isCancelled);
+      throw ApiException(
+        'ALL_PLAYBACK_SOURCES_FAILED',
+        '所有已启用备用源均解析失败（${failures.join('；')}）',
+      );
+    } finally {
+      overallTimeout?.cancel();
+      _endPlaybackOperation(operation);
+    }
+  }
+
+  List<PlaybackSource> _enabledPlaybackSources() {
+    return [
+      for (final source in PlaybackSource.values)
+        if (source != PlaybackSource.automatic &&
+            _playbackSourceConfig.isEnabled(source) &&
+            (source != PlaybackSource.chksz || apiKey.trim().isNotEmpty))
+          source,
+    ];
+  }
+
+  List<String> _qualityCandidates(
+    MusicPlatform platform,
+    String requestedQuality,
+  ) {
+    final requested = requestedQuality.trim();
+    final order = platform == MusicPlatform.netease
+        ? _neteaseQualityOrder
+        : _commonQualityOrder;
+    final index = order.indexOf(requested);
+    if (index < 0) return [requestedQuality];
+    final end = min(order.length, index + _maxQualityDowngrades + 1);
+    return order.sublist(index, end).toList(growable: false);
+  }
+
+  _PlaybackCancellation _beginPlaybackOperation() {
+    _activePlaybackCancellation?.cancel();
+    _playbackGeneration++;
+    final operation = _PlaybackCancellation();
+    _activePlaybackCancellation = operation;
+    return operation;
+  }
+
+  void _endPlaybackOperation(_PlaybackCancellation operation) {
+    if (identical(_activePlaybackCancellation, operation)) {
+      _activePlaybackCancellation = null;
+    }
+    operation.cancel();
+  }
+
+  bool _isExternalPlaybackCancellation(bool Function()? isCancelled) {
+    if (_closed) return true;
+    try {
+      return isCancelled?.call() == true;
+    } catch (_) {
+      // A callback owned by a disposed page is no longer trustworthy.
+      return true;
+    }
+  }
+
+  bool _isPlaybackOperationActive(
+    _PlaybackCancellation operation,
+    int generation,
+    bool Function()? isCancelled,
+  ) {
+    return !_closed &&
+        !operation.isCancelled &&
+        generation == _playbackGeneration &&
+        !_isExternalPlaybackCancellation(isCancelled);
+  }
+
+  void _ensurePlaybackOperationActive(
+    _PlaybackCancellation operation,
+    bool Function()? isCancelled,
+  ) {
+    if (!_isPlaybackOperationActive(
+      operation,
+      _playbackGeneration,
+      isCancelled,
+    )) {
+      throw _playbackCancellationException(operation);
+    }
+  }
+
+  ApiException _playbackCancellationException(
+    _PlaybackCancellation operation,
+  ) => operation.reason == 'timeout'
+      ? const ApiException('PLAYBACK_TIMEOUT', '播放解析超时，请稍后重试')
+      : const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
+
+  Future<SongDetail> _racePlaybackGroup(
+    List<PlaybackSource> sources, {
+    required _PlaybackCancellation operation,
+    required int generation,
+    required bool Function()? isCancelled,
+    required MusicPlatform platform,
+    required String id,
+    required String quality,
+    required String name,
+    required String artist,
+    required String album,
+    String? albumId,
+    int? duration,
+  }) async {
+    final groupCancellation = _PlaybackCancellation();
+    final cancelSignal = Future.any<void>([
+      operation.future,
+      groupCancellation.future,
+    ]);
+    final completer = Completer<SongDetail>();
+    final failures = <String>[];
+    var remaining = sources.length;
+    var finished = false;
+    Timer? cancellationTimer;
+
+    void cancelRace() {
+      if (finished) return;
+      finished = true;
+      groupCancellation.cancel();
+      operation.cancel();
+      if (!completer.isCompleted) {
+        completer.completeError(_playbackCancellationException(operation));
+      }
+    }
+
+    void recordFailure(PlaybackSource source, Object error) {
+      if (finished) return;
+      if (failures.length < sources.length) {
+        failures.add('${source.label}：${_safeResolverFailure(error)}');
+      }
+      remaining--;
+      if (remaining == 0) {
+        finished = true;
+        groupCancellation.cancel();
+        if (!completer.isCompleted) {
+          completer.completeError(_PlaybackGroupFailure(failures));
+        }
+      }
+    }
+
+    Future<void> run(PlaybackSource source) async {
+      if (finished) return;
+      if (!_isPlaybackOperationActive(operation, generation, isCancelled)) {
+        cancelRace();
+        return;
+      }
+      try {
+        final detail = await _resolveWithSource(
+          source,
+          platform: platform,
+          id: id,
+          quality: quality,
+          name: name,
+          artist: artist,
+          album: album,
+          albumId: albumId,
+          duration: duration,
+          cancelSignal: cancelSignal,
+        );
+        if (finished) return;
+        if (!_isPlaybackOperationActive(operation, generation, isCancelled)) {
+          cancelRace();
+          return;
+        }
+        try {
+          _requirePlayableUrl(detail, source);
+        } catch (error) {
+          recordFailure(source, error);
+          return;
+        }
+        finished = true;
+        groupCancellation.cancel();
+        if (!completer.isCompleted) completer.complete(detail);
+      } catch (error) {
+        if (finished) return;
+        if (!_isPlaybackOperationActive(operation, generation, isCancelled) ||
+            _isPlaybackCancellationError(error)) {
+          cancelRace();
+          return;
+        }
+        recordFailure(source, error);
+      }
+    }
+
+    cancellationTimer = Timer.periodic(_racePollInterval, (_) {
+      if (!finished &&
+          !_isPlaybackOperationActive(operation, generation, isCancelled)) {
+        cancelRace();
+      }
+    });
+    for (final source in sources) {
+      // Every source in a group starts immediately; each Future is fully
+      // observed so a losing request cannot surface an unhandled exception.
+      unawaited(run(source));
+    }
+    try {
+      return await completer.future;
+    } finally {
+      cancellationTimer.cancel();
+      groupCancellation.cancel();
+    }
+  }
+
+  static bool _isPlaybackCancellationError(Object error) {
+    return error is HttpRequestCancelledException ||
+        error is ApiException && error.code == 'RESOLVE_CANCELLED';
+  }
+
+  static void _requirePlayableUrl(SongDetail detail, PlaybackSource source) {
+    final url = detail.url.trim();
+    final uri = Uri.tryParse(url);
+    if (url.isEmpty ||
+        uri == null ||
+        uri.host.isEmpty ||
+        (uri.scheme != 'http' && uri.scheme != 'https')) {
+      throw ApiException(
+        '${source.value.toUpperCase()}_EMPTY_URL',
+        '${source.label} 未返回播放地址',
+      );
+    }
+  }
+
+  Future<SongDetail> _resolveWithSource(
+    PlaybackSource source, {
+    required MusicPlatform platform,
+    required String id,
+    required String quality,
+    required String name,
+    required String artist,
+    required String album,
+    String? albumId,
+    int? duration,
+    Future<void>? cancelSignal,
+  }) {
+    switch (source) {
+      case PlaybackSource.automatic:
+        throw StateError('自动备用源不能递归解析');
+      case PlaybackSource.chksz:
+        if (apiKey.trim().isEmpty) {
+          throw const ApiException('API_KEY_REQUIRED', 'ChKSz 需要配置 API Key');
+        }
+        return switch (platform) {
+          MusicPlatform.netease => neteaseMusic(
+            id,
+            level: quality,
+            cancelSignal: cancelSignal,
+          ),
+          MusicPlatform.qq => qqMusic(
+            id,
+            size: quality,
+            cancelSignal: cancelSignal,
+          ),
+          MusicPlatform.kugou => kugouMusic(
+            id,
+            size: quality,
+            cancelSignal: cancelSignal,
+          ),
+          MusicPlatform.bilibili => throw const ApiException(
+            'SOURCE_UNSUPPORTED',
+            'B站使用官方播放接口',
+          ),
+        };
+      case PlaybackSource.qingMusic:
+        return qingMusic(
+          platform,
+          id,
+          quality: quality,
+          cancelSignal: cancelSignal,
+        );
+      case PlaybackSource.hyw:
+        return hywMusic(
+          platform,
+          id,
+          quality: quality,
+          name: name,
+          artist: artist,
+          album: album,
+          albumId: albumId,
+          duration: duration,
+          cancelSignal: cancelSignal,
+        );
+      case PlaybackSource.xinghai:
+        return xinghaiMusic(
+          platform,
+          id,
+          quality: quality,
+          name: name,
+          artist: artist,
+          album: album,
+          albumId: albumId,
+          duration: duration,
+          cancelSignal: cancelSignal,
+        );
+      case PlaybackSource.gdStudio:
+        return gdStudioMusic(
+          platform,
+          id,
+          quality: quality,
+          cancelSignal: cancelSignal,
+        );
+    }
+  }
+
+  Future<SongDetail> hywMusic(
+    MusicPlatform platform,
+    String id, {
+    required String quality,
+    required String name,
+    required String artist,
+    required String album,
+    String? albumId,
+    int? duration,
+    Future<void>? cancelSignal,
+  }) async {
+    final source = _aggregatorSource(platform);
+    final params = <String, String>{
+      'source': source,
+      'platform': source,
+      'songId': id,
+      'songmid': id,
+      if (platform == MusicPlatform.kugou) ...{'hash': id, 'mainHash': id},
+      'quality': _aggregatorQuality(platform, quality),
+      if (name.trim().isNotEmpty) ...{
+        'name': name.trim(),
+        'songName': name.trim(),
+        'songname': name.trim(),
+      },
+      if (artist.trim().isNotEmpty) ...{
+        'singer': artist.trim(),
+        'artist': artist.trim(),
+      },
+      if (album.trim().isNotEmpty) ...{
+        'album': album.trim(),
+        'albumName': album.trim(),
+      },
+      if (albumId?.trim().isNotEmpty == true) ...{
+        'albumId': albumId!.trim(),
+        'albumMid': albumId.trim(),
+      },
+      if (duration != null && duration > 0) 'interval': duration.toString(),
+      if (_playbackSourceConfig.hywCardKey.isNotEmpty)
+        'key': _playbackSourceConfig.hywCardKey,
+    };
+    final uri = Uri.parse(
+      _joinUrl(_playbackSourceConfig.hywBaseUrl, '/api/music/url'),
+    ).replace(queryParameters: params);
+    final headers = <String, String>{
+      if (_playbackSourceConfig.hywCardKey.isNotEmpty)
+        'X-Card-Key': _playbackSourceConfig.hywCardKey,
+    };
+    final http.Response response;
+    try {
+      response = await _get(
+        uri,
+        headers: headers,
+        timeout: _resolverTimeout,
+        maxAttempts: 1,
+        cancelSignal: cancelSignal,
+      );
+    } on ApiException {
+      rethrow;
+    } catch (_) {
+      throw const ApiException('HYW_NETWORK', 'HYW 网络请求失败');
+    }
+    final body = _resolverResponseMap(response, 'HYW');
+    if (body['code']?.toString() != '200') {
+      throw ApiException(
+        'HYW_${body['code'] ?? 'FAILED'}',
+        'HYW 服务拒绝请求或未返回播放地址',
+      );
+    }
+    return _resolvedSongDetail(body, 'HYW');
+  }
+
+  Future<SongDetail> xinghaiMusic(
+    MusicPlatform platform,
+    String id, {
+    required String quality,
+    required String name,
+    required String artist,
+    required String album,
+    String? albumId,
+    int? duration,
+    Future<void>? cancelSignal,
+  }) async {
+    final source = switch (platform) {
+      MusicPlatform.qq => 'qq',
+      MusicPlatform.netease => 'wy',
+      MusicPlatform.kugou => 'kg',
+      MusicPlatform.bilibili => throw const ApiException(
+        'SOURCE_UNSUPPORTED',
+        'B站使用官方播放接口',
+      ),
+    };
+    final mappedQuality = _aggregatorQuality(platform, quality);
+    final params = <String, String>{
+      'source': source,
+      'quality': mappedQuality,
+      'songmid': id,
+      if (platform == MusicPlatform.kugou) ...{
+        'mainHash': id,
+        'hash': id,
+        if (albumId?.trim().isNotEmpty == true) 'albumId': albumId!.trim(),
+      } else ...{
+        if (name.trim().isNotEmpty) 'name': name.trim(),
+        if (artist.trim().isNotEmpty) 'singer': artist.trim(),
+        if (album.trim().isNotEmpty) 'albumName': album.trim(),
+        if (albumId?.trim().isNotEmpty == true) 'albumMid': albumId!.trim(),
+        if (duration != null && duration > 0) 'interval': duration.toString(),
+      },
+    };
+    final base = Uri.parse(_playbackSourceConfig.xinghaiUrl);
+    final uri = base.replace(
+      queryParameters: {...base.queryParameters, ...params},
+    );
+    final http.Response response;
+    try {
+      response = await _get(
+        uri,
+        headers: await _xinghaiHeaders(cancelSignal: cancelSignal),
+        timeout: _resolverTimeout,
+        maxAttempts: 1,
+        cancelSignal: cancelSignal,
+      );
+    } on ApiException {
+      rethrow;
+    } catch (_) {
+      throw const ApiException('XINGHAI_NETWORK', '星海网络请求失败');
+    }
+    final body = _resolverResponseMap(response, '星海');
+    if (body['code']?.toString() != '200') {
+      throw ApiException(
+        'XINGHAI_${body['code'] ?? 'FAILED'}',
+        '星海服务拒绝请求或未返回播放地址',
+      );
+    }
+    return _resolvedSongDetail(body, '星海');
+  }
+
+  Future<SongDetail> gdStudioMusic(
+    MusicPlatform platform,
+    String id, {
+    required String quality,
+    Future<void>? cancelSignal,
+  }) async {
+    final source = switch (platform) {
+      MusicPlatform.qq => 'qq',
+      MusicPlatform.netease => 'netease',
+      MusicPlatform.kugou => 'kg',
+      MusicPlatform.bilibili => throw const ApiException(
+        'SOURCE_UNSUPPORTED',
+        'B站使用官方播放接口',
+      ),
+    };
+    final base = Uri.parse(_playbackSourceConfig.gdStudioUrl);
+
+    Future<SongDetail> requestWithBitrate(String bitrate) async {
+      final params = <String, String>{
+        ...base.queryParameters,
+        if (platform == MusicPlatform.netease) ...{
+          'use_xbridge3': 'true',
+          'loader_name': 'forest',
+          'need_sec_link': '1',
+          'sec_link_scene': 'im',
+          'theme': 'light',
+        },
+        'types': 'url',
+        'source': source,
+        'id': id,
+        'br': bitrate,
+      };
+      final http.Response response;
+      try {
+        response = await _get(
+          base.replace(queryParameters: params),
+          headers: const {'User-Agent': 'LX-Music-Mobile'},
+          timeout: _resolverTimeout,
+          maxAttempts: 1,
+          cancelSignal: cancelSignal,
+        );
+      } on ApiException {
+        rethrow;
+      } catch (_) {
+        throw const ApiException('GD_NETWORK', 'GDStudio 网络请求失败');
+      }
+      final body = _resolverResponseMap(response, 'GDStudio');
+      final code = body['code'];
+      if (code != null && code.toString() != '0' && code.toString() != '200') {
+        throw ApiException('GD_${code.toString()}', 'GDStudio 服务拒绝请求或未返回播放地址');
+      }
+      return _resolvedSongDetail(body, 'GDStudio');
+    }
+
+    final mappedQuality = _aggregatorQuality(platform, quality);
+    final bitrate = _gdBitrate(platform, quality);
+    try {
+      return await requestWithBitrate(bitrate);
+    } catch (error) {
+      if (_isPlaybackCancellationError(error)) rethrow;
+      // The XingHai script retries Netease Hi-Res at standard FLAC when GD
+      // cannot serve bitrate 999. Keep this fallback bounded to one request.
+      if (platform == MusicPlatform.netease &&
+          mappedQuality == 'hires' &&
+          bitrate == '999') {
+        return requestWithBitrate('740');
+      }
+      rethrow;
+    }
+  }
+
+  Future<Map<String, String>> _xinghaiHeaders({
+    Future<void>? cancelSignal,
+  }) async {
+    var config = _playbackSourceConfig;
+    var ip = await _xinghaiPublicIp(cancelSignal: cancelSignal) ?? '0.0.0.0';
+    if (_closed) {
+      throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
+    }
+    if (config.xinghaiDeviceId != _playbackSourceConfig.xinghaiDeviceId ||
+        config.xinghaiClient != _playbackSourceConfig.xinghaiClient) {
+      config = _playbackSourceConfig;
+      ip = _xinghaiIp ?? '0.0.0.0';
+    }
+    final now = DateTime.now();
+    final createdAt = _xinghaiTokenCreatedAt;
+    if (_xinghaiToken == null ||
+        createdAt == null ||
+        now.difference(createdAt) > _xinghaiTokenLifetime ||
+        _xinghaiTokenDeviceId != config.xinghaiDeviceId ||
+        _xinghaiTokenIp != ip) {
+      final payload = <String, dynamic>{
+        'device_id': config.xinghaiDeviceId,
+        'ip': ip,
+        'timestamp': now.millisecondsSinceEpoch ~/ 1000,
+        'random': _randomBase36(10),
+      };
+      _xinghaiToken = base64Encode(utf8.encode(jsonEncode(payload)));
+      _xinghaiTokenCreatedAt = now;
+      _xinghaiTokenDeviceId = config.xinghaiDeviceId;
+      _xinghaiTokenIp = ip;
+    }
+    return {
+      'X-Token': _xinghaiToken!,
+      'X-Client': config.xinghaiClient,
+      'User-Agent': 'lx-music',
+    };
+  }
+
+  Future<String?> _xinghaiPublicIp({Future<void>? cancelSignal}) {
+    if (_xinghaiIp != null) return Future<String?>.value(_xinghaiIp);
+    if (_playbackSourceConfig.xinghaiIpUrl.isEmpty) {
+      return Future<String?>.value(null);
+    }
+    final pending = _xinghaiIpRequest;
+    if (pending != null) return awaitWithCancellation(pending, cancelSignal);
+    late final Future<String?> request;
+    request = () async {
+      try {
+        final response = await _get(
+          Uri.parse(_playbackSourceConfig.xinghaiIpUrl),
+          timeout: _xinghaiIpTimeout,
+          maxAttempts: 1,
+          cancelSignal: cancelSignal,
+        );
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          return null;
+        }
+        final dynamic decoded = jsonDecode(utf8.decode(response.bodyBytes));
+        final ip = decoded is Map ? decoded['ip']?.toString().trim() : null;
+        if (!_closed &&
+            identical(_xinghaiIpRequest, request) &&
+            ip != null &&
+            ip.isNotEmpty) {
+          _xinghaiIp = ip;
+        }
+        return ip?.isNotEmpty == true ? ip : null;
+      } catch (error) {
+        if (_isPlaybackCancellationError(error)) rethrow;
+        return null;
+      } finally {
+        if (identical(_xinghaiIpRequest, request)) _xinghaiIpRequest = null;
+      }
+    }();
+    _xinghaiIpRequest = request;
+    return request;
+  }
+
+  static Map<String, dynamic> _resolverResponseMap(
+    http.Response response,
+    String label,
+  ) {
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException(
+        '${label.toUpperCase()}_HTTP_${response.statusCode}',
+        '$label 服务暂时不可用',
+      );
+    }
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(utf8.decode(response.bodyBytes));
+    } on FormatException {
+      throw ApiException(
+        '${label.toUpperCase()}_INVALID_RESPONSE',
+        '$label 返回了无效数据',
+      );
+    }
+    if (decoded is! Map) {
+      throw ApiException(
+        '${label.toUpperCase()}_INVALID_RESPONSE',
+        '$label 返回格式错误',
+      );
+    }
+    return Map<String, dynamic>.from(decoded);
+  }
+
+  static SongDetail _resolvedSongDetail(
+    Map<String, dynamic> body,
+    String label,
+  ) {
+    final url = _findResolverUrl(body);
+    if (url == null) {
+      throw ApiException('${label.toUpperCase()}_EMPTY_URL', '$label 未返回播放地址');
+    }
+    final data = body['data'];
+    final nested = data is Map ? Map<String, dynamic>.from(data) : null;
+    final rawHeaders =
+        body['playbackHeaders'] ??
+        body['headers'] ??
+        nested?['playbackHeaders'] ??
+        nested?['headers'];
+    final headers = rawHeaders is Map
+        ? rawHeaders.map(
+            (key, value) => MapEntry(key.toString(), value.toString()),
+          )
+        : null;
+    final rawLyric =
+        body['lrc'] ?? body['lyric'] ?? nested?['lrc'] ?? nested?['lyric'];
+    final lyric = rawLyric is Map
+        ? rawLyric['lyric']?.toString()
+        : rawLyric?.toString();
+    final cover =
+        body['picture'] ??
+        body['pic'] ??
+        body['cover'] ??
+        body['picUrl'] ??
+        nested?['picture'] ??
+        nested?['pic'] ??
+        nested?['cover'] ??
+        nested?['picUrl'];
+    final path = Uri.parse(url).path;
+    final dot = path.lastIndexOf('.');
+    return SongDetail(
+      name: '',
+      artist: '',
+      album: '',
+      url: url,
+      coverUrl: cover?.toString(),
+      lyric: lyric,
+      format: dot >= 0 && dot < path.length - 1
+          ? path.substring(dot + 1)
+          : null,
+      playbackHeaders: headers?.isEmpty == true ? null : headers,
+    );
+  }
+
+  static String? _findResolverUrl(dynamic value, [int depth = 0]) {
+    if (depth > 4) return null;
+    if (value is String) {
+      final candidate = value.trim();
+      final uri = Uri.tryParse(candidate);
+      return uri != null &&
+              uri.host.isNotEmpty &&
+              (uri.scheme == 'http' || uri.scheme == 'https')
+          ? candidate
+          : null;
+    }
+    if (value is Map) {
+      for (final key in const [
+        'url',
+        'playUrl',
+        'play_url',
+        'musicUrl',
+        'musicurl',
+        'play_backup_url',
+      ]) {
+        final found = _findResolverUrl(value[key], depth + 1);
+        if (found != null) return found;
+      }
+      for (final key in const ['data', 'result']) {
+        final found = _findResolverUrl(value[key], depth + 1);
+        if (found != null) return found;
+      }
+    } else if (value is List) {
+      for (final item in value.take(8)) {
+        final found = _findResolverUrl(item, depth + 1);
+        if (found != null) return found;
+      }
+    }
+    return null;
+  }
+
+  static String _aggregatorSource(MusicPlatform platform) => switch (platform) {
+    MusicPlatform.qq => 'tx',
+    MusicPlatform.netease => 'wy',
+    MusicPlatform.kugou => 'kg',
+    MusicPlatform.bilibili => throw const ApiException(
+      'SOURCE_UNSUPPORTED',
+      'B站使用官方播放接口',
+    ),
+  };
+
+  static String _aggregatorQuality(MusicPlatform platform, String quality) {
+    if (platform != MusicPlatform.netease) return quality;
+    return switch (quality) {
+      'standard' => '128k',
+      'exhigh' => '320k',
+      'lossless' => 'flac',
+      'hires' => 'hires',
+      'jyeffect' => 'atmos',
+      'sky' || 'jymaster' => 'master',
+      _ => quality,
+    };
+  }
+
+  static String _gdBitrate(MusicPlatform platform, String quality) {
+    final normalized = _aggregatorQuality(platform, quality);
+    return switch (normalized) {
+      '128k' => '128',
+      '320k' => '320',
+      'flac' => '740',
+      _ => '999',
+    };
+  }
+
+  static String _joinUrl(String base, String path) {
+    final normalizedBase = base.endsWith('/')
+        ? base.substring(0, base.length - 1)
+        : base;
+    final normalizedPath = path.startsWith('/') ? path : '/$path';
+    return '$normalizedBase$normalizedPath';
+  }
+
+  static String _randomBase36(int length) {
+    Random random;
+    try {
+      random = Random.secure();
+    } catch (_) {
+      random = Random();
+    }
+    const chars = '0123456789abcdefghijklmnopqrstuvwxyz';
+    return List.generate(
+      length,
+      (_) => chars[random.nextInt(chars.length)],
+    ).join();
+  }
+
+  static String _safeResolverFailure(Object error) {
+    if (error is ApiException) {
+      return switch (error.code) {
+        'API_KEY_REQUIRED' ||
+        'SOURCE_DISABLED' ||
+        'SOURCE_UNSUPPORTED' => error.message,
+        _ => '解析失败（${error.code}）',
+      };
+    }
+    return '网络请求失败';
+  }
+
+  /// Probes one configured resolver with a small request.
+  ///
+  /// This checks endpoint reachability and response latency only. It does not
+  /// assert that a particular song is licensed or playable, because that
+  /// depends on the requested platform, song and current backend state.
+  Future<PlaybackSourceTestResult> testPlaybackSource(
+    PlaybackSource source, {
+    MusicPlatform platform = MusicPlatform.qq,
+    PlaybackSourceConfig? config,
+    Future<void>? cancelSignal,
+  }) async {
+    if (source == PlaybackSource.automatic) {
+      return const PlaybackSourceTestResult(
+        source: PlaybackSource.automatic,
+        reachable: false,
+        latencyMs: null,
+        statusCode: null,
+        message: '自动模式不是可探测的独立接口',
+      );
+    }
+
+    final effective = config ?? _playbackSourceConfig;
+    final stopwatch = Stopwatch()..start();
+    try {
+      _ensureOpen();
+      late final http.Response response;
+      switch (source) {
+        case PlaybackSource.automatic:
+          throw const ApiException('SOURCE_UNSUPPORTED', '自动模式不是独立接口');
+        case PlaybackSource.chksz:
+          final endpoint = switch (platform) {
+            MusicPlatform.netease => '/api/163_music',
+            MusicPlatform.qq => '/api/qq_music',
+            MusicPlatform.kugou => '/api/kugou_music',
+            MusicPlatform.bilibili => '/api/qq_music',
+          };
+          final params = <String, String>{
+            'type': 'json',
+            'apikey': apiKey,
+            if (platform == MusicPlatform.netease) ...{
+              'id': '__probe__',
+              'level': 'standard',
+            } else if (platform == MusicPlatform.kugou) ...{
+              'id': '__PROBE__',
+              'size': '128k',
+            } else ...{
+              'mid': '__probe__',
+              'size': '128k',
+            },
+          };
+          response = await _get(
+            Uri.parse(
+              _joinUrl(effective.chkszBaseUrl, endpoint),
+            ).replace(queryParameters: params),
+            timeout: _probeTimeout,
+            maxAttempts: 1,
+            maxBytes: _maxProbeResponseBytes,
+            cancelSignal: cancelSignal,
+          );
+        case PlaybackSource.qingMusic:
+          response = await _postJson(
+            Uri.parse(effective.qingMusicUrl),
+            {
+              'source': switch (platform) {
+                MusicPlatform.qq => 'tx',
+                MusicPlatform.netease => 'wy',
+                MusicPlatform.kugou => 'kg',
+                MusicPlatform.bilibili => 'tx',
+              },
+              'rid': '__probe__',
+              'level': 'standard',
+            },
+            timeout: _probeTimeout,
+            maxAttempts: 1,
+            maxBytes: _maxProbeResponseBytes,
+            cancelSignal: cancelSignal,
+          );
+        case PlaybackSource.hyw:
+          final sourceCode = _aggregatorSource(platform);
+          final params = <String, String>{
+            'source': sourceCode,
+            'platform': sourceCode,
+            'songId': '__probe__',
+            'songmid': '__probe__',
+            'quality': _aggregatorQuality(platform, '128k'),
+            if (effective.hywCardKey.isNotEmpty) 'key': effective.hywCardKey,
+          };
+          response = await _get(
+            Uri.parse(
+              _joinUrl(effective.hywBaseUrl, '/api/music/url'),
+            ).replace(queryParameters: params),
+            headers: {
+              if (effective.hywCardKey.isNotEmpty)
+                'X-Card-Key': effective.hywCardKey,
+            },
+            timeout: _probeTimeout,
+            maxAttempts: 1,
+            maxBytes: _maxProbeResponseBytes,
+            cancelSignal: cancelSignal,
+          );
+        case PlaybackSource.xinghai:
+          final base = Uri.parse(effective.xinghaiUrl);
+          final sourceCode = switch (platform) {
+            MusicPlatform.qq => 'qq',
+            MusicPlatform.netease => 'wy',
+            MusicPlatform.kugou => 'kg',
+            MusicPlatform.bilibili => 'qq',
+          };
+          response = await _get(
+            base.replace(
+              queryParameters: {
+                ...base.queryParameters,
+                'source': sourceCode,
+                'quality': '128k',
+                'songmid': '__probe__',
+              },
+            ),
+            headers: {
+              if (effective.xinghaiClient.trim().isNotEmpty)
+                'X-Client': effective.xinghaiClient.trim(),
+              'User-Agent': 'lx-music',
+            },
+            timeout: _probeTimeout,
+            maxAttempts: 1,
+            maxBytes: _maxProbeResponseBytes,
+            cancelSignal: cancelSignal,
+          );
+        case PlaybackSource.gdStudio:
+          final base = Uri.parse(effective.gdStudioUrl);
+          final sourceCode = switch (platform) {
+            MusicPlatform.qq => 'qq',
+            MusicPlatform.netease => 'netease',
+            MusicPlatform.kugou => 'kg',
+            MusicPlatform.bilibili => 'qq',
+          };
+          response = await _get(
+            base.replace(
+              queryParameters: {
+                ...base.queryParameters,
+                'types': 'url',
+                'source': sourceCode,
+                'id': '__probe__',
+                'br': '128',
+              },
+            ),
+            headers: const {'User-Agent': 'LX-Music-Mobile'},
+            timeout: _probeTimeout,
+            maxAttempts: 1,
+            maxBytes: _maxProbeResponseBytes,
+            cancelSignal: cancelSignal,
+          );
+      }
+      stopwatch.stop();
+      final statusCode = response.statusCode;
+      final reachable = statusCode >= 100 && statusCode <= 599;
+      final message = statusCode >= 200 && statusCode < 300
+          ? 'HTTP $statusCode'
+          : 'HTTP $statusCode（网络可达，接口返回错误）';
+      return PlaybackSourceTestResult(
+        source: source,
+        reachable: reachable,
+        latencyMs: stopwatch.elapsedMilliseconds,
+        statusCode: statusCode,
+        message: message,
+      );
+    } catch (error) {
+      stopwatch.stop();
+      return PlaybackSourceTestResult(
+        source: source,
+        reachable: false,
+        latencyMs: stopwatch.elapsedMilliseconds,
+        statusCode: null,
+        message: _safeProbeFailure(error),
+      );
+    }
+  }
+
+  /// Probes a bounded number of sources at once. The default is the set of
+  /// enabled sources, so the same switches that control racing also control
+  /// the one-click test. Callers can explicitly request all sources when
+  /// diagnosing a disabled endpoint.
+  Future<List<PlaybackSourceTestResult>> testPlaybackSources({
+    PlaybackSourceConfig? config,
+    MusicPlatform platform = MusicPlatform.qq,
+    bool enabledOnly = true,
+    int maxConcurrent = 3,
+    Future<void>? cancelSignal,
+  }) async {
+    final effective = config ?? _playbackSourceConfig;
+    final sources = PlaybackSource.values
+        .where((source) => source != PlaybackSource.automatic)
+        .where((source) => !enabledOnly || effective.isEnabled(source))
+        .toList(growable: false);
+    if (sources.isEmpty) return const [];
+
+    final results = List<PlaybackSourceTestResult?>.filled(
+      sources.length,
+      null,
+    );
+    final workerCount = min(max(1, maxConcurrent), 3);
+    var nextIndex = 0;
+
+    Future<void> worker() async {
+      while (true) {
+        final index = nextIndex++;
+        if (index >= sources.length) return;
+        try {
+          results[index] = await testPlaybackSource(
+            sources[index],
+            platform: platform,
+            config: effective,
+            cancelSignal: cancelSignal,
+          );
+        } catch (error) {
+          results[index] = PlaybackSourceTestResult(
+            source: sources[index],
+            reachable: false,
+            latencyMs: null,
+            statusCode: null,
+            message: _safeProbeFailure(error),
+          );
+        }
+      }
+    }
+
+    await Future.wait(
+      List<Future<void>>.generate(workerCount, (_) => worker()),
+    );
+    return results.whereType<PlaybackSourceTestResult>().toList(
+      growable: false,
+    );
+  }
+
+  static String _safeProbeFailure(Object error) {
+    if (error is HttpRequestCancelledException ||
+        error is ApiException && error.code == 'RESOLVE_CANCELLED') {
+      return '测试已取消';
+    }
+    if (error is ApiException && error.code == 'RESPONSE_TOO_LARGE') {
+      return '响应过大';
+    }
+    if (error is TimeoutException) return '连接超时';
+    if (error is FormatException) return '地址格式无效';
+    return '网络不可达';
   }
 
   /// 查找并解析当前平台中与歌曲对应的 MV 播放地址。
@@ -820,12 +2064,16 @@ class ApiService {
   }
 
   /// 解析网易云歌曲播放地址 (ChKSz API /api/163_music)
-  Future<SongDetail> neteaseMusic(String id, {String level = 'exhigh'}) async {
+  Future<SongDetail> neteaseMusic(
+    String id, {
+    String level = 'exhigh',
+    Future<void>? cancelSignal,
+  }) async {
     final json = await _chkszGet('/api/163_music', {
       'id': id,
       'level': level,
       'type': 'json',
-    });
+    }, cancelSignal: cancelSignal);
     final rawData = json['data'];
     final data = rawData is Map
         ? Map<String, dynamic>.from(rawData)
@@ -1131,12 +2379,16 @@ class ApiService {
 
   /// 解析酷狗播放地址 (ChKSz 兜底)
   /// ⚠️ ChKSz 酷狗 id 参数要求大写 hash（mobilecdn 搜索返回小写，需转换）
-  Future<SongDetail> kugouMusic(String hash, {String size = 'flac'}) async {
+  Future<SongDetail> kugouMusic(
+    String hash, {
+    String size = 'flac',
+    Future<void>? cancelSignal,
+  }) async {
     final json = await _chkszGet('/api/kugou_music', {
       'id': hash.toUpperCase(),
       'size': size,
       'type': 'json',
-    });
+    }, cancelSignal: cancelSignal);
     return SongDetail.fromKugou(json);
   }
 
@@ -1610,12 +2862,16 @@ class ApiService {
   }
 
   /// 解析QQ音乐播放地址 (ChKSz 兜底)
-  Future<SongDetail> qqMusic(String mid, {String size = 'flac'}) async {
+  Future<SongDetail> qqMusic(
+    String mid, {
+    String size = 'flac',
+    Future<void>? cancelSignal,
+  }) async {
     final json = await _chkszGet('/api/qq_music', {
       'mid': mid,
       'size': size,
       'type': 'json',
-    });
+    }, cancelSignal: cancelSignal);
     return SongDetail.fromQQ(json);
   }
 
@@ -1762,4 +3018,28 @@ class ApiException implements Exception {
 
   @override
   String toString() => '[$code] $message';
+}
+
+class _PlaybackCancellation {
+  final Completer<void> _completer = Completer<void>();
+  bool _cancelled = false;
+  String? _reason;
+
+  bool get isCancelled => _cancelled;
+  String? get reason => _reason;
+  Future<void> get future => _completer.future;
+
+  void cancel({String? reason}) {
+    _reason ??= reason;
+    if (_cancelled) return;
+    _cancelled = true;
+    _completer.complete();
+  }
+}
+
+class _PlaybackGroupFailure implements Exception {
+  final List<String> failures;
+
+  _PlaybackGroupFailure(Iterable<String> failures)
+    : failures = List<String>.unmodifiable(failures);
 }

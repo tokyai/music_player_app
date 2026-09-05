@@ -12,7 +12,9 @@
 - **三平台聚合搜索**：同时搜索 QQ / 网易云 / 酷狗，Tab 切换查看结果
 - **直连优先**：搜索、推荐、歌单、歌词、MV 与封面优先调用平台公开接口，旧反代仅作失败兜底
 - **高品质播放**：无损 / Hi-Res / 母带等音质可选，按平台自定义音质等级
-- **多播放源**：QQ / 网易云 / 酷狗可分别选择 ChKSz 或 QingMusic 解析，手动切换后持久记忆
+- **多播放源**：QQ / 网易云 / 酷狗可分别选择自动备用、ChKSz、QingMusic、HYWmusic、星海或 GDStudio；自动模式按固定分组并行竞速、失败分组回退并有界降音质
+- **备用源配置**：设置 → 播放与音质 → 备用源接口配置，可勾选参与自动竞速的接口、修改 URL / Card Key / X-Client / 设备 ID、测试连通性与响应速度，并恢复 JS 预置默认值
+- **音源分析记录**：`docs/playback_sources_analysis.md` 逐一记录 `tmp/yinyuan` 脚本的请求方式、鉴权、音质回退和接入边界
 - **MV 播放**：内置 ExoPlayer 与 libmpv 双内核，默认自动回退，也可在设置中指定内核
 - **歌词同步**：支持可靠时间轴逐字高亮，不可靠时间轴自动回退整行强调；支持查找匹配版本以及可记忆的字号、行间距调节
 - **歌单导入**：支持 **QQ音乐 + 网易云** 双平台，粘贴歌单链接或 ID 即可导入（自动提取 ID）
@@ -40,7 +42,8 @@
 lib/
 ├── main.dart                    # 应用入口 + 底部导航 + 系统初始化
 ├── models/
-│   └── song.dart                # 数据模型（歌曲、歌单、歌词等）
+│   ├── song.dart                # 数据模型（歌曲、歌单、歌词等）
+│   └── playback_source_config.dart # 备用源入口、启停状态和默认配置
 ├── services/
 │   ├── api_service.dart         # 三平台目录直连 + 播放解析封装
 │   ├── backup_service.dart      # 收藏 + API Key 统一备份协调
@@ -57,7 +60,8 @@ lib/
 │   ├── video_player_screen.dart # 应用内 ExoPlayer / MPV 双内核 MV 播放页
 │   ├── playlist_screen.dart     # 歌单页
 │   ├── backup_restore_screen.dart # 文件 / WebDAV / 局域网备份页
-│   └── settings_screen.dart     # 设置页
+│   ├── settings_screen.dart     # 设置页
+│   └── playback_source_config_screen.dart # 备用源接口配置页
 ├── widgets/
 │   ├── song_tile.dart           # 歌曲列表项
 │   ├── mini_player.dart         # 底部迷你播放器

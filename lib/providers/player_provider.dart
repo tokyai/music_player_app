@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
+import '../models/playback_source_config.dart';
 import '../services/api_service.dart';
 import '../services/audio_cache_service.dart';
 import '../services/bilibili_service.dart';
@@ -106,9 +108,10 @@ class PlayerProvider extends ChangeNotifier {
   // 音质
   NeteaseLevel _neteaseLevel = NeteaseLevel.jymaster;
   CommonLevel _commonLevel = CommonLevel.flac;
-  PlaybackSource _neteasePlaybackSource = PlaybackSource.chksz;
-  PlaybackSource _qqPlaybackSource = PlaybackSource.chksz;
-  PlaybackSource _kugouPlaybackSource = PlaybackSource.chksz;
+  PlaybackSource _neteasePlaybackSource = PlaybackSource.automatic;
+  PlaybackSource _qqPlaybackSource = PlaybackSource.automatic;
+  PlaybackSource _kugouPlaybackSource = PlaybackSource.automatic;
+  PlaybackSourceConfig _playbackSourceConfig = PlaybackSourceConfig.defaults();
   List<MusicPlatform> _bilibiliLyricPlatformOrder = List<MusicPlatform>.from(
     _defaultBilibiliLyricPlatformOrder,
   );
@@ -141,6 +144,7 @@ class PlayerProvider extends ChangeNotifier {
   }) : _restoredSessionActivationEnabled = activateRestoredSession {
     _api = ApiService(
       apiKey: '',
+      playbackSourceConfig: _playbackSourceConfig,
       bilibili: bilibiliService ?? BilibiliService(dataScope: dataScope),
     );
     _api.bilibili.addListener(_handleBilibiliChanged);
@@ -224,9 +228,11 @@ class PlayerProvider extends ChangeNotifier {
       MusicPlatform.netease => _neteasePlaybackSource,
       MusicPlatform.qq => _qqPlaybackSource,
       MusicPlatform.kugou => _kugouPlaybackSource,
-      MusicPlatform.bilibili => PlaybackSource.chksz,
+      MusicPlatform.bilibili => PlaybackSource.automatic,
     };
   }
+
+  PlaybackSourceConfig get playbackSourceConfig => _playbackSourceConfig;
 
   List<MusicPlatform> get bilibiliLyricPlatformOrder =>
       List.unmodifiable(_bilibiliLyricPlatformOrder);
@@ -246,7 +252,7 @@ class PlayerProvider extends ChangeNotifier {
   /// Serializes the playback preferences that are otherwise kept in
   /// SharedPreferences. API Key is intentionally handled by BackupService.
   Map<String, dynamic> toBackupJson() => {
-    'version': 1,
+    'version': 2,
     'neteaseLevel': _neteaseLevel.value,
     'commonLevel': _commonLevel.value,
     'playbackSources': {
@@ -254,6 +260,7 @@ class PlayerProvider extends ChangeNotifier {
       MusicPlatform.qq.code: _qqPlaybackSource.value,
       MusicPlatform.kugou.code: _kugouPlaybackSource.value,
     },
+    'playbackSourceConfig': _playbackSourceConfig.toJson(),
     'bilibiliAudioQuality': _bilibiliAudioQuality,
     'bilibiliVideoQuality': _bilibiliVideoQuality,
     'bilibiliLyricPlatformOrder': _bilibiliLyricPlatformOrder
@@ -277,6 +284,7 @@ class PlayerProvider extends ChangeNotifier {
     final neteaseLevel = json['neteaseLevel'];
     final commonLevel = json['commonLevel'];
     final sources = json['playbackSources'];
+    final sourceConfig = json['playbackSourceConfig'];
     final audioQuality = json['bilibiliAudioQuality'];
     final videoQuality = json['bilibiliVideoQuality'];
     final rawOrder = json['bilibiliLyricPlatformOrder'];
@@ -304,6 +312,12 @@ class PlayerProvider extends ChangeNotifier {
         videoMode is! String ||
         !containsValue(VideoPlayerMode.values, videoMode)) {
       throw const FormatException('备份文件中的播放器设置无效');
+    }
+    if (sourceConfig != null) {
+      if (sourceConfig is! Map) {
+        throw const FormatException('备份文件中的备用源配置无效');
+      }
+      PlaybackSourceConfig.fromJson(Map<String, dynamic>.from(sourceConfig));
     }
     for (final platform in const [
       MusicPlatform.netease,
@@ -388,6 +402,18 @@ class PlayerProvider extends ChangeNotifier {
       changed = true;
     }
 
+    final rawSourceConfig = json['playbackSourceConfig'];
+    if (rawSourceConfig is Map) {
+      final sourceConfig = PlaybackSourceConfig.fromJson(
+        Map<String, dynamic>.from(rawSourceConfig),
+      );
+      if (_playbackSourceConfig != sourceConfig) {
+        _playbackSourceConfig = sourceConfig;
+        _api.setPlaybackSourceConfig(sourceConfig);
+        changed = true;
+      }
+    }
+
     final audioQuality = _positiveInt(json['bilibiliAudioQuality']);
     if (audioQuality != null && audioQuality != _bilibiliAudioQuality) {
       _bilibiliAudioQuality = audioQuality;
@@ -451,6 +477,10 @@ class PlayerProvider extends ChangeNotifier {
         prefs.setString(
           _playbackSourcePreferenceKey(MusicPlatform.kugou),
           _kugouPlaybackSource.value,
+        ),
+        prefs.setString(
+          PlaybackSourceConfig.preferenceKey,
+          jsonEncode(_playbackSourceConfig.toJson()),
         ),
         prefs.setInt('bilibili_audio_quality', _bilibiliAudioQuality),
         prefs.setInt('bilibili_video_quality', _bilibiliVideoQuality),
@@ -923,6 +953,25 @@ class PlayerProvider extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       _apiKey = prefs.getString('api_key') ?? '';
       _api.setApiKey(_apiKey);
+      final rawSourceConfig = prefs.getString(
+        PlaybackSourceConfig.preferenceKey,
+      );
+      if (rawSourceConfig != null) {
+        try {
+          if (rawSourceConfig.length >
+              PlaybackSourceConfig.maxSerializedChars) {
+            throw const FormatException('备用源配置过大');
+          }
+          final decoded = jsonDecode(rawSourceConfig);
+          if (decoded is! Map) throw const FormatException('备用源配置格式错误');
+          _playbackSourceConfig = PlaybackSourceConfig.fromJson(
+            Map<String, dynamic>.from(decoded),
+          );
+        } catch (error) {
+          debugPrint('读取备用源配置失败，继续使用 JS 默认值: $error');
+        }
+      }
+      _api.setPlaybackSourceConfig(_playbackSourceConfig);
       final levelStr = prefs.getString('netease_level');
       if (levelStr != null) {
         _neteaseLevel = NeteaseLevel.values.firstWhere(
@@ -1056,6 +1105,63 @@ class PlayerProvider extends ChangeNotifier {
           prefs.setString(_playbackSourcePreferenceKey(platform), source.value),
     );
     notifyListeners();
+  }
+
+  Future<void> setPlaybackSourceConfig(PlaybackSourceConfig config) async {
+    await settingsReady;
+    if (_disposed || dataScope.isDeleted) return;
+    final validated = config.validated();
+    if (_playbackSourceConfig == validated) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (_disposed || dataScope.isDeleted) return;
+    final saved = await prefs.setString(
+      PlaybackSourceConfig.preferenceKey,
+      jsonEncode(validated.toJson()),
+    );
+    if (!saved) throw StateError('保存备用源配置失败');
+    if (_disposed) return;
+    _playbackSourceConfig = validated;
+    _api.setPlaybackSourceConfig(validated);
+    _playUrlResolvedAt.clear();
+    notifyListeners();
+  }
+
+  Future<PlaybackSourceTestResult> testPlaybackSource(
+    PlaybackSource source, {
+    PlaybackSourceConfig? config,
+    MusicPlatform platform = MusicPlatform.qq,
+    Future<void>? cancelSignal,
+  }) async {
+    await settingsReady;
+    if (_disposed || dataScope.isDeleted) {
+      throw const ApiException('RESOLVE_CANCELLED', '测试请求已取消');
+    }
+    return _api.testPlaybackSource(
+      source,
+      config: config,
+      platform: platform,
+      cancelSignal: cancelSignal,
+    );
+  }
+
+  Future<List<PlaybackSourceTestResult>> testPlaybackSources({
+    PlaybackSourceConfig? config,
+    MusicPlatform platform = MusicPlatform.qq,
+    bool enabledOnly = true,
+    int maxConcurrent = 3,
+    Future<void>? cancelSignal,
+  }) async {
+    await settingsReady;
+    if (_disposed || dataScope.isDeleted) {
+      throw const ApiException('RESOLVE_CANCELLED', '测试请求已取消');
+    }
+    return _api.testPlaybackSources(
+      config: config,
+      platform: platform,
+      enabledOnly: enabledOnly,
+      maxConcurrent: maxConcurrent,
+      cancelSignal: cancelSignal,
+    );
   }
 
   Future<void> setBilibiliLyricPlatformOrder(List<MusicPlatform> order) async {
@@ -1419,7 +1525,7 @@ class PlayerProvider extends ChangeNotifier {
   static PlaybackSource _readPlaybackSource(String? value) {
     return PlaybackSource.values.firstWhere(
       (source) => source.value == value,
-      orElse: () => PlaybackSource.chksz,
+      orElse: () => PlaybackSource.automatic,
     );
   }
 
@@ -1791,7 +1897,10 @@ class PlayerProvider extends ChangeNotifier {
           item.platform != MusicPlatform.bilibili &&
           playbackSourceFor(item.platform) == PlaybackSource.chksz;
       if (usesChksz && _apiKey.isEmpty) {
-        throw ApiException('API_KEY_REQUIRED', '播放需要配置 API Key（设置 → API 配置）');
+        throw const ApiException(
+          'API_KEY_REQUIRED',
+          '播放需要配置 API Key（设置 → API 配置）',
+        );
       }
 
       // 网易云和 QQ 的歌词接口与播放地址互不依赖，提前并发请求；歌词不会再
@@ -1823,11 +1932,14 @@ class PlayerProvider extends ChangeNotifier {
       } else {
         resolvedUrl = _freshPlayUrl(item);
         if (resolvedUrl == null) {
-          detail = await _resolveSongDetail(item);
+          detail = await _resolveSongDetail(
+            item,
+            isCancelled: () => !_isCurrentRequest(requestId, item),
+          );
           if (!_isCurrentRequest(requestId, item)) return;
           resolvedUrl = detail.url;
           if (resolvedUrl.isEmpty) {
-            throw ApiException('404', '无法获取播放地址，可能是版权限制');
+            throw const ApiException('404', '无法获取播放地址，可能是版权限制');
           }
           _rememberPlayUrl(itemKey);
           shouldCacheAudio = true;
@@ -2045,7 +2157,10 @@ class PlayerProvider extends ChangeNotifier {
     return url;
   }
 
-  Future<SongDetail> _resolveSongDetail(PlayQueueItem item) async {
+  Future<SongDetail> _resolveSongDetail(
+    PlayQueueItem item, {
+    bool Function()? isCancelled,
+  }) async {
     if (item.platform == MusicPlatform.bilibili) {
       final cid = item.bilibiliCid;
       if (cid == null || cid <= 0) {
@@ -2077,25 +2192,20 @@ class PlayerProvider extends ChangeNotifier {
         playbackHeaders: _api.bilibili.playbackHeaders,
       );
     }
-    if (playbackSourceFor(item.platform) == PlaybackSource.qingMusic) {
-      return await _api.qingMusic(
-        item.platform,
-        item.id,
-        quality: item.platform == MusicPlatform.netease
-            ? _neteaseLevel.value
-            : _commonLevel.value,
-      );
-    }
-    switch (item.platform) {
-      case MusicPlatform.netease:
-        return _api.neteaseMusic(item.id, level: _neteaseLevel.value);
-      case MusicPlatform.qq:
-        return _api.qqMusic(item.id, size: _commonLevel.value);
-      case MusicPlatform.kugou:
-        return await _api.kugouMusic(item.id, size: _commonLevel.value);
-      case MusicPlatform.bilibili:
-        throw StateError('B站播放已在专用分支处理');
-    }
+    return _api.resolvePlayback(
+      source: playbackSourceFor(item.platform),
+      platform: item.platform,
+      id: item.id,
+      quality: item.platform == MusicPlatform.netease
+          ? _neteaseLevel.value
+          : _commonLevel.value,
+      name: item.name,
+      artist: item.artist,
+      album: item.album,
+      albumId: item.albumId,
+      duration: item.duration,
+      isCancelled: isCancelled,
+    );
   }
 
   Future<void> _loadBilibiliLyricsInBackground(
@@ -2242,7 +2352,10 @@ class PlayerProvider extends ChangeNotifier {
     PlayQueueItem item,
   ) async {
     try {
-      final detail = await _resolveSongDetail(item);
+      final detail = await _resolveSongDetail(
+        item,
+        isCancelled: () => !_isCurrentRequest(requestId, item),
+      );
       if (!_isCurrentRequest(requestId, item)) return;
       if (detail.url.isNotEmpty) {
         _rememberPlayUrl(_itemKey(item));
@@ -2311,8 +2424,28 @@ class PlayerProvider extends ChangeNotifier {
   /// 把底层异常翻译成用户可读的提示
   String _friendlyError(Object e) {
     final s = e.toString();
+    if (s.contains('API_KEY_REQUIRED')) {
+      return '当前音源需要 ChKSz API Key，请在设置 → API 配置中填写，或切换为自动备用';
+    }
+    if (s.contains('SOURCE_DISABLED')) {
+      return '当前音源已在备用源接口配置中停用，请切换为自动备用或重新启用该接口';
+    }
+    if (s.contains('ALL_PLAYBACK_SOURCES_FAILED') ||
+        s.contains('NO_PLAYBACK_SOURCE')) {
+      return '所有备用源均不可用，请检查网络、音源配置或稍后重试';
+    }
+    if (s.contains('PLAYBACK_TIMEOUT')) {
+      return '音源响应超时，已停止继续等待，请检查网络或稍后重试';
+    }
+    if (s.contains('HYW') ||
+        s.contains('星海') ||
+        s.contains('XINGHAI') ||
+        s.contains('GDStudio') ||
+        s.contains('GD_')) {
+      return '当前备用源解析失败，请切换为自动备用或检查接口配置';
+    }
     if (s.contains('QingMusic') || s.contains('QING_')) {
-      return 'QingMusic 音源解析失败，请重试或在设置中切换为 ChKSz';
+      return 'QingMusic 音源解析失败，请重试或切换为自动备用';
     }
     if (s.contains('404') || s.contains('版权') || s.contains('无法获取播放地址')) {
       return '音源获取失败：可能是版权限制或无资源，换一首试试';

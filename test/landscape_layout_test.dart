@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:music_player_app/main.dart' show MainScreen;
+import 'package:music_player_app/models/playback_source_config.dart';
 import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/providers/player_provider.dart';
 import 'package:music_player_app/providers/search_session.dart';
@@ -16,6 +17,7 @@ import 'package:music_player_app/screens/playback_history_screen.dart';
 import 'package:music_player_app/screens/player_screen.dart';
 import 'package:music_player_app/screens/playlist_detail_screen.dart';
 import 'package:music_player_app/screens/playlist_screen.dart';
+import 'package:music_player_app/screens/playback_source_config_screen.dart';
 import 'package:music_player_app/screens/search_screen.dart';
 import 'package:music_player_app/screens/settings_screen.dart';
 import 'package:music_player_app/screens/video_player_screen.dart';
@@ -1682,7 +1684,7 @@ void main() {
     tester,
   ) async {
     await http.runWithClient(() async {
-      final player = PlayerProvider();
+      final player = _ControllablePlayer();
       final theme = ThemeController();
       addTearDown(() async {
         await tester.pumpWidget(const SizedBox.shrink());
@@ -1902,7 +1904,7 @@ void main() {
       );
       expect(
         player.playbackSourceFor(MusicPlatform.netease),
-        PlaybackSource.chksz,
+        PlaybackSource.automatic,
       );
       expect(player.videoPlayerMode, VideoPlayerMode.automatic);
 
@@ -1920,9 +1922,18 @@ void main() {
       expect(tester.widget<Text>(find.text('QQ音乐播放源')).maxLines, 1);
       await tester.tap(qqSource);
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('playback-source-qq-chksz')));
+      final gdSource = find.byKey(
+        const ValueKey('playback-source-qq-gd_studio'),
+      );
+      await tester.ensureVisible(gdSource);
       await tester.pumpAndSettle();
-      expect(player.playbackSourceFor(MusicPlatform.qq), PlaybackSource.chksz);
+      expect(gdSource.hitTestable(), findsOneWidget);
+      await tester.tap(gdSource);
+      await tester.pumpAndSettle();
+      expect(
+        player.playbackSourceFor(MusicPlatform.qq),
+        PlaybackSource.gdStudio,
+      );
       final mvPlayerMode = find.byKey(const ValueKey('mv-player-mode'));
       await tester.ensureVisible(mvPlayerMode);
       await tester.pumpAndSettle();
@@ -1955,11 +1966,87 @@ void main() {
       );
 
       final prefs = await SharedPreferences.getInstance();
-      expect(prefs.getString('playback_source_qq'), 'chksz');
+      expect(prefs.getString('playback_source_qq'), 'gd_studio');
       expect(prefs.getString('playback_source_netease'), 'qing_music');
       expect(prefs.getString('playback_source_kugou'), isNull);
       expect(prefs.getString('video_player_mode'), 'mpv');
       _expectNoException(tester);
+    }, _mockClient);
+  });
+
+  testWidgets('backup source configuration is usable in both landscapes', (
+    tester,
+  ) async {
+    await http.runWithClient(() async {
+      for (final size in const [Size(640, 360), Size(1280, 800)]) {
+        SharedPreferences.setMockInitialValues({});
+        final player = PlayerProvider();
+        final theme = ThemeController();
+        await player.settingsReady;
+
+        await _pumpScreen(tester, const SettingsScreen(), player, theme, size);
+        final entry = find.byKey(const ValueKey('playback-source-config'));
+        await tester.ensureVisible(entry);
+        await tester.pumpAndSettle();
+        expect(entry.hitTestable(), findsOneWidget);
+        await tester.tap(entry);
+        await tester.pumpAndSettle();
+
+        final save = find.byKey(const ValueKey('save-playback-source-config'));
+        expect(save.hitTestable(), findsOneWidget);
+        expect(
+          tester
+              .widget<TextField>(
+                find.byKey(const ValueKey('source-config-hyw-url')),
+              )
+              .controller
+              ?.text,
+          PlaybackSourceConfig.defaultHywBaseUrl,
+        );
+        expect(
+          tester
+              .widget<TextField>(
+                find.byKey(const ValueKey('source-config-hyw-key')),
+              )
+              .controller
+              ?.text,
+          PlaybackSourceConfig.defaultHywCardKey,
+        );
+        expect(
+          tester
+              .widget<TextField>(
+                find.byKey(const ValueKey('source-config-xinghai-url')),
+              )
+              .controller
+              ?.text,
+          PlaybackSourceConfig.defaultXinghaiUrl,
+        );
+
+        final qingUrl = find.byKey(const ValueKey('source-config-qing-url'));
+        await tester.ensureVisible(qingUrl);
+        await tester.enterText(qingUrl, 'https://custom-qing.test/resolve');
+        await tester.tap(save);
+        await tester.pumpAndSettle();
+
+        expect(
+          player.playbackSourceConfig.qingMusicUrl,
+          'https://custom-qing.test/resolve',
+        );
+        final prefs = await SharedPreferences.getInstance();
+        final stored =
+            jsonDecode(prefs.getString(PlaybackSourceConfig.preferenceKey)!)
+                as Map<String, dynamic>;
+        expect(stored['hywCardKey'], PlaybackSourceConfig.defaultHywCardKey);
+        expect(stored['qingMusicUrl'], 'https://custom-qing.test/resolve');
+        _expectNoException(tester);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        player.dispose();
+        theme.dispose();
+      }
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
     }, _mockClient);
   });
 
@@ -2005,6 +2092,76 @@ void main() {
       tester.view.resetDevicePixelRatio();
     }, _mockClient);
   });
+
+  testWidgets(
+    'playback source probes remain usable and honor enabled switches in both landscapes',
+    (tester) async {
+      final requests = <http.Request>[];
+      await http.runWithClient(
+        () async {
+          for (final size in const [Size(640, 360), Size(1280, 800)]) {
+            SharedPreferences.setMockInitialValues({});
+            final player = PlayerProvider();
+            final theme = ThemeController();
+            await player.settingsReady;
+
+            await _pumpScreen(
+              tester,
+              const PlaybackSourceConfigScreen(),
+              player,
+              theme,
+              size,
+            );
+            final enabledTest = find.byKey(
+              const ValueKey('test-enabled-playback-sources'),
+            );
+            final allTest = find.byKey(
+              const ValueKey('test-all-playback-sources'),
+            );
+            expect(enabledTest.hitTestable(), findsOneWidget);
+            expect(allTest.hitTestable(), findsOneWidget);
+            final qingTest = find.byKey(
+              const ValueKey('test-playback-source-qing_music'),
+            );
+            await tester.ensureVisible(qingTest);
+            expect(qingTest.hitTestable(), findsOneWidget);
+
+            final qingCard = find.byKey(const ValueKey('source-config-qing'));
+            await tester.ensureVisible(qingCard);
+            await tester.tap(
+              find.descendant(
+                of: qingCard,
+                matching: find.byType(SwitchListTile),
+              ),
+            );
+            await tester.pump();
+            await tester.ensureVisible(enabledTest);
+            await tester.tap(enabledTest);
+            await tester.pumpAndSettle();
+            expect(
+              requests.any(
+                (request) => request.url.host == 'musicserver.haitangw.cc',
+              ),
+              isFalse,
+            );
+            _expectNoException(tester);
+
+            await tester.pumpWidget(const SizedBox.shrink());
+            await tester.pump();
+            player.dispose();
+            theme.dispose();
+          }
+        },
+        () => MockClient((request) async {
+          requests.add(request);
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+          return http.Response('{}', 200);
+        }),
+      );
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    },
+  );
 
   testWidgets('API key QR input is usable in both landscapes', (tester) async {
     for (final size in const [Size(640, 360), Size(1280, 800)]) {

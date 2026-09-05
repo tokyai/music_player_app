@@ -27,6 +27,7 @@ abstract final class GlobalSettingsService {
     'playback_source_netease',
     'playback_source_qq',
     'playback_source_kugou',
+    'playback_source_config_v1',
     'bilibili_audio_quality',
     'bilibili_video_quality',
     'bilibili_lyric_platform_order',

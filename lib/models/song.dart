@@ -27,8 +27,12 @@ const configurableMusicPlatforms = <MusicPlatform>[
 
 /// 播放地址解析源。搜索、歌单和收藏仍沿用各平台原有接口。
 enum PlaybackSource {
+  automatic('自动备用', 'automatic'),
   chksz('ChKSz', 'chksz'),
-  qingMusic('QingMusic', 'qing_music');
+  qingMusic('QingMusic', 'qing_music'),
+  hyw('HYWmusic', 'hyw'),
+  xinghai('星海', 'xinghai'),
+  gdStudio('GDStudio', 'gd_studio');
 
   final String label;
   final String value;
@@ -199,6 +203,7 @@ class SongSearchResult {
   final String name;
   final String artist;
   final String album;
+  final String? albumId; // 聚合备用解析接口需要的专辑 ID / mid
   final String? coverUrl;
   final int? duration; // 秒
   final String? bilibiliVideoTitle;
@@ -213,6 +218,7 @@ class SongSearchResult {
     required this.name,
     required this.artist,
     required this.album,
+    this.albumId,
     this.coverUrl,
     this.duration,
     this.bilibiliVideoTitle,
@@ -256,6 +262,11 @@ class SongSearchResult {
     if (coverUrl == null) {
       coverUrl = json['picUrl'];
     }
+    final albumId = albumRaw is Map
+        ? (albumRaw['id'] ?? albumRaw['mid'])?.toString()
+        : alRaw is Map
+        ? (alRaw['id'] ?? alRaw['mid'])?.toString()
+        : json['albumId']?.toString();
     final durationRaw = json['dt'] ?? json['duration'];
     final durationMs = durationRaw is num
         ? durationRaw.toInt()
@@ -266,6 +277,7 @@ class SongSearchResult {
       name: json['name'] ?? '未知歌曲',
       artist: artistName,
       album: albumName,
+      albumId: albumId,
       coverUrl: CoverHelper.normalize(coverUrl),
       duration: durationMs == null ? null : durationMs ~/ 1000,
     );
@@ -278,6 +290,8 @@ class SongSearchResult {
       name: json['name'] ?? '未知歌曲',
       artist: json['singer'] ?? '未知歌手',
       album: json['album'] ?? '',
+      albumId: (json['albummid'] ?? json['albumMid'] ?? json['album_id'])
+          ?.toString(),
       duration: null,
     );
   }
@@ -300,6 +314,8 @@ class SongSearchResult {
       name: json['songname'] ?? '未知歌曲',
       artist: artistName,
       album: json['albumname'] ?? '',
+      albumId: (json['albummid'] ?? json['albumMid'] ?? json['album_id'])
+          ?.toString(),
       coverUrl: CoverHelper.fromQQAlbumMid(json['albummid']),
       duration: json['interval'] is int ? json['interval'] as int : null,
     );
@@ -333,6 +349,7 @@ class SongSearchResult {
           .toString(),
       artist: artist.isEmpty ? '未知歌手' : artist,
       album: albumName,
+      albumId: albumMid,
       coverUrl: CoverHelper.fromQQAlbumMid(albumMid),
       duration: interval is num
           ? interval.toInt()
@@ -347,6 +364,8 @@ class SongSearchResult {
       name: json['name'] ?? '未知歌曲',
       artist: json['singer'] ?? '未知歌手',
       album: json['album'] ?? '',
+      albumId: (json['albumId'] ?? json['album_id'] ?? json['AlbumID'])
+          ?.toString(),
       duration: json['duration'] != null
           ? (json['duration'] is int
                 ? json['duration'] as int
@@ -363,6 +382,8 @@ class SongSearchResult {
       name: json['SongName'] ?? json['OriSongName'] ?? '未知歌曲',
       artist: json['SingerName'] ?? '未知歌手',
       album: json['AlbumName'] ?? '',
+      albumId: (json['AlbumID'] ?? json['AlbumId'] ?? json['album_id'])
+          ?.toString(),
       coverUrl: CoverHelper.fromKugouTemplate(json['Image']),
       duration: json['Duration'] is int ? json['Duration'] as int : null,
     );
@@ -391,6 +412,8 @@ class SongSearchResult {
       name: name,
       artist: artist,
       album: json['album_name'] ?? '',
+      albumId: (json['album_id'] ?? json['albumid'] ?? json['AlbumID'])
+          ?.toString(),
       coverUrl: coverUrl,
       duration: json['duration'] is int ? json['duration'] as int : null,
     );
@@ -418,6 +441,8 @@ class SongSearchResult {
       name: json['songname'] ?? '未知歌曲',
       artist: artistName,
       album: json['album_name'] ?? '',
+      albumId: (json['album_id'] ?? json['albumid'] ?? json['AlbumID'])
+          ?.toString(),
       coverUrl: CoverHelper.fromKugouTemplate(json['album_sizable_cover']),
       duration: duration,
     );
@@ -438,6 +463,8 @@ class SongSearchResult {
       name: json['songname'] ?? json['ori_audio_name'] ?? '未知歌曲',
       artist: json['author_name'] ?? '未知歌手',
       album: json['album_name'] ?? json['remark'] ?? '',
+      albumId: (json['album_id'] ?? json['albumid'] ?? json['AlbumID'])
+          ?.toString(),
       coverUrl: CoverHelper.fromKugouTemplate(json['sizable_cover']),
       duration: duration,
     );
@@ -460,6 +487,8 @@ class SongSearchResult {
       name: json['songname']?.toString() ?? '未知歌曲',
       artist: json['singername']?.toString() ?? '未知歌手',
       album: json['album_name']?.toString() ?? '',
+      albumId: (json['album_id'] ?? json['albumid'] ?? json['AlbumID'])
+          ?.toString(),
       coverUrl: coverUrl,
       duration: json['duration'] is num
           ? (json['duration'] as num).toInt()
@@ -493,6 +522,8 @@ class SongSearchResult {
       name: json['songname']?.toString() ?? '未知歌曲',
       artist: artistName,
       album: json['album_name']?.toString() ?? '',
+      albumId: (json['album_id'] ?? json['albumid'] ?? json['AlbumID'])
+          ?.toString(),
       coverUrl: coverUrl,
       duration: json['duration'] is num
           ? (json['duration'] as num).toInt()
@@ -557,6 +588,7 @@ class SongSearchResult {
       name: item.name,
       artist: item.artist,
       album: item.album,
+      albumId: item.albumId,
       coverUrl: item.coverUrl,
       duration: item.duration,
       bilibiliVideoTitle: item.bilibiliVideoTitle,
@@ -596,6 +628,7 @@ class SongSearchResult {
       name: name,
       artist: artist,
       album: album,
+      albumId: albumId,
       coverUrl: coverUrl,
       duration: duration ?? page?.duration,
       bilibiliVideoTitle: bilibiliVideoTitle,
@@ -613,6 +646,7 @@ class SongSearchResult {
     'name': name,
     'artist': artist,
     'album': album,
+    if (albumId != null) 'albumId': albumId,
     'coverUrl': coverUrl,
     'duration': duration,
     if (bilibiliVideoTitle != null) 'bilibiliVideoTitle': bilibiliVideoTitle,
@@ -638,6 +672,7 @@ class SongSearchResult {
       name: json['name']?.toString() ?? '未知歌曲',
       artist: json['artist']?.toString() ?? '未知歌手',
       album: json['album']?.toString() ?? '',
+      albumId: json['albumId']?.toString(),
       coverUrl: json['coverUrl']?.toString(),
       duration: json['duration'] is num
           ? (json['duration'] as num).toInt()
@@ -962,6 +997,7 @@ class PlayQueueItem {
   final String name;
   final String artist;
   final String album;
+  final String? albumId;
   final String? coverUrl;
   final String? bilibiliVideoTitle;
   final String? bilibiliDescription;
@@ -982,6 +1018,7 @@ class PlayQueueItem {
     required this.name,
     required this.artist,
     required this.album,
+    this.albumId,
     this.coverUrl,
     this.bilibiliVideoTitle,
     this.bilibiliDescription,
@@ -1003,6 +1040,7 @@ class PlayQueueItem {
       name: r.name,
       artist: r.artist,
       album: r.album,
+      albumId: r.albumId,
       coverUrl: r.coverUrl,
       duration: r.duration,
       bilibiliVideoTitle: r.bilibiliVideoTitle,
@@ -1016,6 +1054,7 @@ class PlayQueueItem {
   PlayQueueItem copyWith({
     String? name,
     String? album,
+    String? albumId,
     String? playUrl,
     String? lyric,
     Map<String, String>? playbackHeaders,
@@ -1039,6 +1078,7 @@ class PlayQueueItem {
       name: name ?? this.name,
       artist: artist,
       album: album ?? this.album,
+      albumId: albumId ?? this.albumId,
       coverUrl: coverUrl ?? this.coverUrl,
       bilibiliVideoTitle: bilibiliVideoTitle ?? this.bilibiliVideoTitle,
       bilibiliDescription: bilibiliDescription ?? this.bilibiliDescription,

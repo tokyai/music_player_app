@@ -34,6 +34,7 @@ import 'backup_restore_screen.dart';
 import 'cache_list_screen.dart';
 import 'favorites_screen.dart';
 import 'playback_history_screen.dart';
+import 'playback_source_config_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -809,25 +810,27 @@ class _SettingsScreenState extends State<SettingsScreen>
   }
 
   Widget _buildPortraitBody() {
-    return ListView(
+    return SingleChildScrollView(
       padding: const EdgeInsets.only(bottom: 24),
-      children: [
-        _buildPageTitle(),
-        _buildUsersCard(),
-        _buildAppearanceCard(),
-        _buildLyricsCard(),
-        _buildLibraryCard(),
-        _buildPlaybackCard(),
-        _buildBilibiliAccountCard(),
-        _buildApiCard(),
-        AnimatedBuilder(
-          animation: _aiConfigController,
-          builder: (context, _) => _buildGlobalVoiceSettingsCard(),
-        ),
-        _buildAiAssistantCard(),
-        _buildAboutCard(),
-        _buildSystemActionsCard(),
-      ],
+      child: Column(
+        children: [
+          _buildPageTitle(),
+          _buildUsersCard(),
+          _buildAppearanceCard(),
+          _buildLyricsCard(),
+          _buildLibraryCard(),
+          _buildPlaybackCard(),
+          _buildBilibiliAccountCard(),
+          _buildApiCard(),
+          AnimatedBuilder(
+            animation: _aiConfigController,
+            builder: (context, _) => _buildGlobalVoiceSettingsCard(),
+          ),
+          _buildAiAssistantCard(),
+          _buildAboutCard(),
+          _buildSystemActionsCard(),
+        ],
+      ),
     );
   }
 
@@ -1718,20 +1721,24 @@ class _SettingsScreenState extends State<SettingsScreen>
                   return ListTile(
                     key: ValueKey('playback-source-${platform.code}'),
                     dense: compact,
-                    leading: Icon(
-                      source == PlaybackSource.chksz
-                          ? Icons.key_outlined
-                          : Icons.cloud_outlined,
-                    ),
+                    leading: Icon(switch (source) {
+                      PlaybackSource.automatic => Icons.alt_route_rounded,
+                      PlaybackSource.chksz => Icons.key_outlined,
+                      PlaybackSource.qingMusic => Icons.cloud_outlined,
+                      PlaybackSource.hyw => Icons.hub_outlined,
+                      PlaybackSource.xinghai => Icons.auto_awesome_outlined,
+                      PlaybackSource.gdStudio => Icons.backup_outlined,
+                    }),
                     title: Text(
                       '${platform.label}播放源',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     subtitle: Text(
-                      source == PlaybackSource.chksz
-                          ? 'ChKSz · 需要 API Key'
-                          : 'QingMusic · 第三方备用解析',
+                      _playbackSourceDescription(
+                        source,
+                        enabled: player.playbackSourceConfig.isEnabled(source),
+                      ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -1740,6 +1747,31 @@ class _SettingsScreenState extends State<SettingsScreen>
                         _showPlaybackSourcePicker(ctx, player, platform),
                   );
                 }),
+                const Divider(height: 1),
+                ListTile(
+                  key: const ValueKey('playback-source-config'),
+                  dense: compact,
+                  leading: const Icon(Icons.tune_rounded),
+                  title: const Text('备用源接口配置'),
+                  subtitle: const Text(
+                    '勾选参与竞速的接口，修改预置字段并测试连通性/响应速度',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () async {
+                    FocusManager.instance.primaryFocus?.unfocus();
+                    final player = context.read<PlayerProvider>();
+                    await player.settingsReady;
+                    if (!mounted) return;
+                    await Navigator.of(context).push<bool>(
+                      MaterialPageRoute(
+                        builder: (_) => const PlaybackSourceConfigScreen(),
+                      ),
+                    );
+                    if (mounted) FocusManager.instance.primaryFocus?.unfocus();
+                  },
+                ),
                 const Divider(height: 1),
                 ListTile(
                   key: const ValueKey('mv-player-mode'),
@@ -2044,7 +2076,7 @@ class _SettingsScreenState extends State<SettingsScreen>
               ),
               const SizedBox(height: 4),
               Text(
-                '仅用于选择 ChKSz 播放源的平台；QingMusic 备用源不使用此 Key',
+                '用于 ChKSz 或自动备用链；未填写时自动模式会跳过 ChKSz',
                 style: TextStyle(
                   fontSize: layout.secondarySize,
                   color: AppColors.textSecondary,
@@ -2769,34 +2801,52 @@ class _SettingsScreenState extends State<SettingsScreen>
       builder: (dialogContext) => SimpleDialog(
         title: Text('${platform.label}播放源'),
         children: PlaybackSource.values.map((source) {
+          final enabled = player.playbackSourceConfig.isEnabled(source);
           return RadioListTile<PlaybackSource>(
             key: ValueKey('playback-source-${platform.code}-${source.value}'),
             value: source,
             groupValue: player.playbackSourceFor(platform),
             title: Text(source.label),
             subtitle: Text(
-              source == PlaybackSource.chksz
-                  ? '现有解析服务，需要已配置的 API Key'
-                  : 'QingMusic 第三方备用解析，不使用 ChKSz API Key',
+              _playbackSourceDescription(source, enabled: enabled),
             ),
-            onChanged: (selected) async {
-              if (selected == null) return;
-              try {
-                await player.setPlaybackSource(platform, selected);
-                if (!dialogContext.mounted) return;
-                Navigator.pop(dialogContext);
-              } catch (error) {
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('保存${platform.label}音源失败：$error')),
-                );
-              }
-            },
+            onChanged: enabled
+                ? (selected) async {
+                    if (selected == null) return;
+                    try {
+                      await player.setPlaybackSource(platform, selected);
+                      if (!dialogContext.mounted) return;
+                      Navigator.pop(dialogContext);
+                    } catch (error) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('保存${platform.label}音源失败：$error'),
+                        ),
+                      );
+                    }
+                  }
+                : null,
           );
         }).toList(),
       ),
     );
     if (mounted) FocusManager.instance.primaryFocus?.unfocus();
+  }
+
+  String _playbackSourceDescription(
+    PlaybackSource source, {
+    required bool enabled,
+  }) {
+    if (!enabled) return '${source.label} · 已在接口配置中停用';
+    return switch (source) {
+      PlaybackSource.automatic => '主组并行竞速 · 失败后 GDStudio 兜底 · 自动降音质',
+      PlaybackSource.chksz => '现有解析服务 · 需要 API Key',
+      PlaybackSource.qingMusic => '统一 POST 第三方解析',
+      PlaybackSource.hyw => '统一 GET 聚合解析 · 使用 Card Key',
+      PlaybackSource.xinghai => '动态 X-Token 聚合解析',
+      PlaybackSource.gdStudio => '简单 GET 末级备用解析',
+    };
   }
 
   void _showVideoPlayerModePicker(BuildContext context, PlayerProvider player) {

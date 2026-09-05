@@ -32,6 +32,11 @@ class CachedSongInfo {
 /// 文件命名: 歌曲名-歌手.ext（特殊字符替换）
 /// 元数据索引: audio_cache/_index.json
 class AudioCacheService {
+  // Cache lookup must never hold the first playback request hostage when a
+  // platform path provider is unavailable. Normal Android/iOS calls complete
+  // well below this bound; an unavailable test/desktop channel falls back to
+  // the temporary directory immediately on the next branch.
+  static const _directoryLookupTimeout = Duration(milliseconds: 100);
   static final Map<String, _AudioCacheContext> _contexts = {};
   // Playback caching runs in the background while settings can clear or
   // remove a cache entry. Serialize filesystem/index mutations so two calls
@@ -57,7 +62,9 @@ class AudioCacheService {
     final context = _context(scope);
     if (context.cacheDir != null) return context.cacheDir!;
     try {
-      final base = await getApplicationCacheDirectory();
+      final base = await getApplicationCacheDirectory().timeout(
+        _directoryLookupTimeout,
+      );
       final dir = Directory('${base.path}/${scope.audioCacheRelativePath}');
       if (!await dir.exists()) {
         await dir.create(recursive: true);
@@ -65,7 +72,9 @@ class AudioCacheService {
       context.cacheDir = dir;
       return dir;
     } catch (_) {
-      final base = await getTemporaryDirectory();
+      final base = await getTemporaryDirectory().timeout(
+        _directoryLookupTimeout,
+      );
       final dir = Directory('${base.path}/${scope.audioCacheRelativePath}');
       if (!await dir.exists()) {
         await dir.create(recursive: true);
