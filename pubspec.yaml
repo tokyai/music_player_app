@@ -12,7 +12,7 @@ dependencies:
   cupertino_icons: ^1.0.8
 
   # 网络
-  http: ^1.2.2
+  http: ^1.6.0
   dio: ^5.7.0
   crypto: ^3.0.6
   protobuf: ^6.0.0

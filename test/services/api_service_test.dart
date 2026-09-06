@@ -1430,6 +1430,38 @@ void main() {
     },
   );
 
+  test('source probes skip ChKSz when no API key is configured', () async {
+    final requested = <Uri>[];
+    await http.runWithClient(
+      () async {
+        final config = PlaybackSourceConfig.defaults().copyWith(
+          chkszEnabled: true,
+          qingMusicEnabled: false,
+          hywEnabled: false,
+          xinghaiEnabled: false,
+          gdStudioEnabled: false,
+        );
+        final api = ApiService(apiKey: '', playbackSourceConfig: config);
+        try {
+          final single = await api.testPlaybackSource(
+            PlaybackSource.chksz,
+            config: config,
+          );
+          expect(single.message, contains('API Key'));
+          final all = await api.testPlaybackSources(config: config);
+          expect(all, isEmpty);
+        } finally {
+          api.close();
+        }
+      },
+      () => MockClient((request) async {
+        requested.add(request.url);
+        return _jsonResponse({'code': 200});
+      }),
+    );
+    expect(requested, isEmpty);
+  });
+
   test(
     'source probes map the requested platform for Xinghai and GDStudio',
     () async {

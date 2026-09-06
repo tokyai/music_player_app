@@ -27,6 +27,7 @@ class ApiService {
   static const _catalogFallbackTimeout = Duration(seconds: 8);
   static const _probeTimeout = Duration(seconds: 4);
   static const _automaticPlaybackTimeout = Duration(seconds: 20);
+  static const _manualPlaybackTimeout = Duration(seconds: 14);
   static const _retryDelay = Duration(milliseconds: 350);
   static const _maxJsonResponseBytes = 5 * 1024 * 1024;
   static const _maxProbeResponseBytes = 64 * 1024;
@@ -93,6 +94,7 @@ class ApiService {
   PlaybackSourceConfig _playbackSourceConfig;
   String? _xinghaiIp;
   Future<String?>? _xinghaiIpRequest;
+  _PlaybackCancellation? _xinghaiIpCancellation;
   String? _xinghaiToken;
   DateTime? _xinghaiTokenCreatedAt;
   String? _xinghaiTokenDeviceId;
@@ -122,6 +124,8 @@ class ApiService {
     _playbackGeneration++;
     _activePlaybackCancellation?.cancel();
     _playbackSourceConfig = validated;
+    _xinghaiIpCancellation?.cancel();
+    _xinghaiIpCancellation = null;
     _xinghaiIp = null;
     _xinghaiIpRequest = null;
     _xinghaiToken = null;
@@ -139,6 +143,8 @@ class ApiService {
     _playbackGeneration++;
     _activePlaybackCancellation?.cancel();
     _activePlaybackCancellation = null;
+    _xinghaiIpCancellation?.cancel();
+    _xinghaiIpCancellation = null;
     _xinghaiIpRequest = null;
     _xinghaiToken = null;
     _client.close();
@@ -271,9 +277,11 @@ class ApiService {
     Map<String, dynamic> params, {
     Future<void>? cancelSignal,
   }) async {
-    final uri = Uri.parse(
-      _joinUrl(_playbackSourceConfig.chkszBaseUrl, path),
-    ).replace(queryParameters: _chkszQuery(params));
+    final uri = _endpointUri(
+      _playbackSourceConfig.chkszBaseUrl,
+      path,
+      _chkszQuery(params),
+    );
     final http.Response res;
     try {
       res = await _get(
@@ -442,7 +450,19 @@ class ApiService {
       throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
     }
     final operation = _beginPlaybackOperation();
-    Timer? overallTimeout;
+    final overallTimeout = Timer(
+      source == PlaybackSource.automatic
+          ? _automaticPlaybackTimeout
+          : _manualPlaybackTimeout,
+      () => operation.cancel(reason: 'timeout'),
+    );
+    final cancellationTimer = isCancelled == null
+        ? null
+        : Timer.periodic(_racePollInterval, (_) {
+            if (_isExternalPlaybackCancellation(isCancelled)) {
+              operation.cancel();
+            }
+          });
     try {
       if (source != PlaybackSource.automatic) {
         if (!_playbackSourceConfig.isEnabled(source)) {
@@ -472,10 +492,6 @@ class ApiService {
 
       final failures = <String>[];
       final qualityCandidates = _qualityCandidates(platform, quality);
-      overallTimeout = Timer(
-        _automaticPlaybackTimeout,
-        () => operation.cancel(reason: 'timeout'),
-      );
       for (final candidateQuality in qualityCandidates) {
         _ensurePlaybackOperationActive(operation, isCancelled);
         for (
@@ -519,8 +535,12 @@ class ApiService {
         'ALL_PLAYBACK_SOURCES_FAILED',
         '所有已启用备用源均解析失败（${failures.join('；')}）',
       );
+    } catch (_) {
+      _ensurePlaybackOperationActive(operation, isCancelled);
+      rethrow;
     } finally {
-      overallTimeout?.cancel();
+      overallTimeout.cancel();
+      cancellationTimer?.cancel();
       _endPlaybackOperation(operation);
     }
   }
@@ -627,7 +647,6 @@ class ApiService {
     final failures = <String>[];
     var remaining = sources.length;
     var finished = false;
-    Timer? cancellationTimer;
 
     void cancelRace() {
       if (finished) return;
@@ -698,12 +717,9 @@ class ApiService {
       }
     }
 
-    cancellationTimer = Timer.periodic(_racePollInterval, (_) {
-      if (!finished &&
-          !_isPlaybackOperationActive(operation, generation, isCancelled)) {
-        cancelRace();
-      }
-    });
+    final cancellationSubscription = operation.future.asStream().listen(
+      (_) => cancelRace(),
+    );
     for (final source in sources) {
       // Every source in a group starts immediately; each Future is fully
       // observed so a losing request cannot surface an unhandled exception.
@@ -712,7 +728,7 @@ class ApiService {
     try {
       return await completer.future;
     } finally {
-      cancellationTimer.cancel();
+      unawaited(cancellationSubscription.cancel());
       groupCancellation.cancel();
     }
   }
@@ -857,9 +873,11 @@ class ApiService {
       if (_playbackSourceConfig.hywCardKey.isNotEmpty)
         'key': _playbackSourceConfig.hywCardKey,
     };
-    final uri = Uri.parse(
-      _joinUrl(_playbackSourceConfig.hywBaseUrl, '/api/music/url'),
-    ).replace(queryParameters: params);
+    final uri = _endpointUri(
+      _playbackSourceConfig.hywBaseUrl,
+      '/api/music/url',
+      params,
+    );
     final headers = <String, String>{
       if (_playbackSourceConfig.hywCardKey.isNotEmpty)
         'X-Card-Key': _playbackSourceConfig.hywCardKey,
@@ -1027,16 +1045,16 @@ class ApiService {
   Future<Map<String, String>> _xinghaiHeaders({
     Future<void>? cancelSignal,
   }) async {
-    var config = _playbackSourceConfig;
-    var ip = await _xinghaiPublicIp(cancelSignal: cancelSignal) ?? '0.0.0.0';
+    _ensureOpen();
+    // The single-flight lookup belongs to the service, while this song only
+    // waits as long as it remains current. A later song can reuse the result.
+    final ip =
+        await awaitWithCancellation(_xinghaiPublicIp(), cancelSignal) ??
+        '0.0.0.0';
     if (_closed) {
       throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
     }
-    if (config.xinghaiDeviceId != _playbackSourceConfig.xinghaiDeviceId ||
-        config.xinghaiClient != _playbackSourceConfig.xinghaiClient) {
-      config = _playbackSourceConfig;
-      ip = _xinghaiIp ?? '0.0.0.0';
-    }
+    final config = _playbackSourceConfig;
     final now = DateTime.now();
     final createdAt = _xinghaiTokenCreatedAt;
     if (_xinghaiToken == null ||
@@ -1062,13 +1080,15 @@ class ApiService {
     };
   }
 
-  Future<String?> _xinghaiPublicIp({Future<void>? cancelSignal}) {
+  Future<String?> _xinghaiPublicIp() {
     if (_xinghaiIp != null) return Future<String?>.value(_xinghaiIp);
     if (_playbackSourceConfig.xinghaiIpUrl.isEmpty) {
       return Future<String?>.value(null);
     }
     final pending = _xinghaiIpRequest;
-    if (pending != null) return awaitWithCancellation(pending, cancelSignal);
+    if (pending != null) return pending;
+    final cancellation = _PlaybackCancellation();
+    _xinghaiIpCancellation = cancellation;
     late final Future<String?> request;
     request = () async {
       try {
@@ -1076,7 +1096,8 @@ class ApiService {
           Uri.parse(_playbackSourceConfig.xinghaiIpUrl),
           timeout: _xinghaiIpTimeout,
           maxAttempts: 1,
-          cancelSignal: cancelSignal,
+          cancelSignal: cancellation.future,
+          maxBytes: _maxProbeResponseBytes,
         );
         if (response.statusCode < 200 || response.statusCode >= 300) {
           return null;
@@ -1090,11 +1111,14 @@ class ApiService {
           _xinghaiIp = ip;
         }
         return ip?.isNotEmpty == true ? ip : null;
-      } catch (error) {
-        if (_isPlaybackCancellationError(error)) rethrow;
+      } catch (_) {
         return null;
       } finally {
         if (identical(_xinghaiIpRequest, request)) _xinghaiIpRequest = null;
+        if (identical(_xinghaiIpCancellation, cancellation)) {
+          _xinghaiIpCancellation = null;
+        }
+        cancellation.cancel();
       }
     }();
     _xinghaiIpRequest = request;
@@ -1248,12 +1272,18 @@ class ApiService {
     };
   }
 
-  static String _joinUrl(String base, String path) {
-    final normalizedBase = base.endsWith('/')
-        ? base.substring(0, base.length - 1)
-        : base;
+  static Uri _endpointUri(
+    String base,
+    String path,
+    Map<String, String> params,
+  ) {
+    final uri = Uri.parse(base);
+    final basePath = uri.path.replaceFirst(RegExp(r'/+$'), '');
     final normalizedPath = path.startsWith('/') ? path : '/$path';
-    return '$normalizedBase$normalizedPath';
+    return uri.replace(
+      path: '$basePath$normalizedPath',
+      queryParameters: {...uri.queryParameters, ...params},
+    );
   }
 
   static String _randomBase36(int length) {
@@ -1303,6 +1333,16 @@ class ApiService {
       );
     }
 
+    if (source == PlaybackSource.chksz && apiKey.trim().isEmpty) {
+      return const PlaybackSourceTestResult(
+        source: PlaybackSource.chksz,
+        reachable: false,
+        latencyMs: 0,
+        statusCode: null,
+        message: '需要先填写 ChKSz API Key',
+      );
+    }
+
     final effective = config ?? _playbackSourceConfig;
     final stopwatch = Stopwatch()..start();
     try {
@@ -1333,9 +1373,7 @@ class ApiService {
             },
           };
           response = await _get(
-            Uri.parse(
-              _joinUrl(effective.chkszBaseUrl, endpoint),
-            ).replace(queryParameters: params),
+            _endpointUri(effective.chkszBaseUrl, endpoint, params),
             timeout: _probeTimeout,
             maxAttempts: 1,
             maxBytes: _maxProbeResponseBytes,
@@ -1370,9 +1408,7 @@ class ApiService {
             if (effective.hywCardKey.isNotEmpty) 'key': effective.hywCardKey,
           };
           response = await _get(
-            Uri.parse(
-              _joinUrl(effective.hywBaseUrl, '/api/music/url'),
-            ).replace(queryParameters: params),
+            _endpointUri(effective.hywBaseUrl, '/api/music/url', params),
             headers: {
               if (effective.hywCardKey.isNotEmpty)
                 'X-Card-Key': effective.hywCardKey,
@@ -1449,6 +1485,7 @@ class ApiService {
       );
     } catch (error) {
       stopwatch.stop();
+      if (_isPlaybackCancellationError(error)) rethrow;
       return PlaybackSourceTestResult(
         source: source,
         reachable: false,
@@ -1474,6 +1511,10 @@ class ApiService {
     final sources = PlaybackSource.values
         .where((source) => source != PlaybackSource.automatic)
         .where((source) => !enabledOnly || effective.isEnabled(source))
+        .where(
+          (source) =>
+              source != PlaybackSource.chksz || apiKey.trim().isNotEmpty,
+        )
         .toList(growable: false);
     if (sources.isEmpty) return const [];
 
@@ -1483,9 +1524,10 @@ class ApiService {
     );
     final workerCount = min(max(1, maxConcurrent), 3);
     var nextIndex = 0;
+    var cancelled = false;
 
     Future<void> worker() async {
-      while (true) {
+      while (!cancelled) {
         final index = nextIndex++;
         if (index >= sources.length) return;
         try {
@@ -1496,6 +1538,10 @@ class ApiService {
             cancelSignal: cancelSignal,
           );
         } catch (error) {
+          if (_isPlaybackCancellationError(error)) {
+            cancelled = true;
+            rethrow;
+          }
           results[index] = PlaybackSourceTestResult(
             source: sources[index],
             reachable: false,

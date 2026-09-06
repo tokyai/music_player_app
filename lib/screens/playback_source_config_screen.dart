@@ -91,6 +91,7 @@ class _PlaybackSourceConfigScreenState
       _xinghaiClientController.text = config.xinghaiClient;
       _xinghaiDeviceIdController.text = config.xinghaiDeviceId;
       _gdStudioUrlController.text = config.gdStudioUrl;
+      _testResults.clear();
     }
 
     if (rebuild) {
@@ -253,11 +254,11 @@ class _PlaybackSourceConfigScreenState
     final result = _testResults[source];
     if (result == null) return '尚未测试';
     final latency = result.latencyMs == null ? '' : ' · ${result.latencyMs} ms';
-    if (result.successful) return '可用$latency';
+    if (result.successful) return '已响应 · ${result.message}$latency';
     if (result.reachable) {
       return '可达 · ${result.message}$latency';
     }
-    return '不可用 · ${result.message}$latency';
+    return '未连接 · ${result.message}$latency';
   }
 
   Color _testStatusColor(PlaybackSource source) {
@@ -364,14 +365,7 @@ class _PlaybackSourceConfigScreenState
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('自动备用顺序', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 6),
-            const Text('ChKSz（有 Key 时）→ QingMusic → HYW → 星海 → GDStudio'),
-            const SizedBox(height: 6),
-            Text(
-              '主组内并行竞速，全部失败后进入 GDStudio 兜底组；每档失败后最多自动降 3 档。选择具体源时不会自动切换。',
-              style: TextStyle(color: AppColors.textSecondary),
-            ),
+            Text('接口连通性', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 12),
             Wrap(
               spacing: 10,
@@ -606,6 +600,8 @@ class _PlaybackSourceConfigScreenState
   }) => TextField(
     key: key,
     controller: controller,
+    enabled: !_busy,
+    onChanged: (_) => setState(_testResults.clear),
     obscureText: obscureText,
     autocorrect: false,
     enableSuggestions: false,

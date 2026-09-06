@@ -31,25 +31,90 @@ Future<http.Response> sendBoundedHttpRequest(
   required Duration timeout,
   Future<void>? cancelSignal,
 }) async {
-  final streamed = await awaitWithCancellation(
-    client.send(request).timeout(timeout),
-    cancelSignal,
+  final abort = Completer<void>();
+  Object? interruption;
+  void interrupt(Object error) {
+    if (abort.isCompleted) return;
+    interruption = error;
+    abort.complete();
+  }
+
+  final deadline = Timer(
+    timeout,
+    () => interrupt(TimeoutException('HTTP request timed out', timeout)),
   );
-  final bodyBytes = await _readBoundedResponse(
-    streamed.stream,
-    maxBytes: maxBytes,
-    timeout: timeout,
-    cancelSignal: cancelSignal,
+  final cancellationSubscription = cancelSignal?.asStream().listen(
+    (_) => interrupt(const HttpRequestCancelledException()),
+    onError: (Object _) => interrupt(const HttpRequestCancelledException()),
   );
-  return http.Response.bytes(
-    bodyBytes,
-    streamed.statusCode,
-    request: request,
-    headers: streamed.headers,
-    isRedirect: streamed.isRedirect,
-    persistentConnection: streamed.persistentConnection,
-    reasonPhrase: streamed.reasonPhrase,
-  );
+
+  Future<http.Response> receive() async {
+    // Deliver an already-completed cancellation before opening a connection.
+    await Future<void>.value();
+    if (abort.isCompleted) throw interruption!;
+    final streamed = await client.send(
+      _AbortableBoundedRequest(request, abort.future),
+    );
+    if (abort.isCompleted) {
+      // Also release late responses from clients that ignore abortTrigger.
+      unawaited(
+        _cancelSubscriptionQuietly(
+          streamed.stream.listen((_) {}, onError: (Object _) {}),
+        ),
+      );
+      throw interruption!;
+    }
+    final bodyBytes = await _readBoundedResponse(
+      streamed.stream,
+      maxBytes: maxBytes,
+      timeout: timeout,
+      cancelSignal: abort.future,
+    );
+    return http.Response.bytes(
+      bodyBytes,
+      streamed.statusCode,
+      request: request,
+      headers: streamed.headers,
+      isRedirect: streamed.isRedirect,
+      persistentConnection: streamed.persistentConnection,
+      reasonPhrase: streamed.reasonPhrase,
+    );
+  }
+
+  try {
+    return await awaitWithCancellation(receive(), abort.future);
+  } on HttpRequestCancelledException {
+    throw interruption ?? const HttpRequestCancelledException();
+  } on http.RequestAbortedException {
+    throw interruption ?? const HttpRequestCancelledException();
+  } finally {
+    deadline.cancel();
+    unawaited(cancellationSubscription?.cancel());
+    // Release client listeners even when the owner's signal stays pending.
+    if (!abort.isCompleted) abort.complete();
+  }
+}
+
+/// Preserve the original request stream without copying JSON/upload bodies.
+class _AbortableBoundedRequest extends http.BaseRequest with http.Abortable {
+  final http.BaseRequest _request;
+  @override
+  final Future<void> abortTrigger;
+
+  _AbortableBoundedRequest(this._request, this.abortTrigger)
+    : super(_request.method, _request.url) {
+    headers.addAll(_request.headers);
+    contentLength = _request.contentLength;
+    followRedirects = _request.followRedirects;
+    maxRedirects = _request.maxRedirects;
+    persistentConnection = _request.persistentConnection;
+  }
+
+  @override
+  http.ByteStream finalize() {
+    super.finalize();
+    return _request.finalize();
+  }
 }
 
 Future<Uint8List> _readBoundedResponse(
@@ -170,9 +235,14 @@ Future<T> awaitWithCancellation<T>(
       },
     ),
   );
-  cancellationSubscription = cancelSignal.asStream().listen((_) {
-    completeError(const HttpRequestCancelledException(), StackTrace.current);
-  });
+  cancellationSubscription = cancelSignal.asStream().listen(
+    (_) => completeError(
+      const HttpRequestCancelledException(),
+      StackTrace.current,
+    ),
+    onError: (Object _, StackTrace stackTrace) =>
+        completeError(const HttpRequestCancelledException(), stackTrace),
+  );
   try {
     return await result.future;
   } finally {

@@ -189,6 +189,11 @@ class PlaybackSourceConfig {
     if (normalizedClient.length > _maxHeaderLength) {
       throw const FormatException('星海 X-Client 过长');
     }
+    final invalidHeader = RegExp(r'[^\x20-\x7e]');
+    if (invalidHeader.hasMatch(normalizedCardKey) ||
+        invalidHeader.hasMatch(normalizedClient)) {
+      throw const FormatException('Card Key 和 X-Client 只能包含单行 ASCII 字符');
+    }
     if (normalizedDeviceId.length > _maxHeaderLength) {
       throw const FormatException('星海设备 ID 过长');
     }
@@ -315,6 +320,9 @@ class PlaybackSourceConfig {
     if (uri == null ||
         !uri.hasScheme ||
         uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasFragment ||
+        RegExp(r'[\x00-\x20\x7f]').hasMatch(normalized) ||
         (uri.scheme != 'http' && uri.scheme != 'https')) {
       throw FormatException('$label 必须是有效的 HTTP/HTTPS 地址');
     }
