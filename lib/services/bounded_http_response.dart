@@ -24,11 +24,14 @@ class HttpRequestCancelledException implements Exception {
   String toString() => 'HTTP request cancelled';
 }
 
+/// [timeout] bounds response headers and body inactivity. Resolvers can also
+/// set [totalTimeout] without changing the idle policy of large downloads.
 Future<http.Response> sendBoundedHttpRequest(
   http.Client client,
   http.BaseRequest request, {
   required int maxBytes,
   required Duration timeout,
+  Duration? totalTimeout,
   Future<void>? cancelSignal,
 }) async {
   final abort = Completer<void>();
@@ -43,6 +46,14 @@ Future<http.Response> sendBoundedHttpRequest(
     timeout,
     () => interrupt(TimeoutException('HTTP request timed out', timeout)),
   );
+  final totalDeadline = totalTimeout == null
+      ? null
+      : Timer(
+          totalTimeout,
+          () => interrupt(
+            TimeoutException('HTTP request timed out', totalTimeout),
+          ),
+        );
   final cancellationSubscription = cancelSignal?.asStream().listen(
     (_) => interrupt(const HttpRequestCancelledException()),
     onError: (Object _) => interrupt(const HttpRequestCancelledException()),
@@ -55,6 +66,7 @@ Future<http.Response> sendBoundedHttpRequest(
     final streamed = await client.send(
       _AbortableBoundedRequest(request, abort.future),
     );
+    deadline.cancel();
     if (abort.isCompleted) {
       // Also release late responses from clients that ignore abortTrigger.
       unawaited(
@@ -89,6 +101,7 @@ Future<http.Response> sendBoundedHttpRequest(
     throw interruption ?? const HttpRequestCancelledException();
   } finally {
     deadline.cancel();
+    totalDeadline?.cancel();
     unawaited(cancellationSubscription?.cancel());
     // Release client listeners even when the owner's signal stays pending.
     if (!abort.isCompleted) abort.complete();

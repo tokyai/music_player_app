@@ -112,6 +112,7 @@ void main() {
           http.Request('GET', Uri.parse('https://resolver.test')),
           maxBytes: 10000,
           timeout: const Duration(milliseconds: 80),
+          totalTimeout: const Duration(milliseconds: 80),
         ),
         throwsA(isA<TimeoutException>()),
       );
@@ -147,6 +148,29 @@ void main() {
       );
       expect(response.body, '{}');
       expect(response.request, same(request));
+    },
+  );
+
+  test(
+    'downloads without a total deadline retain the body inactivity policy',
+    () async {
+      final client = MockClient.streaming(
+        (_, __) async => http.StreamedResponse(
+          Stream<List<int>>.periodic(
+            const Duration(milliseconds: 50),
+            (_) => [1],
+          ).take(4),
+          200,
+        ),
+      );
+      addTearDown(client.close);
+      final response = await sendBoundedHttpRequest(
+        client,
+        http.Request('GET', Uri.parse('https://backup.test')),
+        maxBytes: 100,
+        timeout: const Duration(milliseconds: 150),
+      );
+      expect(response.bodyBytes, [1, 1, 1, 1]);
     },
   );
 }

@@ -182,6 +182,7 @@ class ApiService {
           request,
           maxBytes: maxBytes,
           timeout: timeout,
+          totalTimeout: timeout,
           cancelSignal: cancelSignal,
         );
         if (attempt < attempts - 1 && response.statusCode >= 500) {
@@ -237,6 +238,7 @@ class ApiService {
           request,
           maxBytes: maxBytes,
           timeout: timeout,
+          totalTimeout: timeout,
           cancelSignal: cancelSignal,
         );
         if (attempt < attempts - 1 && response.statusCode >= 500) {
@@ -491,6 +493,7 @@ class ApiService {
       }
 
       final failures = <String>[];
+      final attempted = <(PlaybackSource, String)>{};
       final qualityCandidates = _qualityCandidates(platform, quality);
       for (final candidateQuality in qualityCandidates) {
         _ensurePlaybackOperationActive(operation, isCancelled);
@@ -501,6 +504,12 @@ class ApiService {
         ) {
           final group = _playbackSourceGroups[groupIndex]
               .where(candidates.contains)
+              .where(
+                (source) => attempted.add((
+                  source,
+                  _effectivePlaybackQuality(source, platform, candidateQuality),
+                )),
+              )
               .toList(growable: false);
           if (group.isEmpty) continue;
           try {
@@ -565,9 +574,23 @@ class ApiService {
         : _commonQualityOrder;
     final index = order.indexOf(requested);
     if (index < 0) return [requestedQuality];
-    final end = min(order.length, index + _maxQualityDowngrades + 1);
-    return order.sublist(index, end).toList(growable: false);
+    // Keep the requested quality, but reserve the bounded fallback slots for
+    // lossless, high and standard instead of only other premium-only tiers.
+    final fallbackStart = max(index + 1, order.length - _maxQualityDowngrades);
+    return [requested, ...order.skip(fallbackStart)];
   }
+
+  static String _effectivePlaybackQuality(
+    PlaybackSource source,
+    MusicPlatform platform,
+    String quality,
+  ) => switch (source) {
+    PlaybackSource.qingMusic => _qingMusicLevel(platform, quality),
+    PlaybackSource.hyw ||
+    PlaybackSource.xinghai => _aggregatorQuality(platform, quality),
+    PlaybackSource.gdStudio => _gdBitrate(platform, quality),
+    _ => quality,
+  };
 
   _PlaybackCancellation _beginPlaybackOperation() {
     _activePlaybackCancellation?.cancel();
@@ -1303,10 +1326,13 @@ class ApiService {
   static String _safeResolverFailure(Object error) {
     if (error is ApiException) {
       return switch (error.code) {
-        'API_KEY_REQUIRED' ||
-        'SOURCE_DISABLED' ||
-        'SOURCE_UNSUPPORTED' => error.message,
-        _ => '解析失败（${error.code}）',
+        'API_KEY_REQUIRED' => '需要配置 API Key',
+        'SOURCE_DISABLED' => '音源已停用',
+        'SOURCE_UNSUPPORTED' => '音源不支持当前平台',
+        _ =>
+          RegExp(r'^[A-Za-z0-9_]{1,64}$').hasMatch(error.code)
+              ? '解析失败（${error.code}）'
+              : '解析失败',
       };
     }
     return '网络请求失败';
