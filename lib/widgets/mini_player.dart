@@ -188,53 +188,62 @@ class _MiniPlaybackControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final player = context.read<PlayerProvider>();
-    return Selector<PlayerProvider, bool>(
-      selector: (_, player) => player.isPlaying,
-      builder: (context, isPlaying, _) => AppMotionSwitcher(
-        beginOffset: Offset.zero,
-        child: loading
-            ? SizedBox(
-                key: const ValueKey('mini-player-loading'),
-                width: 40,
-                height: 40,
-                child: Padding(
-                  padding: const EdgeInsets.all(8),
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2.5,
-                    color: AppColors.primary,
-                  ),
-                ),
-              )
-            : Row(
-                key: const ValueKey('mini-player-controls'),
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    tooltip: isPlaying ? '暂停' : '播放',
-                    icon: AppAnimatedIcon(
-                      stateKey: isPlaying,
-                      child: Icon(
-                        isPlaying
-                            ? Icons.pause_circle_filled
-                            : Icons.play_circle_fill,
-                        size: compact ? 36 : 40,
+    return Selector<PlayerProvider, (bool, bool)>(
+      selector: (_, player) => (player.isPlaying, player.isLoading),
+      builder: (context, state, _) {
+        final isPlaying = state.$1;
+        final isLoading = loading || state.$2;
+        return Row(
+          key: const ValueKey('mini-player-controls'),
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              tooltip: '上一首',
+              icon: Icon(
+                Icons.skip_previous_rounded,
+                size: compact ? 26 : 30,
+                color: AppColors.textPrimary,
+              ),
+              onPressed: player.playPrevious,
+            ),
+            SizedBox.square(
+              dimension: compact ? 50 : 54,
+              child: isLoading
+                  ? Padding(
+                      key: const ValueKey('mini-player-loading'),
+                      padding: const EdgeInsets.all(12),
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.5,
                         color: AppColors.primary,
                       ),
+                    )
+                  : IconButton(
+                      tooltip: isPlaying ? '暂停' : '播放',
+                      icon: AppAnimatedIcon(
+                        stateKey: isPlaying,
+                        child: Icon(
+                          isPlaying
+                              ? Icons.pause_circle_filled
+                              : Icons.play_circle_fill,
+                          size: compact ? 36 : 40,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                      onPressed: player.playPause,
                     ),
-                    onPressed: player.playPause,
-                  ),
-                  IconButton(
-                    tooltip: '下一首',
-                    icon: Icon(
-                      Icons.skip_next_rounded,
-                      size: compact ? 26 : 30,
-                      color: AppColors.textPrimary,
-                    ),
-                    onPressed: player.playNext,
-                  ),
-                ],
+            ),
+            IconButton(
+              tooltip: '下一首',
+              icon: Icon(
+                Icons.skip_next_rounded,
+                size: compact ? 26 : 30,
+                color: AppColors.textPrimary,
               ),
-      ),
+              onPressed: player.playNext,
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -413,9 +422,9 @@ class _LandscapeMiniControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final player = context.read<PlayerProvider>();
-    return Selector<PlayerProvider, bool>(
-      selector: (_, player) => player.isPlaying,
-      builder: (context, isPlaying, _) => Row(
+    return Selector<PlayerProvider, (bool, bool)>(
+      selector: (_, player) => (player.isPlaying, player.isLoading),
+      builder: (context, state, _) => Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           IconButton(
@@ -426,9 +435,9 @@ class _LandscapeMiniControls extends StatelessWidget {
               size: compactHeight ? 24 : 30,
             ),
           ),
-          AppMotionSwitcher(
-            beginOffset: Offset.zero,
-            child: loading
+          SizedBox.square(
+            dimension: compactHeight ? 50 : 56,
+            child: loading || state.$2
                 ? SizedBox(
                     key: const ValueKey('landscape-mini-loading'),
                     width: compactHeight ? 44 : 52,
@@ -443,12 +452,12 @@ class _LandscapeMiniControls extends StatelessWidget {
                   )
                 : IconButton.filled(
                     key: const ValueKey('landscape-mini-play-control'),
-                    tooltip: isPlaying ? '暂停' : '播放',
+                    tooltip: state.$1 ? '暂停' : '播放',
                     onPressed: player.playPause,
                     icon: AppAnimatedIcon(
-                      stateKey: isPlaying,
+                      stateKey: state.$1,
                       child: Icon(
-                        isPlaying
+                        state.$1
                             ? Icons.pause_rounded
                             : Icons.play_arrow_rounded,
                         size: compactHeight ? 24 : 30,

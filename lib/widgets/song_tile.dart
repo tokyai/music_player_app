@@ -72,6 +72,12 @@ class SongTile extends StatelessWidget {
         final cardPadding = collectionCard
             ? EdgeInsets.all(layout.isCompactLandscape ? 8 : 10)
             : EdgeInsets.zero;
+        final actions = _buildActions(
+          layout,
+          platformColor,
+          actionIconSize,
+          narrowPane: narrowPane,
+        );
         return Container(
           decoration: BoxDecoration(
             color: selectionMode && selected
@@ -160,110 +166,28 @@ class SongTile extends StatelessWidget {
             ),
             subtitle: Padding(
               padding: const EdgeInsets.only(top: 2),
-              child: Text(
-                '${song.artist} · ${song.album}',
-                maxLines: collectionCard ? 2 : 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: layout.songSubtitleSize,
-                  height: collectionCard ? null : 1.25,
-                  color: isCurrent
-                      ? AppColors.primary.withOpacity(0.7)
-                      : AppColors.textSecondary,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '${song.artist} · ${song.album}',
+                    maxLines: collectionCard ? 2 : 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: layout.songSubtitleSize,
+                      height: collectionCard ? null : 1.25,
+                      color: isCurrent
+                          ? AppColors.primary.withValues(alpha: 0.7)
+                          : AppColors.textSecondary,
+                    ),
+                  ),
+                  if (veryCompact)
+                    Align(alignment: Alignment.centerRight, child: actions),
+                ],
               ),
             ),
-            trailing: veryCompact
-                ? null
-                : selectionMode
-                ? Checkbox(
-                    value: selected,
-                    onChanged: (value) =>
-                        onSelectionChanged?.call(value ?? false),
-                  )
-                : Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (showFavorite)
-                        Selector<FavoriteService, bool>(
-                          selector: (_, favorites) =>
-                              favorites.isFavorite(song.platform, song.id),
-                          builder: (ctx, isFav, _) {
-                            final favorites = ctx.read<FavoriteService>();
-                            return IconButton(
-                              tooltip: isFav ? '取消收藏' : '收藏',
-                              icon: AppAnimatedIcon(
-                                stateKey: isFav,
-                                child: Icon(
-                                  isFav
-                                      ? Icons.favorite
-                                      : Icons.favorite_border,
-                                  size: actionIconSize,
-                                  color: isFav
-                                      ? Colors.redAccent
-                                      : AppColors.textHint,
-                                ),
-                              ),
-                              onPressed: () {
-                                favorites.toggle(song);
-                                ScaffoldMessenger.of(ctx).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      isFav
-                                          ? '已取消收藏: ${song.name}'
-                                          : '已收藏: ${song.name}',
-                                    ),
-                                    duration: const Duration(seconds: 1),
-                                  ),
-                                );
-                              },
-                            );
-                          },
-                        ),
-                      if (showPlatformTag && !narrowPane)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 9,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: platformColor.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(
-                              AppRadius.control,
-                            ),
-                          ),
-                          child: Text(
-                            song.platform.label,
-                            style: TextStyle(
-                              fontSize: layout.secondarySize,
-                              color: platformColor,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      if (onAddToQueue != null) ...[
-                        const SizedBox(width: 2),
-                        PopupMenuButton<String>(
-                          iconSize: actionIconSize,
-                          color: AppColors.surface,
-                          onSelected: (value) {
-                            if (value == 'add_queue') onAddToQueue!();
-                          },
-                          itemBuilder: (_) => const [
-                            PopupMenuItem(
-                              value: 'add_queue',
-                              child: Text('添加到队列'),
-                            ),
-                          ],
-                        ),
-                      ] else
-                        Icon(
-                          Icons.chevron_right,
-                          size: actionIconSize,
-                          color: AppColors.textHint,
-                        ),
-                    ],
-                  ),
+            trailing: veryCompact ? null : actions,
             selected: selectionMode && selected,
             onTap: selectionMode
                 ? () => onSelectionChanged?.call(!selected)
@@ -274,6 +198,88 @@ class SongTile extends StatelessWidget {
       },
     );
   }
+
+  Widget _buildActions(
+    AppLayout layout,
+    Color platformColor,
+    double actionIconSize, {
+    required bool narrowPane,
+  }) => selectionMode
+      ? Checkbox(
+          value: selected,
+          onChanged: (value) => onSelectionChanged?.call(value ?? false),
+        )
+      : Wrap(
+          alignment: WrapAlignment.end,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 2,
+          children: [
+            if (showFavorite)
+              Selector<FavoriteService, bool>(
+                selector: (_, favorites) =>
+                    favorites.isFavorite(song.platform, song.id),
+                builder: (ctx, isFav, _) {
+                  final favorites = ctx.read<FavoriteService>();
+                  return IconButton(
+                    tooltip: isFav ? '取消收藏' : '收藏',
+                    icon: AppAnimatedIcon(
+                      stateKey: isFav,
+                      child: Icon(
+                        isFav ? Icons.favorite : Icons.favorite_border,
+                        size: actionIconSize,
+                        color: isFav ? Colors.redAccent : AppColors.textHint,
+                      ),
+                    ),
+                    onPressed: () {
+                      favorites.toggle(song);
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            isFav ? '已取消收藏: ${song.name}' : '已收藏: ${song.name}',
+                          ),
+                          duration: const Duration(seconds: 1),
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            if (showPlatformTag && !narrowPane)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                decoration: BoxDecoration(
+                  color: platformColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(AppRadius.control),
+                ),
+                child: Text(
+                  song.platform.label,
+                  style: TextStyle(
+                    fontSize: layout.secondarySize,
+                    color: platformColor,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            if (onAddToQueue != null)
+              PopupMenuButton<String>(
+                tooltip: '歌曲操作',
+                iconSize: actionIconSize,
+                color: AppColors.surface,
+                onSelected: (value) {
+                  if (value == 'add_queue') onAddToQueue!();
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'add_queue', child: Text('添加到队列')),
+                ],
+              )
+            else
+              Icon(
+                Icons.chevron_right,
+                size: actionIconSize,
+                color: AppColors.textHint,
+              ),
+          ],
+        );
 
   Widget _placeholder(Color platformColor) {
     return Container(
