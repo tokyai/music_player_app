@@ -2054,6 +2054,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final options = player.playbackSourceOptions(song.platform);
     if (options.isEmpty) return;
     final selected = player.currentPlaybackSource ?? PlaybackSource.automatic;
+    var selectionMade = false;
     await showModalBottomSheet<void>(
       context: ctx,
       showDragHandle: true,
@@ -2067,10 +2068,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
             child: ListView(
               padding: const EdgeInsets.only(bottom: 12),
               children: [
-                const ListTile(
-                  leading: Icon(Icons.swap_horiz_rounded),
-                  title: Text('切换当前歌曲音源'),
-                  subtitle: Text('只影响这首歌本次播放，不修改平台默认设置'),
+                ListTile(
+                  leading: const Icon(Icons.swap_horiz_rounded),
+                  title: const Text('切换当前歌曲音源'),
+                  subtitle: Text(
+                    song.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
                 for (final source in options)
                   ListTile(
@@ -2082,17 +2087,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       color: source == selected ? AppColors.primary : null,
                     ),
                     title: Text(source.label),
-                    subtitle: source == PlaybackSource.automatic
-                        ? const Text('按当前音质自动竞速并回退')
-                        : null,
                     trailing: source == selected
                         ? const Icon(Icons.check, color: AppColors.primary)
                         : null,
                     onTap: () async {
+                      if (selectionMade) return;
+                      selectionMade = true;
                       Navigator.of(sheetContext).pop();
-                      final success = await player.switchCurrentPlaybackSource(
-                        source,
-                      );
+                      var success = false;
+                      try {
+                        success = await player.switchCurrentPlaybackSource(
+                          source,
+                          expectedSong: song,
+                        );
+                      } catch (error) {
+                        debugPrint('切换当前歌曲音源失败: ${error.runtimeType}');
+                      }
                       if (!ctx.mounted || success) return;
                       ScaffoldMessenger.of(ctx).showSnackBar(
                         const SnackBar(content: Text('切换音源失败，请选择其他音源')),

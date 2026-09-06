@@ -108,10 +108,8 @@ class PlayerProvider extends ChangeNotifier {
   String? _activePlaybackItemKey;
   PlaybackSource? _currentResolvedPlaybackSource;
   PlaybackSource? _currentPlaybackSourceOverride;
-  bool _currentAutomaticSourceOverride = false;
   final Set<PlaybackSource> _currentPlaybackFailedSources = <PlaybackSource>{};
   int _playbackRecoveryAttempts = 0;
-  bool _playbackRecoveryInFlight = false;
 
   // 音质
   NeteaseLevel _neteaseLevel = NeteaseLevel.jymaster;
@@ -244,11 +242,11 @@ class PlayerProvider extends ChangeNotifier {
 
   /// The resolver that supplied the URL currently loaded for the active song.
   /// This is session state only and is never written to preferences.
-  PlaybackSource? get currentPlaybackSource =>
-      _currentResolvedPlaybackSource ??
-      (_currentAutomaticSourceOverride
-          ? PlaybackSource.automatic
-          : _currentPlaybackSourceOverride);
+  PlaybackSource? get currentPlaybackSource {
+    final song = currentSong;
+    if (song == null || _activePlaybackItemKey != _itemKey(song)) return null;
+    return _currentResolvedPlaybackSource ?? _currentPlaybackSourceOverride;
+  }
 
   List<PlaybackSource> playbackSourceOptions(MusicPlatform platform) {
     if (platform == MusicPlatform.bilibili) return const [];
@@ -765,59 +763,48 @@ class PlayerProvider extends ChangeNotifier {
 
     _errorSub = _audioPlayer.playbackEventStream.listen(
       (_) {},
-      onError: (e) {
-        if (_disposed) return;
-        final song = currentSong;
-        final canRecover =
-            song != null &&
-            song.platform != MusicPlatform.bilibili &&
-            (playbackSourceFor(song.platform) == PlaybackSource.automatic ||
-                _currentAutomaticSourceOverride) &&
-            (_currentPlaybackSourceOverride == null ||
-                _currentAutomaticSourceOverride) &&
-            !_isLoading &&
-            !_playbackRecoveryInFlight &&
-            _playbackRecoveryAttempts < _maxPlaybackRecoveryAttempts;
-        if (canRecover) {
-          final failedSource = _currentResolvedPlaybackSource;
-          if (failedSource != null) {
-            _currentPlaybackFailedSources.add(failedSource);
-          } else {
-            _invalidatePlayUrl(_itemKey(song));
-          }
-          _playbackRecoveryAttempts++;
-          _playbackRecoveryInFlight = true;
-          unawaited(_recoverFromPlaybackError(song));
-          return;
-        }
-        // 播放中途出错（解码失败/数据流中断）：停止并提示，避免静默
-        _isLoading = false;
-        _errorMessage = '播放错误: $e';
-        _lastError = '播放出错：音源可能已失效，已停止播放';
-        unawaited(_stopAfterPlaybackError());
-        notifyListeners();
-      },
+      onError: _handlePlaybackFailure,
     );
   }
 
-  Future<void> _recoverFromPlaybackError(PlayQueueItem expectedSong) async {
-    try {
-      if (_disposed ||
-          currentSong == null ||
-          _itemKey(currentSong!) != _itemKey(expectedSong)) {
-        return;
-      }
-      await _playCurrent(
-        resumePosition: _position,
-        excludedSources: Set<PlaybackSource>.of(_currentPlaybackFailedSources),
-        bypassAudioCache: true,
-      );
-    } finally {
-      final current = currentSong;
-      if (current != null && _itemKey(current) == _itemKey(expectedSong)) {
-        _playbackRecoveryInFlight = false;
-      }
+  void _handlePlaybackFailure(Object error) {
+    // Loading errors are owned by setAudioSource's awaited failure path.
+    // A duplicate stream error must not stop a newer load or start a second recovery.
+    if (_disposed || _preparingForExit || dataScope.isDeleted || _isLoading)
+      return;
+    final song = currentSong;
+    if (song == null) return;
+    _invalidatePlayUrl(_itemKey(song));
+    final source =
+        _currentPlaybackSourceOverride ?? playbackSourceFor(song.platform);
+    if (song.platform != MusicPlatform.bilibili &&
+        source == PlaybackSource.automatic &&
+        _playbackRecoveryAttempts < _maxPlaybackRecoveryAttempts) {
+      final failedSource = _currentResolvedPlaybackSource;
+      if (failedSource != null) _currentPlaybackFailedSources.add(failedSource);
+      _playbackRecoveryAttempts++;
+      unawaited(_recoverFromPlaybackError(song, _playRequestId));
+      return;
     }
+    _errorMessage = '播放错误: $error';
+    _lastError = '播放出错：音源可能已失效，已停止播放';
+    unawaited(_stopAfterPlaybackError());
+    notifyListeners();
+  }
+
+  Future<void> _recoverFromPlaybackError(
+    PlayQueueItem expectedSong,
+    int expectedRequest,
+  ) async {
+    if (!_isCurrentRequest(expectedRequest, expectedSong)) return;
+    await _playCurrent(
+      resumePosition: _position,
+      sourceOverride: _currentPlaybackSourceOverride,
+      excludedSources: Set<PlaybackSource>.of(_currentPlaybackFailedSources),
+      forceResolve: true,
+      bypassAudioCache: true,
+      recovering: true,
+    );
   }
 
   void _handlePlayerStreamError(
@@ -1180,28 +1167,35 @@ class PlayerProvider extends ChangeNotifier {
 
   /// Re-resolves only the current song with a temporary source choice.
   /// This intentionally does not touch the platform preference or backups.
-  Future<bool> switchCurrentPlaybackSource(PlaybackSource source) async {
-    await settingsReady;
+  Future<bool> switchCurrentPlaybackSource(
+    PlaybackSource source, {
+    PlayQueueItem? expectedSong,
+  }) async {
     final item = currentSong;
+    final previousRequest = _playRequestId;
+    if (item == null) return false;
+    await settingsReady;
     if (_disposed ||
-        item == null ||
+        _preparingForExit ||
+        dataScope.isDeleted ||
+        !_isCurrentRequest(previousRequest, item) ||
+        (expectedSong != null && _itemKey(expectedSong) != _itemKey(item)) ||
         item.platform == MusicPlatform.bilibili ||
         !playbackSourceOptions(item.platform).contains(source)) {
       return false;
     }
-    final requestKey = _itemKey(item);
+    _cancelPendingBilibiliPlay();
+    _cancelPendingPlaybackRestore();
     await _playCurrent(
       resumePosition: _position,
-      sourceOverride: source == PlaybackSource.automatic ? null : source,
-      automaticSourceOverride: source == PlaybackSource.automatic,
+      sourceOverride: source,
       forceResolve: true,
+      bypassAudioCache: true,
     );
-    final current = currentSong;
-    return current != null &&
-        _itemKey(current) == requestKey &&
+    return _isCurrentRequest(previousRequest + 1, item) &&
         _errorMessage == null &&
-        (source == PlaybackSource.automatic ||
-            _currentPlaybackSourceOverride == source);
+        !_isLoading &&
+        _currentPlaybackSourceOverride == source;
   }
 
   Future<void> setPlaybackSourceConfig(PlaybackSourceConfig config) async {
@@ -1963,15 +1957,34 @@ class PlayerProvider extends ChangeNotifier {
     Set<PlaybackSource> excludedSources = const {},
     bool forceResolve = false,
     bool bypassAudioCache = false,
-    bool automaticSourceOverride = false,
+    bool recovering = false,
   }) async {
-    if (_currentIndex < 0 || _currentIndex >= _queue.length) return;
+    if (_disposed ||
+        _preparingForExit ||
+        dataScope.isDeleted ||
+        _currentIndex < 0 ||
+        _currentIndex >= _queue.length) {
+      return;
+    }
     var item = _queue[_currentIndex];
     final requestId = ++_playRequestId;
     final immediateLyrics = _cachedLyrics(item);
 
+    _activePlaybackItemKey = _itemKey(item);
+    _currentPlaybackSourceOverride = sourceOverride;
+    _currentResolvedPlaybackSource = null;
+    if (sourceOverride != null || forceResolve) {
+      _invalidatePlayUrl(_activePlaybackItemKey!);
+    }
+    if (!recovering) {
+      _currentPlaybackFailedSources.clear();
+      _playbackRecoveryAttempts = 0;
+    }
+    _currentPlaybackFailedSources.addAll(excludedSources);
+
     _isLoading = true;
     _errorMessage = null;
+    _lastError = null;
     _lyrics = immediateLyrics?.lines ?? [];
     _lyricsLoading =
         item.platform != MusicPlatform.bilibili && immediateLyrics == null;
@@ -1997,35 +2010,8 @@ class PlayerProvider extends ChangeNotifier {
         if (!_isCurrentRequest(requestId, item)) return;
       }
       final itemKey = _itemKey(item);
-      if (_activePlaybackItemKey != itemKey) {
-        _activePlaybackItemKey = itemKey;
-        _currentResolvedPlaybackSource = null;
-        _currentPlaybackSourceOverride = null;
-        _currentAutomaticSourceOverride = false;
-        _currentPlaybackFailedSources.clear();
-        _playbackRecoveryAttempts = 0;
-        _playbackRecoveryInFlight = false;
-      }
-      if (forceResolve || sourceOverride != null || automaticSourceOverride) {
-        _currentPlaybackSourceOverride = sourceOverride;
-        _currentAutomaticSourceOverride = automaticSourceOverride;
-        _currentPlaybackFailedSources.clear();
-        _playbackRecoveryAttempts = 0;
-      } else if (excludedSources.isEmpty) {
-        _currentPlaybackFailedSources.clear();
-        _playbackRecoveryAttempts = 0;
-      }
-      _currentPlaybackFailedSources.addAll(excludedSources);
-      final usesChksz =
-          item.platform != MusicPlatform.bilibili &&
-          playbackSourceFor(item.platform) == PlaybackSource.chksz &&
-          !_currentAutomaticSourceOverride;
-      if (usesChksz && _apiKey.isEmpty) {
-        throw const ApiException(
-          'API_KEY_REQUIRED',
-          '播放需要配置 API Key（设置 → API 配置）',
-        );
-      }
+      _activePlaybackItemKey = itemKey;
+      final selectedSource = sourceOverride ?? playbackSourceFor(item.platform);
 
       // 网易云和 QQ 的歌词接口与播放地址互不依赖，提前并发请求；歌词不会再
       // 阻塞音频源加载。已有歌词则直接复用，不发请求。
@@ -2039,7 +2025,8 @@ class PlayerProvider extends ChangeNotifier {
 
       // 缓存检查只依赖平台和歌曲 id，必须放在网络解析之前。命中缓存时
       // 直接播放本地文件，不再为了封面、歌手、专辑等已有信息请求详情。
-      final cachedPath = bypassAudioCache
+      final cachedPath =
+          bypassAudioCache || forceResolve || sourceOverride != null
           ? null
           : await AudioCacheService.getCachedPath(
               platformCode: item.platform.code,
@@ -2061,7 +2048,7 @@ class PlayerProvider extends ChangeNotifier {
           detail = await _resolveSongDetail(
             item,
             isCancelled: () => !_isCurrentRequest(requestId, item),
-            sourceOverride: _currentPlaybackSourceOverride,
+            sourceOverride: selectedSource,
             excludedSources: _currentPlaybackFailedSources,
           );
           if (!_isCurrentRequest(requestId, item)) return;
@@ -2069,8 +2056,7 @@ class PlayerProvider extends ChangeNotifier {
           if (resolvedUrl.isEmpty) {
             throw const ApiException('404', '无法获取播放地址，可能是版权限制');
           }
-          _currentResolvedPlaybackSource = detail.playbackSource;
-          shouldCacheAudio = true;
+          shouldCacheAudio = sourceOverride == null;
         }
         playPath = resolvedUrl;
       }
@@ -2090,13 +2076,14 @@ class PlayerProvider extends ChangeNotifier {
         playbackHeaders: playbackHeaders,
         clearPlaybackHeaders:
             cachedPath == null && detail != null && playbackHeaders == null,
-        loading: false,
+        loading: true,
         clearError: true,
       );
 
       // 系统媒体会话由 PlayerMediaHandler 同步当前歌曲元数据。
+      var usingLocalCache = cachedPath != null;
       while (true) {
-        final audioUri = playPath.startsWith('/')
+        final audioUri = usingLocalCache
             ? Uri.file(playPath)
             : Uri.parse(playPath);
         try {
@@ -2106,34 +2093,31 @@ class PlayerProvider extends ChangeNotifier {
           );
           break;
         } catch (_) {
+          if (!_isCurrentRequest(requestId, item)) return;
+          _invalidatePlayUrl(itemKey);
           final failedSource =
               detail?.playbackSource ?? _currentResolvedPlaybackSource;
           final canResolveAnother =
               item.platform != MusicPlatform.bilibili &&
-              (playbackSourceFor(item.platform) == PlaybackSource.automatic ||
-                  _currentAutomaticSourceOverride) &&
-              (_currentPlaybackSourceOverride == null ||
-                  _currentAutomaticSourceOverride) &&
-              (failedSource != null ||
-                  (cachedPath == null && resolvedUrl != null)) &&
+              selectedSource == PlaybackSource.automatic &&
               _playbackRecoveryAttempts < _maxPlaybackRecoveryAttempts;
           if (!canResolveAnother) rethrow;
           if (failedSource != null) {
             _currentPlaybackFailedSources.add(failedSource);
           }
           _playbackRecoveryAttempts++;
-          _invalidatePlayUrl(itemKey);
           detail = await _resolveSongDetail(
             item,
             isCancelled: () => !_isCurrentRequest(requestId, item),
-            sourceOverride: null,
+            sourceOverride: selectedSource,
             excludedSources: _currentPlaybackFailedSources,
           );
           if (!_isCurrentRequest(requestId, item)) return;
           resolvedUrl = detail.url;
-          _currentResolvedPlaybackSource = detail.playbackSource;
           playbackHeaders = detail.playbackHeaders;
           playPath = resolvedUrl;
+          usingLocalCache = false;
+          shouldCacheAudio = sourceOverride == null;
           _queue[_currentIndex] = _queue[_currentIndex].copyWith(
             playUrl: resolvedUrl,
             duration: detail.duration,
@@ -2146,6 +2130,8 @@ class PlayerProvider extends ChangeNotifier {
         }
       }
       if (!_isCurrentRequest(requestId, item)) return;
+      _currentResolvedPlaybackSource = detail?.playbackSource;
+      _queue[_currentIndex] = _queue[_currentIndex].copyWith(loading: false);
       if (shouldCacheAudio && resolvedUrl != null) {
         _rememberPlayUrl(itemKey);
       }
@@ -2153,6 +2139,7 @@ class PlayerProvider extends ChangeNotifier {
       final startPosition = _normalizeResumePosition(resumePosition, item);
       if (startPosition > Duration.zero) {
         await _audioPlayer.seek(startPosition);
+        if (!_isCurrentRequest(requestId, item)) return;
       }
       _position = startPosition;
       _recordCurrentHistory(position: startPosition, immediate: true);
@@ -2215,6 +2202,7 @@ class PlayerProvider extends ChangeNotifier {
       // 歌词索引由 positionStream 驱动更新（无需额外定时器）
     } catch (e) {
       if (!_isCurrentRequest(requestId, item)) return;
+      _invalidatePlayUrl(_itemKey(item));
       _queue[_currentIndex] = _queue[_currentIndex].copyWith(
         loading: false,
         error: e.toString(),
@@ -2333,7 +2321,7 @@ class PlayerProvider extends ChangeNotifier {
 
   void _invalidatePlayUrl(String itemKey) {
     _playUrlResolvedAt.remove(itemKey);
-    if (_currentIndex >= 0 && _currentIndex < _queue.length) {
+    if (currentSong != null && _itemKey(currentSong!) == itemKey) {
       _queue[_currentIndex] = _queue[_currentIndex].copyWith(
         clearPlayUrl: true,
       );
@@ -2378,12 +2366,7 @@ class PlayerProvider extends ChangeNotifier {
       );
     }
     return _api.resolvePlayback(
-      source:
-          sourceOverride ??
-          (_currentAutomaticSourceOverride
-              ? PlaybackSource.automatic
-              : _currentPlaybackSourceOverride ??
-                    playbackSourceFor(item.platform)),
+      source: sourceOverride ?? playbackSourceFor(item.platform),
       platform: item.platform,
       id: item.id,
       quality: item.platform == MusicPlatform.netease
@@ -2599,14 +2582,15 @@ class PlayerProvider extends ChangeNotifier {
       await _audioPlayer.play();
     } catch (e) {
       if (!_isCurrentRequest(requestId, item)) return;
-      _errorMessage = '播放错误: $e';
-      notifyListeners();
+      _handlePlaybackFailure(e);
     }
   }
 
   bool _isCurrentRequest(int requestId, PlayQueueItem item) {
     final current = currentSong;
     return !_disposed &&
+        !_preparingForExit &&
+        !dataScope.isDeleted &&
         requestId == _playRequestId &&
         current?.platform == item.platform &&
         current?.id == item.id;

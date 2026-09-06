@@ -1530,45 +1530,49 @@ void main() {
           tester.view.resetDevicePixelRatio();
         });
 
-        await _pumpScreen(
-          tester,
-          const PlayerScreen(),
-          player,
-          theme,
-          const Size(640, 360),
-        );
-        final lyricAction = find.byKey(
-          const ValueKey('player-lyric-search-action'),
-        );
-        final sourceAction = find.byKey(
-          const ValueKey('player-playback-source-action'),
-        );
-        expect(lyricAction.hitTestable(), findsOneWidget);
-        expect(sourceAction.hitTestable(), findsOneWidget);
-        expect(
-          tester.getRect(sourceAction).left,
-          greaterThanOrEqualTo(tester.getRect(lyricAction).right - 1),
-        );
+        for (final size in const [
+          Size(640, 360),
+          Size(1280, 800),
+          Size(390, 844),
+        ]) {
+          await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
+          if (size.width < size.height) {
+            await tester.tap(find.text('歌词').hitTestable());
+            await tester.pumpAndSettle();
+          }
+          final lyricAction = find.byKey(
+            const ValueKey('player-lyric-search-action'),
+          );
+          final sourceAction = find.byKey(
+            const ValueKey('player-playback-source-action'),
+          );
+          expect(lyricAction.hitTestable(), findsOneWidget);
+          expect(sourceAction.hitTestable(), findsOneWidget);
+          expect(
+            tester.getRect(sourceAction).left,
+            greaterThanOrEqualTo(tester.getRect(lyricAction).right - 1),
+          );
 
-        await tester.tap(sourceAction);
-        await tester.pumpAndSettle();
-        expect(find.text('切换当前歌曲音源'), findsOneWidget);
-        expect(
-          find.byKey(const ValueKey('current-playback-source-automatic')),
-          findsOneWidget,
-        );
-        expect(
-          find.byKey(const ValueKey('current-playback-source-qing_music')),
-          findsOneWidget,
-        );
-        final qingOption = find.byKey(
-          const ValueKey('current-playback-source-qing_music'),
-        );
-        await tester.ensureVisible(qingOption);
-        await tester.tap(qingOption);
-        await tester.pumpAndSettle();
-        expect(player.switchedPlaybackSource, PlaybackSource.qingMusic);
-        _expectNoException(tester);
+          await tester.tap(sourceAction);
+          await tester.pumpAndSettle();
+          expect(find.text('切换当前歌曲音源'), findsOneWidget);
+          expect(
+            find.byKey(const ValueKey('current-playback-source-automatic')),
+            findsOneWidget,
+          );
+          expect(
+            find.byKey(const ValueKey('current-playback-source-qing_music')),
+            findsOneWidget,
+          );
+          final qingOption = find.byKey(
+            const ValueKey('current-playback-source-qing_music'),
+          );
+          await tester.ensureVisible(qingOption);
+          await tester.tap(qingOption);
+          await tester.pumpAndSettle();
+          expect(player.switchedPlaybackSource, PlaybackSource.qingMusic);
+          _expectNoException(tester);
+        }
       }, _mockClient);
     },
   );
@@ -3241,7 +3245,10 @@ class _PlayerWithLyrics extends PlayerProvider {
   }
 
   @override
-  Future<bool> switchCurrentPlaybackSource(PlaybackSource source) async {
+  Future<bool> switchCurrentPlaybackSource(
+    PlaybackSource source, {
+    PlayQueueItem? expectedSong,
+  }) async {
     switchedPlaybackSource = source;
     return true;
   }
