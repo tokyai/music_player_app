@@ -443,6 +443,7 @@ class ApiService {
     String? albumId,
     int? duration,
     bool Function()? isCancelled,
+    Set<PlaybackSource> excludedSources = const {},
   }) async {
     _ensureOpen();
     if (platform == MusicPlatform.bilibili) {
@@ -470,6 +471,9 @@ class ApiService {
         if (!_playbackSourceConfig.isEnabled(source)) {
           throw ApiException('SOURCE_DISABLED', '${source.label} 已在备用源配置中停用');
         }
+        if (excludedSources.contains(source)) {
+          throw ApiException('SOURCE_EXCLUDED', '${source.label} 已被本次播放排除');
+        }
         final detail = await _resolveWithSource(
           source,
           platform: platform,
@@ -484,7 +488,7 @@ class ApiService {
         );
         _ensurePlaybackOperationActive(operation, isCancelled);
         _requirePlayableUrl(detail, source);
-        return detail;
+        return detail.copyWith(playbackSource: source);
       }
 
       final candidates = _enabledPlaybackSources();
@@ -504,6 +508,7 @@ class ApiService {
         ) {
           final group = _playbackSourceGroups[groupIndex]
               .where(candidates.contains)
+              .where((source) => !excludedSources.contains(source))
               .where(
                 (source) => attempted.add((
                   source,
@@ -720,15 +725,16 @@ class ApiService {
           cancelRace();
           return;
         }
+        final sourcedDetail = detail.copyWith(playbackSource: source);
         try {
-          _requirePlayableUrl(detail, source);
+          _requirePlayableUrl(sourcedDetail, source);
         } catch (error) {
           recordFailure(source, error);
           return;
         }
         finished = true;
         groupCancellation.cancel();
-        if (!completer.isCompleted) completer.complete(detail);
+        if (!completer.isCompleted) completer.complete(sourcedDetail);
       } catch (error) {
         if (finished) return;
         if (!_isPlaybackOperationActive(operation, generation, isCancelled) ||

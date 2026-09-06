@@ -538,6 +538,51 @@ void main() {
   );
 
   test(
+    'automatic resolver can exclude a failed winner for the next attempt',
+    () async {
+      final hosts = <String>[];
+      await http.runWithClient(
+        () async {
+          final config = PlaybackSourceConfig.defaults().copyWith(
+            chkszEnabled: false,
+            qingMusicEnabled: true,
+            hywEnabled: true,
+            xinghaiEnabled: false,
+            gdStudioEnabled: false,
+            qingMusicUrl: 'https://exclude-qing.test/resolve-url',
+            hywBaseUrl: 'https://exclude-hyw.test',
+          );
+          final api = ApiService(apiKey: '', playbackSourceConfig: config);
+          try {
+            final detail = await api.resolvePlayback(
+              source: PlaybackSource.automatic,
+              platform: MusicPlatform.qq,
+              id: 'qq-mid',
+              quality: 'flac',
+              name: '歌曲',
+              artist: '歌手',
+              album: '专辑',
+              excludedSources: {PlaybackSource.hyw},
+            );
+            expect(detail.playbackSource, PlaybackSource.qingMusic);
+          } finally {
+            api.close();
+          }
+        },
+        () => MockClient((request) async {
+          hosts.add(request.url.host);
+          return _jsonResponse({
+            'code': 0,
+            'data': {'url': 'https://audio.test/excluded.flac'},
+          });
+        }),
+      );
+      expect(hosts, isNot(contains('exclude-hyw.test')));
+      expect(hosts, contains('exclude-qing.test'));
+    },
+  );
+
+  test(
     'GDStudio resolver maps each platform and high quality bitrate',
     () async {
       final requested = <Uri>[];
@@ -1226,6 +1271,7 @@ void main() {
               album: '专辑',
             );
             expect(detail.url, 'https://audio.test/race-hyw.flac');
+            expect(detail.playbackSource, PlaybackSource.hyw);
             // Let the cancelled loser finish its mock callback so this test also
             // exercises the late-result absorption path.
             await Future<void>.delayed(const Duration(milliseconds: 120));

@@ -1516,6 +1516,63 @@ void main() {
     }, _mockClient);
   });
 
+  testWidgets(
+    'current playback source picker follows the lyric search action',
+    (tester) async {
+      await http.runWithClient(() async {
+        final player = _PlayerWithLyrics();
+        final theme = ThemeController();
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          player.dispose();
+          theme.dispose();
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+
+        await _pumpScreen(
+          tester,
+          const PlayerScreen(),
+          player,
+          theme,
+          const Size(640, 360),
+        );
+        final lyricAction = find.byKey(
+          const ValueKey('player-lyric-search-action'),
+        );
+        final sourceAction = find.byKey(
+          const ValueKey('player-playback-source-action'),
+        );
+        expect(lyricAction.hitTestable(), findsOneWidget);
+        expect(sourceAction.hitTestable(), findsOneWidget);
+        expect(
+          tester.getRect(sourceAction).left,
+          greaterThanOrEqualTo(tester.getRect(lyricAction).right - 1),
+        );
+
+        await tester.tap(sourceAction);
+        await tester.pumpAndSettle();
+        expect(find.text('切换当前歌曲音源'), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('current-playback-source-automatic')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('current-playback-source-qing_music')),
+          findsOneWidget,
+        );
+        final qingOption = find.byKey(
+          const ValueKey('current-playback-source-qing_music'),
+        );
+        await tester.ensureVisible(qingOption);
+        await tester.tap(qingOption);
+        await tester.pumpAndSettle();
+        expect(player.switchedPlaybackSource, PlaybackSource.qingMusic);
+        _expectNoException(tester);
+      }, _mockClient);
+    },
+  );
+
   testWidgets('built-in MV player keeps controls usable in both landscapes', (
     tester,
   ) async {
@@ -3137,6 +3194,7 @@ void _expectNoException(WidgetTester tester) {
 class _PlayerWithLyrics extends PlayerProvider {
   String? lastLyricQuery;
   String? appliedLyricId;
+  PlaybackSource? switchedPlaybackSource;
 
   final PlayQueueItem _song = PlayQueueItem(
     platform: MusicPlatform.netease,
@@ -3180,6 +3238,12 @@ class _PlayerWithLyrics extends PlayerProvider {
   @override
   Future<void> applyLyricCandidate(SongSearchResult candidate) async {
     appliedLyricId = candidate.id;
+  }
+
+  @override
+  Future<bool> switchCurrentPlaybackSource(PlaybackSource source) async {
+    switchedPlaybackSource = source;
+    return true;
   }
 }
 

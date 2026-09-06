@@ -1961,6 +1961,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
               color: textColor,
             ),
           ),
+          if (song.platform != MusicPlatform.bilibili)
+            Expanded(
+              child: _playerActionButton(
+                key: const ValueKey('player-playback-source-action'),
+                context: ctx,
+                compact: compact,
+                onPressed: () => _showPlaybackSourceSheet(ctx, player, song),
+                icon: Icons.swap_horiz_rounded,
+                label: '音源',
+                tooltip: '切换当前歌曲音源',
+                color: textColor,
+              ),
+            ),
           if (showOffsetControls) ...[
             Expanded(
               child: _playerActionButton(
@@ -2031,6 +2044,67 @@ class _PlayerScreenState extends State<PlayerScreen> {
         ? seconds.toStringAsFixed(0)
         : seconds.toStringAsFixed(1);
     return '${offset.isNegative ? '-' : '+'}${value}s';
+  }
+
+  Future<void> _showPlaybackSourceSheet(
+    BuildContext ctx,
+    PlayerProvider player,
+    PlayQueueItem song,
+  ) async {
+    final options = player.playbackSourceOptions(song.platform);
+    if (options.isEmpty) return;
+    final selected = player.currentPlaybackSource ?? PlaybackSource.automatic;
+    await showModalBottomSheet<void>(
+      context: ctx,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) => ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: constraints.maxHeight * 0.82,
+            ),
+            child: ListView(
+              padding: const EdgeInsets.only(bottom: 12),
+              children: [
+                const ListTile(
+                  leading: Icon(Icons.swap_horiz_rounded),
+                  title: Text('切换当前歌曲音源'),
+                  subtitle: Text('只影响这首歌本次播放，不修改平台默认设置'),
+                ),
+                for (final source in options)
+                  ListTile(
+                    key: ValueKey('current-playback-source-${source.value}'),
+                    leading: Icon(
+                      source == selected
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_off,
+                      color: source == selected ? AppColors.primary : null,
+                    ),
+                    title: Text(source.label),
+                    subtitle: source == PlaybackSource.automatic
+                        ? const Text('按当前音质自动竞速并回退')
+                        : null,
+                    trailing: source == selected
+                        ? const Icon(Icons.check, color: AppColors.primary)
+                        : null,
+                    onTap: () async {
+                      Navigator.of(sheetContext).pop();
+                      final success = await player.switchCurrentPlaybackSource(
+                        source,
+                      );
+                      if (!ctx.mounted || success) return;
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                        const SnackBar(content: Text('切换音源失败，请选择其他音源')),
+                      );
+                    },
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   String _formatDurationSeconds(Duration duration) {

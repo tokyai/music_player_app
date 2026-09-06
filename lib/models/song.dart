@@ -707,6 +707,7 @@ class SongDetail {
   final String? bitrate;
   final String? format;
   final Map<String, String>? playbackHeaders;
+  final PlaybackSource? playbackSource;
 
   SongDetail({
     required this.name,
@@ -719,7 +720,22 @@ class SongDetail {
     this.bitrate,
     this.format,
     this.playbackHeaders,
+    this.playbackSource,
   });
+
+  SongDetail copyWith({PlaybackSource? playbackSource}) => SongDetail(
+    name: name,
+    artist: artist,
+    album: album,
+    url: url,
+    coverUrl: coverUrl,
+    lyric: lyric,
+    duration: duration,
+    bitrate: bitrate,
+    format: format,
+    playbackHeaders: playbackHeaders,
+    playbackSource: playbackSource ?? this.playbackSource,
+  );
 
   /// ChKSz 网易云解析结果
   factory SongDetail.fromNetease(Map<String, dynamic> data) {
