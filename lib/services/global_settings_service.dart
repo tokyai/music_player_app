@@ -21,6 +21,8 @@ abstract final class GlobalSettingsService {
     LyricStylePreferences.lineSpacingKey,
     LyricStylePreferences.fontFamilyKey,
     LyricStylePreferences.fontWeightKey,
+    LyricStylePreferences.wordHighlightKey,
+    LyricStylePreferences.translationKey,
     landscapeSplitRatioKey,
     'api_key',
     'netease_level',
@@ -57,6 +59,8 @@ abstract final class GlobalSettingsService {
     'lineSpacing': 44,
     'fontFamily': 'system',
     'fontWeight': 500,
+    'wordHighlight': false,
+    'showTranslation': false,
     'landscapeSplitRatio': 0.42,
   };
 
@@ -114,6 +118,10 @@ abstract final class GlobalSettingsService {
     final defaults = defaultLyricDisplay();
     return {
       'version': 1,
+      'wordHighlight':
+          prefs.get(LyricStylePreferences.wordHighlightKey) == true,
+      'showTranslation':
+          prefs.get(LyricStylePreferences.translationKey) == true,
       'fontSize':
           _number(prefs.get(LyricStylePreferences.fontSizeKey)) ??
           defaults['fontSize'],
@@ -133,6 +141,11 @@ abstract final class GlobalSettingsService {
   }
 
   static void validateLyricDisplay(Map<String, dynamic> json) {
+    for (final key in ['wordHighlight', 'showTranslation']) {
+      if (json[key] != null && json[key] is! bool) {
+        throw const FormatException('备份文件中的歌词显示开关无效');
+      }
+    }
     final fontSize = _requiredFiniteNumber(json, 'fontSize', '歌词字号');
     final spacing = _requiredFiniteNumber(json, 'lineSpacing', '歌词行距');
     final split = _requiredFiniteNumber(json, 'landscapeSplitRatio', '横屏歌词布局');
@@ -163,6 +176,14 @@ abstract final class GlobalSettingsService {
     validateLyricDisplay(json);
     final prefs = await SharedPreferences.getInstance();
     final writes = await Future.wait([
+      prefs.setBool(
+        LyricStylePreferences.wordHighlightKey,
+        json['wordHighlight'] == true,
+      ),
+      prefs.setBool(
+        LyricStylePreferences.translationKey,
+        json['showTranslation'] == true,
+      ),
       prefs.setDouble(
         LyricStylePreferences.fontSizeKey,
         (json['fontSize'] as num).toDouble(),

@@ -25,6 +25,7 @@ import '../widgets/ai_assistant_overlay.dart';
 import '../widgets/remote_focusable.dart';
 import '../widgets/audio_settings_dialogs.dart';
 import '../widgets/sleep_timer_dialog.dart';
+import '../widgets/karaoke_lyric_text.dart';
 import '../services/sleep_timer.dart';
 import '../widgets/smart_cover.dart';
 import 'video_player_screen.dart';
@@ -419,6 +420,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Color? _dominantColor;
   bool _lyricsAutoScroll = true;
   bool _fullscreenLyrics = false;
+  bool _wordHighlight = false;
+  bool _showTranslation = false;
   double _lyricFontSize = 42;
   double _lyricLineSpacing = 44;
   LyricFontFamilyPreset _lyricFontFamily = LyricFontFamilyPreset.system;
@@ -508,6 +511,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (!mounted) return;
       setState(() {
         var layoutChanged = false;
+        final translation =
+            prefs.get(LyricStylePreferences.translationKey) == true;
+        layoutChanged = _showTranslation != translation;
+        _showTranslation = translation;
+        _wordHighlight =
+            prefs.get(LyricStylePreferences.wordHighlightKey) == true;
         if (savedSize != null && _lyricFontSizes.contains(savedSize)) {
           layoutChanged = layoutChanged || _lyricFontSize != savedSize;
           _lyricFontSize = savedSize;
@@ -2620,10 +2629,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
         final scaledFontSize = MediaQuery.textScalerOf(
           ctx,
         ).scale(_lyricFontSize);
-        final lineExtent = (scaledFontSize + _lyricLineSpacing).clamp(
-          52.0,
-          scaledFontSize + _maximumLyricLineSpacing,
-        );
+        final translationSize = (_lyricFontSize * 0.45).clamp(14.0, 26.0);
+        final translationHeight = _showTranslation
+            ? MediaQuery.textScalerOf(ctx).scale(translationSize) * 1.25 + 8
+            : 0.0;
+        final lineExtent =
+            (scaledFontSize + _lyricLineSpacing + translationHeight).clamp(
+              52.0,
+              scaledFontSize + _maximumLyricLineSpacing + translationHeight,
+            );
         _lyricLineExtent = lineExtent;
         final centerPadding = availableHeight > lineExtent
             ? (availableHeight - lineExtent) / 2
@@ -2676,18 +2690,70 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     alignment: Alignment.center,
                     child: SizedBox(
                       width: double.infinity,
-                      child: _AnimatedLyricLineText(
-                        index: i,
-                        text: lyric.primaryText,
-                        isCurrent: isCurrent,
-                        currentFontSize: _lyricFontSize,
-                        inactiveFontSize: inactiveFontSize,
-                        activeColor: textColor,
-                        inactiveColor: textColor.withValues(
-                          alpha: i < player.currentLyricIndex ? 0.62 : 0.48,
-                        ),
-                        fontFamily: _lyricFontFamily,
-                        fontWeight: _lyricFontWeight,
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          if (_wordHighlight &&
+                              isCurrent &&
+                              KaraokeLyricText.canHighlight(lyric))
+                            Selector<PlayerProvider, Duration>(
+                              selector: (_, p) => p.lyricPosition,
+                              builder: (_, position, _) => KaraokeLyricText(
+                                key: ValueKey('lyric-karaoke-$i'),
+                                line: lyric,
+                                position: position,
+                                style: TextStyle(
+                                  color: textColor,
+                                  fontSize: _lyricFontSize,
+                                  fontWeight:
+                                      _lyricFontWeight.currentLineWeight,
+                                  fontFamily: _lyricFontFamily.fontFamily,
+                                  fontFamilyFallback:
+                                      _lyricFontFamily.fontFamilyFallback,
+                                  height: 1.18,
+                                ),
+                                activeColor: AppColors.primary,
+                                pendingColor: textColor.withValues(alpha: 0.4),
+                              ),
+                            )
+                          else
+                            _AnimatedLyricLineText(
+                              index: i,
+                              text: lyric.primaryText,
+                              isCurrent: isCurrent,
+                              currentFontSize: _lyricFontSize,
+                              inactiveFontSize: inactiveFontSize,
+                              activeColor: textColor,
+                              inactiveColor: textColor.withValues(
+                                alpha: i < player.currentLyricIndex
+                                    ? 0.62
+                                    : 0.48,
+                              ),
+                              fontFamily: _lyricFontFamily,
+                              fontWeight: _lyricFontWeight,
+                            ),
+                          if (_showTranslation &&
+                              lyric.translationText.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              lyric.translationText,
+                              key: ValueKey('lyric-translation-$i'),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: textColor.withValues(
+                                  alpha: isCurrent ? 0.85 : 0.48,
+                                ),
+                                fontSize: translationSize,
+                                height: 1.25,
+                                fontFamily: _lyricFontFamily.fontFamily,
+                                fontFamilyFallback:
+                                    _lyricFontFamily.fontFamilyFallback,
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                     ),
                   ),

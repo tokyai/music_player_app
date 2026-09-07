@@ -42,6 +42,10 @@ class LyricLine {
   });
 
   String get primaryText => text.split('\n').first;
+  String get translationText {
+    final separator = text.indexOf('\n');
+    return separator < 0 ? '' : text.substring(separator + 1).trim();
+  }
 
   /// Whether every displayed rune has a trustworthy, non-overlapping timing
   /// interval.
@@ -51,17 +55,22 @@ class LyricLine {
   /// is only a guess, so those lines deliberately fall back to solid current-
   /// line highlighting instead of showing a misleading karaoke cursor.
   bool get hasReliableWordTiming {
+    return hasReliableTokenTiming &&
+        words.every((word) => word.text.runes.length == 1);
+  }
+
+  /// Tokens may be complete words; their own timestamps are never subdivided.
+  bool get hasReliableTokenTiming {
     if (words.isEmpty) return false;
     final source = primaryText;
     if (words.map((word) => word.text).join() != source) return false;
-    if (source.runes.length != words.length) return false;
 
     final allowedEnd = declaredEndTime ?? endTime;
     if (allowedEnd == null || allowedEnd <= time) return false;
 
     var previousEnd = time;
     for (final word in words) {
-      if (word.text.runes.length != 1 || word.duration <= Duration.zero) {
+      if (word.text.isEmpty || word.duration <= Duration.zero) {
         return false;
       }
       if (word.time < time || word.time < previousEnd) return false;

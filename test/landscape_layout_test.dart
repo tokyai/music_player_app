@@ -1024,7 +1024,10 @@ void main() {
         await tester.pumpAndSettle();
         await tester.binding.handlePopRoute();
         await tester.pumpAndSettle();
-        expect(find.byKey(const ValueKey('player-fullscreen-lyrics')), findsNothing);
+        expect(
+          find.byKey(const ValueKey('player-fullscreen-lyrics')),
+          findsNothing,
+        );
         _expectNoException(tester);
       },
     );
@@ -2642,6 +2645,60 @@ void main() {
       _expectNoException(tester);
     }, _mockClient);
   });
+
+  for (final size in const [Size(640, 360), Size(1280, 800)]) {
+    testWidgets(
+      'word highlighting and translation are opt-in and fit at $size',
+      (tester) async {
+        final player = _PlayerWithLyrics();
+        final enhanced = LyricParser.parseEnhanced(
+          '[0,2000](0,1000,0)你好(1000,1000,0)世界',
+        ).single;
+        player._testLyrics
+          ..clear()
+          ..add(
+            LyricLine(
+              Duration.zero,
+              '${enhanced.text}\nHello world',
+              endTime: enhanced.endTime,
+              declaredEndTime: enhanced.declaredEndTime,
+              words: enhanced.words,
+            ),
+          );
+        final theme = ThemeController();
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await player.disposeResources();
+          theme.dispose();
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+        await _pumpScreen(tester, const SettingsScreen(), player, theme, size);
+        for (final key in [
+          'lyric-word-highlight-setting',
+          'lyric-translation-setting',
+        ]) {
+          final toggle = find.byKey(ValueKey(key));
+          await tester.ensureVisible(toggle);
+          await tester.pumpAndSettle();
+          expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+          await tester.tap(toggle);
+          await tester.pumpAndSettle();
+          expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+        await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
+        expect(find.byKey(const ValueKey('lyric-karaoke-0')), findsOneWidget);
+        expect(find.text('Hello world'), findsOneWidget);
+        expect(find.text('收藏').hitTestable(), findsOneWidget);
+        await tester.tap(find.byTooltip('全屏歌词'));
+        await tester.pumpAndSettle();
+        expect(find.text('Hello world'), findsOneWidget);
+        expect(find.byTooltip('播放队列').hitTestable(), findsOneWidget);
+        _expectNoException(tester);
+      },
+    );
+  }
 
   testWidgets(
     'global font scale is live, persistent, and usable in landscape',

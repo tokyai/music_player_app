@@ -63,6 +63,9 @@ class _SettingsScreenState extends State<SettingsScreen>
   int _cacheCount = 0;
   LyricFontFamilyPreset _lyricFontFamily = LyricFontFamilyPreset.system;
   LyricFontWeightPreset _lyricFontWeight = LyricFontWeightPreset.medium;
+  bool _wordHighlight = false;
+  bool _showTranslation = false;
+  bool _savingLyricDisplay = false;
   bool _waitingForFloatingPermission = false;
   bool _leftForFloatingPermission = false;
   bool _changingFloatingCapsule = false;
@@ -269,8 +272,42 @@ class _SettingsScreenState extends State<SettingsScreen>
       setState(() {
         _lyricFontFamily = family;
         _lyricFontWeight = weight;
+        _wordHighlight =
+            prefs.get(LyricStylePreferences.wordHighlightKey) == true;
+        _showTranslation =
+            prefs.get(LyricStylePreferences.translationKey) == true;
       });
     } catch (_) {}
+  }
+
+  Future<void> _setLyricDisplayFlag(String key, bool value) async {
+    if (_savingLyricDisplay || _dataScope.isDeleted) return;
+    setState(() => _savingLyricDisplay = true);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted || _dataScope.isDeleted) return;
+      final previous = prefs.get(key) == true;
+      try {
+        if (!await prefs.setBool(key, value)) throw StateError('保存失败');
+      } catch (error) {
+        await prefs.setBool(key, previous);
+        rethrow;
+      }
+      if (!mounted) return;
+      setState(() {
+        if (key == LyricStylePreferences.wordHighlightKey)
+          _wordHighlight = value;
+        else
+          _showTranslation = value;
+      });
+    } catch (error) {
+      if (mounted)
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('保存歌词显示失败：$error')));
+    } finally {
+      if (mounted) setState(() => _savingLyricDisplay = false);
+    }
   }
 
   Future<void> _setLyricFontFamily(LyricFontFamilyPreset family) async {
@@ -1263,6 +1300,30 @@ class _SettingsScreenState extends State<SettingsScreen>
       compact: compact,
       children: [
         _buildSectionHeader(icon: Icons.lyrics_outlined, title: '歌词显示'),
+        SwitchListTile(
+          key: const ValueKey('lyric-word-highlight-setting'),
+          dense: compact,
+          title: const Text('逐字高亮'),
+          value: _wordHighlight,
+          onChanged: _savingLyricDisplay
+              ? null
+              : (value) => _setLyricDisplayFlag(
+                  LyricStylePreferences.wordHighlightKey,
+                  value,
+                ),
+        ),
+        SwitchListTile(
+          key: const ValueKey('lyric-translation-setting'),
+          dense: compact,
+          title: const Text('显示译文'),
+          value: _showTranslation,
+          onChanged: _savingLyricDisplay
+              ? null
+              : (value) => _setLyricDisplayFlag(
+                  LyricStylePreferences.translationKey,
+                  value,
+                ),
+        ),
         ListTile(
           key: const ValueKey('lyric-display-setting'),
           dense: compact,

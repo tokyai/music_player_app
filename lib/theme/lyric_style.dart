@@ -9,6 +9,8 @@ abstract final class LyricStylePreferences {
   static const lineSpacingKey = 'lyric_line_spacing';
   static const fontFamilyKey = 'lyric_font_family';
   static const fontWeightKey = 'lyric_font_weight';
+  static const wordHighlightKey = 'lyric_word_highlight';
+  static const translationKey = 'lyric_translation_visible';
 }
 
 enum LyricFontFamilyPreset {
