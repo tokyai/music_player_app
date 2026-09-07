@@ -28,6 +28,7 @@ import '../theme/lyric_style.dart';
 import '../widgets/bilibili_login_dialog.dart';
 import '../widgets/ai_profile_editor_dialog.dart';
 import '../widgets/remote_focusable.dart';
+import '../widgets/lyric_display_settings_dialog.dart';
 import '../widgets/app_user_avatar.dart';
 import '../widgets/user_profile_editor_dialog.dart';
 import 'backup_restore_screen.dart';
@@ -1263,6 +1264,21 @@ class _SettingsScreenState extends State<SettingsScreen>
       children: [
         _buildSectionHeader(icon: Icons.lyrics_outlined, title: '歌词显示'),
         ListTile(
+          key: const ValueKey('lyric-display-setting'),
+          dense: compact,
+          leading: const Icon(Icons.format_size_rounded),
+          title: const Text('歌词字号和间距'),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: () {
+            FocusManager.instance.primaryFocus?.unfocus();
+            showDialog<void>(
+              context: context,
+              builder: (_) => const LyricDisplaySettingsDialog(),
+            );
+          },
+        ),
+        const Divider(height: 1),
+        ListTile(
           key: const ValueKey('lyric-font-family-setting'),
           dense: compact,
           leading: const Icon(Icons.text_fields_rounded),
@@ -1333,16 +1349,6 @@ class _SettingsScreenState extends State<SettingsScreen>
                     fontWeight: _lyricFontWeight.weight,
                     fontFamily: _lyricFontFamily.fontFamily,
                     fontFamilyFallback: _lyricFontFamily.fontFamilyFallback,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '字号与上下间距仍可在播放页的字体按钮中调节',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: layout.secondarySize,
                   ),
                 ),
               ],

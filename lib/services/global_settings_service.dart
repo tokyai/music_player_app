@@ -4,6 +4,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme/lyric_style.dart';
+import '../models/audio_effects.dart';
 import 'user_data_scope.dart';
 
 /// Owns preference keys that apply to the whole app rather than one profile.
@@ -24,6 +25,7 @@ abstract final class GlobalSettingsService {
     'api_key',
     'netease_level',
     'common_level',
+    AudioEffectsSettings.preferenceKey,
     'playback_source_netease',
     'playback_source_qq',
     'playback_source_kugou',

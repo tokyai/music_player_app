@@ -432,7 +432,7 @@ void main() {
         );
         expect(
           find
-              .byKey(const ValueKey('player-bilibili-quality-control'))
+              .byKey(const ValueKey('player-audio-quality-action'))
               .hitTestable(),
           findsOneWidget,
         );

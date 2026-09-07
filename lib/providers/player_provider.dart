@@ -5,6 +5,8 @@ import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
 import '../models/playback_source_config.dart';
+import '../models/audio_effects.dart';
+import '../services/audio_effects_service.dart';
 import '../services/api_service.dart';
 import '../services/audio_cache_service.dart';
 import '../services/bilibili_service.dart';
@@ -57,6 +59,11 @@ class PlayerProvider extends ChangeNotifier {
   ];
 
   final AudioPlayer _audioPlayer = AudioPlayer();
+  final AudioEffectsService audioEffects = AudioEffectsService();
+  StreamSubscription<int?>? _audioSessionSub;
+  bool _changingAudioQuality = false;
+  Completer<void>? _qualityChangeCompletion;
+  bool get changingAudioQuality => _changingAudioQuality;
   late ApiService _api;
   late final Future<void> settingsReady;
   late final Future<void> playbackStateReady;
@@ -281,6 +288,7 @@ class PlayerProvider extends ChangeNotifier {
     'version': 2,
     'neteaseLevel': _neteaseLevel.value,
     'commonLevel': _commonLevel.value,
+    'audioEffects': audioEffects.settings.toJson(),
     'playbackSources': {
       MusicPlatform.netease.code: _neteasePlaybackSource.value,
       MusicPlatform.qq.code: _qqPlaybackSource.value,
@@ -297,6 +305,13 @@ class PlayerProvider extends ChangeNotifier {
   };
 
   static void validateBackupJson(Map<String, dynamic> json) {
+    final effects = json['audioEffects'];
+    if (effects != null) {
+      if (effects is! Map<String, dynamic>) {
+        throw const FormatException('备份文件中的音效设置无效');
+      }
+      AudioEffectsSettings.fromJson(effects);
+    }
     bool containsValue<T>(Iterable<T> values, String value) => values.any(
       (item) => switch (item) {
         NeteaseLevel item => item.value == value,
@@ -375,6 +390,14 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> restoreBackupJson(Map<String, dynamic> json) async {
     await settingsReady;
     if (_disposed) return;
+    final effects = json['audioEffects'];
+    if (effects != null) {
+      if (effects is! Map<String, dynamic>) {
+        throw const FormatException('备份文件中的音效设置无效');
+      }
+      await audioEffects.setSettings(AudioEffectsSettings.fromJson(effects));
+      if (_disposed) return;
+    }
 
     var changed = false;
     final neteaseValue = json['neteaseLevel'];
@@ -693,6 +716,13 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   void _initAudioPlayer() {
+    _audioSessionSub = _audioPlayer.androidAudioSessionIdStream.listen(
+      audioEffects.setSessionId,
+      onError: (Object error) {
+        debugPrint('音频会话不可用: $error');
+        audioEffects.setSessionId(null);
+      },
+    );
     _playerSub = _audioPlayer.playerStateStream.listen(
       (state) {
         if (_disposed) return;
@@ -1008,6 +1038,7 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> _loadSettings() async {
     try {
       await GlobalSettingsService.migrateLegacyScopedSettings(dataScope);
+      if (_disposed) return;
       final prefs = await SharedPreferences.getInstance();
       _apiKey = prefs.getString('api_key') ?? '';
       _api.setApiKey(_apiKey);
@@ -1075,6 +1106,7 @@ class PlayerProvider extends ChangeNotifier {
       if (_api.bilibili.hasCookie) {
         unawaited(_api.bilibili.refreshAccount());
       }
+      await audioEffects.ready;
     } catch (e) {
       debugPrint('读取播放器设置失败: $e');
     }
@@ -1113,25 +1145,83 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> setNeteaseLevel(NeteaseLevel level) async {
     await settingsReady;
     if (_disposed) return;
-    _neteaseLevel = level;
-    _playUrlResolvedAt.clear();
-    await _savePreference(
-      '网易云音质',
-      (prefs) => prefs.setString('netease_level', level.value),
+    await _changeAudioQuality(
+      key: 'netease_level',
+      value: level.value,
+      update: () => _neteaseLevel = level,
+      changed: _neteaseLevel != level,
+      platforms: const {MusicPlatform.netease},
     );
-    notifyListeners();
   }
 
   Future<void> setCommonLevel(CommonLevel level) async {
     await settingsReady;
     if (_disposed) return;
-    _commonLevel = level;
-    _playUrlResolvedAt.clear();
-    await _savePreference(
-      '通用音质',
-      (prefs) => prefs.setString('common_level', level.value),
+    await _changeAudioQuality(
+      key: 'common_level',
+      value: level.value,
+      update: () => _commonLevel = level,
+      changed: _commonLevel != level,
+      platforms: const {MusicPlatform.qq, MusicPlatform.kugou},
     );
+  }
+
+  Future<void> _changeAudioQuality({
+    required String key,
+    required Object value,
+    required VoidCallback update,
+    bool changed = true,
+    required Set<MusicPlatform> platforms,
+  }) async {
+    if (_disposed || _preparingForExit || dataScope.isDeleted) return;
+    if (_changingAudioQuality) throw StateError('音质正在切换');
+    _changingAudioQuality = true;
+    final completion = _qualityChangeCompletion = Completer<void>();
     notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (_disposed || _preparingForExit || dataScope.isDeleted) return;
+      final previous = prefs.get(key);
+      Future<bool> write(Object? next) => switch (next) {
+        String next => prefs.setString(key, next),
+        int next => prefs.setInt(key, next),
+        _ => prefs.remove(key),
+      };
+      try {
+        if (!await write(value)) throw StateError('保存音质失败');
+      } catch (error) {
+        try {
+          await write(previous);
+        } catch (rollbackError) {
+          debugPrint('回退音质存储失败: $rollbackError');
+        }
+        rethrow;
+      }
+      if (_disposed || _preparingForExit || dataScope.isDeleted) return;
+      update();
+      _playUrlResolvedAt.clear();
+      // Disposal waits for the preference write, never for a decoder load
+      // that disposal itself may need to interrupt.
+      completion.complete();
+      _qualityChangeCompletion = null;
+      final song = currentSong;
+      if (changed && song != null && platforms.contains(song.platform)) {
+        final position = _position;
+        final autoPlay = _isPlaying || _isLoading;
+        await _playCurrent(
+          resumePosition: position,
+          autoPlay: autoPlay,
+          restartNearEnd: false,
+          forceResolve: true,
+          sourceOverride: _currentPlaybackSourceOverride,
+        );
+      }
+    } finally {
+      _changingAudioQuality = false;
+      if (!completion.isCompleted) completion.complete();
+      _qualityChangeCompletion = null;
+      notifyListeners();
+    }
   }
 
   Future<void> setPlaybackSource(
@@ -1314,22 +1404,13 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> setBilibiliAudioQuality(int quality) async {
     await settingsReady;
     if (_disposed || _bilibiliAudioQuality == quality) return;
-    _bilibiliAudioQuality = quality;
-    await _savePreference(
-      'B 站音频音质',
-      (prefs) => prefs.setInt('bilibili_audio_quality', quality),
+    if (quality <= 0) throw ArgumentError.value(quality, 'quality');
+    await _changeAudioQuality(
+      key: 'bilibili_audio_quality',
+      value: quality,
+      update: () => _bilibiliAudioQuality = quality,
+      platforms: const {MusicPlatform.bilibili},
     );
-    final song = currentSong;
-    if (song?.platform == MusicPlatform.bilibili) {
-      _playUrlResolvedAt.removeWhere(
-        (key, _) => key.startsWith('${MusicPlatform.bilibili.code}:'),
-      );
-      _queue[_currentIndex] = song!.copyWith(clearPlayUrl: true);
-      notifyListeners();
-      await _playCurrent();
-    } else {
-      notifyListeners();
-    }
   }
 
   Future<void> setBilibiliVideoQuality(int quality) async {
@@ -1958,6 +2039,8 @@ class PlayerProvider extends ChangeNotifier {
     bool forceResolve = false,
     bool bypassAudioCache = false,
     bool recovering = false,
+    bool autoPlay = true,
+    bool restartNearEnd = true,
   }) async {
     if (_disposed ||
         _preparingForExit ||
@@ -2031,6 +2114,7 @@ class PlayerProvider extends ChangeNotifier {
           : await AudioCacheService.getCachedPath(
               platformCode: item.platform.code,
               songId: _audioCacheSongId(item),
+              quality: _audioQualityFor(item),
               scope: dataScope,
             );
       if (!_isCurrentRequest(requestId, item)) return;
@@ -2136,7 +2220,11 @@ class PlayerProvider extends ChangeNotifier {
         _rememberPlayUrl(itemKey);
       }
 
-      final startPosition = _normalizeResumePosition(resumePosition, item);
+      final startPosition = _normalizeResumePosition(
+        resumePosition,
+        item,
+        restartNearEnd: restartNearEnd,
+      );
       if (startPosition > Duration.zero) {
         await _audioPlayer.seek(startPosition);
         if (!_isCurrentRequest(requestId, item)) return;
@@ -2149,7 +2237,7 @@ class PlayerProvider extends ChangeNotifier {
       // 音源准备完成即结束“加载中”，播放过程放到后台等待。
       _isLoading = false;
       notifyListeners();
-      unawaited(_startPlayback(requestId, item));
+      if (autoPlay) unawaited(_startPlayback(requestId, item));
 
       // 歌词独立完成：网络慢或失败都不阻塞声音。酷狗歌词随解析详情返回；
       // 若本地音频秒开且没有歌词，只在后台补一次歌词。
@@ -2184,6 +2272,7 @@ class PlayerProvider extends ChangeNotifier {
             requestId,
             item,
             resolvedUrl,
+            quality: _audioQualityFor(item),
             headers: playbackHeaders,
           ),
         );
@@ -2195,7 +2284,7 @@ class PlayerProvider extends ChangeNotifier {
           title: item.name,
           artist: item.artist,
           coverUrl: effectiveCover,
-          isPlaying: true,
+          isPlaying: autoPlay,
         );
       }
 
@@ -2225,10 +2314,20 @@ class PlayerProvider extends ChangeNotifier {
       return '${item.platform.code}:${item.id}:${item.bilibiliCid ?? 0}:'
           'q$_bilibiliAudioQuality';
     }
-    return '${item.platform.code}:${item.id}';
+    return '${item.platform.code}:${item.id}:q${_audioQualityFor(item)}';
   }
 
-  Duration _normalizeResumePosition(Duration? requested, PlayQueueItem item) {
+  String _audioQualityFor(PlayQueueItem item) => switch (item.platform) {
+    MusicPlatform.netease => _neteaseLevel.value,
+    MusicPlatform.qq || MusicPlatform.kugou => _commonLevel.value,
+    MusicPlatform.bilibili => '$_bilibiliAudioQuality',
+  };
+
+  Duration _normalizeResumePosition(
+    Duration? requested,
+    PlayQueueItem item, {
+    bool restartNearEnd = true,
+  }) {
     if (requested == null || requested <= Duration.zero) {
       return Duration.zero;
     }
@@ -2240,6 +2339,7 @@ class PlayerProvider extends ChangeNotifier {
         ? loadedDuration
         : declaredDuration;
     if (total > Duration.zero) {
+      if (!restartNearEnd) return requested > total ? total : requested;
       if (requested >= total - const Duration(seconds: 3)) {
         return Duration.zero;
       }
@@ -2349,11 +2449,6 @@ class PlayerProvider extends ChangeNotifier {
         (stream) => stream.quality == _bilibiliAudioQuality,
         orElse: () => playInfo.audioStreams.first,
       );
-      if (!playInfo.audioStreams.any(
-        (stream) => stream.quality == _bilibiliAudioQuality,
-      )) {
-        _bilibiliAudioQuality = selected.quality;
-      }
       return SongDetail(
         name: item.name,
         artist: item.artist,
@@ -2554,6 +2649,7 @@ class PlayerProvider extends ChangeNotifier {
     int requestId,
     PlayQueueItem item,
     String url, {
+    required String quality,
     Map<String, String>? headers,
   }) async {
     try {
@@ -2562,6 +2658,7 @@ class PlayerProvider extends ChangeNotifier {
       final localPath = await AudioCacheService.cacheAudio(
         platformCode: item.platform.code,
         songId: _audioCacheSongId(item),
+        quality: quality,
         url: url,
         name: item.name,
         artist: item.artist,
@@ -3173,12 +3270,14 @@ class PlayerProvider extends ChangeNotifier {
       _positionSub,
       _bufferSub,
       _errorSub,
+      _audioSessionSub,
     ];
     _api.bilibili.removeListener(_handleBilibiliChanged);
     _api.close();
     // Release ChangeNotifier listeners immediately; native audio teardown can
     // continue asynchronously without retaining the old widget tree.
     super.dispose();
+    audioEffects.dispose();
     _resourceDisposeFuture = _disposeAudioResources(subscriptions);
   }
 
@@ -3195,6 +3294,8 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> _disposeAudioResources(
     List<StreamSubscription?> subscriptions,
   ) async {
+    await _qualityChangeCompletion?.future;
+    await audioEffects.close();
     for (final subscription in subscriptions) {
       try {
         await subscription?.cancel();

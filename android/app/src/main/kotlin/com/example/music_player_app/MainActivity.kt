@@ -167,6 +167,9 @@ class MainActivity : AudioServiceActivity() {
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        if (!flutterEngine.plugins.has(AudioEffectsPlugin::class.java)) {
+            flutterEngine.plugins.add(AudioEffectsPlugin())
+        }
         val staleModelResults = synchronized(lifecycleLock) {
             activityGeneration++
             activityAlive = true

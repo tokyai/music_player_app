@@ -23,6 +23,7 @@ import '../utils/system_ui.dart';
 import '../widgets/cover_hero_tags.dart';
 import '../widgets/ai_assistant_overlay.dart';
 import '../widgets/remote_focusable.dart';
+import '../widgets/audio_settings_dialogs.dart';
 import '../widgets/smart_cover.dart';
 import 'video_player_screen.dart';
 
@@ -351,133 +352,6 @@ class _LyricSearchDialogState extends State<_LyricSearchDialog> {
   }
 }
 
-class _LyricDisplaySettingsDialog extends StatefulWidget {
-  final double fontSize;
-  final double lineSpacing;
-  final List<double> fontSizes;
-  final ValueChanged<double> onFontSizeChanged;
-  final ValueChanged<double> onLineSpacingChanged;
-  final ValueChanged<double> onLineSpacingChangeEnd;
-
-  const _LyricDisplaySettingsDialog({
-    required this.fontSize,
-    required this.lineSpacing,
-    required this.fontSizes,
-    required this.onFontSizeChanged,
-    required this.onLineSpacingChanged,
-    required this.onLineSpacingChangeEnd,
-  });
-
-  @override
-  State<_LyricDisplaySettingsDialog> createState() =>
-      _LyricDisplaySettingsDialogState();
-}
-
-class _LyricDisplaySettingsDialogState
-    extends State<_LyricDisplaySettingsDialog> {
-  late double _fontSize = widget.fontSize;
-  late double _lineSpacing = widget.lineSpacing;
-
-  @override
-  Widget build(BuildContext context) {
-    final size = MediaQuery.sizeOf(context);
-    final compact = size.height < 480;
-    return Dialog(
-      key: const ValueKey('lyric-display-settings-dialog'),
-      insetPadding: const EdgeInsets.all(12),
-      clipBehavior: Clip.antiAlias,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxWidth: 560, maxHeight: size.height - 24),
-        child: SingleChildScrollView(
-          padding: EdgeInsets.fromLTRB(
-            compact ? 16 : 22,
-            compact ? 10 : 16,
-            compact ? 16 : 22,
-            compact ? 10 : 16,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      '歌词显示',
-                      style: TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                  IconButton(
-                    key: const ValueKey('lyric-display-settings-close'),
-                    tooltip: '关闭',
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close_rounded),
-                  ),
-                ],
-              ),
-              SizedBox(height: compact ? 2 : 8),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8, right: 12),
-                    child: Text(
-                      '字号',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                  ),
-                  Expanded(
-                    child: Wrap(
-                      spacing: 8,
-                      runSpacing: 6,
-                      children: widget.fontSizes.map((size) {
-                        return ChoiceChip(
-                          key: ValueKey('lyric-font-size-${size.round()}'),
-                          label: Text('${size.round()}'),
-                          selected: _fontSize == size,
-                          onSelected: (_) {
-                            setState(() => _fontSize = size);
-                            widget.onFontSizeChanged(size);
-                          },
-                        );
-                      }).toList(),
-                    ),
-                  ),
-                ],
-              ),
-              SizedBox(height: compact ? 8 : 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '上下间距',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                  ),
-                  Text('${_lineSpacing.round()} px'),
-                ],
-              ),
-              Slider(
-                key: const ValueKey('lyric-line-spacing-slider'),
-                value: _lineSpacing,
-                min: _PlayerScreenState._minimumLyricLineSpacing,
-                max: _PlayerScreenState._maximumLyricLineSpacing,
-                divisions: 28,
-                label: '${_lineSpacing.round()} px',
-                onChanged: (value) {
-                  setState(() => _lineSpacing = value);
-                  widget.onLineSpacingChanged(value);
-                },
-                onChangeEnd: widget.onLineSpacingChangeEnd,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _AnimatedLyricLineText extends StatelessWidget {
   final int index;
   final String text;
@@ -531,17 +405,17 @@ class _AnimatedLyricLineText extends StatelessWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
-  static const _lyricFontSizes = <double>[32, 36, 42, 48, 54, 60];
-  static const _minimumLyricLineSpacing = 20.0;
-  static const _maximumLyricLineSpacing = 160.0;
+  static const _lyricFontSizes = LyricStylePreferences.fontSizes;
+  static const _minimumLyricLineSpacing =
+      LyricStylePreferences.minimumLineSpacing;
+  static const _maximumLyricLineSpacing =
+      LyricStylePreferences.maximumLineSpacing;
   static const _defaultLandscapeLeftRatio = 0.42;
   static const _minimumLandscapeLeftRatio = 0.32;
   static const _maximumLandscapeLeftRatio = 0.62;
 
   Color? _dominantColor;
   bool _lyricsAutoScroll = true;
-  bool _lyricFontSizeChangedByUser = false;
-  bool _lyricLineSpacingChangedByUser = false;
   double _lyricFontSize = 42;
   double _lyricLineSpacing = 44;
   LyricFontFamilyPreset _lyricFontFamily = LyricFontFamilyPreset.system;
@@ -631,13 +505,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (!mounted) return;
       setState(() {
         var layoutChanged = false;
-        if (!_lyricFontSizeChangedByUser &&
-            savedSize != null &&
-            _lyricFontSizes.contains(savedSize)) {
+        if (savedSize != null && _lyricFontSizes.contains(savedSize)) {
           layoutChanged = layoutChanged || _lyricFontSize != savedSize;
           _lyricFontSize = savedSize;
         }
-        if (!_lyricLineSpacingChangedByUser && savedSpacing != null) {
+        if (savedSpacing != null && savedSpacing.isFinite) {
           layoutChanged = layoutChanged || _lyricLineSpacing != savedSpacing;
           _lyricLineSpacing = savedSpacing;
         }
@@ -652,57 +524,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
           _forceLyricRecenter = true;
         }
       });
-    } catch (_) {}
-  }
-
-  void _selectLyricFontSize(double size) {
-    if (!_lyricFontSizes.contains(size)) return;
-    _lyricFontSizeChangedByUser = true;
-    if (_lyricFontSize != size) {
-      setState(() {
-        _lyricFontSize = size;
-        _lastAutoScrollLyricIndex = null;
-        _forceLyricRecenter = true;
-      });
-    }
-    unawaited(_saveLyricFontSize(size));
-  }
-
-  Future<void> _saveLyricFontSize(double size) async {
-    if (_dataScope.isDeleted) return;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      if (_dataScope.isDeleted) return;
-      await prefs.setDouble(LyricStylePreferences.fontSizeKey, size);
-    } catch (_) {}
-  }
-
-  void _previewLyricLineSpacing(double spacing) {
-    _lyricLineSpacingChangedByUser = true;
-    final next = spacing.clamp(
-      _minimumLyricLineSpacing,
-      _maximumLyricLineSpacing,
-    );
-    if (_lyricLineSpacing != next) {
-      setState(() {
-        _lyricLineSpacing = next;
-        _lastAutoScrollLyricIndex = null;
-        _forceLyricRecenter = true;
-      });
-    }
-  }
-
-  void _commitLyricLineSpacing(double spacing) {
-    _previewLyricLineSpacing(spacing);
-    unawaited(_saveLyricLineSpacing(_lyricLineSpacing));
-  }
-
-  Future<void> _saveLyricLineSpacing(double spacing) async {
-    if (_dataScope.isDeleted) return;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      if (_dataScope.isDeleted) return;
-      await prefs.setDouble(LyricStylePreferences.lineSpacingKey, spacing);
     } catch (_) {}
   }
 
@@ -1948,6 +1769,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
       child: Row(
         key: const ValueKey('player-lyric-bottom-toolbar'),
         children: [
+          SizedBox(
+            width: compact ? 42 : 48,
+            child: IconButton(
+              key: const ValueKey('player-audio-effects-action'),
+              tooltip: '全局音效',
+              icon: Icon(Icons.graphic_eq_rounded, color: textColor),
+              onPressed: () => showDialog<void>(
+                context: ctx,
+                builder: (_) =>
+                    AudioEffectsDialog(service: player.audioEffects),
+              ),
+            ),
+          ),
           if (!showOffsetControls) const Spacer(),
           Expanded(
             child: _playerActionButton(
@@ -2401,41 +2235,42 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
               onTap: selected
                   ? null
-                  : () => unawaited(onSelected(stream.quality)),
+                  : () async {
+                      try {
+                        await onSelected(stream.quality);
+                      } catch (error) {
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('切换清晰度失败：$error')),
+                        );
+                      }
+                    },
             );
           }),
       ],
     );
   }
 
-  Widget _buildLyricFontControlButton(
+  Widget _buildAudioQualityButton(
+    PlayerProvider player,
     Color color, {
     required double width,
     required double height,
     required double iconSize,
-  }) {
-    return SizedBox(
-      key: const ValueKey('player-lyric-font-action'),
-      width: width,
-      height: height,
-      child: IconButton(
-        tooltip: '歌词字号和间距',
-        padding: EdgeInsets.zero,
-        onPressed: () => showDialog<void>(
-          context: context,
-          builder: (_) => _LyricDisplaySettingsDialog(
-            fontSize: _lyricFontSize,
-            lineSpacing: _lyricLineSpacing,
-            fontSizes: _lyricFontSizes,
-            onFontSizeChanged: _selectLyricFontSize,
-            onLineSpacingChanged: _previewLyricLineSpacing,
-            onLineSpacingChangeEnd: _commitLyricLineSpacing,
-          ),
-        ),
-        icon: Icon(Icons.format_size_rounded, color: color, size: iconSize),
+  }) => SizedBox(
+    key: const ValueKey('player-audio-quality-action'),
+    width: width,
+    height: height,
+    child: IconButton(
+      tooltip: '全局音质',
+      padding: EdgeInsets.zero,
+      onPressed: () => showDialog<void>(
+        context: context,
+        builder: (_) => AudioQualityDialog(player: player),
       ),
-    );
-  }
+      icon: Icon(Icons.high_quality_rounded, color: color, size: iconSize),
+    ),
+  );
 
   Widget _buildPlayerVisual(
     BuildContext ctx,
@@ -3029,30 +2864,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
                 onPressed: player.playNext,
               ),
-              if (player.currentSong?.platform == MusicPlatform.bilibili)
-                SizedBox(
-                  key: const ValueKey('player-bilibili-quality-control'),
-                  width: iconButtonWidth,
-                  height: iconButtonHeight,
-                  child: IconButton(
-                    tooltip: '音频和视频清晰度',
-                    padding: EdgeInsets.zero,
-                    onPressed: () => _showBilibiliQualityDialog(ctx, player),
-                    icon: Icon(
-                      Icons.tune_rounded,
-                      color: textColor,
-                      size: largeUi ? 30 : (compact ? 24 : 28),
-                    ),
-                  ),
-                )
-              else
-                // 字号只保留图标，紧跟在下一首右侧。
-                _buildLyricFontControlButton(
-                  textColor,
-                  width: iconButtonWidth,
-                  height: iconButtonHeight,
-                  iconSize: largeUi ? 30 : (compact ? 24 : 28),
-                ),
+              _buildAudioQualityButton(
+                player,
+                textColor,
+                width: iconButtonWidth,
+                height: iconButtonHeight,
+                iconSize: largeUi ? 30 : (compact ? 24 : 28),
+              ),
             ],
           ),
         );
@@ -3178,12 +2996,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final height = largeUi ? 54.0 : (compact ? 42.0 : 50.0);
     final iconSize = largeUi ? 24.0 : (compact ? 18.0 : 22.0);
     final fontSize = largeUi ? 16.0 : (compact ? 13.0 : 16.0);
+    final glyph = animationKey == null
+        ? Icon(icon, color: color, size: iconSize)
+        : AppAnimatedIcon(
+            stateKey: animationKey,
+            child: Icon(icon, color: color, size: iconSize),
+          );
+    final caption = Text(
+      label,
+      key: labelKey,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(color: color, fontSize: fontSize),
+    );
     return Tooltip(
       key: key,
       message: tooltip ?? (label == '队列' ? '播放队列' : label),
       child: SizedBox(
         height: height,
-        child: TextButton.icon(
+        child: TextButton(
           onPressed: onPressed,
           style: TextButton.styleFrom(
             padding: EdgeInsets.symmetric(horizontal: largeUi ? 4 : 2),
@@ -3191,18 +3022,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
             maximumSize: Size(double.infinity, height),
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
-          icon: animationKey == null
-              ? Icon(icon, color: color, size: iconSize)
-              : AppAnimatedIcon(
-                  stateKey: animationKey,
-                  child: Icon(icon, color: color, size: iconSize),
-                ),
-          label: Text(
-            label,
-            key: labelKey,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: color, fontSize: fontSize),
+          child: LayoutBuilder(
+            builder: (_, constraints) => constraints.maxWidth < 64
+                ? Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [glyph, caption],
+                  )
+                : Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      glyph,
+                      const SizedBox(width: 8),
+                      Flexible(child: caption),
+                    ],
+                  ),
           ),
         ),
       ),

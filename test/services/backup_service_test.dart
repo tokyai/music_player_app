@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:music_player_app/models/ai_assistant.dart';
 import 'package:music_player_app/models/playback_source_config.dart';
 import 'package:music_player_app/models/song.dart';
+import 'package:music_player_app/models/audio_effects.dart';
 import 'package:music_player_app/providers/ai_config_controller.dart';
 import 'package:music_player_app/providers/player_provider.dart';
 import 'package:music_player_app/providers/search_session.dart';
@@ -241,6 +242,14 @@ void main() {
     await source.settingsReady;
     await source.setNeteaseLevel(NeteaseLevel.lossless);
     await source.setCommonLevel(CommonLevel.master);
+    await source.audioEffects.setSettings(
+      const AudioEffectsSettings(
+        enabled: true,
+        bassEnabled: true,
+        balanceEnabled: true,
+        balance: -0.2,
+      ),
+    );
     await source.setPlaybackSource(MusicPlatform.qq, PlaybackSource.qingMusic);
     await source.setPlaybackSource(
       MusicPlatform.kugou,
@@ -298,6 +307,9 @@ void main() {
     expect(result.playerSettingsRestored, isTrue);
     expect(restored.neteaseLevel, NeteaseLevel.lossless);
     expect(restored.commonLevel, CommonLevel.master);
+    expect(restored.audioEffects.settings.enabled, isTrue);
+    expect(restored.audioEffects.settings.bassEnabled, isTrue);
+    expect(restored.audioEffects.settings.balance, -0.2);
     expect(
       restored.playbackSourceFor(MusicPlatform.qq),
       PlaybackSource.qingMusic,

@@ -906,7 +906,7 @@ void main() {
       expect(find.text('收藏').hitTestable(), findsOneWidget);
       expect(find.text('MV').hitTestable(), findsOneWidget);
       expect(find.text('字号'), findsNothing);
-      expect(find.byTooltip('歌词字号和间距').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('全局音质').hitTestable(), findsOneWidget);
       expect(find.byType(CircularProgressIndicator), findsNothing);
       expect(
         find.byKey(const ValueKey('landscape-player-divider')).hitTestable(),
@@ -933,7 +933,7 @@ void main() {
         find.byKey(const ValueKey('player-next-track')),
       );
       final fontRect = tester.getRect(
-        find.byKey(const ValueKey('player-lyric-font-action')),
+        find.byKey(const ValueKey('player-audio-quality-action')),
       );
       final songNameRect = tester.getRect(
         find.byKey(const ValueKey('player-song-search')),
@@ -944,19 +944,17 @@ void main() {
       expect(fontRect.left, greaterThanOrEqualTo(nextRect.right - 1));
       _expectNoException(tester);
 
-      await tester.tap(find.byTooltip('歌词字号和间距'));
+      await tester.tap(find.byTooltip('全局音质'));
       await tester.pumpAndSettle();
       expect(
-        find.byKey(const ValueKey('lyric-line-spacing-slider')).hitTestable(),
+        find.byKey(const ValueKey('audio-quality-dialog')),
         findsOneWidget,
       );
-      await tester.tap(find.byKey(const ValueKey('lyric-font-size-48')));
-      await tester.pumpAndSettle();
-      final enlargedLyric = tester.widget<Text>(find.text('第一句歌词'));
-      expect(enlargedLyric.style?.fontSize, 48);
-      await tester.tap(
-        find.byKey(const ValueKey('lyric-display-settings-close')),
+      expect(
+        find.byKey(const ValueKey('audio-quality-standard')).hitTestable(),
+        findsOneWidget,
       );
+      await tester.tap(find.byKey(const ValueKey('audio-quality-close')));
       await tester.pumpAndSettle();
 
       _setViewSize(tester, const Size(1125, 651));
@@ -970,6 +968,88 @@ void main() {
       _expectNoException(tester);
     }, _mockClient);
   });
+
+  for (final size in const [Size(640, 360), Size(1280, 800), Size(390, 844)]) {
+    testWidgets('global audio controls and settings remain usable at $size', (
+      tester,
+    ) async {
+      final player = _PlayerWithLyrics();
+      final theme = ThemeController();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await player.disposeResources();
+        theme.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
+      expect(find.byTooltip('全局音质').hitTestable(), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('player-lyric-font-action')),
+        findsNothing,
+      );
+      expect(find.byTooltip('播放').hitTestable(), findsOneWidget);
+      expect(find.text('收藏').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('播放队列').hitTestable(), findsOneWidget);
+      await tester.tap(find.byTooltip('全局音质'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('audio-quality-standard')));
+      await tester.pumpAndSettle();
+      expect(player.neteaseLevel, NeteaseLevel.standard);
+      expect(
+        (await SharedPreferences.getInstance()).getString('netease_level'),
+        'standard',
+      );
+      await tester.tap(find.byKey(const ValueKey('audio-quality-close')));
+      await tester.pumpAndSettle();
+      if (size.width < size.height) {
+        await tester.tap(find.text('歌词').hitTestable());
+        await tester.pumpAndSettle();
+      }
+      final effects = find.byKey(const ValueKey('player-audio-effects-action'));
+      expect(effects.hitTestable(), findsOneWidget);
+      final toolbar = find.byKey(const ValueKey('player-lyric-bottom-toolbar'));
+      expect(
+        tester.getRect(toolbar).contains(tester.getCenter(effects)),
+        isTrue,
+      );
+      await tester.tap(effects);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('audio-effects-master')));
+      await tester.pumpAndSettle();
+      expect(player.audioEffects.settings.enabled, isTrue);
+      await tester.tap(find.byKey(const ValueKey('audio-effects-equalizer')));
+      await tester.pumpAndSettle();
+      final band = find.byKey(const ValueKey('audio-effects-band-0'));
+      await tester.ensureVisible(band);
+      await tester.pumpAndSettle();
+      final slider = tester.widget<Slider>(band);
+      slider.onChanged!(4);
+      slider.onChangeEnd!(4);
+      await tester.pumpAndSettle();
+      expect(player.audioEffects.settings.bands.first, 4);
+      final balance = find.byKey(const ValueKey('audio-effects-balance'));
+      await tester.ensureVisible(balance);
+      await tester.pumpAndSettle();
+      expect(balance.hitTestable(), findsOneWidget);
+      await tester.tap(balance);
+      await tester.pumpAndSettle();
+      expect(player.audioEffects.settings.balanceEnabled, isTrue);
+      _setViewSize(
+        tester,
+        size.width > size.height ? const Size(390, 844) : const Size(640, 360),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('audio-effects-close')).hitTestable(),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const ValueKey('audio-effects-close')));
+      await tester.pumpAndSettle();
+      expect(player.audioEffects.settings.enabled, isTrue);
+      _expectNoException(tester);
+    });
+  }
 
   testWidgets(
     'portrait lyric mode hides song metadata while landscape keeps it',
@@ -1432,10 +1512,10 @@ void main() {
       );
       expect(tester.getSize(controls).width, closeTo(resizedWidth, 1));
       expect(find.text('MV').hitTestable(), findsOneWidget);
-      expect(find.byTooltip('歌词字号和间距').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('全局音质').hitTestable(), findsOneWidget);
       expect(
         tester
-            .getRect(find.byKey(const ValueKey('player-lyric-font-action')))
+            .getRect(find.byKey(const ValueKey('player-audio-quality-action')))
             .left,
         greaterThanOrEqualTo(
           tester
@@ -1639,16 +1719,18 @@ void main() {
 
       await _pumpScreen(
         tester,
-        const PlayerScreen(),
+        const SettingsScreen(),
         firstPlayer,
         theme,
         const Size(1280, 800),
       );
-      await tester.tap(find.byTooltip('歌词字号和间距'));
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('lyric-display-setting')),
+      );
+      await tester.tap(find.byKey(const ValueKey('lyric-display-setting')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('lyric-font-size-60')));
       await tester.pumpAndSettle();
-      expect(tester.widget<Text>(find.text('第一句歌词')).style?.fontSize, 60);
       final spacingSlider = tester.widget<Slider>(
         find.byKey(const ValueKey('lyric-line-spacing-slider')),
       );
@@ -1680,66 +1762,84 @@ void main() {
     }, _mockClient);
   });
 
-  testWidgets('saved and live lyric spacing keep the current line centered', (
-    tester,
-  ) async {
-    await http.runWithClient(() async {
-      for (final size in const [Size(640, 360), Size(1280, 800)]) {
-        SharedPreferences.setMockInitialValues({'lyric_line_spacing': 160.0});
-        final player = _CenteredLyricsPlayer();
-        final theme = ThemeController();
+  testWidgets(
+    'saved lyric spacing from settings keeps the current line centered',
+    (tester) async {
+      await http.runWithClient(() async {
+        for (final size in const [Size(640, 360), Size(1280, 800)]) {
+          SharedPreferences.setMockInitialValues({'lyric_line_spacing': 160.0});
+          final player = _CenteredLyricsPlayer();
+          final theme = ThemeController();
 
-        await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
+          await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
 
-        final lyricsRect = tester.getRect(
-          find.byKey(const ValueKey('player-lyric-list')),
-        );
-        final currentLineRect = tester.getRect(
-          find.byKey(const ValueKey('lyric-line-3')),
-        );
-        expect(
-          currentLineRect.center.dy,
-          closeTo(lyricsRect.center.dy, 1),
-          reason: '已保存的歌词间距加载后，当前歌词仍应位于歌词栏正中',
-        );
-        expect(currentLineRect.height, greaterThan(190));
+          final lyricsRect = tester.getRect(
+            find.byKey(const ValueKey('player-lyric-list')),
+          );
+          final currentLineRect = tester.getRect(
+            find.byKey(const ValueKey('lyric-line-3')),
+          );
+          expect(
+            currentLineRect.center.dy,
+            closeTo(lyricsRect.center.dy, 1),
+            reason: '已保存的歌词间距加载后，当前歌词仍应位于歌词栏正中',
+          );
+          expect(currentLineRect.height, greaterThan(190));
 
-        await tester.tap(find.byTooltip('歌词字号和间距'));
-        await tester.pumpAndSettle();
-        final spacingSlider = tester.widget<Slider>(
-          find.byKey(const ValueKey('lyric-line-spacing-slider')),
-        );
-        spacingSlider.onChanged!(20);
-        spacingSlider.onChangeEnd!(20);
-        await tester.pumpAndSettle();
-        await tester.tap(
-          find.byKey(const ValueKey('lyric-display-settings-close')),
-        );
-        await tester.pumpAndSettle();
+          await tester.pumpWidget(const SizedBox.shrink());
+          await _pumpScreen(
+            tester,
+            const SettingsScreen(),
+            player,
+            theme,
+            size,
+          );
+          await tester.ensureVisible(
+            find.byKey(const ValueKey('lyric-display-setting')),
+          );
+          await tester.tap(find.byKey(const ValueKey('lyric-display-setting')));
+          await tester.pumpAndSettle();
+          final spacingSlider = tester.widget<Slider>(
+            find.byKey(const ValueKey('lyric-line-spacing-slider')),
+          );
+          spacingSlider.onChanged!(20);
+          spacingSlider.onChangeEnd!(20);
+          await tester.pumpAndSettle();
+          await tester.tap(
+            find.byKey(const ValueKey('lyric-display-settings-close')),
+          );
+          await tester.pumpAndSettle();
 
-        final resizedLyricsRect = tester.getRect(
-          find.byKey(const ValueKey('player-lyric-list')),
-        );
-        final resizedCurrentLineRect = tester.getRect(
-          find.byKey(const ValueKey('lyric-line-3')),
-        );
-        expect(
-          resizedCurrentLineRect.center.dy,
-          closeTo(resizedLyricsRect.center.dy, 1),
-          reason: '拖动歌词间距滑杆后，当前歌词仍应位于歌词栏正中',
-        );
-        expect(resizedCurrentLineRect.height, lessThan(currentLineRect.height));
-        _expectNoException(tester);
+          await tester.pumpWidget(const SizedBox.shrink());
+          await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
 
-        await tester.pumpWidget(const SizedBox.shrink());
-        await tester.pump();
-        player.dispose();
-        theme.dispose();
-      }
-      tester.view.resetPhysicalSize();
-      tester.view.resetDevicePixelRatio();
-    }, _mockClient);
-  });
+          final resizedLyricsRect = tester.getRect(
+            find.byKey(const ValueKey('player-lyric-list')),
+          );
+          final resizedCurrentLineRect = tester.getRect(
+            find.byKey(const ValueKey('lyric-line-3')),
+          );
+          expect(
+            resizedCurrentLineRect.center.dy,
+            closeTo(resizedLyricsRect.center.dy, 1),
+            reason: '拖动歌词间距滑杆后，当前歌词仍应位于歌词栏正中',
+          );
+          expect(
+            resizedCurrentLineRect.height,
+            lessThan(currentLineRect.height),
+          );
+          _expectNoException(tester);
+
+          await tester.pumpWidget(const SizedBox.shrink());
+          await tester.pump();
+          player.dispose();
+          theme.dispose();
+        }
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      }, _mockClient);
+    },
+  );
 
   testWidgets('main shell switches navigation and player placement', (
     tester,
@@ -2650,14 +2750,14 @@ void main() {
       expect(albumText.style?.fontSize, 20);
       expect(
         tester
-            .getRect(find.byKey(const ValueKey('player-lyric-font-action')))
+            .getRect(find.byKey(const ValueKey('player-audio-quality-action')))
             .left,
         lessThan(lyricsRect.left),
       );
       expect(find.text('收藏').hitTestable(), findsOneWidget);
       expect(find.text('MV').hitTestable(), findsOneWidget);
       expect(find.text('字号'), findsNothing);
-      expect(find.byTooltip('歌词字号和间距').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('全局音质').hitTestable(), findsOneWidget);
       expect(find.text('歌词').hitTestable(), findsNothing);
       _expectNoException(tester);
     }, _mockClient);
@@ -2732,15 +2832,15 @@ void main() {
               .bottom,
         ),
       );
-      await tester.tap(find.byKey(const ValueKey('player-lyric-font-action')));
+      await tester.tap(
+        find.byKey(const ValueKey('player-audio-quality-action')),
+      );
       await tester.pumpAndSettle();
       expect(
-        find.byKey(const ValueKey('lyric-display-settings-dialog')),
+        find.byKey(const ValueKey('audio-quality-dialog')),
         findsOneWidget,
       );
-      await tester.tap(
-        find.byKey(const ValueKey('lyric-display-settings-close')),
-      );
+      await tester.tap(find.byKey(const ValueKey('audio-quality-close')));
       await tester.pumpAndSettle();
       expect(find.text('收藏'), findsOneWidget);
       await tester.tap(find.widgetWithText(TextButton, '收藏'));
@@ -2748,7 +2848,7 @@ void main() {
       expect(find.text('已收藏'), findsOneWidget);
       expect(
         tester
-            .getRect(find.byKey(const ValueKey('player-lyric-font-action')))
+            .getRect(find.byKey(const ValueKey('player-audio-quality-action')))
             .height,
         greaterThanOrEqualTo(54),
       );

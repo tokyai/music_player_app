@@ -31,6 +31,79 @@ void main() {
     }, cached: true);
   });
 
+  test('quality changes bypass old cache and retain paused position', () async {
+    await _scenario((fixture, player) async {
+      await player.playFromSearchResults([_song('song')], 0);
+      await player.pause();
+      await player.seekTo(const Duration(seconds: 37));
+      final playCalls = fixture.playCalls;
+      await player.setCommonLevel(CommonLevel.k320);
+      expect(fixture.loaded, hasLength(2));
+      expect(Uri.parse(fixture.loaded.last).host, 'audio-qing.test');
+      expect(fixture.seekPositions.last, 37000000);
+      expect(player.position, const Duration(seconds: 37));
+      expect(player.isPlaying, isFalse);
+      expect(fixture.playCalls, playCalls);
+      expect(fixture.requestedQualities.last, 'exhigh');
+      expect(
+        await AudioCacheService.getCachedPath(
+          platformCode: 'qq',
+          songId: 'song',
+          quality: '320k',
+          scope: fixture.scope,
+        ),
+        isNull,
+      );
+      expect(
+        await AudioCacheService.getCachedPath(
+          platformCode: 'qq',
+          songId: 'song',
+          quality: 'flac',
+          scope: fixture.scope,
+        ),
+        isNotNull,
+      );
+      await player.setCommonLevel(CommonLevel.k320);
+      expect(fixture.loaded, hasLength(2));
+      await player.seekTo(const Duration(seconds: 179));
+      await player.setCommonLevel(CommonLevel.hires);
+      expect(player.position, const Duration(seconds: 179));
+    }, cached: true);
+  });
+
+  test('quality remains global for subsequent tracks and restart', () async {
+    await _scenario((fixture, player) async {
+      await player.playFromSearchResults([_song('song'), _song('next')], 0);
+      await player.setCommonLevel(CommonLevel.k128);
+      await player.playNext();
+      expect(fixture.requestedQualities.last, 'standard');
+      expect(player.currentSong!.id, 'next');
+      final restored = PlayerProvider(activateRestoredSession: false);
+      try {
+        await restored.settingsReady;
+        expect(restored.commonLevel, CommonLevel.k128);
+      } finally {
+        await restored.disposeResources();
+      }
+    });
+  });
+
+  test(
+    'quality resolution failure finishes cleanly without changing queue',
+    () async {
+      await _scenario((fixture, player) async {
+        await player.playFromSearchResults([_song('song')], 0);
+        fixture.failAllLoads = true;
+        await player.setCommonLevel(CommonLevel.hires);
+        expect(player.changingAudioQuality, isFalse);
+        expect(player.isLoading, isFalse);
+        expect(player.errorMessage, isNotNull);
+        expect(player.currentSong!.id, 'song');
+        expect(player.queue, hasLength(1));
+      });
+    },
+  );
+
   test(
     'a broken resolver winner is excluded after native load failure',
     () async {
@@ -193,6 +266,9 @@ class _NativeFixture {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
   final List<MethodChannel> channels = [];
   final List<String> loaded = [];
+  final List<String> requestedQualities = [];
+  final List<int> seekPositions = [];
+  int playCalls = 0;
   String? playerId;
   bool failQingLoads = false;
   bool failAllLoads = false;
@@ -246,6 +322,12 @@ class _NativeFixture {
         fixture.install(MethodChannel('com.ryanheise.just_audio.methods.$id'), (
           call,
         ) async {
+          if (call.method == 'play') fixture.playCalls++;
+          if (call.method == 'seek') {
+            fixture.seekPositions.add(
+              (call.arguments as Map)['position'] as int,
+            );
+          }
           if (call.method == 'load') {
             final url =
                 ((call.arguments as Map)['audioSource'] as Map)['uri']
@@ -280,6 +362,7 @@ class _NativeFixture {
             'artist': 'artist',
             'platformCode': 'qq',
             'songId': 'song',
+            'quality': 'flac',
           },
         }),
       );
@@ -323,7 +406,9 @@ class _NativeFixture {
 
   Future<http.Response> request(http.Request request) async {
     if (request.url.host == 'qing.test') {
-      final id = (jsonDecode(request.body) as Map)['rid'];
+      final body = jsonDecode(request.body) as Map;
+      final id = body['rid'];
+      requestedQualities.add(body['level'] as String);
       return http.Response(
         jsonEncode({
           'code': 0,

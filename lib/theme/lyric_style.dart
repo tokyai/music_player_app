@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 
 /// 歌词显示偏好的持久化键与可选项。
 abstract final class LyricStylePreferences {
+  static const fontSizes = <double>[32, 36, 42, 48, 54, 60];
+  static const minimumLineSpacing = 20.0;
+  static const maximumLineSpacing = 160.0;
   static const fontSizeKey = 'lyric_font_size';
   static const lineSpacingKey = 'lyric_line_spacing';
   static const fontFamilyKey = 'lyric_font_family';

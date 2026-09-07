@@ -142,19 +142,20 @@ class AudioCacheService {
   }
 
   /// 保存缓存索引
-  static Future<void> _saveIndex(UserDataScope scope) async {
-    if (scope.isDeleted) return;
+  static Future<bool> _saveIndex(UserDataScope scope) async {
+    if (scope.isDeleted) return false;
     final context = _context(scope);
-    if (context.index == null) return;
+    if (context.index == null) return false;
     try {
       final dir = await _getCacheDir(scope);
       final file = File('${dir.path}/_index.json');
       final temporary = File('${file.path}.tmp');
       await temporary.writeAsString(json.encode(context.index), flush: true);
-      if (await file.exists()) await file.delete();
       await temporary.rename(file.path);
+      return true;
     } catch (e) {
       debugPrint('保存缓存索引失败: $e');
+      return false;
     }
   }
 
@@ -164,6 +165,7 @@ class AudioCacheService {
     required String songId,
     // 保留旧调用方的命名参数兼容；缓存索引按歌曲身份查找，不依赖 URL。
     String? url,
+    String? quality,
     UserDataScope scope = UserDataScope.defaultScope,
   }) async {
     if (scope.isDeleted) return null;
@@ -171,7 +173,7 @@ class AudioCacheService {
       final index = await _loadIndex(scope);
       final key = _cacheKey(platformCode, songId);
       final entry = index[key];
-      if (entry != null) {
+      if (entry != null && (quality == null || entry['quality'] == quality)) {
         final filePath = entry['filePath'] as String?;
         if (filePath != null) {
           final file = File(filePath);
@@ -191,6 +193,7 @@ class AudioCacheService {
     required String platformCode,
     required String songId,
     required String url,
+    String? quality,
     String name = '未知歌曲',
     String artist = '未知歌手',
     Map<String, String>? headers,
@@ -207,7 +210,8 @@ class AudioCacheService {
 
         // 先检查索引中是否已有缓存
         final existing = index[key];
-        if (existing != null) {
+        if (existing != null &&
+            (quality == null || existing['quality'] == quality)) {
           final existingPath = existing['filePath'] as String?;
           if (existingPath != null) {
             final file = File(existingPath);
@@ -227,26 +231,32 @@ class AudioCacheService {
         if (await tempFile.exists()) await tempFile.delete();
 
         final dio = Dio();
-        await dio.download(
-          url,
-          tempPath,
-          onReceiveProgress: onProgress,
-          options: Options(
-            headers: headers,
-            receiveTimeout: const Duration(seconds: 30),
-            sendTimeout: const Duration(seconds: 10),
-          ),
-        );
+        try {
+          await dio.download(
+            url,
+            tempPath,
+            onReceiveProgress: onProgress,
+            options: Options(
+              headers: headers,
+              receiveTimeout: const Duration(seconds: 30),
+              sendTimeout: const Duration(seconds: 10),
+            ),
+          );
+        } finally {
+          dio.close(force: true);
+        }
 
         // 下载完成，重命名为正式缓存文件
         if (await tempFile.exists()) {
           final size = await tempFile.length();
           if (size > 10240) {
-            // 如果目标文件已存在（同名不同歌曲），加 id 后缀
+            // Keep the previous quality intact until the new index is committed.
             String finalPath = path;
             if (await File(path).exists()) {
               finalPath =
-                  '${dir.path}/${_sanitizeName(name)}-${_sanitizeName(artist)}_${songId}.$ext';
+                  '${dir.path}/${_sanitizeName(name)}-${_sanitizeName(artist)}_'
+                  '${_sanitizeName('${platformCode}_$songId')}_'
+                  '${DateTime.now().microsecondsSinceEpoch}.$ext';
             }
             await tempFile.rename(finalPath);
             // 更新索引
@@ -257,9 +267,29 @@ class AudioCacheService {
               'songId': songId,
               'filePath': finalPath,
               'fileSize': size,
+              'quality': quality,
             };
             _context(scope).index = index;
-            await _saveIndex(scope);
+            if (!await _saveIndex(scope)) {
+              if (existing == null) {
+                index.remove(key);
+              } else {
+                index[key] = existing;
+              }
+              await File(finalPath).delete();
+              return null;
+            }
+            final oldPath = existing?['filePath'];
+            if (oldPath is String &&
+                oldPath != finalPath &&
+                File(oldPath).absolute.parent.path == dir.absolute.path &&
+                !index.values.any((entry) => entry['filePath'] == oldPath)) {
+              try {
+                if (await File(oldPath).exists()) await File(oldPath).delete();
+              } catch (error) {
+                debugPrint('清理旧音质缓存失败: $error');
+              }
+            }
             debugPrint('缓存成功: $finalPath ($size bytes)');
             return finalPath;
           } else {
