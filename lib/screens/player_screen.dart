@@ -418,6 +418,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Color? _dominantColor;
   bool _lyricsAutoScroll = true;
+  bool _fullscreenLyrics = false;
   double _lyricFontSize = 42;
   double _lyricLineSpacing = 44;
   LyricFontFamilyPreset _lyricFontFamily = LyricFontFamilyPreset.system;
@@ -961,60 +962,68 @@ class _PlayerScreenState extends State<PlayerScreen> {
             (aiConfig?.showAssistantOnAllPages ?? true) &&
             (aiConfig?.showPetOnPlayerPage ?? true);
 
-        return Scaffold(
-          body: Stack(
-            fit: StackFit.expand,
-            children: [
-              _buildPlayerBackground(song, baseColor, darkTheme),
-              SafeArea(
-                child: isLandscape
-                    ? _buildLandscapePlayer(
-                        ctx,
-                        player,
-                        song,
-                        baseColor,
-                        textColor,
-                        subTextColor,
-                      )
-                    : Column(
-                        children: [
-                          _buildTopBar(ctx, player, textColor, subTextColor),
-                          Expanded(
-                            child: _buildPlayerVisual(
+        return PopScope<void>(
+          canPop: !(isLandscape && _fullscreenLyrics),
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop && mounted) _toggleFullscreenLyrics();
+          },
+          child: Scaffold(
+            body: Stack(
+              fit: StackFit.expand,
+              children: [
+                _buildPlayerBackground(song, baseColor, darkTheme),
+                SafeArea(
+                  child: isLandscape
+                      ? _buildLandscapePlayer(
+                          ctx,
+                          player,
+                          song,
+                          baseColor,
+                          textColor,
+                          subTextColor,
+                        )
+                      : Column(
+                          children: [
+                            _buildTopBar(ctx, player, textColor, subTextColor),
+                            Expanded(
+                              child: _buildPlayerVisual(
+                                ctx,
+                                player,
+                                song,
+                                baseColor,
+                                textColor,
+                              ),
+                            ),
+                            Selector<PlayerProvider, bool>(
+                              selector: (_, p) => p.showLyric,
+                              builder: (ctx, showLyric, _) => showLyric
+                                  ? const SizedBox(
+                                      key: ValueKey(
+                                        'portrait-lyric-info-hidden',
+                                      ),
+                                    )
+                                  : _buildSongInfo(
+                                      ctx,
+                                      player,
+                                      song,
+                                      textColor,
+                                      subTextColor,
+                                    ),
+                            ),
+                            _buildProgressBar(
                               ctx,
                               player,
-                              song,
-                              baseColor,
                               textColor,
+                              subTextColor,
                             ),
-                          ),
-                          Selector<PlayerProvider, bool>(
-                            selector: (_, p) => p.showLyric,
-                            builder: (ctx, showLyric, _) => showLyric
-                                ? const SizedBox(
-                                    key: ValueKey('portrait-lyric-info-hidden'),
-                                  )
-                                : _buildSongInfo(
-                                    ctx,
-                                    player,
-                                    song,
-                                    textColor,
-                                    subTextColor,
-                                  ),
-                          ),
-                          _buildProgressBar(
-                            ctx,
-                            player,
-                            textColor,
-                            subTextColor,
-                          ),
-                          _buildControls(ctx, player, textColor),
-                          _buildBottomActions(ctx, player, subTextColor),
-                        ],
-                      ),
-              ),
-              if (showAiPet) _buildAiAssistantOverlay(ctx),
-            ],
+                            _buildControls(ctx, player, textColor),
+                            _buildBottomActions(ctx, player, subTextColor),
+                          ],
+                        ),
+                ),
+                if (showAiPet) _buildAiAssistantOverlay(ctx),
+              ],
+            ),
           ),
         );
       },
@@ -1178,6 +1187,62 @@ class _PlayerScreenState extends State<PlayerScreen> {
   ) {
     final layout = AppLayout.fromContext(ctx);
     final largeUi = layout.usesLargeTypography;
+    if (_fullscreenLyrics) {
+      return Column(
+        key: const ValueKey('player-fullscreen-lyrics'),
+        children: [
+          _buildTopBar(ctx, player, textColor, subTextColor, showQueue: false),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: _buildLandscapeLyrics(
+                ctx,
+                player,
+                textColor,
+                footerHeight: largeUi
+                    ? 56
+                    : layout.isCompactLandscape
+                    ? 44
+                    : 52,
+                footerBottomPadding: 0,
+              ),
+            ),
+          ),
+          _buildProgressBar(
+            ctx,
+            player,
+            textColor,
+            subTextColor,
+            compact: true,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _buildControls(
+                    ctx,
+                    player,
+                    textColor,
+                    compact: true,
+                    landscape: true,
+                  ),
+                ),
+                Expanded(
+                  child: _buildBottomActions(
+                    ctx,
+                    player,
+                    subTextColor,
+                    compact: true,
+                    landscape: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
     return Column(
       children: [
         _buildTopBar(ctx, player, textColor, subTextColor, showQueue: false),
@@ -2312,6 +2377,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
+  void _toggleFullscreenLyrics() {
+    setState(() {
+      _fullscreenLyrics = !_fullscreenLyrics;
+      _lastAutoScrollLyricIndex = null;
+      _forceLyricRecenter = true;
+    });
+  }
+
   Widget _buildTopBar(
     BuildContext ctx,
     PlayerProvider player,
@@ -2332,8 +2405,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
             key: const ValueKey('player-back'),
             tooltip: '返回',
             icon: Icon(Icons.keyboard_arrow_down, color: textColor),
-            onPressed: () => Navigator.pop(ctx),
+            onPressed: !showQueue && _fullscreenLyrics
+                ? _toggleFullscreenLyrics
+                : () => Navigator.pop(ctx),
           ),
+          if (!showQueue)
+            IconButton(
+              key: const ValueKey('player-fullscreen-lyrics-toggle'),
+              tooltip: _fullscreenLyrics ? '退出全屏歌词' : '全屏歌词',
+              icon: Icon(
+                _fullscreenLyrics
+                    ? Icons.fullscreen_exit_rounded
+                    : Icons.fullscreen_rounded,
+                color: textColor,
+              ),
+              onPressed: _toggleFullscreenLyrics,
+            ),
           ListenableBuilder(
             listenable: player.sleepTimer,
             builder: (context, _) => IconButton(
@@ -2359,7 +2446,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
             child: Column(
               children: [
                 Text(
-                  '正在播放',
+                  !showQueue && _fullscreenLyrics
+                      ? player.currentSong?.name ?? '正在播放'
+                      : '正在播放',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: subColor,
                     fontSize: largeUi ? 16 : 13,
@@ -2367,9 +2458,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  player.queue.length > 1
+                  !showQueue && _fullscreenLyrics
+                      ? player.currentSong?.artist ?? ''
+                      : player.queue.length > 1
                       ? '播放列表 (${player.currentIndex + 1}/${player.queue.length})'
                       : '单曲播放',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: textColor,
                     fontSize: largeUi ? 20 : 16,
@@ -2386,7 +2481,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
             )
           else
             const SizedBox(width: 48),
-
         ],
       ),
     );

@@ -969,6 +969,67 @@ void main() {
     }, _mockClient);
   });
 
+  for (final size in const [Size(640, 360), Size(1280, 800)]) {
+    testWidgets(
+      'fullscreen lyrics keeps transport and returns safely at $size',
+      (tester) async {
+        final player = _PlayerWithLyrics();
+        final theme = ThemeController();
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          await player.disposeResources();
+          theme.dispose();
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+        await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
+        await tester.tap(find.byTooltip('全屏歌词').hitTestable());
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const ValueKey('player-fullscreen-lyrics')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const ValueKey('landscape-player-cover')),
+          findsNothing,
+        );
+        expect(find.byTooltip('播放').hitTestable(), findsOneWidget);
+        expect(find.byTooltip('播放队列').hitTestable(), findsOneWidget);
+        expect(find.text('收藏').hitTestable(), findsOneWidget);
+        expect(find.text('MV').hitTestable(), findsOneWidget);
+        expect(find.byTooltip('全局音质').hitTestable(), findsOneWidget);
+        expect(find.byTooltip('全局音效').hitTestable(), findsOneWidget);
+        expect(
+          tester.getSize(find.byKey(const ValueKey('player-lyric-list'))).width,
+          greaterThan(size.width * 0.8),
+        );
+        _setViewSize(tester, const Size(390, 844));
+        await tester.pumpAndSettle();
+        expect(find.byTooltip('播放').hitTestable(), findsOneWidget);
+        _setViewSize(tester, size);
+        await tester.pumpAndSettle();
+        expect(find.byTooltip('退出全屏歌词').hitTestable(), findsOneWidget);
+        player._testLyrics.clear();
+        player.notifyListeners();
+        await tester.pumpAndSettle();
+        expect(find.text('暂无歌词'), findsOneWidget);
+        expect(find.byTooltip('播放').hitTestable(), findsOneWidget);
+        await tester.tap(find.byKey(const ValueKey('player-back')));
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const ValueKey('landscape-player-cover')),
+          findsOneWidget,
+        );
+        await tester.tap(find.byTooltip('全屏歌词'));
+        await tester.pumpAndSettle();
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+        expect(find.byKey(const ValueKey('player-fullscreen-lyrics')), findsNothing);
+        _expectNoException(tester);
+      },
+    );
+  }
+
   for (final size in const [Size(640, 360), Size(1280, 800), Size(390, 844)]) {
     testWidgets('sleep timer stays accessible across rotation at $size', (
       tester,
