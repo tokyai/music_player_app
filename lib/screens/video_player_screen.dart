@@ -663,6 +663,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       'User-Agent':
           'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36',
       'Referer': switch (platform) {
+        MusicPlatform.local => '',
         MusicPlatform.qq => 'https://y.qq.com/',
         MusicPlatform.netease => 'https://music.163.com/',
         MusicPlatform.kugou => 'https://www.kugou.com/',

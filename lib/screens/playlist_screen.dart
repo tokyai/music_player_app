@@ -110,6 +110,8 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     PlaylistInfo? savedMetadata,
   }) async {
     switch (platform) {
+      case MusicPlatform.local:
+        throw const ApiException('PLAYLIST_UNSUPPORTED', '本地歌曲不使用在线歌单');
       case MusicPlatform.qq:
         if (savedMetadata == null) {
           final playlist = await player.api.qqPlaylist(id);
@@ -192,6 +194,10 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
       final offset = playlist.tracks.length;
       final api = context.read<PlayerProvider>().api;
       final page = switch (platform) {
+        MusicPlatform.local => throw const ApiException(
+          'PLAYLIST_UNSUPPORTED',
+          '本地歌曲不使用在线歌单',
+        ),
         MusicPlatform.qq => await api.qqPlaylistTracks(
           playlist.id,
           limit: _pageSize,

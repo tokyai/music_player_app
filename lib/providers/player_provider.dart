@@ -245,6 +245,7 @@ class PlayerProvider extends ChangeNotifier {
       MusicPlatform.qq => _qqPlaybackSource,
       MusicPlatform.kugou => _kugouPlaybackSource,
       MusicPlatform.bilibili => PlaybackSource.automatic,
+      MusicPlatform.local => PlaybackSource.automatic,
     };
   }
 
@@ -259,7 +260,7 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   List<PlaybackSource> playbackSourceOptions(MusicPlatform platform) {
-    if (platform == MusicPlatform.bilibili) return const [];
+    if (!configurableMusicPlatforms.contains(platform)) return const [];
     return [
       PlaybackSource.automatic,
       for (final source in PlaybackSource.values)
@@ -810,7 +811,7 @@ class PlayerProvider extends ChangeNotifier {
     _invalidatePlayUrl(_itemKey(song));
     final source =
         _currentPlaybackSourceOverride ?? playbackSourceFor(song.platform);
-    if (song.platform != MusicPlatform.bilibili &&
+    if (configurableMusicPlatforms.contains(song.platform) &&
         source == PlaybackSource.automatic &&
         _playbackRecoveryAttempts < _maxPlaybackRecoveryAttempts) {
       final failedSource = _currentResolvedPlaybackSource;
@@ -1238,6 +1239,8 @@ class PlayerProvider extends ChangeNotifier {
       return;
     }
     switch (platform) {
+      case MusicPlatform.local:
+        return;
       case MusicPlatform.netease:
         _neteasePlaybackSource = source;
       case MusicPlatform.qq:
@@ -1273,7 +1276,7 @@ class PlayerProvider extends ChangeNotifier {
         dataScope.isDeleted ||
         !_isCurrentRequest(previousRequest, item) ||
         (expectedSong != null && _itemKey(expectedSong) != _itemKey(item)) ||
-        item.platform == MusicPlatform.bilibili ||
+        !configurableMusicPlatforms.contains(item.platform) ||
         !playbackSourceOptions(item.platform).contains(source)) {
       return false;
     }
@@ -1434,7 +1437,9 @@ class PlayerProvider extends ChangeNotifier {
     final results = song.platform == MusicPlatform.bilibili
         ? await _searchBilibiliLyricCandidates(song, query)
         : await _api.searchLyricCandidates(
-            platform: song.platform,
+            platform: song.platform == MusicPlatform.local
+                ? MusicPlatform.qq
+                : song.platform,
             keyword: query,
             currentName: song.name,
             currentArtist: song.artist,
@@ -1512,7 +1517,7 @@ class PlayerProvider extends ChangeNotifier {
     if (song == null) {
       throw const ApiException('NO_CURRENT_SONG', '当前没有正在播放的歌曲');
     }
-    if (song.platform != MusicPlatform.bilibili &&
+    if (configurableMusicPlatforms.contains(song.platform) &&
         candidate.platform != song.platform) {
       throw const ApiException('LYRIC_PLATFORM_MISMATCH', '歌词来源与当前歌曲平台不一致');
     }
@@ -1695,6 +1700,7 @@ class PlayerProvider extends ChangeNotifier {
         MusicPlatform.qq => 'playback_source_qq',
         MusicPlatform.kugou => 'playback_source_kugou',
         MusicPlatform.bilibili => throw UnsupportedError('B站不使用第三方播放源'),
+        MusicPlatform.local => throw UnsupportedError('本地音频不使用第三方播放源'),
       };
 
   static PlaybackSource _readPlaybackSource(String? value) {
@@ -2113,7 +2119,10 @@ class PlayerProvider extends ChangeNotifier {
       // 缓存检查只依赖平台和歌曲 id，必须放在网络解析之前。命中缓存时
       // 直接播放本地文件，不再为了封面、歌手、专辑等已有信息请求详情。
       final cachedPath =
-          bypassAudioCache || forceResolve || sourceOverride != null
+          item.platform == MusicPlatform.local ||
+              bypassAudioCache ||
+              forceResolve ||
+              sourceOverride != null
           ? null
           : await AudioCacheService.getCachedPath(
               platformCode: item.platform.code,
@@ -2127,7 +2136,10 @@ class PlayerProvider extends ChangeNotifier {
       String? resolvedUrl;
       var playPath = '';
       var shouldCacheAudio = false;
-      if (cachedPath != null) {
+      if (item.platform == MusicPlatform.local) {
+        playPath = validateLocalAudioUri(item.id).toString();
+        resolvedUrl = playPath;
+      } else if (cachedPath != null) {
         debugPrint('缓存命中: $cachedPath');
         playPath = cachedPath;
       } else {
@@ -2152,7 +2164,8 @@ class PlayerProvider extends ChangeNotifier {
       // 已有封面优先，解析接口返回的封面只补空缺，避免 URL 改变导致播放页
       // 再下载一次相同图片。歌名、歌手和专辑始终使用列表已有元数据。
       final effectiveCover = _preferExisting(item.coverUrl, detail?.coverUrl);
-      var playbackHeaders = cachedPath != null
+      var playbackHeaders =
+          item.platform == MusicPlatform.local || cachedPath != null
           ? null
           : detail != null
           ? detail.playbackHeaders
@@ -2186,7 +2199,7 @@ class PlayerProvider extends ChangeNotifier {
           final failedSource =
               detail?.playbackSource ?? _currentResolvedPlaybackSource;
           final canResolveAnother =
-              item.platform != MusicPlatform.bilibili &&
+              configurableMusicPlatforms.contains(item.platform) &&
               selectedSource == PlaybackSource.automatic &&
               _playbackRecoveryAttempts < _maxPlaybackRecoveryAttempts;
           if (!canResolveAnother) rethrow;
@@ -2263,8 +2276,11 @@ class PlayerProvider extends ChangeNotifier {
             item,
             _ResolvedLyrics.fromPlainText(detail.lyric),
           );
-        } else {
+        } else if (item.platform != MusicPlatform.local) {
           unawaited(_loadBundledLyricsInBackground(requestId, item));
+        } else {
+          _lyricsLoading = false;
+          notifyListeners();
         }
       }
 
@@ -2322,6 +2338,7 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   String _audioQualityFor(PlayQueueItem item) => switch (item.platform) {
+    MusicPlatform.local => 'original',
     MusicPlatform.netease => _neteaseLevel.value,
     MusicPlatform.qq || MusicPlatform.kugou => _commonLevel.value,
     MusicPlatform.bilibili => '$_bilibiliAudioQuality',
@@ -2535,6 +2552,8 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<_ResolvedLyrics?>? _fetchIndependentLyrics(PlayQueueItem item) {
     switch (item.platform) {
+      case MusicPlatform.local:
+        return null;
       case MusicPlatform.netease:
         return _fetchNeteaseLyrics(item.id);
       case MusicPlatform.qq:
@@ -2699,6 +2718,9 @@ class PlayerProvider extends ChangeNotifier {
 
   /// 把底层异常翻译成用户可读的提示
   String _friendlyError(Object e) {
+    if (currentSong?.platform == MusicPlatform.local) {
+      return '本地音频不可访问，请检查音频权限或重新扫描';
+    }
     final s = e.toString();
     if (s.contains('API_KEY_REQUIRED')) {
       return '当前音源需要 ChKSz API Key，请在设置 → API 配置中填写，或切换为自动备用';

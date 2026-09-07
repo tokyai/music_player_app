@@ -67,6 +67,8 @@ class PlatformColors {
         return kugou;
       case MusicPlatform.bilibili:
         return bilibili;
+      case MusicPlatform.local:
+        return const Color(0xFF5C786A);
     }
   }
 }

@@ -33,6 +33,7 @@ import '../widgets/app_user_avatar.dart';
 import '../widgets/user_profile_editor_dialog.dart';
 import 'backup_restore_screen.dart';
 import 'cache_list_screen.dart';
+import 'local_music_screen.dart';
 import 'favorites_screen.dart';
 import 'playback_history_screen.dart';
 import 'playback_source_config_screen.dart';
@@ -1917,6 +1918,18 @@ class _SettingsScreenState extends State<SettingsScreen>
       compact: compact,
       children: [
         _buildSectionHeader(icon: Icons.library_music_outlined, title: '音乐库'),
+        ListTile(
+          key: const ValueKey('local-music-setting'),
+          dense: compact,
+          leading: const Icon(Icons.folder_open_rounded),
+          title: const Text('本地音乐'),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const LocalMusicScreen()),
+          ),
+        ),
+        const Divider(height: 1),
         Consumer<FavoriteService>(
           builder: (context, favorites, _) => ListTile(
             dense: compact,

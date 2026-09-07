@@ -3,7 +3,8 @@ enum MusicPlatform {
   netease('网易云', '163'),
   qq('QQ音乐', 'qq'),
   kugou('酷狗', 'kugou'),
-  bilibili('B站', 'bilibili');
+  bilibili('B站', 'bilibili'),
+  local('本地', 'local');
 
   final String label;
   final String code;
@@ -48,6 +49,32 @@ enum VideoPlayerMode {
   final String label;
   final String value;
   const VideoPlayerMode(this.label, this.value);
+}
+
+/// Only MediaStore audio items are accepted, never arbitrary files/providers.
+Uri validateLocalAudioUri(String value) {
+  final uri = Uri.tryParse(value);
+  final segments = uri?.pathSegments ?? const <String>[];
+  if (value.length > 256 ||
+      uri == null ||
+      uri.scheme != 'content' ||
+      uri.host != 'media' ||
+      uri.hasPort ||
+      uri.userInfo.isNotEmpty ||
+      uri.hasQuery ||
+      uri.hasFragment ||
+      segments.length != 4 ||
+      !const [
+        'external',
+        'external_primary',
+        'internal',
+      ].contains(segments[0]) ||
+      segments[1] != 'audio' ||
+      segments[2] != 'media' ||
+      (int.tryParse(segments[3]) ?? 0) <= 0) {
+    throw const FormatException('本地音频地址无效');
+  }
+  return uri;
 }
 
 /// 封面 URL 工具
@@ -666,6 +693,8 @@ class SongSearchResult {
       (e) => e.code == json['platform'],
       orElse: () => MusicPlatform.netease,
     );
+    if (platform == MusicPlatform.local)
+      validateLocalAudioUri(json['id']?.toString() ?? '');
     return SongSearchResult(
       platform: platform,
       id: json['id']?.toString() ?? '',
@@ -1050,6 +1079,7 @@ class PlayQueueItem {
   });
 
   factory PlayQueueItem.fromSearchResult(SongSearchResult r) {
+    if (r.platform == MusicPlatform.local) validateLocalAudioUri(r.id);
     return PlayQueueItem(
       platform: r.platform,
       id: r.id,

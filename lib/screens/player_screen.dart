@@ -678,7 +678,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
         player.api,
         keyword: keyword,
         subject: subject,
-        preferredPlatform: song.platform,
+        preferredPlatform: song.platform == MusicPlatform.local
+            ? MusicPlatform.qq
+            : song.platform,
       ),
     );
     Navigator.of(context).popUntil((route) => route.isFirst);
@@ -1871,7 +1873,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
               color: textColor,
             ),
           ),
-          if (song.platform != MusicPlatform.bilibili)
+          if (configurableMusicPlatforms.contains(song.platform))
             Expanded(
               child: _playerActionButton(
                 key: const ValueKey('player-playback-source-action'),
@@ -3103,12 +3105,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   key: const ValueKey('player-mv-action'),
                   context: ctx,
                   compact: compact,
-                  onPressed: song == null || _mvOpening
+                  onPressed:
+                      song == null ||
+                          song.platform == MusicPlatform.local ||
+                          _mvOpening
                       ? null
                       : () => _openMusicVideo(ctx, player, song),
                   icon: Icons.ondemand_video_rounded,
                   label: 'MV',
-                  color: subColor,
+                  tooltip: song?.platform == MusicPlatform.local
+                      ? '本地音频无MV'
+                      : null,
+                  color: song?.platform == MusicPlatform.local
+                      ? subColor.withValues(alpha: 0.4)
+                      : subColor,
                 ),
               ),
               Expanded(

@@ -170,6 +170,9 @@ class MainActivity : AudioServiceActivity() {
         if (!flutterEngine.plugins.has(AudioEffectsPlugin::class.java)) {
             flutterEngine.plugins.add(AudioEffectsPlugin())
         }
+        if (!flutterEngine.plugins.has(LocalMusicPlugin::class.java)) {
+            flutterEngine.plugins.add(LocalMusicPlugin())
+        }
         val staleModelResults = synchronized(lifecycleLock) {
             activityGeneration++
             activityAlive = true

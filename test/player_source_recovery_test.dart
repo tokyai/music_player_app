@@ -32,6 +32,31 @@ void main() {
   });
 
   test(
+    'local playback never contacts a resolver even after native failures',
+    () async {
+      await _scenario((fixture, player) async {
+        final song = SongSearchResult(
+          platform: MusicPlatform.local,
+          id: 'content://media/external/audio/media/123',
+          name: 'local',
+          artist: 'artist',
+          album: 'album',
+        );
+        await player.playSingle(song);
+        expect(fixture.loaded.single, song.id);
+        expect(fixture.requestCount, 0);
+        expect(player.playbackSourceOptions(MusicPlatform.local), isEmpty);
+        fixture.failAllLoads = true;
+        await player.playSingle(song);
+        expect(fixture.loaded, hasLength(2));
+        expect(fixture.requestCount, 0);
+        expect(player.errorMessage, isNotNull);
+        expect(player.isLoading, isFalse);
+      });
+    },
+  );
+
+  test(
     'end-of-track timer suppresses queue advancement and repeated completion',
     () async {
       await _scenario((fixture, player) async {
@@ -291,6 +316,7 @@ class _NativeFixture {
   final List<String> requestedQualities = [];
   final List<int> seekPositions = [];
   int playCalls = 0;
+  int requestCount = 0;
   String? playerId;
   bool failQingLoads = false;
   bool failAllLoads = false;
@@ -427,6 +453,7 @@ class _NativeFixture {
   }
 
   Future<http.Response> request(http.Request request) async {
+    requestCount++;
     if (request.url.host == 'qing.test') {
       final body = jsonDecode(request.body) as Map;
       final id = body['rid'];

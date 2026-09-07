@@ -326,6 +326,8 @@ class SearchSession extends ChangeNotifier {
     try {
       final List<PlaylistInfo> playlists;
       switch (platform) {
+        case MusicPlatform.local:
+          playlists = const [];
         case MusicPlatform.netease:
           playlists = await api.neteaseSearchPlaylists(keyword);
         case MusicPlatform.qq:

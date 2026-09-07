@@ -332,6 +332,7 @@ class ApiService {
         Uri.parse(_playbackSourceConfig.qingMusicUrl),
         {
           'source': switch (platform) {
+            MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
             MusicPlatform.qq => 'tx',
             MusicPlatform.netease => 'wy',
             MusicPlatform.kugou => 'kg',
@@ -401,6 +402,8 @@ class ApiService {
 
   static String _qingMusicLevel(MusicPlatform platform, String quality) {
     switch (platform) {
+      case MusicPlatform.local:
+        throw UnsupportedError('本地音频不使用在线接口');
       case MusicPlatform.netease:
         return switch (quality) {
           'standard' => 'standard',
@@ -446,6 +449,9 @@ class ApiService {
     Set<PlaybackSource> excludedSources = const {},
   }) async {
     _ensureOpen();
+    if (platform == MusicPlatform.local) {
+      throw const ApiException('SOURCE_UNSUPPORTED', '本地音频不使用在线接口');
+    }
     if (platform == MusicPlatform.bilibili) {
       throw const ApiException('SOURCE_UNSUPPORTED', 'B站使用官方播放接口');
     }
@@ -801,6 +807,7 @@ class ApiService {
           throw const ApiException('API_KEY_REQUIRED', 'ChKSz 需要配置 API Key');
         }
         return switch (platform) {
+          MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
           MusicPlatform.netease => neteaseMusic(
             id,
             level: quality,
@@ -947,6 +954,7 @@ class ApiService {
     Future<void>? cancelSignal,
   }) async {
     final source = switch (platform) {
+      MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
       MusicPlatform.qq => 'qq',
       MusicPlatform.netease => 'wy',
       MusicPlatform.kugou => 'kg',
@@ -1007,6 +1015,7 @@ class ApiService {
     Future<void>? cancelSignal,
   }) async {
     final source = switch (platform) {
+      MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
       MusicPlatform.qq => 'qq',
       MusicPlatform.netease => 'netease',
       MusicPlatform.kugou => 'kg',
@@ -1269,6 +1278,7 @@ class ApiService {
   }
 
   static String _aggregatorSource(MusicPlatform platform) => switch (platform) {
+    MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
     MusicPlatform.qq => 'tx',
     MusicPlatform.netease => 'wy',
     MusicPlatform.kugou => 'kg',
@@ -1385,6 +1395,7 @@ class ApiService {
           throw const ApiException('SOURCE_UNSUPPORTED', '自动模式不是独立接口');
         case PlaybackSource.chksz:
           final endpoint = switch (platform) {
+            MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
             MusicPlatform.netease => '/api/163_music',
             MusicPlatform.qq => '/api/qq_music',
             MusicPlatform.kugou => '/api/kugou_music',
@@ -1416,6 +1427,7 @@ class ApiService {
             Uri.parse(effective.qingMusicUrl),
             {
               'source': switch (platform) {
+                MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
                 MusicPlatform.qq => 'tx',
                 MusicPlatform.netease => 'wy',
                 MusicPlatform.kugou => 'kg',
@@ -1453,6 +1465,7 @@ class ApiService {
         case PlaybackSource.xinghai:
           final base = Uri.parse(effective.xinghaiUrl);
           final sourceCode = switch (platform) {
+            MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
             MusicPlatform.qq => 'qq',
             MusicPlatform.netease => 'wy',
             MusicPlatform.kugou => 'kg',
@@ -1480,6 +1493,7 @@ class ApiService {
         case PlaybackSource.gdStudio:
           final base = Uri.parse(effective.gdStudioUrl);
           final sourceCode = switch (platform) {
+            MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
             MusicPlatform.qq => 'qq',
             MusicPlatform.netease => 'netease',
             MusicPlatform.kugou => 'kg',
@@ -1617,6 +1631,7 @@ class ApiService {
     required String artist,
   }) async {
     return switch (platform) {
+      MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
       MusicPlatform.qq => _qqMusicVideoUrl(songId, songName, artist),
       MusicPlatform.netease => _neteaseMusicVideoUrl(songId),
       MusicPlatform.kugou => _kugouMusicVideoUrl(songId, songName, artist),
@@ -2961,6 +2976,8 @@ class ApiService {
     String keyword,
   ) {
     switch (platform) {
+      case MusicPlatform.local:
+        throw UnsupportedError('本地音频不使用在线接口');
       case MusicPlatform.netease:
         return neteaseSearch(keyword);
       case MusicPlatform.qq:
@@ -3055,6 +3072,8 @@ class ApiService {
   /// 解析播放地址
   Future<SongDetail> resolve(MusicPlatform platform, String id) {
     switch (platform) {
+      case MusicPlatform.local:
+        throw UnsupportedError('本地音频不使用在线接口');
       case MusicPlatform.netease:
         return neteaseMusic(id);
       case MusicPlatform.qq:
@@ -3069,6 +3088,7 @@ class ApiService {
   /// 获取歌词
   Future<LyricData?> getLyric(MusicPlatform platform, String id) async {
     return switch (platform) {
+      MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
       MusicPlatform.netease => neteaseLyric(id),
       MusicPlatform.qq => qqLyric(id),
       MusicPlatform.kugou => kugouPublicLyric(id),

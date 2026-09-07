@@ -15,7 +15,8 @@ class AudioQualityDialog extends StatefulWidget {
 
 class _AudioQualityDialogState extends State<AudioQualityDialog> {
   late MusicPlatform _platform =
-      widget.player.currentSong?.platform == MusicPlatform.kugou
+      widget.player.currentSong?.platform == MusicPlatform.kugou ||
+          widget.player.currentSong?.platform == MusicPlatform.local
       ? MusicPlatform.qq
       : widget.player.currentSong?.platform ?? MusicPlatform.qq;
   String? _error;
@@ -60,6 +61,7 @@ class _AudioQualityDialogState extends State<AudioQualityDialog> {
                 ),
           ];
       final selected = switch (_platform) {
+        MusicPlatform.local => player.commonLevel.value,
         MusicPlatform.netease => player.neteaseLevel.value,
         MusicPlatform.qq || MusicPlatform.kugou => player.commonLevel.value,
         MusicPlatform.bilibili => '${player.bilibiliAudioQuality}',
