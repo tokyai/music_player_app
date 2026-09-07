@@ -970,6 +970,47 @@ void main() {
   });
 
   for (final size in const [Size(640, 360), Size(1280, 800), Size(390, 844)]) {
+    testWidgets('sleep timer stays accessible across rotation at $size', (
+      tester,
+    ) async {
+      final player = _PlayerWithLyrics();
+      final theme = ThemeController();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await player.disposeResources();
+        theme.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
+      await tester.tap(find.byKey(const ValueKey('player-sleep-timer')));
+      await tester.pumpAndSettle();
+      final endTrack = find.byKey(const ValueKey('sleep-timer-track-end'));
+      await tester.ensureVisible(endTrack);
+      await tester.tap(endTrack);
+      await tester.pumpAndSettle();
+      expect(player.sleepTimer.active, isTrue);
+      _setViewSize(
+        tester,
+        size.width > size.height ? const Size(390, 844) : const Size(640, 360),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('播完当前歌曲停止').hitTestable(), findsOneWidget);
+      expect(find.text('收藏').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('播放').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('播放队列').hitTestable(), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('player-sleep-timer')));
+      await tester.pumpAndSettle();
+      final cancel = find.byKey(const ValueKey('sleep-timer-cancel'));
+      await tester.ensureVisible(cancel);
+      await tester.tap(cancel);
+      await tester.pumpAndSettle();
+      expect(player.sleepTimer.active, isFalse);
+      _expectNoException(tester);
+    });
+  }
+
+  for (final size in const [Size(640, 360), Size(1280, 800), Size(390, 844)]) {
     testWidgets('global audio controls and settings remain usable at $size', (
       tester,
     ) async {

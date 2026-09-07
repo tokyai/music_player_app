@@ -24,6 +24,8 @@ import '../widgets/cover_hero_tags.dart';
 import '../widgets/ai_assistant_overlay.dart';
 import '../widgets/remote_focusable.dart';
 import '../widgets/audio_settings_dialogs.dart';
+import '../widgets/sleep_timer_dialog.dart';
+import '../services/sleep_timer.dart';
 import '../widgets/smart_cover.dart';
 import 'video_player_screen.dart';
 
@@ -2332,6 +2334,27 @@ class _PlayerScreenState extends State<PlayerScreen> {
             icon: Icon(Icons.keyboard_arrow_down, color: textColor),
             onPressed: () => Navigator.pop(ctx),
           ),
+          ListenableBuilder(
+            listenable: player.sleepTimer,
+            builder: (context, _) => IconButton(
+              key: const ValueKey('player-sleep-timer'),
+              tooltip: player.sleepTimer.mode == SleepTimerMode.duration
+                  ? '睡眠定时 ${formatSleepRemaining(player.sleepTimer.remaining)}'
+                  : player.sleepTimer.mode == SleepTimerMode.endOfTrack
+                  ? '播完当前歌曲停止'
+                  : '睡眠定时',
+              icon: Icon(
+                player.sleepTimer.active
+                    ? Icons.timer_rounded
+                    : Icons.timer_outlined,
+                color: player.sleepTimer.active ? AppColors.primary : textColor,
+              ),
+              onPressed: () => showDialog<void>(
+                context: ctx,
+                builder: (_) => SleepTimerDialog(timer: player.sleepTimer),
+              ),
+            ),
+          ),
           Expanded(
             child: Column(
               children: [
@@ -2363,6 +2386,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             )
           else
             const SizedBox(width: 48),
+
         ],
       ),
     );

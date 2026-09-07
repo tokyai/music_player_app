@@ -7,6 +7,7 @@ import '../models/song.dart';
 import '../models/playback_source_config.dart';
 import '../models/audio_effects.dart';
 import '../services/audio_effects_service.dart';
+import '../services/sleep_timer.dart';
 import '../services/api_service.dart';
 import '../services/audio_cache_service.dart';
 import '../services/bilibili_service.dart';
@@ -60,6 +61,8 @@ class PlayerProvider extends ChangeNotifier {
 
   final AudioPlayer _audioPlayer = AudioPlayer();
   final AudioEffectsService audioEffects = AudioEffectsService();
+  late final SleepTimer sleepTimer = SleepTimer(onElapsed: _stopForSleepTimer);
+  bool _sleepTimerStopped = false;
   StreamSubscription<int?>? _audioSessionSub;
   bool _changingAudioQuality = false;
   Completer<void>? _qualityChangeCompletion;
@@ -2050,6 +2053,7 @@ class PlayerProvider extends ChangeNotifier {
       return;
     }
     var item = _queue[_currentIndex];
+    _sleepTimerStopped = false;
     final requestId = ++_playRequestId;
     final immediateLyrics = _cachedLyrics(item);
 
@@ -2733,6 +2737,9 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   void _onSongComplete() {
+    if (_disposed || _preparingForExit || _isLoading || _sleepTimerStopped)
+      return;
+    if (sleepTimer.consumeTrackEnd()) return;
     switch (_playMode) {
       case PlayMode.sequence:
         _runAudioCommandInBackground('自动播放下一首', playNext);
@@ -2912,6 +2919,7 @@ class PlayerProvider extends ChangeNotifier {
       if (_audioPlayer.processingState == ProcessingState.idle) {
         await _playCurrent(resumePosition: _position);
       } else {
+        _sleepTimerStopped = false;
         await _tryAudioCommand('继续播放', _audioPlayer.play);
       }
     }
@@ -2958,11 +2966,35 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   Future<void> stop() async {
+    sleepTimer.cancel();
     _cancelPendingBilibiliPlay();
     _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     await _tryAudioCommand('停止播放', _audioPlayer.stop);
     _persistPlaybackStateNow();
+  }
+
+  Future<void> _stopForSleepTimer() async {
+    if (_disposed || _preparingForExit || dataScope.isDeleted) return;
+    _sleepTimerStopped = true;
+    // Invalidate a pending resolver too: a late URL must not restart the player.
+    final requestId = ++_playRequestId;
+    final position = _position;
+    _cancelPendingBilibiliPlay();
+    _cancelPendingPlaybackRestore();
+    _isLoading = false;
+    for (var i = 0; i < _queue.length; i++) {
+      if (_queue[i].loading) _queue[i] = _queue[i].copyWith(loading: false);
+    }
+    await pause();
+    if (_disposed || _preparingForExit || requestId != _playRequestId) return;
+    final stopped = await _tryAudioCommand('定时停止播放', _audioPlayer.stop);
+    if (_disposed || _preparingForExit || requestId != _playRequestId) return;
+    if (!stopped) throw StateError('停止播放器失败');
+    _position = position;
+    _isPlaying = false;
+    _persistPlaybackStateNow();
+    notifyListeners();
   }
 
   /// Saves the last playable session and releases active playback before the
@@ -2998,6 +3030,7 @@ class PlayerProvider extends ChangeNotifier {
     // start while the final snapshot is being prepared. The queue itself is
     // still restored and preserved below.
     _preparingForExit = true;
+    sleepTimer.cancel();
     if (waitForWrites) {
       try {
         await playbackStateReady;
@@ -3249,6 +3282,7 @@ class PlayerProvider extends ChangeNotifier {
     // Mark the provider first so a final audio position event cannot schedule
     // another history persistence timer while the subscriptions are stopping.
     _disposed = true;
+    sleepTimer.dispose();
     _historyPersistTimer?.cancel();
     _historyPersistTimer = null;
     _historyPersistAgain = false;

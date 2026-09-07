@@ -31,6 +31,28 @@ void main() {
     }, cached: true);
   });
 
+  test(
+    'end-of-track timer suppresses queue advancement and repeated completion',
+    () async {
+      await _scenario((fixture, player) async {
+        await player.playFromSearchResults([_song('song'), _song('next')], 0);
+        player.sleepTimer.stopAfterTrack();
+        await fixture.readyEvent(state: 4);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await fixture.readyEvent(state: 4);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(player.currentIndex, 0);
+        expect(fixture.loaded, hasLength(1));
+        expect(player.sleepTimer.active, isFalse);
+        await player.playNext();
+        expect(player.currentIndex, 1);
+        player.sleepTimer.start(const Duration(minutes: 15));
+        await player.prepareForUserSwitch();
+        expect(player.sleepTimer.active, isFalse);
+      });
+    },
+  );
+
   test('quality changes bypass old cache and retain paused position', () async {
     await _scenario((fixture, player) async {
       await player.playFromSearchResults([_song('song')], 0);
@@ -378,9 +400,9 @@ class _NativeFixture {
     messenger.setMockMethodCallHandler(channel, handler);
   }
 
-  Future<void> readyEvent() => _event(
+  Future<void> readyEvent({int state = 3}) => _event(
     const StandardMethodCodec().encodeSuccessEnvelope({
-      'processingState': 3,
+      'processingState': state,
       'updateTime': DateTime.now().millisecondsSinceEpoch,
       'updatePosition': 0,
       'bufferedPosition': 0,
