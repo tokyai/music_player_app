@@ -1000,6 +1000,11 @@ void main() {
         expect(find.text('MV').hitTestable(), findsOneWidget);
         expect(find.byTooltip('全局音质').hitTestable(), findsOneWidget);
         expect(find.byTooltip('全局音效').hitTestable(), findsOneWidget);
+        expect(find.text('音效').hitTestable(), findsOneWidget);
+        expect(
+          tester.getRect(find.byTooltip('切换当前歌曲音源')).right,
+          lessThanOrEqualTo(tester.getRect(find.byTooltip('查找歌词')).left),
+        );
         expect(
           tester.getSize(find.byKey(const ValueKey('player-lyric-list'))).width,
           greaterThan(size.width * 0.8),
@@ -1703,7 +1708,7 @@ void main() {
   });
 
   testWidgets(
-    'current playback source picker follows the lyric search action',
+    'lyric toolbar labels effects and places source before lyric search',
     (tester) async {
       await http.runWithClient(() async {
         final player = _PlayerWithLyrics();
@@ -1732,12 +1737,37 @@ void main() {
           final sourceAction = find.byKey(
             const ValueKey('player-playback-source-action'),
           );
+          final effectsAction = find.byKey(
+            const ValueKey('player-audio-effects-action'),
+          );
+          expect(
+            find
+                .descendant(of: effectsAction, matching: find.text('音效'))
+                .hitTestable(),
+            findsOneWidget,
+          );
           expect(lyricAction.hitTestable(), findsOneWidget);
           expect(sourceAction.hitTestable(), findsOneWidget);
           expect(
             tester.getRect(sourceAction).left,
-            greaterThanOrEqualTo(tester.getRect(lyricAction).right - 1),
+            greaterThanOrEqualTo(tester.getRect(effectsAction).right),
           );
+          expect(
+            tester.getRect(sourceAction).right,
+            lessThanOrEqualTo(tester.getRect(lyricAction).left),
+          );
+          expect(find.byTooltip('播放').hitTestable(), findsOneWidget);
+          expect(find.byTooltip('播放队列').hitTestable(), findsOneWidget);
+          expect(find.text('收藏').hitTestable(), findsOneWidget);
+
+          await tester.tap(effectsAction);
+          await tester.pumpAndSettle();
+          expect(
+            find.byKey(const ValueKey('audio-effects-dialog')),
+            findsOneWidget,
+          );
+          await tester.tap(find.byKey(const ValueKey('audio-effects-close')));
+          await tester.pumpAndSettle();
 
           await tester.tap(sourceAction);
           await tester.pumpAndSettle();
@@ -2241,22 +2271,69 @@ void main() {
     }, _mockClient);
   });
 
-  testWidgets('backup source configuration is usable in both landscapes', (
+  testWidgets('backup source configuration owns API key in all orientations', (
     tester,
   ) async {
     await http.runWithClient(() async {
-      for (final size in const [Size(640, 360), Size(1280, 800)]) {
-        SharedPreferences.setMockInitialValues({});
+      for (final size in const [
+        Size(640, 360),
+        Size(1280, 800),
+        Size(390, 844),
+      ]) {
+        SharedPreferences.setMockInitialValues({
+          'api_key': 'existing-chksz-key',
+        });
         final player = PlayerProvider();
         final theme = ThemeController();
         await player.settingsReady;
 
         await _pumpScreen(tester, const SettingsScreen(), player, theme, size);
+        expect(find.text('API 配置'), findsNothing);
+        expect(find.byKey(const ValueKey('api-key-field')), findsNothing);
         final entry = find.byKey(const ValueKey('playback-source-config'));
         await tester.ensureVisible(entry);
         await tester.pumpAndSettle();
         expect(entry.hitTestable(), findsOneWidget);
         await tester.tap(entry);
+        await tester.pumpAndSettle();
+
+        final apiKeyField = find.byKey(const ValueKey('api-key-field'));
+        final chkszCard = find.byKey(const ValueKey('source-config-chksz'));
+        expect(
+          find.descendant(of: chkszCard, matching: find.text('API 配置')),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(of: chkszCard, matching: apiKeyField),
+          findsOneWidget,
+        );
+        expect(
+          tester.widget<TextField>(apiKeyField).controller?.text,
+          'existing-chksz-key',
+        );
+        expect(tester.widget<TextField>(apiKeyField).obscureText, isTrue);
+        await tester.ensureVisible(apiKeyField);
+        await tester.enterText(apiKeyField, '  updated-chksz-key  ');
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.byTooltip('显示 API Key'));
+        await tester.tap(find.byTooltip('显示 API Key'));
+        await tester.pump();
+        expect(tester.widget<TextField>(apiKeyField).obscureText, isFalse);
+        final saveApiKey = find.byKey(const ValueKey('api-key-save'));
+        await tester.ensureVisible(saveApiKey);
+        await tester.tap(saveApiKey);
+        await tester.pumpAndSettle();
+        expect(player.apiKey, 'updated-chksz-key');
+        expect(find.byType(PlaybackSourceConfigScreen), findsOneWidget);
+
+        final help = find.text('如何获取？');
+        await tester.ensureVisible(help);
+        await tester.tap(help);
+        await tester.pumpAndSettle();
+        expect(find.text('获取 API Key'), findsOneWidget);
+        expect(find.text('知道了').hitTestable(), findsOneWidget);
+        _expectNoException(tester);
+        await tester.tap(find.text('知道了'));
         await tester.pumpAndSettle();
 
         final save = find.byKey(const ValueKey('save-playback-source-config'));
@@ -2300,11 +2377,30 @@ void main() {
           'https://custom-qing.test/resolve',
         );
         final prefs = await SharedPreferences.getInstance();
+        expect(prefs.getString('api_key'), 'updated-chksz-key');
         final stored =
             jsonDecode(prefs.getString(PlaybackSourceConfig.preferenceKey)!)
                 as Map<String, dynamic>;
         expect(stored['hywCardKey'], PlaybackSourceConfig.defaultHywCardKey);
         expect(stored['qingMusicUrl'], 'https://custom-qing.test/resolve');
+        await tester.ensureVisible(entry);
+        await tester.tap(entry);
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<TextField>(apiKeyField).controller?.text,
+          'updated-chksz-key',
+        );
+        final reset = find.byKey(
+          const ValueKey('reset-playback-source-config'),
+        );
+        await tester.ensureVisible(reset);
+        await tester.tap(reset);
+        await tester.pumpAndSettle();
+        expect(
+          tester.widget<TextField>(apiKeyField).controller?.text,
+          'updated-chksz-key',
+        );
+        expect(player.apiKey, 'updated-chksz-key');
         _expectNoException(tester);
 
         await tester.pumpWidget(const SizedBox.shrink());
@@ -2317,7 +2413,7 @@ void main() {
     }, _mockClient);
   });
 
-  testWidgets('closing playback source picker does not restore API key focus', (
+  testWidgets('leaving source configuration does not restore API key focus', (
     tester,
   ) async {
     await http.runWithClient(() async {
@@ -2328,11 +2424,17 @@ void main() {
         await player.settingsReady;
 
         await _pumpScreen(tester, const SettingsScreen(), player, theme, size);
+        final entry = find.byKey(const ValueKey('playback-source-config'));
+        await tester.ensureVisible(entry);
+        await tester.tap(entry);
+        await tester.pumpAndSettle();
         final apiKeyField = find.byKey(const ValueKey('api-key-field'));
         await tester.ensureVisible(apiKeyField);
         await tester.tap(apiKeyField);
         await tester.pump();
         expect(FocusManager.instance.primaryFocus, isNotNull);
+        await tester.pageBack();
+        await tester.pumpAndSettle();
 
         final source = find.byKey(const ValueKey('playback-source-qq'));
         await tester.ensureVisible(source);
@@ -2437,13 +2539,21 @@ void main() {
       final theme = ThemeController();
       await player.settingsReady;
 
-      await _pumpScreen(tester, const SettingsScreen(), player, theme, size);
+      await _pumpScreen(
+        tester,
+        const PlaybackSourceConfigScreen(),
+        player,
+        theme,
+        size,
+      );
       final qrInput = find.byKey(const ValueKey('api-key-qr-input'));
       await tester.ensureVisible(qrInput);
       await tester.pumpAndSettle();
       expect(qrInput.hitTestable(), findsOneWidget);
 
-      await tester.tap(qrInput);
+      final openQr = tester.widget<OutlinedButton>(qrInput).onPressed!;
+      openQr();
+      openQr();
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 100)),
       );
@@ -2461,12 +2571,22 @@ void main() {
       _expectNoException(tester);
 
       await tester.tap(close);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)),
+      );
       await tester.pumpAndSettle();
       expect(qrCode, findsNothing);
       _expectNoException(tester);
 
+      await tester.tap(qrInput);
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)),
+      );
+      await tester.pumpAndSettle();
+      expect(qrCode, findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
+      _expectNoException(tester);
       player.dispose();
       theme.dispose();
     }

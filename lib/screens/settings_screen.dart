@@ -19,7 +19,6 @@ import '../services/batch_favorite_import_service.dart';
 import '../services/favorite_service.dart';
 import '../services/floating_capsule_service.dart';
 import '../services/lan_ai_config_service.dart';
-import '../services/lan_api_key_service.dart';
 import '../services/lan_favorite_import_service.dart';
 import '../services/user_data_scope.dart';
 import '../theme/app_layout.dart';
@@ -27,7 +26,6 @@ import '../theme/app_theme.dart';
 import '../theme/lyric_style.dart';
 import '../widgets/bilibili_login_dialog.dart';
 import '../widgets/ai_profile_editor_dialog.dart';
-import '../widgets/remote_focusable.dart';
 import '../widgets/lyric_display_settings_dialog.dart';
 import '../widgets/app_user_avatar.dart';
 import '../widgets/user_profile_editor_dialog.dart';
@@ -48,9 +46,6 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen>
     with WidgetsBindingObserver {
-  final _apiKeyController = TextEditingController();
-  bool _obscureKey = true;
-  bool _apiKeyEdited = false;
   late final AiConfigController _aiConfigController;
   late final UserDataScope _dataScope;
   late final bool _ownsAiConfigController;
@@ -104,12 +99,6 @@ class _SettingsScreenState extends State<SettingsScreen>
           _duckingReductionDraft = _aiConfigController.duckingReductionPercent
               .toDouble();
         });
-      }
-    });
-    _apiKeyController.text = player.apiKey;
-    player.settingsReady.then((_) {
-      if (mounted && !_apiKeyEdited) {
-        _apiKeyController.text = player.apiKey;
       }
     });
     _loadVersion();
@@ -370,66 +359,6 @@ class _SettingsScreenState extends State<SettingsScreen>
         context,
       ).showSnackBar(SnackBar(content: Text('清除缓存失败：$error')));
     }
-  }
-
-  Future<void> _showApiKeyQrInput(PlayerProvider player) async {
-    FocusManager.instance.primaryFocus?.unfocus();
-    late final LanApiKeySession session;
-    try {
-      session = await LanApiKeyService.start();
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('启动扫码输入失败：$error')));
-      return;
-    }
-    if (!mounted) {
-      await session.stop();
-      return;
-    }
-
-    final saveFuture = _receiveAndSaveApiKey(session, player);
-    try {
-      await showDialog<void>(
-        context: context,
-        barrierDismissible: false,
-        builder: (dialogContext) =>
-            _ApiKeyQrDialog(session: session, saveFuture: saveFuture),
-      );
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('扫码输入已中止：$error')));
-      }
-    } finally {
-      try {
-        await session.stop();
-      } catch (_) {}
-    }
-    if (mounted) FocusManager.instance.primaryFocus?.unfocus();
-  }
-
-  Future<bool> _receiveAndSaveApiKey(
-    LanApiKeySession session,
-    PlayerProvider player,
-  ) async {
-    final apiKey = await session.receivedApiKey;
-    if (apiKey == null) return false;
-    await player.setApiKey(apiKey);
-    if (!mounted) return true;
-    setState(() {
-      _apiKeyController.text = apiKey;
-      _apiKeyEdited = false;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('手机提交的 API Key 已保存'),
-        duration: Duration(seconds: 2),
-      ),
-    );
-    return true;
   }
 
   Future<void> _showBatchFavoriteImport() async {
@@ -713,7 +642,6 @@ class _SettingsScreenState extends State<SettingsScreen>
     _activeFavoriteImportSession = null;
     if (activeFavoriteImport != null) unawaited(activeFavoriteImport.stop());
     WidgetsBinding.instance.removeObserver(this);
-    _apiKeyController.dispose();
     _aiConfigController.removeListener(_syncAiConfigDrafts);
     if (_ownsAiConfigController) _aiConfigController.dispose();
     super.dispose();
@@ -861,7 +789,6 @@ class _SettingsScreenState extends State<SettingsScreen>
           _buildLibraryCard(),
           _buildPlaybackCard(),
           _buildBilibiliAccountCard(),
-          _buildApiCard(),
           AnimatedBuilder(
             animation: _aiConfigController,
             builder: (context, _) => _buildGlobalVoiceSettingsCard(),
@@ -923,7 +850,6 @@ class _SettingsScreenState extends State<SettingsScreen>
                       child: Column(
                         children: [
                           _buildBilibiliAccountCard(compact: compact),
-                          _buildApiCard(compact: compact),
                           AnimatedBuilder(
                             animation: _aiConfigController,
                             builder: (context, _) =>
@@ -2148,101 +2074,6 @@ class _SettingsScreenState extends State<SettingsScreen>
     }
   }
 
-  Widget _buildApiCard({bool compact = false}) {
-    final layout = AppLayout.fromContext(context);
-    return _buildCard(
-      compact: compact,
-      children: [
-        _buildSectionHeader(icon: Icons.key, title: 'API 配置'),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'ChKSz API Key',
-                style: TextStyle(
-                  fontWeight: FontWeight.w600,
-                  fontSize: layout.bodySize,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '用于 ChKSz 或自动备用链；未填写时自动模式会跳过 ChKSz',
-                style: TextStyle(
-                  fontSize: layout.secondarySize,
-                  color: AppColors.textSecondary,
-                ),
-              ),
-              const SizedBox(height: 12),
-              RemoteTextFieldTraversal(
-                controller: _apiKeyController,
-                child: TextField(
-                  key: const ValueKey('api-key-field'),
-                  controller: _apiKeyController,
-                  obscureText: _obscureKey,
-                  onChanged: (_) => _apiKeyEdited = true,
-                  decoration: InputDecoration(
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscureKey ? Icons.visibility : Icons.visibility_off,
-                      ),
-                      onPressed: () =>
-                          setState(() => _obscureKey = !_obscureKey),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  FilledButton.icon(
-                    onPressed: () async {
-                      final player = context.read<PlayerProvider>();
-                      final messenger = ScaffoldMessenger.of(context);
-                      try {
-                        await player.setApiKey(_apiKeyController.text.trim());
-                        if (!mounted) return;
-                        messenger.showSnackBar(
-                          const SnackBar(
-                            content: Text('API Key 已保存'),
-                            duration: Duration(seconds: 1),
-                          ),
-                        );
-                      } catch (error) {
-                        if (!mounted) return;
-                        messenger.showSnackBar(
-                          SnackBar(content: Text('API Key 保存失败：$error')),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.save),
-                    label: const Text('保存'),
-                  ),
-                  OutlinedButton.icon(
-                    key: const ValueKey('api-key-qr-input'),
-                    onPressed: () =>
-                        _showApiKeyQrInput(context.read<PlayerProvider>()),
-                    icon: const Icon(Icons.qr_code_scanner_rounded),
-                    label: const Text('手机扫码输入'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: () => _showApiKeyHelp(context),
-                    icon: const Icon(Icons.help_outline),
-                    label: const Text('如何获取？'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _buildAiProfileList(AppLayout layout) {
     final profiles = _aiConfigController.profiles;
     return Container(
@@ -2892,8 +2723,6 @@ class _SettingsScreenState extends State<SettingsScreen>
     PlayerProvider player,
     MusicPlatform platform,
   ) async {
-    // Do not restore the API Key TextField focus when this settings dialog
-    // closes. This is especially visible on TV/car displays with a keyboard.
     FocusManager.instance.primaryFocus?.unfocus();
     await showDialog<void>(
       context: context,
@@ -2980,34 +2809,6 @@ class _SettingsScreenState extends State<SettingsScreen>
             },
           );
         }).toList(),
-      ),
-    );
-  }
-
-  void _showApiKeyHelp(BuildContext ctx) {
-    showDialog(
-      context: ctx,
-      builder: (ctx) => AlertDialog(
-        title: const Text('获取 API Key'),
-        content: const Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('1. 访问 api.chksz.com'),
-            SizedBox(height: 8),
-            Text('2. 注册/登录账号'),
-            SizedBox(height: 8),
-            Text('3. 点击「查看密钥」获取个人 API Key'),
-            SizedBox(height: 8),
-            Text('4. 将 Key 复制到上方输入框并保存'),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('知道了'),
-          ),
-        ],
       ),
     );
   }
@@ -3343,145 +3144,6 @@ class _AiConfigQrStatus extends StatelessWidget {
           child: Text(
             message,
             key: const ValueKey('ai-config-qr-status'),
-            style: TextStyle(color: AppColors.textPrimary),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _ApiKeyQrDialog extends StatelessWidget {
-  final LanApiKeySession session;
-  final Future<bool> saveFuture;
-
-  const _ApiKeyQrDialog({required this.session, required this.saveFuture});
-
-  @override
-  Widget build(BuildContext context) {
-    final layout = AppLayout.fromContext(context);
-    final compact = layout.isCompactLandscape;
-    final qrSize = compact ? 150.0 : 210.0;
-    final status = FutureBuilder<bool>(
-      future: saveFuture,
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return const _ApiKeyQrStatus(
-            icon: Icons.error_outline_rounded,
-            message: '保存失败，请关闭后重试',
-            color: Colors.redAccent,
-          );
-        }
-        if (snapshot.connectionState == ConnectionState.done) {
-          return _ApiKeyQrStatus(
-            icon: snapshot.data == true
-                ? Icons.check_circle_outline_rounded
-                : Icons.timer_off_outlined,
-            message: snapshot.data == true ? 'API Key 已保存到车机' : '本次扫码输入已结束',
-            color: snapshot.data == true
-                ? AppColors.primary
-                : AppColors.textHint,
-          );
-        }
-        return const _ApiKeyQrStatus(
-          icon: Icons.phone_android_rounded,
-          message: '手机扫码后输入 Key 并提交',
-          color: AppColors.primary,
-        );
-      },
-    );
-
-    final qrCode = Container(
-      padding: const EdgeInsets.all(10),
-      color: Colors.white,
-      child: QrImageView(
-        key: const ValueKey('api-key-qr-code'),
-        data: session.url,
-        version: QrVersions.auto,
-        size: qrSize,
-        backgroundColor: Colors.white,
-      ),
-    );
-    final details = Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          '扫码输入 API Key',
-          style: TextStyle(
-            color: AppColors.textPrimary,
-            fontSize: layout.sectionTitleSize,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-        const SizedBox(height: 10),
-        status,
-        const SizedBox(height: 10),
-        Text(
-          '手机与车机需连接同一个 Wi-Fi，二维码约 10 分钟后失效。',
-          style: TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: layout.secondarySize,
-          ),
-        ),
-        const SizedBox(height: 14),
-        Align(
-          alignment: Alignment.centerRight,
-          child: TextButton.icon(
-            key: const ValueKey('api-key-qr-close'),
-            onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.close_rounded),
-            label: const Text('关闭'),
-          ),
-        ),
-      ],
-    );
-
-    return Dialog(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 560),
-        child: Padding(
-          padding: EdgeInsets.all(compact ? 12 : 20),
-          child: MediaQuery.orientationOf(context) == Orientation.landscape
-              ? Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    qrCode,
-                    SizedBox(width: compact ? 12 : 20),
-                    Flexible(child: details),
-                  ],
-                )
-              : Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [qrCode, const SizedBox(height: 16), details],
-                ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ApiKeyQrStatus extends StatelessWidget {
-  final IconData icon;
-  final String message;
-  final Color color;
-
-  const _ApiKeyQrStatus({
-    required this.icon,
-    required this.message,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon, color: color, size: 22),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            message,
-            key: const ValueKey('api-key-qr-status'),
             style: TextStyle(color: AppColors.textPrimary),
           ),
         ),

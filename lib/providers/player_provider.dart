@@ -1150,7 +1150,7 @@ class PlayerProvider extends ChangeNotifier {
       'API Key',
       (prefs) => prefs.setString('api_key', key),
     );
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   Future<void> setNeteaseLevel(NeteaseLevel level) async {
@@ -2858,7 +2858,7 @@ class PlayerProvider extends ChangeNotifier {
     }
     final s = e.toString();
     if (s.contains('API_KEY_REQUIRED')) {
-      return '当前音源需要 ChKSz API Key，请在设置 → API 配置中填写，或切换为自动备用';
+      return '当前音源需要 ChKSz API Key，请在设置 → 备用源接口配置 → ChKSz 中填写，或切换为自动备用';
     }
     if (s.contains('SOURCE_DISABLED')) {
       return '当前音源已在备用源接口配置中停用，请切换为自动备用或重新启用该接口';

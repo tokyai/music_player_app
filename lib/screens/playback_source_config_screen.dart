@@ -3,11 +3,15 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../models/playback_source_config.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
+import '../services/lan_api_key_service.dart';
+import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
+import '../widgets/remote_focusable.dart';
 
 class PlaybackSourceConfigScreen extends StatefulWidget {
   const PlaybackSourceConfigScreen({super.key});
@@ -19,6 +23,12 @@ class PlaybackSourceConfigScreen extends StatefulWidget {
 
 class _PlaybackSourceConfigScreenState
     extends State<PlaybackSourceConfigScreen> {
+  final _apiKeyController = TextEditingController();
+  bool _obscureKey = true;
+  bool _apiKeyEdited = false;
+  bool _savingApiKey = false;
+  bool _apiKeyQrInputInProgress = false;
+  LanApiKeySession? _activeApiKeySession;
   late final TextEditingController _chkszUrlController;
   late final TextEditingController _qingMusicUrlController;
   late final TextEditingController _hywUrlController;
@@ -46,7 +56,14 @@ class _PlaybackSourceConfigScreenState
   void initState() {
     super.initState();
     _testCancelSignal = Completer<void>();
-    final config = context.read<PlayerProvider>().playbackSourceConfig;
+    final player = context.read<PlayerProvider>();
+    final config = player.playbackSourceConfig;
+    _apiKeyController.text = player.apiKey;
+    player.settingsReady.then((_) {
+      if (mounted && !_apiKeyEdited) {
+        _apiKeyController.text = player.apiKey;
+      }
+    });
     _chkszUrlController = TextEditingController();
     _qingMusicUrlController = TextEditingController();
     _hywUrlController = TextEditingController();
@@ -61,6 +78,10 @@ class _PlaybackSourceConfigScreenState
 
   @override
   void dispose() {
+    final apiKeySession = _activeApiKeySession;
+    _activeApiKeySession = null;
+    if (apiKeySession != null) unawaited(apiKeySession.stop());
+    _apiKeyController.dispose();
     _testRequestId++;
     if (!_testCancelSignal.isCompleted) _testCancelSignal.complete();
     _chkszUrlController.dispose();
@@ -118,7 +139,86 @@ class _PlaybackSourceConfigScreenState
     gdStudioUrl: _gdStudioUrlController.text,
   );
 
-  bool get _busy => _saving || _testingAll || _testingSources.isNotEmpty;
+  bool get _busy =>
+      _saving ||
+      _savingApiKey ||
+      _apiKeyQrInputInProgress ||
+      _testingAll ||
+      _testingSources.isNotEmpty;
+
+  Future<void> _saveApiKey() async {
+    if (_busy) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    final key = _apiKeyController.text.trim();
+    setState(() => _savingApiKey = true);
+    try {
+      await context.read<PlayerProvider>().setApiKey(key);
+      if (!mounted) return;
+      setState(() {
+        _apiKeyController.text = key;
+        _apiKeyEdited = true;
+        _testResults.remove(PlaybackSource.chksz);
+      });
+      _showMessage('API Key 已保存');
+    } catch (error) {
+      _showMessage('API Key 保存失败：$error');
+    } finally {
+      if (mounted) setState(() => _savingApiKey = false);
+    }
+  }
+
+  Future<void> _showApiKeyQrInput() async {
+    if (_busy) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    final player = context.read<PlayerProvider>();
+    setState(() => _apiKeyQrInputInProgress = true);
+    LanApiKeySession? session;
+    try {
+      session = await LanApiKeyService.start();
+      if (!mounted) return;
+      _activeApiKeySession = session;
+      final saveFuture = _receiveAndSaveApiKey(session, player);
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) =>
+            _ApiKeyQrDialog(session: session!, saveFuture: saveFuture),
+      );
+    } catch (error) {
+      _showMessage('扫码输入失败：$error');
+    } finally {
+      if (identical(_activeApiKeySession, session)) {
+        _activeApiKeySession = null;
+      }
+      await session?.stop();
+      if (mounted) {
+        FocusManager.instance.primaryFocus?.unfocus();
+        setState(() => _apiKeyQrInputInProgress = false);
+      }
+    }
+  }
+
+  Future<bool> _receiveAndSaveApiKey(
+    LanApiKeySession session,
+    PlayerProvider player,
+  ) async {
+    final apiKey = await session.receivedApiKey;
+    if (apiKey == null || !mounted || !session.isActive) return false;
+    setState(() => _savingApiKey = true);
+    try {
+      await player.setApiKey(apiKey);
+      if (!mounted) return true;
+      setState(() {
+        _apiKeyController.text = apiKey;
+        _apiKeyEdited = true;
+        _testResults.remove(PlaybackSource.chksz);
+      });
+      _showMessage('手机提交的 API Key 已保存');
+      return true;
+    } finally {
+      if (mounted) setState(() => _savingApiKey = false);
+    }
+  }
 
   PlaybackSourceConfig? _validatedDraftForProbe() {
     try {
@@ -400,7 +500,7 @@ class _PlaybackSourceConfigScreenState
       source: PlaybackSource.chksz,
       cardKey: const ValueKey('source-config-chksz'),
       title: 'ChKSz',
-      subtitle: 'API Key 仍在设置页“API 配置”中填写。默认使用现有中转地址。',
+      subtitle: '默认使用现有中转地址。',
       enabled: _chkszEnabled,
       onEnabled: (value) => setState(() => _chkszEnabled = value),
       children: [
@@ -409,6 +509,8 @@ class _PlaybackSourceConfigScreenState
           controller: _chkszUrlController,
           label: '服务基础 URL',
         ),
+        const SizedBox(height: 16),
+        _buildApiKeyConfiguration(),
       ],
     ),
     _sourceCard(
@@ -532,6 +634,96 @@ class _PlaybackSourceConfigScreenState
     ),
   ];
 
+  Widget _buildApiKeyConfiguration() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text('API 配置', style: Theme.of(context).textTheme.titleMedium),
+      const SizedBox(height: 12),
+      RemoteTextFieldTraversal(
+        controller: _apiKeyController,
+        child: TextField(
+          key: const ValueKey('api-key-field'),
+          controller: _apiKeyController,
+          enabled: !_busy,
+          obscureText: _obscureKey,
+          autocorrect: false,
+          enableSuggestions: false,
+          inputFormatters: [LengthLimitingTextInputFormatter(8192)],
+          onChanged: (_) => _apiKeyEdited = true,
+          decoration: InputDecoration(
+            labelText: 'ChKSz API Key',
+            border: const OutlineInputBorder(),
+            suffixIcon: IconButton(
+              tooltip: _obscureKey ? '显示 API Key' : '隐藏 API Key',
+              icon: Icon(_obscureKey ? Icons.visibility : Icons.visibility_off),
+              onPressed: _busy
+                  ? null
+                  : () => setState(() => _obscureKey = !_obscureKey),
+            ),
+          ),
+        ),
+      ),
+      const SizedBox(height: 12),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          FilledButton.icon(
+            key: const ValueKey('api-key-save'),
+            onPressed: _busy ? null : _saveApiKey,
+            icon: _savingApiKey
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save),
+            label: const Text('保存 API Key'),
+          ),
+          OutlinedButton.icon(
+            key: const ValueKey('api-key-qr-input'),
+            onPressed: _busy ? null : _showApiKeyQrInput,
+            icon: const Icon(Icons.qr_code_scanner_rounded),
+            label: const Text('手机扫码输入'),
+          ),
+          OutlinedButton.icon(
+            onPressed: _busy ? null : () => _showApiKeyHelp(context),
+            icon: const Icon(Icons.help_outline),
+            label: const Text('如何获取？'),
+          ),
+        ],
+      ),
+    ],
+  );
+
+  void _showApiKeyHelp(BuildContext ctx) {
+    showDialog(
+      context: ctx,
+      builder: (ctx) => AlertDialog(
+        title: const Text('获取 API Key'),
+        scrollable: true,
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('1. 访问 api.chksz.com'),
+            SizedBox(height: 8),
+            Text('2. 注册/登录账号'),
+            SizedBox(height: 8),
+            Text('3. 点击「查看密钥」获取个人 API Key'),
+            SizedBox(height: 8),
+            Text('4. 将 Key 复制到上方输入框并保存'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _sourceCard({
     required PlaybackSource source,
     required Key cardKey,
@@ -613,4 +805,143 @@ class _PlaybackSourceConfigScreenState
       suffixIcon: suffix,
     ),
   );
+}
+
+class _ApiKeyQrDialog extends StatelessWidget {
+  final LanApiKeySession session;
+  final Future<bool> saveFuture;
+
+  const _ApiKeyQrDialog({required this.session, required this.saveFuture});
+
+  @override
+  Widget build(BuildContext context) {
+    final layout = AppLayout.fromContext(context);
+    final compact = layout.isCompactLandscape;
+    final qrSize = compact ? 150.0 : 210.0;
+    final status = FutureBuilder<bool>(
+      future: saveFuture,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return const _ApiKeyQrStatus(
+            icon: Icons.error_outline_rounded,
+            message: '保存失败，请关闭后重试',
+            color: Colors.redAccent,
+          );
+        }
+        if (snapshot.connectionState == ConnectionState.done) {
+          return _ApiKeyQrStatus(
+            icon: snapshot.data == true
+                ? Icons.check_circle_outline_rounded
+                : Icons.timer_off_outlined,
+            message: snapshot.data == true ? 'API Key 已保存到车机' : '本次扫码输入已结束',
+            color: snapshot.data == true
+                ? AppColors.primary
+                : AppColors.textHint,
+          );
+        }
+        return const _ApiKeyQrStatus(
+          icon: Icons.phone_android_rounded,
+          message: '手机扫码后输入 Key 并提交',
+          color: AppColors.primary,
+        );
+      },
+    );
+
+    final qrCode = Container(
+      padding: const EdgeInsets.all(10),
+      color: Colors.white,
+      child: QrImageView(
+        key: const ValueKey('api-key-qr-code'),
+        data: session.url,
+        version: QrVersions.auto,
+        size: qrSize,
+        backgroundColor: Colors.white,
+      ),
+    );
+    final details = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          '扫码输入 API Key',
+          style: TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: layout.sectionTitleSize,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 10),
+        status,
+        const SizedBox(height: 10),
+        Text(
+          '手机与车机需连接同一个 Wi-Fi，二维码约 10 分钟后失效。',
+          style: TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: layout.secondarySize,
+          ),
+        ),
+        const SizedBox(height: 14),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            key: const ValueKey('api-key-qr-close'),
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.close_rounded),
+            label: const Text('关闭'),
+          ),
+        ),
+      ],
+    );
+
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: Padding(
+          padding: EdgeInsets.all(compact ? 12 : 20),
+          child: MediaQuery.orientationOf(context) == Orientation.landscape
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    qrCode,
+                    SizedBox(width: compact ? 12 : 20),
+                    Flexible(child: details),
+                  ],
+                )
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [qrCode, const SizedBox(height: 16), details],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ApiKeyQrStatus extends StatelessWidget {
+  final IconData icon;
+  final String message;
+  final Color color;
+
+  const _ApiKeyQrStatus({
+    required this.icon,
+    required this.message,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, color: color, size: 22),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            message,
+            key: const ValueKey('api-key-qr-status'),
+            style: TextStyle(color: AppColors.textPrimary),
+          ),
+        ),
+      ],
+    );
+  }
 }

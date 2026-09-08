@@ -1848,12 +1848,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
       child: Row(
         key: const ValueKey('player-lyric-bottom-toolbar'),
         children: [
-          SizedBox(
-            width: compact ? 42 : 48,
-            child: IconButton(
+          Expanded(
+            child: _playerActionButton(
               key: const ValueKey('player-audio-effects-action'),
+              context: ctx,
+              compact: compact,
               tooltip: '全局音效',
-              icon: Icon(Icons.graphic_eq_rounded, color: textColor),
+              icon: Icons.graphic_eq_rounded,
+              label: '音效',
+              color: textColor,
               onPressed: () => showDialog<void>(
                 context: ctx,
                 builder: (_) =>
@@ -1862,18 +1865,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ),
           ),
           if (!showOffsetControls) const Spacer(),
-          Expanded(
-            child: _playerActionButton(
-              key: searchKey,
-              context: ctx,
-              compact: compact,
-              onPressed: () => _openLyricSearch(ctx, player, song),
-              icon: Icons.manage_search_rounded,
-              label: '查找',
-              tooltip: '查找歌词',
-              color: textColor,
-            ),
-          ),
           if (configurableMusicPlatforms.contains(song.platform))
             Expanded(
               child: _playerActionButton(
@@ -1887,6 +1878,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 color: textColor,
               ),
             ),
+          Expanded(
+            child: _playerActionButton(
+              key: searchKey,
+              context: ctx,
+              compact: compact,
+              onPressed: () => _openLyricSearch(ctx, player, song),
+              icon: Icons.manage_search_rounded,
+              label: '查找',
+              tooltip: '查找歌词',
+              color: textColor,
+            ),
+          ),
           if (showOffsetControls) ...[
             Expanded(
               child: _playerActionButton(

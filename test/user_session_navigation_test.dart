@@ -181,15 +181,18 @@ void main() {
                 )
                 .first;
       final apiKeyField = find.byKey(const ValueKey('api-key-field'));
-      await tester.scrollUntilVisible(
-        apiKeyField,
-        180,
-        scrollable: systemScroll,
-      );
+      expect(apiKeyField, findsNothing);
+      final sourceConfig = find.byKey(const ValueKey('playback-source-config'));
+      await tester.ensureVisible(sourceConfig);
+      await tester.pump();
+      await tester.tap(sourceConfig);
+      await tester.pumpAndSettle();
       expect(
         tester.widget<TextField>(apiKeyField).controller?.text,
         'default-user-key',
       );
+      await tester.pageBack();
+      await tester.pumpAndSettle();
 
       final allPagesToggle = find.byKey(const ValueKey('ai-all-pages-toggle'));
       await tester.scrollUntilVisible(

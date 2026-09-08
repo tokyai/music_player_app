@@ -98,6 +98,21 @@ void main() {
     },
   );
 
+  test('API key writes do not notify a disposed player', () async {
+    final player = PlayerProvider(activateRestoredSession: false);
+    await player.settingsReady;
+    store.gate = Completer<void>();
+    final saving = player.setApiKey('updated-key');
+    await store.entered.future;
+    player.dispose();
+    store.gate!.complete();
+    await saving;
+    expect(
+      (await SharedPreferences.getInstance()).getString('api_key'),
+      'updated-key',
+    );
+  });
+
   test('quality writes finish before disposing a user session', () async {
     final player = PlayerProvider(activateRestoredSession: false);
     await player.settingsReady;
