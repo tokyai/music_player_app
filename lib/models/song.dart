@@ -225,6 +225,7 @@ int? _intValue(dynamic value) {
 
 /// 统一歌曲模型（搜索结果）
 class SongSearchResult {
+  final String? downloadId;
   final MusicPlatform platform;
   final String id; // 网易云: 歌曲ID; QQ: mid; 酷狗: hash id
   final String name;
@@ -240,6 +241,7 @@ class SongSearchResult {
   final List<BilibiliPageInfo> bilibiliPages;
 
   SongSearchResult({
+    this.downloadId,
     required this.platform,
     required this.id,
     required this.name,
@@ -610,6 +612,7 @@ class SongSearchResult {
   /// 从播放队列项构造（收藏用）
   factory SongSearchResult.fromQueueItem(PlayQueueItem item) {
     return SongSearchResult(
+      downloadId: item.downloadId,
       platform: item.platform,
       id: item.id,
       name: item.name,
@@ -650,6 +653,7 @@ class SongSearchResult {
       }
     }
     return SongSearchResult(
+      downloadId: downloadId,
       platform: platform,
       id: id,
       name: name,
@@ -668,6 +672,7 @@ class SongSearchResult {
 
   /// 序列化（收藏本地持久化用）
   Map<String, dynamic> toJson() => {
+    if (downloadId != null) 'downloadId': downloadId,
     'platform': platform.code,
     'id': id,
     'name': name,
@@ -693,9 +698,16 @@ class SongSearchResult {
       (e) => e.code == json['platform'],
       orElse: () => MusicPlatform.netease,
     );
+    final downloadId = json['downloadId'];
+    if (downloadId != null &&
+        (downloadId is! String ||
+            !RegExp(r'^[a-f0-9]{24}$').hasMatch(downloadId))) {
+      throw const FormatException('离线歌曲标识无效');
+    }
     if (platform == MusicPlatform.local)
       validateLocalAudioUri(json['id']?.toString() ?? '');
     return SongSearchResult(
+      downloadId: downloadId as String?,
       platform: platform,
       id: json['id']?.toString() ?? '',
       name: json['name']?.toString() ?? '未知歌曲',
@@ -1037,6 +1049,7 @@ class FavoritePlaylist {
 
 /// 播放队列中的歌曲（包含元信息 + 运行时信息）
 class PlayQueueItem {
+  final String? downloadId;
   final MusicPlatform platform;
   final String id;
   final String name;
@@ -1058,6 +1071,7 @@ class PlayQueueItem {
   String? error; // 解析失败信息
 
   PlayQueueItem({
+    this.downloadId,
     required this.platform,
     required this.id,
     required this.name,
@@ -1081,6 +1095,7 @@ class PlayQueueItem {
   factory PlayQueueItem.fromSearchResult(SongSearchResult r) {
     if (r.platform == MusicPlatform.local) validateLocalAudioUri(r.id);
     return PlayQueueItem(
+      downloadId: r.downloadId,
       platform: r.platform,
       id: r.id,
       name: r.name,
@@ -1119,6 +1134,7 @@ class PlayQueueItem {
     bool clearLyric = false,
   }) {
     return PlayQueueItem(
+      downloadId: downloadId,
       platform: platform,
       id: id,
       name: name ?? this.name,

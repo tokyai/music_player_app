@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:crypto/crypto.dart';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -8,6 +9,8 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:music_player_app/models/playback_source_config.dart';
 import 'package:music_player_app/models/song.dart';
+import 'package:music_player_app/models/download_entry.dart';
+import 'package:music_player_app/services/download_manager.dart';
 import 'package:music_player_app/providers/player_provider.dart';
 import 'package:music_player_app/services/audio_cache_service.dart';
 import 'package:music_player_app/services/user_data_scope.dart';
@@ -30,6 +33,68 @@ void main() {
       expect(player.toBackupJson(), before);
     }, cached: true);
   });
+
+  for (final platform in [MusicPlatform.qq, MusicPlatform.bilibili]) {
+    test(
+      'downloaded $platform plays and restores without network requests',
+      () async {
+        await _scenario((fixture, player) async {
+          final entry = DownloadEntry(
+            id: 'a' * 24,
+            song: SongSearchResult(
+              platform: platform,
+              id: 'offline',
+              name: 'offline',
+              artist: 'artist',
+              album: 'album',
+              bilibiliCid: platform == MusicPlatform.bilibili ? 123 : null,
+            ),
+            quality: 'flac',
+            status: DownloadStatus.completed,
+            fileName: '${'a' * 24}.mp3',
+          );
+          final folder = sha256
+              .convert(utf8.encode(fixture.scope.userId))
+              .toString()
+              .substring(0, 16);
+          final dir = await Directory(
+            '${fixture.directory.path}/downloads/$folder/media',
+          ).create(recursive: true);
+          await File(
+            '${dir.path}/${entry.fileName}',
+          ).writeAsBytes(List.filled(4096, 0));
+          await File(
+            '${dir.path}/${entry.id}.lrc',
+          ).writeAsString('[00:00.00]离线歌词');
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString(
+            fixture.scope.preferenceKey(DownloadManager.preferenceKey),
+            jsonEncode({
+              'version': 1,
+              'wifiOnly': true,
+              'entries': [entry.toJson()],
+            }),
+          );
+          await player.playSingle(entry.offlineSong);
+          expect(fixture.requestCount, 0);
+          expect(fixture.loaded.single, contains(entry.fileName!));
+          expect(player.lyrics.single.text, '离线歌词');
+          final persistedSong = SongSearchResult.fromQueueItem(
+            player.currentSong!,
+          ).compactForPlaybackPersistence();
+          expect(
+            SongSearchResult.fromJson(persistedSong.toJson()).downloadId,
+            entry.id,
+          );
+          fixture.failAllLoads = true;
+          await player.playSingle(entry.offlineSong);
+          expect(fixture.requestCount, 0);
+          expect(player.isLoading, isFalse);
+          expect(player.errorMessage, isNotNull);
+        });
+      },
+    );
+  }
 
   test(
     'local playback never contacts a resolver even after native failures',
@@ -55,6 +120,46 @@ void main() {
       });
     },
   );
+
+  test('playback and download resolution do not cancel each other', () async {
+    await _scenario((fixture, player) async {
+      await player.setPlaybackSource(
+        MusicPlatform.qq,
+        PlaybackSource.qingMusic,
+      );
+      fixture.install(DownloadManager.channel, (_) async => false);
+      fixture.install(
+        const MethodChannel('music_player/download_network'),
+        (_) async => null,
+      );
+      final playingGate = fixture.resolutionGates['playing'] =
+          Completer<void>();
+      final downloadGate = fixture.resolutionGates['download'] =
+          Completer<void>();
+      try {
+        await player.downloads.setWifiOnly(false);
+        final playing = player.playSingle(_song('playing'));
+        await fixture.waitForResolution('playing');
+        final entry = await player.downloadSong(_song('download'));
+        await fixture.waitForResolution('download');
+        playingGate.complete();
+        await playing.timeout(const Duration(seconds: 2));
+        expect(player.errorMessage, isNull);
+        expect(fixture.loaded.single, contains('playing.mp3'));
+
+        await player.playSingle(_song('next'));
+        expect(player.errorMessage, isNull);
+        expect(fixture.loaded.last, contains('next.mp3'));
+        expect(entry.status, DownloadStatus.downloading);
+        expect(entry.error, isNull);
+        await player.downloads.suspend().timeout(const Duration(seconds: 1));
+        expect(entry.status, DownloadStatus.paused);
+      } finally {
+        if (!playingGate.isCompleted) playingGate.complete();
+        if (!downloadGate.isCompleted) downloadGate.complete();
+      }
+    });
+  });
 
   test(
     'end-of-track timer suppresses queue advancement and repeated completion',
@@ -315,6 +420,8 @@ class _NativeFixture {
   final List<String> loaded = [];
   final List<String> requestedQualities = [];
   final List<int> seekPositions = [];
+  final Map<String, Completer<void>> resolutionGates = {};
+  final Set<String> resolvingIds = {};
   int playCalls = 0;
   int requestCount = 0;
   String? playerId;
@@ -456,7 +563,9 @@ class _NativeFixture {
     requestCount++;
     if (request.url.host == 'qing.test') {
       final body = jsonDecode(request.body) as Map;
-      final id = body['rid'];
+      final id = body['rid'] as String;
+      resolvingIds.add(id);
+      await resolutionGates[id]?.future;
       requestedQualities.add(body['level'] as String);
       return http.Response(
         jsonEncode({
@@ -478,6 +587,14 @@ class _NativeFixture {
       );
     }
     return http.Response('{}', 200);
+  }
+
+  Future<void> waitForResolution(String id) async {
+    final end = DateTime.now().add(const Duration(seconds: 2));
+    while (!resolvingIds.contains(id) && DateTime.now().isBefore(end)) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(resolvingIds, contains(id));
   }
 
   Future<void> dispose() async {

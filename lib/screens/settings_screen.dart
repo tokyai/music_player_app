@@ -34,6 +34,7 @@ import '../widgets/user_profile_editor_dialog.dart';
 import 'backup_restore_screen.dart';
 import 'cache_list_screen.dart';
 import 'local_music_screen.dart';
+import 'downloads_screen.dart';
 import 'favorites_screen.dart';
 import 'playback_history_screen.dart';
 import 'playback_source_config_screen.dart';
@@ -1919,6 +1920,18 @@ class _SettingsScreenState extends State<SettingsScreen>
       children: [
         _buildSectionHeader(icon: Icons.library_music_outlined, title: '音乐库'),
         ListTile(
+          key: const ValueKey('downloads-setting'),
+          dense: compact,
+          leading: const Icon(Icons.download_rounded),
+          title: const Text('下载管理'),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const DownloadsScreen()),
+          ),
+        ),
+        const Divider(height: 1),
+        ListTile(
           key: const ValueKey('local-music-setting'),
           dense: compact,
           leading: const Icon(Icons.folder_open_rounded),
@@ -2684,6 +2697,12 @@ class _SettingsScreenState extends State<SettingsScreen>
       compact: compact,
       children: [
         _buildSectionHeader(icon: Icons.music_note, title: '关于'),
+        ListTile(
+          leading: const Icon(Icons.description_outlined),
+          title: const Text('开源许可证'),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: () => showLicensePage(context: context),
+        ),
         ListTile(
           dense: compact,
           leading: ClipRRect(

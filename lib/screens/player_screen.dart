@@ -29,6 +29,7 @@ import '../widgets/karaoke_lyric_text.dart';
 import '../services/sleep_timer.dart';
 import '../widgets/smart_cover.dart';
 import 'video_player_screen.dart';
+import 'downloads_screen.dart';
 
 class PlayerScreen extends StatefulWidget {
   const PlayerScreen({super.key});
@@ -2452,6 +2453,42 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 builder: (_) => SleepTimerDialog(timer: player.sleepTimer),
               ),
             ),
+          ),
+          PopupMenuButton<String>(
+            key: const ValueKey('player-download-action'),
+            tooltip: '下载',
+            icon: Icon(Icons.download_rounded, color: textColor),
+            itemBuilder: (_) => [
+              PopupMenuItem(
+                value: 'download',
+                enabled:
+                    player.currentSong?.platform != MusicPlatform.local &&
+                    player.currentSong?.downloadId == null,
+                child: const Text('下载当前歌曲'),
+              ),
+              const PopupMenuItem(value: 'manage', child: Text('下载管理')),
+            ],
+            onSelected: (value) async {
+              try {
+                final song = player.currentSong;
+                if (value == 'download' && song != null) {
+                  await player.downloadSong(
+                    SongSearchResult.fromQueueItem(song),
+                  );
+                }
+                if (!ctx.mounted) return;
+                await Navigator.push(
+                  ctx,
+                  MaterialPageRoute(builder: (_) => const DownloadsScreen()),
+                );
+              } catch (error) {
+                if (ctx.mounted) {
+                  ScaffoldMessenger.of(
+                    ctx,
+                  ).showSnackBar(SnackBar(content: Text('下载失败：$error')));
+                }
+              }
+            },
           ),
           Expanded(
             child: Column(

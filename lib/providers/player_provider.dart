@@ -8,6 +8,8 @@ import '../models/playback_source_config.dart';
 import '../models/audio_effects.dart';
 import '../services/audio_effects_service.dart';
 import '../services/sleep_timer.dart';
+import '../services/download_manager.dart';
+import '../models/download_entry.dart';
 import '../services/api_service.dart';
 import '../services/audio_cache_service.dart';
 import '../services/bilibili_service.dart';
@@ -61,6 +63,10 @@ class PlayerProvider extends ChangeNotifier {
 
   final AudioPlayer _audioPlayer = AudioPlayer();
   final AudioEffectsService audioEffects = AudioEffectsService();
+  late final DownloadManager downloads = DownloadManager(
+    scope: dataScope,
+    resolve: _resolveDownload,
+  );
   late final SleepTimer sleepTimer = SleepTimer(onElapsed: _stopForSleepTimer);
   bool _sleepTimerStopped = false;
   StreamSubscription<int?>? _audioSessionSub;
@@ -811,7 +817,8 @@ class PlayerProvider extends ChangeNotifier {
     _invalidatePlayUrl(_itemKey(song));
     final source =
         _currentPlaybackSourceOverride ?? playbackSourceFor(song.platform);
-    if (configurableMusicPlatforms.contains(song.platform) &&
+    if (song.downloadId == null &&
+        configurableMusicPlatforms.contains(song.platform) &&
         source == PlaybackSource.automatic &&
         _playbackRecoveryAttempts < _maxPlaybackRecoveryAttempts) {
       final failedSource = _currentResolvedPlaybackSource;
@@ -1752,7 +1759,8 @@ class PlayerProvider extends ChangeNotifier {
   ) async {
     if (index < 0 || index >= results.length) return;
     final selected = results[index];
-    if (selected.platform == MusicPlatform.bilibili) {
+    if (selected.platform == MusicPlatform.bilibili &&
+        selected.downloadId == null) {
       await playBilibiliResource(selected);
       return;
     }
@@ -1778,7 +1786,8 @@ class PlayerProvider extends ChangeNotifier {
 
   /// 添加到队列并播放
   Future<void> playSingle(SongSearchResult result) async {
-    if (result.platform == MusicPlatform.bilibili) {
+    if (result.platform == MusicPlatform.bilibili &&
+        result.downloadId == null) {
       await playBilibiliResource(result);
       return;
     }
@@ -1797,7 +1806,8 @@ class PlayerProvider extends ChangeNotifier {
   /// 和第三方调用方；需要知道实际追加数量的页面使用
   /// [addToQueueAndGetCount]。
   void addToQueue(SongSearchResult result) {
-    if (result.platform != MusicPlatform.bilibili) {
+    if (result.platform != MusicPlatform.bilibili ||
+        result.downloadId != null) {
       addTracksToQueue([result]);
       return;
     }
@@ -1807,7 +1817,8 @@ class PlayerProvider extends ChangeNotifier {
   /// Adds a result to the queue and returns the number of concrete queue items
   /// appended. B 站 results expand to one item per valid page.
   Future<int> addToQueueAndGetCount(SongSearchResult result) async {
-    if (result.platform != MusicPlatform.bilibili) {
+    if (result.platform != MusicPlatform.bilibili ||
+        result.downloadId != null) {
       return addTracksToQueue([result]) ? 1 : 0;
     }
     final requestId = ++_bilibiliAddRequestId;
@@ -2041,6 +2052,108 @@ class PlayerProvider extends ChangeNotifier {
     await _playCurrent(resumePosition: entries[index].position);
   }
 
+  Future<DownloadEntry> downloadSong(SongSearchResult song) async {
+    await settingsReady;
+    if (_disposed || _preparingForExit) throw StateError('播放器已关闭');
+    if (song.platform == MusicPlatform.local || song.downloadId != null) {
+      throw StateError('当前歌曲已在本地');
+    }
+    final quality = _audioQualityFor(PlayQueueItem.fromSearchResult(song));
+    return downloads.enqueue(song, quality);
+  }
+
+  Future<SongDetail> _resolveDownload(
+    SongSearchResult song,
+    String quality,
+    bool Function() cancelled,
+    Future<void> cancelSignal,
+  ) async {
+    if (_disposed || _preparingForExit || cancelled()) {
+      throw const ApiException('RESOLVE_CANCELLED', '下载已取消');
+    }
+    // Playback resolution is latest-request-wins. A download must own its
+    // resolver so it cannot cancel the song currently starting playback.
+    final resolver = ApiService(
+      apiKey: _apiKey,
+      playbackSourceConfig: _playbackSourceConfig,
+      bilibili: BilibiliService(dataScope: dataScope),
+    );
+    final cancellation = cancelSignal.asStream().listen(
+      (_) => resolver.close(),
+    );
+    try {
+      SongDetail detail;
+      if (song.platform == MusicPlatform.bilibili) {
+        final cid = song.bilibiliCid;
+        if (cid == null) throw StateError('请先选择 B站分P');
+        final info = await resolver.bilibili.playInfo(song.id, cid);
+        if (cancelled() || _disposed || _preparingForExit) {
+          throw const ApiException('RESOLVE_CANCELLED', '下载已取消');
+        }
+        if (info.audioStreams.isEmpty) throw StateError('当前没有音频流');
+        final stream = info.audioStreams.firstWhere(
+          (value) => '${value.quality}' == quality,
+          orElse: () => info.audioStreams.first,
+        );
+        detail = SongDetail(
+          name: song.name,
+          artist: song.artist,
+          album: song.album,
+          url: stream.url,
+          format: 'm4a',
+          playbackHeaders: resolver.bilibili.playbackHeaders,
+        );
+      } else {
+        detail = await resolver.resolvePlayback(
+          source: playbackSourceFor(song.platform),
+          platform: song.platform,
+          id: song.id,
+          quality: quality,
+          name: song.name,
+          artist: song.artist,
+          album: song.album,
+          albumId: song.albumId,
+          duration: song.duration,
+          isCancelled: () => cancelled() || _disposed || _preparingForExit,
+        );
+      }
+      if (detail.lyric == null &&
+          configurableMusicPlatforms.contains(song.platform) &&
+          !cancelled()) {
+        try {
+          final data = await resolver
+              .getLyric(song.platform, song.id)
+              .timeout(const Duration(seconds: 12));
+          if (cancelled() || _disposed || _preparingForExit) {
+            throw const ApiException('RESOLVE_CANCELLED', '下载已取消');
+          }
+          final lyrics = data?.wordSynced?.isNotEmpty == true
+              ? data!.wordSynced
+              : data?.original;
+          return SongDetail(
+            name: detail.name,
+            artist: detail.artist,
+            album: detail.album,
+            url: detail.url,
+            coverUrl: detail.coverUrl,
+            lyric: _boundLyricText(lyrics),
+            duration: detail.duration,
+            bitrate: detail.bitrate,
+            format: detail.format,
+            playbackHeaders: detail.playbackHeaders,
+            playbackSource: detail.playbackSource,
+          );
+        } catch (error) {
+          debugPrint('下载歌词未获取: $error');
+        }
+      }
+      return detail;
+    } finally {
+      unawaited(cancellation.cancel());
+      resolver.close();
+    }
+  }
+
   Future<void> _playCurrent({
     Duration? resumePosition,
     PlaybackSource? sourceOverride,
@@ -2098,7 +2211,21 @@ class PlayerProvider extends ChangeNotifier {
       await historyReady;
       if (!_isCurrentRequest(requestId, item)) return;
 
-      if (item.platform == MusicPlatform.bilibili) {
+      String? downloadedPath;
+      if (item.downloadId != null) {
+        downloadedPath = await downloads.playablePath(item.downloadId!);
+        if (!_isCurrentRequest(requestId, item)) return;
+        if (downloadedPath == null) throw StateError('下载文件已不存在，请重新下载');
+        final downloadedLyrics = await downloads.lyricsFor(item.downloadId!);
+        if (!_isCurrentRequest(requestId, item)) return;
+        _applyLyrics(
+          requestId,
+          item,
+          _ResolvedLyrics.fromPlainText(downloadedLyrics),
+        );
+      }
+
+      if (downloadedPath == null && item.platform == MusicPlatform.bilibili) {
         item = await _prepareBilibiliItem(requestId, item);
         if (!_isCurrentRequest(requestId, item)) return;
       }
@@ -2108,7 +2235,8 @@ class PlayerProvider extends ChangeNotifier {
 
       // 网易云和 QQ 的歌词接口与播放地址互不依赖，提前并发请求；歌词不会再
       // 阻塞音频源加载。已有歌词则直接复用，不发请求。
-      final independentLyrics = immediateLyrics == null
+      final independentLyrics =
+          immediateLyrics == null && downloadedPath == null
           ? _fetchIndependentLyrics(item)
           : null;
 
@@ -2119,7 +2247,8 @@ class PlayerProvider extends ChangeNotifier {
       // 缓存检查只依赖平台和歌曲 id，必须放在网络解析之前。命中缓存时
       // 直接播放本地文件，不再为了封面、歌手、专辑等已有信息请求详情。
       final cachedPath =
-          item.platform == MusicPlatform.local ||
+          downloadedPath != null ||
+              item.platform == MusicPlatform.local ||
               bypassAudioCache ||
               forceResolve ||
               sourceOverride != null
@@ -2136,7 +2265,9 @@ class PlayerProvider extends ChangeNotifier {
       String? resolvedUrl;
       var playPath = '';
       var shouldCacheAudio = false;
-      if (item.platform == MusicPlatform.local) {
+      if (downloadedPath != null) {
+        playPath = downloadedPath;
+      } else if (item.platform == MusicPlatform.local) {
         playPath = validateLocalAudioUri(item.id).toString();
         resolvedUrl = playPath;
       } else if (cachedPath != null) {
@@ -2165,7 +2296,9 @@ class PlayerProvider extends ChangeNotifier {
       // 再下载一次相同图片。歌名、歌手和专辑始终使用列表已有元数据。
       final effectiveCover = _preferExisting(item.coverUrl, detail?.coverUrl);
       var playbackHeaders =
-          item.platform == MusicPlatform.local || cachedPath != null
+          downloadedPath != null ||
+              item.platform == MusicPlatform.local ||
+              cachedPath != null
           ? null
           : detail != null
           ? detail.playbackHeaders
@@ -2182,7 +2315,7 @@ class PlayerProvider extends ChangeNotifier {
       );
 
       // 系统媒体会话由 PlayerMediaHandler 同步当前歌曲元数据。
-      var usingLocalCache = cachedPath != null;
+      var usingLocalCache = downloadedPath != null || cachedPath != null;
       while (true) {
         final audioUri = usingLocalCache
             ? Uri.file(playPath)
@@ -2199,6 +2332,7 @@ class PlayerProvider extends ChangeNotifier {
           final failedSource =
               detail?.playbackSource ?? _currentResolvedPlaybackSource;
           final canResolveAnother =
+              downloadedPath == null &&
               configurableMusicPlatforms.contains(item.platform) &&
               selectedSource == PlaybackSource.automatic &&
               _playbackRecoveryAttempts < _maxPlaybackRecoveryAttempts;
@@ -2258,7 +2392,7 @@ class PlayerProvider extends ChangeNotifier {
 
       // 歌词独立完成：网络慢或失败都不阻塞声音。酷狗歌词随解析详情返回；
       // 若本地音频秒开且没有歌词，只在后台补一次歌词。
-      if (immediateLyrics == null) {
+      if (immediateLyrics == null && downloadedPath == null) {
         if (item.platform == MusicPlatform.bilibili) {
           unawaited(_loadBilibiliLyricsInBackground(requestId, item));
         } else if (independentLyrics != null) {
@@ -2330,6 +2464,7 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   String _itemKey(PlayQueueItem item) {
+    if (item.downloadId != null) return 'download:${item.downloadId}';
     if (item.platform == MusicPlatform.bilibili) {
       return '${item.platform.code}:${item.id}:${item.bilibiliCid ?? 0}:'
           'q$_bilibiliAudioQuality';
@@ -3035,6 +3170,7 @@ class PlayerProvider extends ChangeNotifier {
     final shouldResume = _resumeAfterCancelledUserSwitch;
     _resumeAfterCancelledUserSwitch = false;
     _preparingForExit = false;
+    downloads.resumeSession();
     if (!shouldResume || currentSong == null) return;
     if (_audioPlayer.processingState == ProcessingState.idle) {
       await _tryAudioCommand(
@@ -3053,6 +3189,7 @@ class PlayerProvider extends ChangeNotifier {
     // still restored and preserved below.
     _preparingForExit = true;
     sleepTimer.cancel();
+    final downloadSuspension = downloads.suspend();
     if (waitForWrites) {
       try {
         await playbackStateReady;
@@ -3080,6 +3217,7 @@ class PlayerProvider extends ChangeNotifier {
     final playbackSnapshot = _playbackStateLoaded
         ? _playbackStateSnapshot()
         : null;
+    await downloadSuspension;
 
     if (_queue.isNotEmpty ||
         _audioPlayer.processingState != ProcessingState.idle) {
@@ -3350,6 +3488,7 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> _disposeAudioResources(
     List<StreamSubscription?> subscriptions,
   ) async {
+    await downloads.close();
     await _qualityChangeCompletion?.future;
     await audioEffects.close();
     for (final subscription in subscriptions) {

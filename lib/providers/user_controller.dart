@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/app_user.dart';
 import '../services/audio_cache_service.dart';
+import '../services/download_manager.dart';
 import '../services/user_avatar_storage.dart';
 import '../services/user_data_scope.dart';
 
@@ -397,6 +398,11 @@ class UserController extends ChangeNotifier {
     await _deleteScopedPreferences(scope);
     await _deleteScopedSecret(scope);
     await AudioCacheService.deleteUserCache(scope);
+    try {
+      await DownloadManager.deleteUserFiles(scope);
+    } catch (error) {
+      debugPrint('清理用户下载失败: $error');
+    }
     // Repeat the cheap key cleanup after queued cache and plugin operations
     // have drained, covering a write that was already in flight at deletion.
     await _deleteScopedPreferences(scope);

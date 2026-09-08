@@ -4,6 +4,8 @@ import 'dart:ui';
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'
+    show LicenseRegistry, LicenseEntryWithLineBreaks;
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
@@ -40,6 +42,12 @@ const _foregroundMediaKeyChannel = MethodChannel(
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  LicenseRegistry.addLicense(() async* {
+    final license = await rootBundle.loadString(
+      'third_party/jaudiotagger/LGPL-2.1.txt',
+    );
+    yield LicenseEntryWithLineBreaks(['Jaudiotagger for Android'], license);
+  });
   // Music lists can contain hundreds of covers. Flutter's default image
   // cache is item-count based and may retain a large decoded-image working
   // set on a car display. Bound only the in-memory decoded cache; the disk

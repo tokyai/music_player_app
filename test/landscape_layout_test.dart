@@ -12,6 +12,7 @@ import 'package:music_player_app/providers/player_provider.dart';
 import 'package:music_player_app/providers/search_session.dart';
 import 'package:music_player_app/providers/theme_controller.dart';
 import 'package:music_player_app/screens/discover_screen.dart';
+import 'package:music_player_app/screens/downloads_screen.dart';
 import 'package:music_player_app/screens/favorites_screen.dart';
 import 'package:music_player_app/screens/playback_history_screen.dart';
 import 'package:music_player_app/screens/player_screen.dart';
@@ -2647,6 +2648,44 @@ void main() {
   });
 
   for (final size in const [Size(640, 360), Size(1280, 800)]) {
+    testWidgets(
+      'download entry retains player controls and return path at $size',
+      (tester) async {
+        final player = _PlayerWithLyrics();
+        final theme = ThemeController();
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          final disposing = player.disposeResources();
+          await tester.pump();
+          await disposing;
+          theme.dispose();
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+        await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
+        final download = find.byKey(const ValueKey('player-download-action'));
+        expect(download.hitTestable(), findsOneWidget);
+        expect(find.text('收藏').hitTestable(), findsOneWidget);
+        expect(find.byTooltip('播放队列').hitTestable(), findsOneWidget);
+        await tester.tap(download);
+        await tester.pumpAndSettle();
+        expect(find.text('下载当前歌曲').hitTestable(), findsOneWidget);
+        await tester.tap(find.text('下载管理'));
+        await tester.pumpAndSettle();
+        expect(find.byType(DownloadsScreen), findsOneWidget);
+        expect(find.byType(BackButton).hitTestable(), findsOneWidget);
+        await tester.tap(find.byType(BackButton));
+        await tester.pumpAndSettle();
+        expect(download.hitTestable(), findsOneWidget);
+        await tester.tap(find.byTooltip('全屏歌词'));
+        await tester.pumpAndSettle();
+        expect(download.hitTestable(), findsOneWidget);
+        expect(find.text('收藏').hitTestable(), findsOneWidget);
+        expect(find.byTooltip('播放队列').hitTestable(), findsOneWidget);
+        _expectNoException(tester);
+      },
+    );
+
     testWidgets(
       'word highlighting and translation are opt-in and fit at $size',
       (tester) async {

@@ -118,6 +118,10 @@ flutter {
     source = "../.."
 }
 
+dependencies {
+    implementation files('libs/jaudiotagger-android.jar')
+}
+
 gradle.taskGraph.whenReady { graph ->
     def releaseRequested = graph.allTasks.any { task ->
         task.project == project && task.name.toLowerCase().contains("release")
