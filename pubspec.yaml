@@ -34,7 +34,7 @@ dependencies:
   permission_handler: ^11.3.1
   speech_to_text: ^7.4.0
   # Android 车机离线流式识别：Zipformer CTC + 原始 PCM 麦克风输入。
-  sherpa_onnx: 1.13.6
+  sherpa_onnx: 1.13.7
   record: 6.1.2
   flutter_secure_storage: ^11.0.0
 
