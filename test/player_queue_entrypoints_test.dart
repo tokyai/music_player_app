@@ -65,6 +65,32 @@ void main() {
   );
 
   test(
+    'shuffle plays every queued song once before starting a new cycle',
+    () async {
+      final player = PlayerProvider(activateRestoredSession: false);
+      addTearDown(player.dispose);
+      await player.playbackStateReady;
+      player.addTracksToQueue([
+        _song('shuffle-one', '随机一'),
+        _song('shuffle-two', '随机二'),
+        _song('shuffle-three', '随机三'),
+      ]);
+      player.togglePlayMode(); // sequence -> repeat
+      player.togglePlayMode(); // repeat -> shuffle
+
+      final firstCycle = <int>[];
+      for (var i = 0; i < 3; i++) {
+        await player.playNext();
+        firstCycle.add(player.currentIndex);
+      }
+      expect(firstCycle.toSet(), hasLength(3));
+
+      await player.playNext();
+      expect(player.currentIndex, inInclusiveRange(0, 2));
+    },
+  );
+
+  test(
     'Bilibili list playback expands only the selected resource pages',
     () async {
       final viewRequests = <String, int>{};

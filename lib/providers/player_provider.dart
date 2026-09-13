@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -79,6 +80,12 @@ class PlayerProvider extends ChangeNotifier {
 
   // ---- 状态 ----
   List<PlayQueueItem> _queue = [];
+  // Shuffle is a queue-session cycle rather than an independent random pick
+  // for every transition. Keys are based on the song identity (without the
+  // selected audio quality), so changing quality cannot make a played song
+  // eligible again during the same cycle.
+  final Set<String> _shufflePlayedKeys = <String>{};
+  final Random _shuffleRandom = Random();
   int _currentIndex = -1;
   bool _isPlaying = false;
   bool _isLoading = false;
@@ -660,6 +667,7 @@ class PlayerProvider extends ChangeNotifier {
         'shuffle' => PlayMode.shuffle,
         _ => PlayMode.sequence,
       };
+      _resetShuffleCycle(markCurrent: _playMode == PlayMode.shuffle);
       _restoredPlaybackPending = snapshot.isPlaying;
       notifyListeners();
       // A paused session still has a meaningful current song. Keep the
@@ -687,6 +695,7 @@ class PlayerProvider extends ChangeNotifier {
       debugPrint('恢复播放会话失败: $error');
       debugPrintStack(stackTrace: stackTrace);
       _queue = [];
+      _shufflePlayedKeys.clear();
       _currentIndex = -1;
       _position = Duration.zero;
       _duration = Duration.zero;
@@ -1752,6 +1761,72 @@ class PlayerProvider extends ChangeNotifier {
 
   // ==================== 播放控制 ====================
 
+  /// Returns the identity used by the current shuffle cycle. Audio quality is
+  /// intentionally excluded so changing quality cannot make a played song
+  /// eligible again.
+  String _shuffleItemKey(PlayQueueItem item) {
+    if (item.downloadId != null) return 'download:${item.downloadId}';
+    final page = item.platform == MusicPlatform.bilibili
+        ? ':${item.bilibiliCid ?? 0}'
+        : '';
+    return '${item.platform.code}:${item.id}$page';
+  }
+
+  void _pruneShufflePlayedKeys() {
+    if (_queue.isEmpty) {
+      _shufflePlayedKeys.clear();
+      return;
+    }
+    if (_shufflePlayedKeys.isEmpty) return;
+    final queueKeys = <String>{
+      for (final item in _queue) _shuffleItemKey(item),
+    };
+    _shufflePlayedKeys.removeWhere((key) => !queueKeys.contains(key));
+  }
+
+  void _resetShuffleCycle({bool markCurrent = false}) {
+    _shufflePlayedKeys.clear();
+    if (markCurrent) _markShufflePlayed(_currentIndex);
+  }
+
+  void _markShufflePlayed(int index) {
+    if (_playMode != PlayMode.shuffle || index < 0 || index >= _queue.length) {
+      return;
+    }
+    _shufflePlayedKeys.add(_shuffleItemKey(_queue[index]));
+  }
+
+  int _nextShuffleIndex() {
+    if (_queue.isEmpty) return -1;
+    _pruneShufflePlayedKeys();
+    // The current item has just finished (or was explicitly skipped), so it
+    // must be consumed before selecting the next candidate.
+    _markShufflePlayed(_currentIndex);
+
+    var candidates = <int>[];
+    final candidateKeys = <String>{};
+    for (var index = 0; index < _queue.length; index++) {
+      final key = _shuffleItemKey(_queue[index]);
+      if (!_shufflePlayedKeys.contains(key) && candidateKeys.add(key)) {
+        candidates.add(index);
+      }
+    }
+    if (candidates.isEmpty) {
+      // Every queue item has been played once. Start a fresh full-list cycle.
+      _shufflePlayedKeys.clear();
+      candidateKeys.clear();
+      for (var index = 0; index < _queue.length; index++) {
+        final key = _shuffleItemKey(_queue[index]);
+        if (!_shufflePlayedKeys.contains(key) && candidateKeys.add(key)) {
+          candidates.add(index);
+        }
+      }
+    }
+    final index = candidates[_shuffleRandom.nextInt(candidates.length)];
+    _shufflePlayedKeys.add(_shuffleItemKey(_queue[index]));
+    return index;
+  }
+
   /// 从搜索结果播放（替换整个队列）
   Future<void> playFromSearchResults(
     List<SongSearchResult> results,
@@ -1779,6 +1854,7 @@ class PlayerProvider extends ChangeNotifier {
     _queueSessionId++;
     _queue = nextQueue;
     _currentIndex = index;
+    _resetShuffleCycle(markCurrent: _playMode == PlayMode.shuffle);
     _persistPlaybackStateNow();
     notifyListeners();
     await _playCurrent();
@@ -1797,6 +1873,7 @@ class PlayerProvider extends ChangeNotifier {
     _queueSessionId++;
     _queue = [PlayQueueItem.fromSearchResult(result)];
     _currentIndex = 0;
+    _resetShuffleCycle(markCurrent: _playMode == PlayMode.shuffle);
     _persistPlaybackStateNow();
     notifyListeners();
     await _playCurrent();
@@ -1868,6 +1945,7 @@ class PlayerProvider extends ChangeNotifier {
       _queueSessionId++;
       _queue = nextQueue;
       _currentIndex = 0;
+      _resetShuffleCycle(markCurrent: _playMode == PlayMode.shuffle);
       _persistPlaybackStateNow();
       notifyListeners();
       await _playCurrent();
@@ -2000,6 +2078,7 @@ class PlayerProvider extends ChangeNotifier {
     _queueSessionId++;
     _queue = nextQueue;
     _currentIndex = index;
+    _resetShuffleCycle(markCurrent: _playMode == PlayMode.shuffle);
     _persistPlaybackStateNow();
     notifyListeners();
     await _playCurrent();
@@ -2022,6 +2101,7 @@ class PlayerProvider extends ChangeNotifier {
     _queueSessionId++;
     _queue = [PlayQueueItem.fromSearchResult(entry.song)];
     _currentIndex = 0;
+    _resetShuffleCycle(markCurrent: _playMode == PlayMode.shuffle);
     _persistPlaybackStateNow();
     notifyListeners();
     await _playCurrent(resumePosition: entry.position);
@@ -2047,6 +2127,7 @@ class PlayerProvider extends ChangeNotifier {
         .map((entry) => PlayQueueItem.fromSearchResult(entry.song))
         .toList();
     _currentIndex = index;
+    _resetShuffleCycle(markCurrent: _playMode == PlayMode.shuffle);
     _persistPlaybackStateNow();
     notifyListeners();
     await _playCurrent(resumePosition: entries[index].position);
@@ -2172,6 +2253,7 @@ class PlayerProvider extends ChangeNotifier {
       return;
     }
     var item = _queue[_currentIndex];
+    _markShufflePlayed(_currentIndex);
     _sleepTimerStopped = false;
     final requestId = ++_playRequestId;
     final immediateLyrics = _cachedLyrics(item);
@@ -2228,6 +2310,10 @@ class PlayerProvider extends ChangeNotifier {
       if (downloadedPath == null && item.platform == MusicPlatform.bilibili) {
         item = await _prepareBilibiliItem(requestId, item);
         if (!_isCurrentRequest(requestId, item)) return;
+        // A legacy resource-level Bilibili item can acquire its concrete CID
+        // during preparation. Record the prepared identity as well so that
+        // this first play cannot re-enter the same shuffle cycle.
+        _markShufflePlayed(_currentIndex);
       }
       final itemKey = _itemKey(item);
       _activePlaybackItemKey = itemKey;
@@ -2908,11 +2994,7 @@ class PlayerProvider extends ChangeNotifier {
         });
         break;
       case PlayMode.shuffle:
-        if (_queue.length > 1) {
-          final random = DateTime.now().millisecondsSinceEpoch % _queue.length;
-          _currentIndex = random;
-          _runAudioCommandInBackground('随机播放下一首', _playCurrent);
-        }
+        _runAudioCommandInBackground('随机播放下一首', playNext);
         break;
     }
   }
@@ -3285,7 +3367,7 @@ class PlayerProvider extends ChangeNotifier {
     _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     if (_playMode == PlayMode.shuffle) {
-      _currentIndex = DateTime.now().millisecondsSinceEpoch % _queue.length;
+      _currentIndex = _nextShuffleIndex();
     } else {
       _currentIndex = (_currentIndex + 1) % _queue.length;
     }
@@ -3352,12 +3434,15 @@ class PlayerProvider extends ChangeNotifier {
     switch (_playMode) {
       case PlayMode.sequence:
         _playMode = PlayMode.repeat;
+        _resetShuffleCycle();
         break;
       case PlayMode.repeat:
         _playMode = PlayMode.shuffle;
+        _resetShuffleCycle(markCurrent: true);
         break;
       case PlayMode.shuffle:
         _playMode = PlayMode.sequence;
+        _resetShuffleCycle();
         break;
     }
     _persistPlaybackStateNow();
@@ -3375,6 +3460,7 @@ class PlayerProvider extends ChangeNotifier {
     _cancelPendingPlaybackRestore();
     _recordCurrentHistory(immediate: true);
     _currentIndex = index;
+    _markShufflePlayed(index);
     _persistPlaybackStateNow();
     notifyListeners();
     await _playCurrent();
@@ -3386,6 +3472,9 @@ class PlayerProvider extends ChangeNotifier {
     _cancelPendingPlaybackRestore();
     if (index == _currentIndex) _recordCurrentHistory(immediate: true);
     _queue.removeAt(index);
+    if (_playMode == PlayMode.shuffle) {
+      _pruneShufflePlayedKeys();
+    }
     if (index < _currentIndex) {
       _currentIndex--;
     } else if (index == _currentIndex) {
@@ -3409,6 +3498,7 @@ class PlayerProvider extends ChangeNotifier {
     _playRequestId++;
     _queueSessionId++;
     _queue.clear();
+    _shufflePlayedKeys.clear();
     _currentIndex = -1;
     _lyrics.clear();
     _lyricsLoading = false;
@@ -3517,6 +3607,7 @@ class PlayerProvider extends ChangeNotifier {
       }
     }
     _queue.clear();
+    _shufflePlayedKeys.clear();
     _lyrics.clear();
     _lyricCache.clear();
     _lyricOffsets.clear();
