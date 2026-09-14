@@ -90,6 +90,146 @@ void main() {
     },
   );
 
+  test('shuffle removal continues with the unplayed remaining song', () async {
+    final player = PlayerProvider(activateRestoredSession: false);
+    addTearDown(player.disposeResources);
+    await player.playbackStateReady;
+    final songs = [_song('a', 'A'), _song('b', 'B'), _song('c', 'C')];
+    await player.playFromSearchResults(songs, 1);
+    player.togglePlayMode();
+    player.togglePlayMode();
+    final played = <String>{player.currentSong!.id};
+    await player.playNext();
+    played.add(player.currentSong!.id);
+    final unplayed = songs.singleWhere((song) => !played.contains(song.id));
+
+    player.removeFromQueue(player.currentIndex);
+
+    expect(player.currentSong!.id, unplayed.id);
+    expect(player.queue, hasLength(2));
+    // Both remaining songs have now been consumed. The next full cycle must
+    // still contain each one exactly once.
+    final nextCycle = <String>[];
+    for (var i = 0; i < 2; i++) {
+      await player.playNext();
+      nextCycle.add(player.currentSong!.id);
+    }
+    expect(nextCycle.toSet(), {'b', unplayed.id});
+  });
+
+  test(
+    'shuffle removal does not consume the song shifted into the old slot',
+    () async {
+      final player = PlayerProvider(activateRestoredSession: false);
+      addTearDown(player.disposeResources);
+      await player.playbackStateReady;
+      await player.playFromSearchResults([
+        _song('a', 'A'),
+        _song('b', 'B'),
+        _song('c', 'C'),
+      ], 0);
+      player.togglePlayMode();
+      player.togglePlayMode();
+
+      player.removeFromQueue(0);
+      final first = player.currentSong!.id;
+      await player.playNext();
+
+      expect({first, player.currentSong!.id}, {'b', 'c'});
+    },
+  );
+
+  test('shuffle removal of another song preserves the current cycle', () async {
+    final player = PlayerProvider(activateRestoredSession: false);
+    addTearDown(player.disposeResources);
+    await player.playbackStateReady;
+    await player.playFromSearchResults([
+      _song('a', 'A'),
+      _song('b', 'B'),
+      _song('c', 'C'),
+    ], 1);
+    player.togglePlayMode();
+    player.togglePlayMode();
+
+    player.removeFromQueue(0);
+    expect(player.currentSong!.id, 'b');
+    expect(player.currentIndex, 0);
+    await player.playNext();
+    expect(player.currentSong!.id, 'c');
+  });
+
+  test(
+    'shuffle removal handles the last song and repeated empty operations',
+    () async {
+      final player = PlayerProvider(activateRestoredSession: false);
+      addTearDown(player.disposeResources);
+      await player.playbackStateReady;
+      await player.playSingle(_song('a', 'A'));
+      player.togglePlayMode();
+      player.togglePlayMode();
+
+      player.removeFromQueue(0);
+      player.removeFromQueue(0);
+      await player.playNext();
+      expect(player.queue, isEmpty);
+      expect(player.currentIndex, -1);
+      expect(player.currentSong, isNull);
+
+      player.addTracksToQueue([_song('a', 'A'), _song('b', 'B')]);
+      await player.playNext();
+      final first = player.currentSong!.id;
+      await player.playNext();
+      expect({first, player.currentSong!.id}, {'a', 'b'});
+    },
+  );
+
+  for (final platform in [MusicPlatform.qq, MusicPlatform.bilibili]) {
+    test(
+      'shuffle treats online and downloaded copies as one $platform song',
+      () async {
+        final player = _bilibiliQueuePlayer();
+        addTearDown(player.disposeResources);
+        await player.playbackStateReady;
+        final song = SongSearchResult(
+          platform: platform,
+          id: 'same-song',
+          name: 'A',
+          artist: '歌手',
+          album: '专辑',
+          bilibiliCid: platform == MusicPlatform.bilibili ? 101 : null,
+        );
+        final other = SongSearchResult(
+          platform: platform,
+          id: platform == MusicPlatform.bilibili ? song.id : 'other-song',
+          name: 'B',
+          artist: '歌手',
+          album: '专辑',
+          bilibiliCid: platform == MusicPlatform.bilibili ? 102 : null,
+        );
+        player.addTracksToQueue([
+          song,
+          // Different download IDs represent two downloaded audio qualities.
+          SongSearchResult.fromJson({...song.toJson(), 'downloadId': 'a' * 24}),
+          SongSearchResult.fromJson({...song.toJson(), 'downloadId': 'b' * 24}),
+          other,
+        ]);
+        await player.playQueueItem(0);
+        player.togglePlayMode();
+        player.togglePlayMode();
+
+        final played = <String>[player.currentSong!.name];
+        for (var i = 0; i < 3; i++) {
+          await player.playNext();
+          played.add(player.currentSong!.name);
+        }
+        // With two logical songs, each pair is one full cycle. Checking both
+        // pairs makes the regression independent of which index Random picks.
+        expect(played.take(2).toSet(), {'A', 'B'});
+        expect(played.skip(2).toSet(), {'A', 'B'});
+      },
+    );
+  }
+
   test(
     'Bilibili list playback expands only the selected resource pages',
     () async {

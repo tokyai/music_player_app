@@ -183,6 +183,107 @@ void main() {
     },
   );
 
+  for (final disposeDuringLoad in [false, true]) {
+    test(
+      'shuffle removal cancels stale loads (dispose: $disposeDuringLoad)',
+      () async {
+        await _scenario((fixture, player) async {
+          await player.setPlaybackSource(
+            MusicPlatform.qq,
+            PlaybackSource.qingMusic,
+          );
+          await player.playFromSearchResults([
+            _song('a'),
+            _song('b'),
+            _song('c'),
+          ], 1);
+          player.togglePlayMode();
+          player.togglePlayMode();
+          final removedGate = fixture.resolutionGates['a'] = Completer<void>();
+          final successorGate = disposeDuringLoad
+              ? fixture.resolutionGates['c'] = Completer<void>()
+              : null;
+          final removedPlayback = player.playQueueItem(0);
+          try {
+            await fixture.waitForResolution('a');
+            player.removeFromQueue(0);
+            expect(player.currentSong!.id, 'c');
+
+            if (disposeDuringLoad) {
+              await fixture.waitForResolution('c');
+              await player.disposeResources();
+            } else {
+              await _until(player, () => !player.isLoading);
+              expect(player.errorMessage, isNull);
+            }
+          } finally {
+            removedGate.complete();
+            successorGate?.complete();
+            await removedPlayback.timeout(const Duration(seconds: 2));
+          }
+          await Future<void>.delayed(Duration.zero);
+          expect(
+            fixture.loaded.map((url) => Uri.parse(url).path),
+            disposeDuringLoad ? ['/b.mp3'] : ['/b.mp3', '/c.mp3'],
+          );
+          if (disposeDuringLoad) {
+            expect(player.currentSong, isNull);
+            expect(player.queue, isEmpty);
+          } else {
+            expect(player.currentSong!.id, 'c');
+          }
+        });
+      },
+    );
+  }
+
+  test('shuffle removal handles a successor native load failure', () async {
+    await _scenario((fixture, player) async {
+      await player.setPlaybackSource(
+        MusicPlatform.qq,
+        PlaybackSource.qingMusic,
+      );
+      await player.playFromSearchResults([
+        _song('a'),
+        _song('b'),
+        _song('c'),
+      ], 1);
+      player.togglePlayMode();
+      player.togglePlayMode();
+      await player.playNext();
+      final unplayed = player.currentSong!.id == 'a' ? 'c' : 'a';
+      final loadedBefore = fixture.loaded.length;
+      fixture.failAllLoads = true;
+
+      player.removeFromQueue(player.currentIndex);
+      await _until(player, () => !player.isLoading);
+
+      expect(player.currentSong!.id, unplayed);
+      expect(player.currentSong!.loading, isFalse);
+      expect(player.errorMessage, isNotNull);
+      expect(fixture.loaded, hasLength(loadedBefore + 1));
+    });
+  });
+
+  test('shuffle removal is ignored while preparing a user switch', () async {
+    await _scenario((fixture, player) async {
+      await player.playFromSearchResults([_song('a'), _song('b')], 0);
+      player.togglePlayMode();
+      player.togglePlayMode();
+      await player.prepareForUserSwitch();
+
+      player.removeFromQueue(0);
+      expect(player.queue.map((song) => song.id), ['a', 'b']);
+      expect(player.currentSong!.id, 'a');
+
+      await player.cancelPreparedUserSwitch();
+      player.removeFromQueue(0);
+      await _until(player, () => !player.isLoading);
+      expect(player.currentSong!.id, 'b');
+      expect(player.errorMessage, isNull);
+    });
+  });
+
   test('quality changes bypass old cache and retain paused position', () async {
     await _scenario((fixture, player) async {
       await player.playFromSearchResults([_song('song')], 0);

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -22,7 +23,9 @@ import 'package:music_player_app/screens/playback_source_config_screen.dart';
 import 'package:music_player_app/screens/search_screen.dart';
 import 'package:music_player_app/screens/settings_screen.dart';
 import 'package:music_player_app/screens/video_player_screen.dart';
+import 'package:music_player_app/services/audio_cache_service.dart';
 import 'package:music_player_app/services/favorite_service.dart';
+import 'package:music_player_app/services/user_data_scope.dart';
 import 'package:music_player_app/theme/app_layout.dart';
 import 'package:music_player_app/theme/app_motion.dart';
 import 'package:music_player_app/theme/app_theme.dart';
@@ -2768,6 +2771,127 @@ void main() {
   });
 
   for (final size in const [Size(640, 360), Size(1280, 800)]) {
+    testWidgets('shuffle queue edits retain controls through rotation at $size', (
+      tester,
+    ) async {
+      final scope = UserDataScope(
+        'landscape-shuffle-${DateTime.now().microsecondsSinceEpoch}',
+      );
+      final cacheRoot = Directory(
+        '${Directory.systemTemp.path}shuffle-cache-${DateTime.now().microsecondsSinceEpoch}',
+      )..createSync(recursive: true);
+      _mockShuffleAudioPlayer(cacheRoot.path);
+      SharedPreferences.setMockInitialValues({
+        scope.preferenceKey(PlaybackSourceConfig.preferenceKey): jsonEncode(
+          PlaybackSourceConfig.defaults()
+              .copyWith(
+                chkszEnabled: false,
+                hywEnabled: false,
+                xinghaiEnabled: false,
+                gdStudioEnabled: false,
+                qingMusicUrl: 'https://qing.test/resolve',
+              )
+              .toJson(),
+        ),
+      });
+      await http.runWithClient(() async {
+        final player = PlayerProvider(
+          dataScope: scope,
+          activateRestoredSession: false,
+        );
+        final theme = ThemeController();
+        addTearDown(() async {
+          await tester.pumpWidget(const SizedBox.shrink());
+          final disposing = player.disposeResources();
+          await tester.pump();
+          await disposing;
+          theme.dispose();
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+          if (cacheRoot.existsSync()) {
+            await cacheRoot.delete(recursive: true);
+          }
+          await AudioCacheService.releaseMemoryContext(scope);
+        });
+        final songs = [
+          for (final id in ['a', 'b', 'c'])
+            SongSearchResult(
+              platform: MusicPlatform.qq,
+              id: id,
+              name: '随机歌曲 $id',
+              artist: '测试歌手',
+              album: '测试专辑',
+            ),
+        ];
+        await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
+        debugPrint('shuffle stage before loading');
+        final loading = player.playFromSearchResults([
+          songs[0],
+          SongSearchResult.fromJson({
+            ...songs[0].toJson(),
+            'downloadId': 'a' * 24,
+          }),
+          SongSearchResult.fromJson({
+            ...songs[0].toJson(),
+            'downloadId': 'b' * 24,
+          }),
+          songs[1],
+          songs[2],
+        ], 3);
+        try {
+          await tester.runAsync(
+            () => loading.timeout(const Duration(seconds: 5)),
+          );
+        } catch (error) {
+          debugPrint(
+            'shuffle loading timeout state=${player.isLoading} '
+            'error=${player.errorMessage} song=${player.currentSong?.id}',
+          );
+        }
+        debugPrint('shuffle stage after loading');
+        await tester.pump();
+        await tester.tap(find.byTooltip('播放模式'));
+        await tester.tap(find.byTooltip('播放模式'));
+        await tester.pump(const Duration(milliseconds: 100));
+        final played = <String>{player.currentSong!.id};
+        await tester.tap(find.byTooltip('下一首').hitTestable());
+        await tester.pumpAndSettle();
+        played.add(player.currentSong!.id);
+        final unplayed = songs.singleWhere((song) => !played.contains(song.id));
+
+        player.removeFromQueue(player.currentIndex);
+        await tester.pumpAndSettle();
+        expect(player.currentSong!.id, unplayed.id);
+        expect(player.errorMessage, isNull);
+        await tester.tap(find.byTooltip('暂停').hitTestable());
+        await tester.pumpAndSettle();
+        expect(find.byTooltip('播放').hitTestable(), findsOneWidget);
+        await tester.tap(find.widgetWithText(TextButton, '收藏').hitTestable());
+        await tester.pumpAndSettle();
+        expect(find.text('已收藏').hitTestable(), findsOneWidget);
+        await tester.tap(find.byTooltip('播放队列').hitTestable());
+        await tester.pumpAndSettle();
+        expect(find.text('播放队列 (4)'), findsOneWidget);
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+
+        _setViewSize(tester, const Size(390, 844));
+        await tester.pumpAndSettle();
+        _setViewSize(tester, size);
+        await tester.pumpAndSettle();
+        expect(player.currentSong!.id, unplayed.id);
+        expect(player.playMode, PlayMode.shuffle);
+        expect(find.text('已收藏').hitTestable(), findsOneWidget);
+        expect(find.byTooltip('下一首').hitTestable(), findsOneWidget);
+        expect(find.byTooltip('播放队列').hitTestable(), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('player-back')).hitTestable(),
+          findsOneWidget,
+        );
+        _expectNoException(tester);
+      }, _mockShuffleClient);
+    });
+
     testWidgets(
       'download entry retains player controls and return path at $size',
       (tester) async {
@@ -3597,6 +3721,73 @@ http.Response _qqSearchResponse({
     200,
     headers: const {'content-type': 'application/json; charset=utf-8'},
   );
+}
+
+void _mockShuffleAudioPlayer(String cacheRoot) {
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  final channels = <MethodChannel>[];
+  void install(String name, Future<Object?> Function(MethodCall) handler) {
+    final channel = MethodChannel(name);
+    channels.add(channel);
+    messenger.setMockMethodCallHandler(channel, handler);
+  }
+
+  install('com.ryanheise.audio_session', (_) async => null);
+  install('plugins.flutter.io/path_provider', (_) async {
+    return cacheRoot;
+  });
+  install('com.ryanheise.just_audio.methods', (call) async {
+    debugPrint('shuffle method ${call.method}');
+    if (call.method == 'init') {
+      final id = (call.arguments as Map)['id'] as String;
+      install('com.ryanheise.just_audio.events.$id', (_) async => null);
+      install('com.ryanheise.just_audio.data.$id', (_) async => null);
+      install('com.ryanheise.just_audio.methods.$id', (method) async {
+        debugPrint('shuffle player method ${method.method}');
+        if (method.method == 'load') {
+          await Future<void>.delayed(Duration.zero);
+          await messenger.handlePlatformMessage(
+            'com.ryanheise.just_audio.events.$id',
+            const StandardMethodCodec().encodeSuccessEnvelope({
+              'processingState': 3,
+              'updateTime': DateTime.now().millisecondsSinceEpoch,
+              'updatePosition': 0,
+              'bufferedPosition': 0,
+              'duration': 180000000,
+              'currentIndex': 0,
+            }),
+            (_) {},
+          );
+          return {'duration': 180000000};
+        }
+        return <String, dynamic>{};
+      });
+    }
+    return <String, dynamic>{};
+  });
+  addTearDown(() {
+    for (final channel in channels) {
+      messenger.setMockMethodCallHandler(channel, null);
+    }
+  });
+}
+
+http.Client _mockShuffleClient() {
+  return MockClient((request) async {
+    debugPrint('shuffle request ${request.method} ${request.url}');
+    final body = request.url.host == 'qing.test'
+        ? {
+            'code': 0,
+            'data': {'url': 'https://audio.test/shuffle.mp3'},
+          }
+        : <String, dynamic>{};
+    return http.Response(
+      jsonEncode(body),
+      200,
+      headers: const {'content-type': 'application/json; charset=utf-8'},
+    );
+  });
 }
 
 http.Client _mockClient() {

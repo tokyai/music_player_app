@@ -1761,11 +1761,10 @@ class PlayerProvider extends ChangeNotifier {
 
   // ==================== 播放控制 ====================
 
-  /// Returns the identity used by the current shuffle cycle. Audio quality is
-  /// intentionally excluded so changing quality cannot make a played song
-  /// eligible again.
+  /// Returns the song identity used by the current shuffle cycle. Download
+  /// IDs and audio quality are excluded so online and downloaded copies share
+  /// the same played state. Bilibili pages remain separate songs.
   String _shuffleItemKey(PlayQueueItem item) {
-    if (item.downloadId != null) return 'download:${item.downloadId}';
     final page = item.platform == MusicPlatform.bilibili
         ? ':${item.bilibiliCid ?? 0}'
         : '';
@@ -1796,6 +1795,80 @@ class PlayerProvider extends ChangeNotifier {
     _shufflePlayedKeys.add(_shuffleItemKey(_queue[index]));
   }
 
+  bool _hasCompletedShuffleDownload(PlayQueueItem item) {
+    final downloadId = item.downloadId;
+    if (downloadId == null) return false;
+    for (final entry in downloads.entries) {
+      if (entry.id == downloadId &&
+          entry.status == DownloadStatus.completed &&
+          entry.fileName?.isNotEmpty == true) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  int _preferredShuffleCandidate(List<int> indexes) {
+    // A completed local copy is more reliable than an online copy when both
+    // represent the same logical song. Failed/paused downloads are ignored so
+    // they cannot hide a usable network candidate.
+    for (final index in indexes) {
+      if (_hasCompletedShuffleDownload(_queue[index])) return index;
+    }
+    for (final index in indexes) {
+      if (_queue[index].downloadId == null) return index;
+    }
+    return indexes.first;
+  }
+
+  List<int> _unplayedShuffleCandidates() {
+    final indexesByKey = <String, List<int>>{};
+    for (var index = 0; index < _queue.length; index++) {
+      final key = _shuffleItemKey(_queue[index]);
+      if (_shufflePlayedKeys.contains(key)) continue;
+      indexesByKey.putIfAbsent(key, () => <int>[]).add(index);
+    }
+    return indexesByKey.values
+        .map(_preferredShuffleCandidate)
+        .toList(growable: false);
+  }
+
+  /// A legacy Bilibili queue item has no CID until its first play resolves
+  /// the video details. If that resolution reveals a page already consumed in
+  /// the current cycle, switch to another candidate before loading audio.
+  Future<bool> _revalidatePreparedShuffleIdentity(
+    String previousKey,
+    PlayQueueItem prepared,
+  ) async {
+    if (_playMode != PlayMode.shuffle) return true;
+    final preparedKey = _shuffleItemKey(prepared);
+    if (preparedKey == previousKey) {
+      _shufflePlayedKeys.add(preparedKey);
+      return true;
+    }
+
+    // Replace the provisional resource-level identity with the concrete page
+    // identity. This also prevents a stale `:0` key from surviving pruning.
+    _shufflePlayedKeys.remove(previousKey);
+    if (!_shufflePlayedKeys.contains(preparedKey)) {
+      _shufflePlayedKeys.add(preparedKey);
+      return true;
+    }
+
+    final conflictingIndex = _currentIndex;
+    final nextIndex = _nextShuffleIndex();
+    if (nextIndex < 0) return false;
+    if (nextIndex == conflictingIndex) {
+      // There was no other logical song. _nextShuffleIndex has started a new
+      // cycle, so replaying this page is now the only valid choice.
+      return true;
+    }
+    _currentIndex = nextIndex;
+    notifyListeners();
+    await _playCurrent();
+    return false;
+  }
+
   int _nextShuffleIndex() {
     if (_queue.isEmpty) return -1;
     _pruneShufflePlayedKeys();
@@ -1803,25 +1876,13 @@ class PlayerProvider extends ChangeNotifier {
     // must be consumed before selecting the next candidate.
     _markShufflePlayed(_currentIndex);
 
-    var candidates = <int>[];
-    final candidateKeys = <String>{};
-    for (var index = 0; index < _queue.length; index++) {
-      final key = _shuffleItemKey(_queue[index]);
-      if (!_shufflePlayedKeys.contains(key) && candidateKeys.add(key)) {
-        candidates.add(index);
-      }
-    }
+    var candidates = _unplayedShuffleCandidates();
     if (candidates.isEmpty) {
       // Every queue item has been played once. Start a fresh full-list cycle.
       _shufflePlayedKeys.clear();
-      candidateKeys.clear();
-      for (var index = 0; index < _queue.length; index++) {
-        final key = _shuffleItemKey(_queue[index]);
-        if (!_shufflePlayedKeys.contains(key) && candidateKeys.add(key)) {
-          candidates.add(index);
-        }
-      }
+      candidates = _unplayedShuffleCandidates();
     }
+    if (candidates.isEmpty) return -1;
     final index = candidates[_shuffleRandom.nextInt(candidates.length)];
     _shufflePlayedKeys.add(_shuffleItemKey(_queue[index]));
     return index;
@@ -2308,12 +2369,15 @@ class PlayerProvider extends ChangeNotifier {
       }
 
       if (downloadedPath == null && item.platform == MusicPlatform.bilibili) {
+        final shuffleKeyBeforePrepare = _shuffleItemKey(item);
         item = await _prepareBilibiliItem(requestId, item);
         if (!_isCurrentRequest(requestId, item)) return;
-        // A legacy resource-level Bilibili item can acquire its concrete CID
-        // during preparation. Record the prepared identity as well so that
-        // this first play cannot re-enter the same shuffle cycle.
-        _markShufflePlayed(_currentIndex);
+        if (!await _revalidatePreparedShuffleIdentity(
+          shuffleKeyBeforePrepare,
+          item,
+        )) {
+          return;
+        }
       }
       final itemKey = _itemKey(item);
       _activePlaybackItemKey = itemKey;
@@ -2934,7 +2998,9 @@ class PlayerProvider extends ChangeNotifier {
         !dataScope.isDeleted &&
         requestId == _playRequestId &&
         current?.platform == item.platform &&
-        current?.id == item.id;
+        current?.id == item.id &&
+        current?.downloadId == item.downloadId &&
+        (current?.bilibiliCid ?? 0) == (item.bilibiliCid ?? 0);
   }
 
   /// 把底层异常翻译成用户可读的提示
@@ -3467,7 +3533,13 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   void removeFromQueue(int index) {
-    if (index < 0 || index >= _queue.length) return;
+    if (_disposed ||
+        _preparingForExit ||
+        dataScope.isDeleted ||
+        index < 0 ||
+        index >= _queue.length) {
+      return;
+    }
     _cancelPendingBilibiliPlay();
     _cancelPendingPlaybackRestore();
     if (index == _currentIndex) _recordCurrentHistory(immediate: true);
@@ -3478,9 +3550,16 @@ class PlayerProvider extends ChangeNotifier {
     if (index < _currentIndex) {
       _currentIndex--;
     } else if (index == _currentIndex) {
-      if (_currentIndex >= _queue.length) _currentIndex = _queue.length - 1;
+      if (_playMode == PlayMode.shuffle) {
+        // The removed slot may now contain an unplayed song. Clear the old
+        // index so selecting a successor cannot mark that song as played.
+        _currentIndex = -1;
+        _currentIndex = _nextShuffleIndex();
+      } else if (_currentIndex >= _queue.length) {
+        _currentIndex = _queue.length - 1;
+      }
       if (_currentIndex >= 0) {
-        unawaited(_playCurrent());
+        _runAudioCommandInBackground('移除歌曲后继续播放', _playCurrent);
       } else {
         _playRequestId++;
         _runAudioCommandInBackground('停止播放', _audioPlayer.stop);
