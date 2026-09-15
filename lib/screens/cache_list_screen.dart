@@ -90,7 +90,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
         builder: (ctx) => AlertDialog(
           title: const Text('清除全部缓存'),
           content: Text(
-            '将删除 ${_cacheList.length} 首已缓存歌曲'
+            '将删除 ${_cacheList.length} 首已缓存歌曲及关联歌词'
             '（${AudioCacheService.formatSize(totalSize)}），'
             '下次播放需重新联网。是否继续？',
           ),
@@ -281,7 +281,7 @@ class _CacheListScreenState extends State<CacheListScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                '播放过的歌曲会自动保存，网络不稳定时优先使用本地文件。',
+                '歌曲和可获取的歌词会自动缓存，断网时优先使用本地文件。',
                 style: TextStyle(
                   fontSize: layout.secondarySize,
                   height: 1.45,

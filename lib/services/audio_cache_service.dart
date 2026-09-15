@@ -1,9 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../models/song.dart';
 import 'user_data_scope.dart';
 
 /// 缓存歌曲信息（用于列表展示）
@@ -37,6 +40,8 @@ class AudioCacheService {
   // well below this bound; an unavailable test/desktop channel falls back to
   // the temporary directory immediately on the next branch.
   static const _directoryLookupTimeout = Duration(milliseconds: 100);
+  static const _maxLyricTextChars = 256 * 1024;
+  static const _maxLyricFileBytes = 4 * 1024 * 1024;
   static final Map<String, _AudioCacheContext> _contexts = {};
   // Playback caching runs in the background while settings can clear or
   // remove a cache entry. Serialize filesystem/index mutations so two calls
@@ -87,6 +92,174 @@ class AudioCacheService {
   /// 缓存索引 key
   static String _cacheKey(String platformCode, String songId) =>
       '${platformCode}_$songId';
+
+  // Use the indexed song identity, not its display name or audio quality.
+  // Same-title recordings stay separate, and replacing audio quality retains
+  // the lyrics. Bilibili's cache song id already includes its page and quality.
+  static File _lyricFile(Directory dir, String platformCode, String songId) {
+    final identity = sha256.convert(
+      utf8.encode(jsonEncode([platformCode, songId])),
+    );
+    return File('${dir.path}/lyrics_$identity.json');
+  }
+
+  static bool _ownsAudioPath(Directory dir, String path) => p.equals(
+    p.dirname(p.normalize(p.absolute(path))),
+    p.normalize(p.absolute(dir.path)),
+  );
+
+  static Future<bool> _matchesCachedAudio(
+    UserDataScope scope,
+    Directory dir,
+    String platformCode,
+    String songId,
+    String audioPath,
+  ) async {
+    if (scope.isDeleted || !_ownsAudioPath(dir, audioPath)) return false;
+    final index = await _loadIndex(scope);
+    if (index[_cacheKey(platformCode, songId)]?['filePath'] != audioPath) {
+      return false;
+    }
+    final audio = File(audioPath);
+    return await audio.exists() && await audio.length() > 10240;
+  }
+
+  /// Read lyrics only for the exact audio cache entry chosen for playback.
+  /// A missing, corrupt or oversized sidecar is an ordinary cache miss.
+  static Future<LyricData?> getCachedLyrics({
+    required String platformCode,
+    required String songId,
+    required String audioPath,
+    UserDataScope scope = UserDataScope.defaultScope,
+  }) async {
+    if (scope.isDeleted) return null;
+    try {
+      final dir = await _getCacheDir(scope);
+      if (!await _matchesCachedAudio(
+        scope,
+        dir,
+        platformCode,
+        songId,
+        audioPath,
+      )) {
+        return null;
+      }
+      final file = _lyricFile(dir, platformCode, songId);
+      if (!await file.exists()) return null;
+      final size = await file.length();
+      if (size == 0 || size > _maxLyricFileBytes) return null;
+      // Bound the read as well as the size check, including a concurrent replace.
+      final content = await file
+          .openRead(0, size)
+          .transform(utf8.decoder)
+          .join();
+      final data = jsonDecode(content);
+      if (data is! Map ||
+          data['version'] != 1 ||
+          data['platformCode'] != platformCode ||
+          data['songId'] != songId) {
+        return null;
+      }
+      for (final key in ['original', 'translated', 'romaji', 'wordSynced']) {
+        final value = data[key];
+        if (value != null &&
+            (value is! String || value.length > _maxLyricTextChars)) {
+          return null;
+        }
+      }
+      if (!await _matchesCachedAudio(
+        scope,
+        dir,
+        platformCode,
+        songId,
+        audioPath,
+      )) {
+        return null;
+      }
+      return LyricData(
+        original: data['original'] as String?,
+        translated: data['translated'] as String?,
+        romaji: data['romaji'] as String?,
+        wordSynced: data['wordSynced'] as String?,
+      );
+    } catch (error) {
+      debugPrint('读取缓存歌词失败: $error');
+      return null;
+    }
+  }
+
+  /// Atomically attach lyrics to an audio cache that still exists. The shared
+  /// mutation lock prevents late lyric responses from undoing a cache deletion.
+  static Future<bool> cacheLyrics({
+    required String platformCode,
+    required String songId,
+    required String audioPath,
+    required LyricData lyrics,
+    bool Function()? isCancelled,
+    UserDataScope scope = UserDataScope.defaultScope,
+  }) async {
+    bool cancelled() => scope.isDeleted || (isCancelled?.call() ?? false);
+    if (cancelled()) return false;
+    final values = [
+      lyrics.original,
+      lyrics.translated,
+      lyrics.romaji,
+      lyrics.wordSynced,
+    ];
+    if (values.any(
+          (value) => value != null && value.length > _maxLyricTextChars,
+        ) ||
+        ((lyrics.original?.trim().isEmpty ?? true) &&
+            (lyrics.wordSynced?.trim().isEmpty ?? true))) {
+      return false;
+    }
+    return _withCacheLock(scope, () async {
+      if (cancelled()) return false;
+      File? temporary;
+      try {
+        final dir = await _getCacheDir(scope);
+        if (!await _matchesCachedAudio(
+              scope,
+              dir,
+              platformCode,
+              songId,
+              audioPath,
+            ) ||
+            cancelled()) {
+          return false;
+        }
+        final bytes = utf8.encode(
+          jsonEncode({
+            'version': 1,
+            'platformCode': platformCode,
+            'songId': songId,
+            'original': lyrics.original,
+            'translated': lyrics.translated,
+            'romaji': lyrics.romaji,
+            'wordSynced': lyrics.wordSynced,
+          }),
+        );
+        if (bytes.length > _maxLyricFileBytes) return false;
+        final file = _lyricFile(dir, platformCode, songId);
+        temporary = File('${file.path}.tmp');
+        await temporary.writeAsBytes(bytes, flush: true);
+        if (cancelled()) return false;
+        await temporary.rename(file.path);
+        return true;
+      } catch (error) {
+        debugPrint('保存缓存歌词失败: $error');
+        return false;
+      } finally {
+        try {
+          if (temporary != null && await temporary.exists()) {
+            await temporary.delete();
+          }
+        } catch (error) {
+          debugPrint('清理临时歌词失败: $error');
+        }
+      }
+    });
+  }
 
   /// 从 URL 中提取文件扩展名
   static String _extractExt(String url) {
@@ -379,6 +552,14 @@ class AudioCacheService {
           if (await file.exists()) {
             final size = await file.length();
             if (size > 10240) {
+              final lyrics = _lyricFile(
+                await _getCacheDir(scope),
+                entry['platformCode'] as String? ?? '',
+                entry['songId'] as String? ?? '',
+              );
+              final lyricSize = await lyrics.exists()
+                  ? await lyrics.length()
+                  : 0;
               list.add(
                 CachedSongInfo(
                   platformCode: entry['platformCode'] as String? ?? '',
@@ -386,7 +567,7 @@ class AudioCacheService {
                   name: entry['name'] as String? ?? '未知歌曲',
                   artist: entry['artist'] as String? ?? '未知歌手',
                   filePath: filePath,
-                  fileSize: size,
+                  fileSize: size + lyricSize,
                 ),
               );
             }
@@ -406,6 +587,7 @@ class AudioCacheService {
   }) async {
     if (scope.isDeleted) return;
     await _withCacheLock(scope, () async {
+      if (scope.isDeleted) return;
       try {
         final dir = await _getCacheDir(scope);
         await for (final entity in dir.list(recursive: false)) {
@@ -430,13 +612,17 @@ class AudioCacheService {
   }) async {
     if (scope.isDeleted) return;
     await _withCacheLock(scope, () async {
+      if (scope.isDeleted) return;
       try {
+        final dir = await _getCacheDir(scope);
         final index = await _loadIndex(scope);
         final key = _cacheKey(platformCode, songId);
         final entry = index[key];
+        final lyrics = _lyricFile(dir, platformCode, songId);
+        if (await lyrics.exists()) await lyrics.delete();
         if (entry != null) {
           final filePath = entry['filePath'] as String?;
-          if (filePath != null) {
+          if (filePath != null && _ownsAudioPath(dir, filePath)) {
             final file = File(filePath);
             if (await file.exists()) {
               await file.delete();

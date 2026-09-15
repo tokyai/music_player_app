@@ -1530,7 +1530,7 @@ class PlayerProvider extends ChangeNotifier {
 
   Future<void> applyLyricCandidate(SongSearchResult candidate) async {
     final song = currentSong;
-    if (song == null) {
+    if (song == null || !_canCacheLyrics) {
       throw const ApiException('NO_CURRENT_SONG', '当前没有正在播放的歌曲');
     }
     if (configurableMusicPlatforms.contains(song.platform) &&
@@ -1538,6 +1538,10 @@ class PlayerProvider extends ChangeNotifier {
       throw const ApiException('LYRIC_PLATFORM_MISMATCH', '歌词来源与当前歌曲平台不一致');
     }
 
+    final requestId = _playRequestId;
+    final cacheSongId = _audioCacheSongId(song);
+    final lyricKey = _lyricKey(song);
+    final quality = _audioQualityFor(song);
     _lyricsLoading = true;
     notifyListeners();
     try {
@@ -1547,7 +1551,7 @@ class PlayerProvider extends ChangeNotifier {
         throw const ApiException('LYRIC_EMPTY', '这个版本没有可用歌词');
       }
       final current = currentSong;
-      if (!_isSameLyricTarget(current, song)) {
+      if (!_isCurrentRequest(requestId, song)) {
         throw const ApiException('SONG_CHANGED', '当前歌曲已切换，请重新查找歌词');
       }
 
@@ -1559,9 +1563,23 @@ class PlayerProvider extends ChangeNotifier {
       _rememberLyric(_lyricKey(activeSong), resolved);
       _queue[_currentIndex] = activeSong.copyWith(lyric: resolved.rawText);
       notifyListeners();
+      final cachedPath = await AudioCacheService.getCachedPath(
+        platformCode: song.platform.code,
+        songId: cacheSongId,
+        quality: quality,
+        scope: dataScope,
+      );
+      if (cachedPath != null) {
+        await _cacheLyricsForAudio(
+          song,
+          cacheSongId,
+          lyricKey,
+          cachedPath,
+          Future.value(resolved),
+        );
+      }
     } catch (_) {
-      final current = currentSong;
-      if (_isSameLyricTarget(current, song)) {
+      if (_isCurrentRequest(requestId, song)) {
         _lyricsLoading = false;
         notifyListeners();
       }
@@ -2317,7 +2335,7 @@ class PlayerProvider extends ChangeNotifier {
     _markShufflePlayed(_currentIndex);
     _sleepTimerStopped = false;
     final requestId = ++_playRequestId;
-    final immediateLyrics = _cachedLyrics(item);
+    var immediateLyrics = _cachedLyrics(item);
 
     _activePlaybackItemKey = _itemKey(item);
     _currentPlaybackSourceOverride = sourceOverride;
@@ -2383,19 +2401,14 @@ class PlayerProvider extends ChangeNotifier {
       _activePlaybackItemKey = itemKey;
       final selectedSource = sourceOverride ?? playbackSourceFor(item.platform);
 
-      // 网易云和 QQ 的歌词接口与播放地址互不依赖，提前并发请求；歌词不会再
-      // 阻塞音频源加载。已有歌词则直接复用，不发请求。
-      final independentLyrics =
-          immediateLyrics == null && downloadedPath == null
-          ? _fetchIndependentLyrics(item)
-          : null;
-
       // 选中一首新歌后先停止旧音源，避免 UI 与实际播放内容不一致。
       await _audioPlayer.stop();
       if (!_isCurrentRequest(requestId, item)) return;
 
       // 缓存检查只依赖平台和歌曲 id，必须放在网络解析之前。命中缓存时
       // 直接播放本地文件，不再为了封面、歌手、专辑等已有信息请求详情。
+      final cacheSongId = _audioCacheSongId(item);
+      final lyricKey = _lyricKey(item);
       final cachedPath =
           downloadedPath != null ||
               item.platform == MusicPlatform.local ||
@@ -2405,11 +2418,35 @@ class PlayerProvider extends ChangeNotifier {
           ? null
           : await AudioCacheService.getCachedPath(
               platformCode: item.platform.code,
-              songId: _audioCacheSongId(item),
+              songId: cacheSongId,
               quality: _audioQualityFor(item),
               scope: dataScope,
             );
       if (!_isCurrentRequest(requestId, item)) return;
+
+      var hasCachedLyrics = false;
+      if (cachedPath != null) {
+        final data = await AudioCacheService.getCachedLyrics(
+          platformCode: item.platform.code,
+          songId: cacheSongId,
+          audioPath: cachedPath,
+          scope: dataScope,
+        );
+        if (!_isCurrentRequest(requestId, item)) return;
+        final cachedLyrics = data == null ? null : _resolveLyricData(data);
+        if (cachedLyrics != null) {
+          hasCachedLyrics = true;
+          immediateLyrics = cachedLyrics;
+          _applyLyrics(requestId, item, cachedLyrics);
+        }
+      }
+
+      // Check disk lyrics before starting any lyric request. Online lyrics still
+      // resolve alongside the audio URL and never block audio loading.
+      final independentLyrics =
+          immediateLyrics == null && downloadedPath == null
+          ? _fetchIndependentLyrics(item)
+          : null;
 
       SongDetail? detail;
       String? resolvedUrl;
@@ -2540,32 +2577,40 @@ class PlayerProvider extends ChangeNotifier {
       notifyListeners();
       if (autoPlay) unawaited(_startPlayback(requestId, item));
 
-      // 歌词独立完成：网络慢或失败都不阻塞声音。酷狗歌词随解析详情返回；
-      // 若本地音频秒开且没有歌词，只在后台补一次歌词。
+      // Share the same lyric result with display and audio caching, including
+      // responses that finish after the user has moved to another song.
+      Future<_ResolvedLyrics?> lyricsForCache = Future.value(immediateLyrics);
       if (immediateLyrics == null && downloadedPath == null) {
         if (item.platform == MusicPlatform.bilibili) {
-          unawaited(_loadBilibiliLyricsInBackground(requestId, item));
+          lyricsForCache = _loadBilibiliLyricsInBackground(requestId, item);
         } else if (independentLyrics != null) {
-          unawaited(
-            _completeLyrics(
-              requestId,
-              item,
-              independentLyrics,
-              fallbackText: detail?.lyric,
-            ),
-          );
-        } else if (detail != null) {
-          _applyLyrics(
+          lyricsForCache = _completeLyrics(
             requestId,
             item,
-            _ResolvedLyrics.fromPlainText(detail.lyric),
+            independentLyrics,
+            fallbackText: detail?.lyric,
           );
+        } else if (detail != null) {
+          final resolved = _ResolvedLyrics.fromPlainText(detail.lyric);
+          _applyLyrics(requestId, item, resolved);
+          lyricsForCache = Future.value(resolved);
         } else if (item.platform != MusicPlatform.local) {
-          unawaited(_loadBundledLyricsInBackground(requestId, item));
+          lyricsForCache = _loadBundledLyricsInBackground(requestId, item);
         } else {
           _lyricsLoading = false;
           notifyListeners();
         }
+      }
+      if (cachedPath != null && !hasCachedLyrics) {
+        unawaited(
+          _cacheLyricsForAudio(
+            item,
+            cacheSongId,
+            lyricKey,
+            cachedPath,
+            lyricsForCache,
+          ),
+        );
       }
 
       // 等音频源已预加载并开始播放后再启动后台下载，避免缓存下载与首包
@@ -2576,6 +2621,9 @@ class PlayerProvider extends ChangeNotifier {
             requestId,
             item,
             resolvedUrl,
+            cacheSongId: cacheSongId,
+            lyricKey: lyricKey,
+            lyrics: lyricsForCache,
             quality: _audioQualityFor(item),
             headers: playbackHeaders,
           ),
@@ -2783,15 +2831,17 @@ class PlayerProvider extends ChangeNotifier {
     );
   }
 
-  Future<void> _loadBilibiliLyricsInBackground(
+  Future<_ResolvedLyrics?> _loadBilibiliLyricsInBackground(
     int requestId,
     PlayQueueItem item,
   ) async {
-    if (!_rememberBilibiliLyricAttempt(_lyricKey(item))) return;
+    final lyricKey = _lyricKey(item);
+    if (!_rememberBilibiliLyricAttempt(lyricKey)) return null;
+    var foundLyrics = false;
     try {
       final query = lyricSearchQueryFor(item);
       final candidates = await _searchBilibiliLyricCandidates(item, query);
-      if (!_isCurrentRequest(requestId, item)) return;
+      if (!_canCacheLyrics) return null;
       // B站分P标题常带编号、版本说明，跨平台歌词候选的时长也经常缺失。
       // 标题关键字是自动匹配的必要条件；歌手/UP主和时长只参与上面的排序。
       final matchedCandidates = candidates
@@ -2801,13 +2851,17 @@ class PlayerProvider extends ChangeNotifier {
           .take(8);
 
       for (final candidate in matchedCandidates) {
+        if (!_canCacheLyrics) return null;
         try {
           final data = await _api.getLyric(candidate.platform, candidate.id);
-          if (!_isCurrentRequest(requestId, item)) return;
-          final resolved = data == null ? null : _resolveLyricData(data);
+          if (!_canCacheLyrics) return null;
+          final resolved =
+              _lyricCache[lyricKey] ??
+              (data == null ? null : _resolveLyricData(data));
           if (resolved != null && resolved.lines.isNotEmpty) {
+            foundLyrics = true;
             _applyLyrics(requestId, item, resolved);
-            return;
+            return resolved;
           }
         } catch (_) {
           // 候选无歌词时继续尝试下一个高置信版本。
@@ -2815,7 +2869,12 @@ class PlayerProvider extends ChangeNotifier {
       }
     } catch (_) {
       // 自动匹配失败时保留 B 站分P与视频信息，不影响音频播放。
+    } finally {
+      // Offline attempts must not prevent filling an older audio cache when
+      // the same song is played again after the connection returns.
+      if (!foundLyrics) _bilibiliLyricAutoAttempted.remove(lyricKey);
     }
+    return null;
   }
 
   String _lyricKey(PlayQueueItem item) {
@@ -2888,10 +2947,16 @@ class PlayerProvider extends ChangeNotifier {
     return _ResolvedLyrics(
       rawText: hasWordTiming ? wordSynced : originalText,
       lines: LyricParser.mergeTranslation(original, translated),
+      data: LyricData(
+        original: originalText,
+        translated: translatedText,
+        romaji: _boundLyricText(data.romaji),
+        wordSynced: wordSynced,
+      ),
     );
   }
 
-  Future<void> _completeLyrics(
+  Future<_ResolvedLyrics?> _completeLyrics(
     int requestId,
     PlayQueueItem item,
     Future<_ResolvedLyrics?> request, {
@@ -2904,7 +2969,9 @@ class PlayerProvider extends ChangeNotifier {
       // 请求本身已做容错；保留兜底避免未来实现抛出未处理异常。
     }
     resolved ??= _ResolvedLyrics.fromPlainText(fallbackText);
+    resolved = _lyricCache[_lyricKey(item)] ?? resolved;
     _applyLyrics(requestId, item, resolved);
+    return resolved;
   }
 
   void _applyLyrics(
@@ -2924,7 +2991,7 @@ class PlayerProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _loadBundledLyricsInBackground(
+  Future<_ResolvedLyrics?> _loadBundledLyricsInBackground(
     int requestId,
     PlayQueueItem item,
   ) async {
@@ -2933,7 +3000,7 @@ class PlayerProvider extends ChangeNotifier {
         item,
         isCancelled: () => !_isCurrentRequest(requestId, item),
       );
-      if (!_isCurrentRequest(requestId, item)) return;
+      if (!_isCurrentRequest(requestId, item)) return null;
       if (detail.url.isNotEmpty) {
         _rememberPlayUrl(_itemKey(item));
         final current = _queue[_currentIndex];
@@ -2943,13 +3010,59 @@ class PlayerProvider extends ChangeNotifier {
           coverUrl: _preferExisting(current.coverUrl, detail.coverUrl),
         );
       }
-      _applyLyrics(
-        requestId,
-        item,
-        _ResolvedLyrics.fromPlainText(detail.lyric),
-      );
+      final resolved = _ResolvedLyrics.fromPlainText(detail.lyric);
+      _applyLyrics(requestId, item, resolved);
+      return resolved;
     } catch (_) {
       _applyLyrics(requestId, item, null);
+      return null;
+    }
+  }
+
+  bool get _canCacheLyrics =>
+      !_disposed && !_preparingForExit && !dataScope.isDeleted;
+
+  Future<void> _cacheLyricsForAudio(
+    PlayQueueItem item,
+    String cacheSongId,
+    String lyricKey,
+    String audioPath,
+    Future<_ResolvedLyrics?> request, {
+    bool retryMissing = false,
+  }) async {
+    try {
+      var resolved = await request;
+      if (!_canCacheLyrics) return;
+      // A manually selected lyric takes precedence over a late automatic result.
+      resolved = _lyricCache[lyricKey] ?? resolved;
+      if (resolved == null && retryMissing) {
+        final currentPath = await AudioCacheService.getCachedPath(
+          platformCode: item.platform.code,
+          songId: cacheSongId,
+          scope: dataScope,
+        );
+        if (!_canCacheLyrics || currentPath != audioPath) return;
+        final retry = _fetchIndependentLyrics(item);
+        if (retry != null) resolved = await retry;
+      }
+      if (!_canCacheLyrics || resolved == null || resolved.lines.isEmpty) {
+        return;
+      }
+      final lyrics = _lyricCache[lyricKey] ?? resolved;
+      await AudioCacheService.cacheLyrics(
+        platformCode: item.platform.code,
+        songId: cacheSongId,
+        audioPath: audioPath,
+        lyrics: lyrics.data,
+        isCancelled: () =>
+            !_canCacheLyrics ||
+            (_lyricCache[lyricKey] != null &&
+                !identical(_lyricCache[lyricKey], lyrics)),
+        scope: dataScope,
+      );
+    } catch (error, stackTrace) {
+      debugPrint('后台缓存歌词失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
     }
   }
 
@@ -2957,6 +3070,9 @@ class PlayerProvider extends ChangeNotifier {
     int requestId,
     PlayQueueItem item,
     String url, {
+    required String cacheSongId,
+    required String lyricKey,
+    required Future<_ResolvedLyrics?> lyrics,
     required String quality,
     Map<String, String>? headers,
   }) async {
@@ -2965,7 +3081,7 @@ class PlayerProvider extends ChangeNotifier {
       if (!_isCurrentRequest(requestId, item)) return;
       final localPath = await AudioCacheService.cacheAudio(
         platformCode: item.platform.code,
-        songId: _audioCacheSongId(item),
+        songId: cacheSongId,
         quality: quality,
         url: url,
         name: item.name,
@@ -2973,7 +3089,17 @@ class PlayerProvider extends ChangeNotifier {
         headers: headers,
         scope: dataScope,
       );
-      if (localPath != null) debugPrint('后台缓存完成: $localPath');
+      if (localPath != null) {
+        await _cacheLyricsForAudio(
+          item,
+          cacheSongId,
+          lyricKey,
+          localPath,
+          lyrics,
+          retryMissing: true,
+        );
+        debugPrint('后台缓存完成: $localPath');
+      }
     } catch (error, stackTrace) {
       // Caching is optional and must not surface as an unhandled background
       // Future error after playback has already started.
@@ -3123,7 +3249,7 @@ class PlayerProvider extends ChangeNotifier {
       clearLyric: true,
     );
     _persistPlaybackStateNow();
-    _lyrics.clear();
+    _lyrics = [];
     _lyricsLoading = false;
     notifyListeners();
     await _playCurrent();
@@ -3579,7 +3705,8 @@ class PlayerProvider extends ChangeNotifier {
     _queue.clear();
     _shufflePlayedKeys.clear();
     _currentIndex = -1;
-    _lyrics.clear();
+    // The previous list may still belong to a lyric cache/download result.
+    _lyrics = [];
     _lyricsLoading = false;
     _position = Duration.zero;
     _duration = Duration.zero;
@@ -3687,7 +3814,7 @@ class PlayerProvider extends ChangeNotifier {
     }
     _queue.clear();
     _shufflePlayedKeys.clear();
-    _lyrics.clear();
+    _lyrics = [];
     _lyricCache.clear();
     _lyricOffsets.clear();
     _bilibiliLyricAutoAttempted.clear();
@@ -3699,8 +3826,13 @@ class PlayerProvider extends ChangeNotifier {
 class _ResolvedLyrics {
   final String? rawText;
   final List<LyricLine> lines;
+  final LyricData data;
 
-  const _ResolvedLyrics({required this.rawText, required this.lines});
+  const _ResolvedLyrics({
+    required this.rawText,
+    required this.lines,
+    required this.data,
+  });
 
   static _ResolvedLyrics? fromPlainText(String? rawText) {
     final boundedText = _boundLyricText(rawText);
@@ -3708,6 +3840,7 @@ class _ResolvedLyrics {
     return _ResolvedLyrics(
       rawText: boundedText,
       lines: LyricParser.parseBestEffort(boundedText),
+      data: LyricData(original: boundedText),
     );
   }
 }

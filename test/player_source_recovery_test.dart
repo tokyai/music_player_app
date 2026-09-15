@@ -34,6 +34,374 @@ void main() {
     }, cached: true);
   });
 
+  for (final platform in musicPlatformDisplayOrder) {
+    test(
+      '$platform cached audio reads full lyrics before any network request',
+      () async {
+        await _scenario((fixture, player) async {
+          final isBilibili = platform == MusicPlatform.bilibili;
+          final cacheId = isBilibili ? 'song_123_q30280' : 'song';
+          final quality = switch (platform) {
+            MusicPlatform.netease => 'jymaster',
+            MusicPlatform.bilibili => '30280',
+            _ => 'flac',
+          };
+          final cache = await Directory(
+            '${fixture.directory.path}/${fixture.scope.audioCacheRelativePath}',
+          ).create(recursive: true);
+          final audio = await File(
+            '${cache.path}/offline.mp3',
+          ).writeAsBytes(List<int>.filled(16384, 0));
+          await File('${cache.path}/_index.json').writeAsString(
+            jsonEncode({
+              '${platform.code}_$cacheId': {
+                'filePath': audio.path,
+                'platformCode': platform.code,
+                'songId': cacheId,
+                'quality': quality,
+              },
+            }),
+          );
+          await AudioCacheService.cacheLyrics(
+            platformCode: platform.code,
+            songId: cacheId,
+            audioPath: audio.path,
+            lyrics: _offlineLyrics,
+            scope: fixture.scope,
+          );
+          await AudioCacheService.releaseMemoryContext(fixture.scope);
+          fixture.responseOverride = (_) =>
+              throw const SocketException('offline');
+          await player.playSingle(
+            SongSearchResult(
+              platform: platform,
+              id: 'song',
+              name: '离线歌曲',
+              artist: '歌手',
+              album: '',
+              bilibiliCid: isBilibili ? 123 : null,
+              bilibiliPages: isBilibili
+                  ? const [BilibiliPageInfo(cid: 123, page: 1, title: '离线歌曲')]
+                  : const [],
+            ),
+          );
+          expect(fixture.requestCount, 0);
+          expect(fixture.loaded.single, Uri.file(audio.path).toString());
+          expect(player.errorMessage, isNull);
+          expect(player.lyricsLoading, isFalse);
+          expect(player.lyrics.single.primaryText, '你好');
+          expect(player.lyrics.single.translationText, 'Hello');
+          expect(player.lyrics.single.hasReliableWordTiming, isTrue);
+        });
+      },
+    );
+  }
+
+  for (final clearQueueWhileCaching in [false, true]) {
+    test(
+      'audio completion saves lyrics across restart (clear queue: $clearQueueWhileCaching)',
+      () async {
+        await _scenario((fixture, player) async {
+          final originalOverrides = HttpOverrides.current;
+          HttpOverrides.global = null;
+          final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+          final audioStarted = Completer<void>();
+          final finishAudio = Completer<void>();
+          final subscription = server.listen((request) async {
+            if (!audioStarted.isCompleted) audioStarted.complete();
+            await finishAudio.future;
+            request.response.add(List<int>.filled(16384, 1));
+            await request.response.close();
+          });
+          try {
+            fixture.audioBaseUrl = 'http://127.0.0.1:${server.port}';
+            var lyricRequests = 0;
+            fixture.responseOverride = (request) async {
+              if (!request.url.path.contains('lyric')) return null;
+              lyricRequests++;
+              return _lyricResponse(_offlineLyrics);
+            };
+            await player.setPlaybackSource(
+              MusicPlatform.qq,
+              PlaybackSource.qingMusic,
+            );
+            await player.playSingle(_song('song'));
+            await _until(player, () => player.lyrics.isNotEmpty);
+            await audioStarted.future.timeout(const Duration(seconds: 5));
+            final cache = Directory(
+              '${fixture.directory.path}/${fixture.scope.audioCacheRelativePath}',
+            );
+            expect(
+              await cache
+                  .list()
+                  .where((file) => file.path.contains('lyrics_'))
+                  .toList(),
+              isEmpty,
+            );
+            if (clearQueueWhileCaching) player.clearQueue();
+            finishAudio.complete();
+            final audioPath = await _waitForCachedLyrics(fixture, 'song');
+            expect(lyricRequests, 1);
+            await player.disposeResources();
+            await AudioCacheService.releaseMemoryContext(fixture.scope);
+            fixture.responseOverride = (_) =>
+                throw const SocketException('offline');
+            final requestsBeforeRestart = fixture.requestCount;
+            final restarted = PlayerProvider(
+              dataScope: fixture.scope,
+              activateRestoredSession: false,
+            );
+            try {
+              await restarted.playSingle(_song('song'));
+              expect(fixture.loaded.last, Uri.file(audioPath).toString());
+              expect(fixture.requestCount, requestsBeforeRestart);
+              expect(restarted.lyrics.single.translationText, 'Hello');
+              expect(restarted.lyrics.single.hasReliableWordTiming, isTrue);
+            } finally {
+              await restarted.disposeResources();
+            }
+          } finally {
+            if (!finishAudio.isCompleted) finishAudio.complete();
+            await subscription.cancel();
+            await server.close(force: true);
+            HttpOverrides.global = originalOverrides;
+          }
+        });
+      },
+    );
+  }
+
+  test(
+    'legacy cache fills missing lyrics without holding up audio playback',
+    () async {
+      await _scenario((fixture, player) async {
+        final gate = Completer<void>();
+        fixture.responseOverride = (request) async {
+          if (!request.url.path.contains('lyric')) return null;
+          await gate.future;
+          return _lyricResponse(_offlineLyrics);
+        };
+        try {
+          await player.playSingle(_song('song'));
+          expect(player.isLoading, isFalse);
+          expect(player.lyricsLoading, isTrue);
+          expect(fixture.loaded.single, contains('cached.mp3'));
+          gate.complete();
+          await _waitForCachedLyrics(fixture, 'song');
+          expect(player.lyrics.single.translationText, 'Hello');
+        } finally {
+          if (!gate.isCompleted) gate.complete();
+        }
+      }, cached: true);
+    },
+  );
+
+  for (final action in ['remove', 'clear', 'switch', 'dispose']) {
+    test('late lyric responses are safe after $action', () async {
+      await _scenario((fixture, player) async {
+        final gate = Completer<void>();
+        fixture.responseOverride = (request) async {
+          if (!request.url.path.contains('lyric')) return null;
+          await gate.future;
+          return _lyricResponse(_offlineLyrics);
+        };
+        try {
+          await player.playSingle(_song('song'));
+          switch (action) {
+            case 'remove':
+              await AudioCacheService.removeCache(
+                'qq',
+                'song',
+                scope: fixture.scope,
+              );
+            case 'clear':
+              await AudioCacheService.clearCache(scope: fixture.scope);
+            case 'switch':
+              await player.playSingle(
+                SongSearchResult(
+                  platform: MusicPlatform.local,
+                  id: 'content://media/external/audio/media/123',
+                  name: '下一首',
+                  artist: '',
+                  album: '',
+                ),
+              );
+            case 'dispose':
+              await player.disposeResources();
+          }
+          gate.complete();
+          if (action == 'switch') {
+            await _waitForCachedLyrics(fixture, 'song');
+            expect(player.currentSong?.name, '下一首');
+            expect(player.lyrics, isEmpty);
+          } else {
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+            await AudioCacheService.releaseMemoryContext(fixture.scope);
+            final cache = Directory(
+              '${fixture.directory.path}/${fixture.scope.audioCacheRelativePath}',
+            );
+            expect(
+              await cache
+                  .list()
+                  .where((file) => file.path.contains('lyrics_'))
+                  .toList(),
+              isEmpty,
+            );
+          }
+        } finally {
+          if (!gate.isCompleted) gate.complete();
+        }
+      }, cached: true);
+    });
+  }
+
+  test(
+    'missing lyrics leave cached audio playable and retry on a later play',
+    () async {
+      await _scenario((fixture, player) async {
+        fixture.responseOverride = (_) =>
+            throw const SocketException('offline');
+        await player.playSingle(_song('song'));
+        await _until(player, () => !player.lyricsLoading);
+        expect(player.errorMessage, isNull);
+        expect(player.lyrics, isEmpty);
+        expect(fixture.loaded.single, contains('cached.mp3'));
+        expect(
+          await AudioCacheService.getCachedPath(
+            platformCode: 'qq',
+            songId: 'song',
+            scope: fixture.scope,
+          ),
+          isNotNull,
+        );
+        fixture.responseOverride = (request) async {
+          if (!request.url.path.contains('lyric')) return null;
+          return _lyricResponse(_offlineLyrics);
+        };
+        await player.playSingle(_song('song'));
+        await _waitForCachedLyrics(fixture, 'song');
+        expect(player.lyrics.single.translationText, 'Hello');
+      }, cached: true);
+    },
+  );
+
+  test('manual lyric selection replaces the associated cache', () async {
+    await _scenario((fixture, player) async {
+      fixture.responseOverride = (request) async {
+        if (!request.url.path.contains('lyric')) return null;
+        return _lyricResponse(_offlineLyrics);
+      };
+      await player.playSingle(_song('song'));
+      final path = await _waitForCachedLyrics(fixture, 'song');
+      fixture.responseOverride = (request) async {
+        if (!request.url.path.contains('lyric')) return null;
+        return _lyricResponse(LyricData(original: '[00:01.00]手动匹配的版本'));
+      };
+      await player.applyLyricCandidate(_song('alternate'));
+      final saved = await AudioCacheService.getCachedLyrics(
+        platformCode: 'qq',
+        songId: 'song',
+        audioPath: path,
+        scope: fixture.scope,
+      );
+      expect(saved?.original, contains('手动匹配的版本'));
+      fixture.responseOverride = (_) => throw const SocketException('offline');
+      await player.playSingle(_song('song'));
+      expect(player.lyrics.single.text, '手动匹配的版本');
+    }, cached: true);
+  });
+
+  test(
+    'Bilibili retries failed matching and associates lyrics with its cached page',
+    () async {
+      await _scenario((fixture, player) async {
+        const cacheId = 'song_123_q30280';
+        final cache = Directory(
+          '${fixture.directory.path}/${fixture.scope.audioCacheRelativePath}',
+        );
+        final path = '${cache.path}/cached.mp3';
+        await File('${cache.path}/_index.json').writeAsString(
+          jsonEncode({
+            'bilibili_$cacheId': {
+              'filePath': path,
+              'platformCode': 'bilibili',
+              'songId': cacheId,
+              'quality': '30280',
+            },
+          }),
+        );
+        final song = SongSearchResult(
+          platform: MusicPlatform.bilibili,
+          id: 'song',
+          name: '你好',
+          artist: '歌手',
+          album: '',
+          bilibiliCid: 123,
+          bilibiliPages: const [
+            BilibiliPageInfo(cid: 123, page: 1, title: '你好'),
+          ],
+        );
+        fixture.responseOverride = (_) =>
+            throw const SocketException('offline');
+        await player.playSingle(song);
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        expect(player.errorMessage, isNull);
+        expect(player.lyrics, isEmpty);
+        fixture.responseOverride = (request) async {
+          if (request.url.host == 'u.y.qq.com') {
+            return http.Response(
+              jsonEncode({
+                'req_1': {
+                  'code': 0,
+                  'data': {
+                    'body': {
+                      'song': {
+                        'list': [
+                          {
+                            'mid': 'qq-match',
+                            'name': '你好',
+                            'singer': [
+                              {'name': '歌手'},
+                            ],
+                            'album': {'name': ''},
+                          },
+                        ],
+                      },
+                    },
+                  },
+                },
+              }),
+              200,
+              headers: const {
+                'content-type': 'application/json; charset=utf-8',
+              },
+            );
+          }
+          if (request.url.path.contains('lyric')) {
+            return _lyricResponse(_offlineLyrics);
+          }
+          return http.Response('{}', 200);
+        };
+        await player.playSingle(song);
+        expect(
+          await _waitForCachedLyrics(
+            fixture,
+            cacheId,
+            platformCode: 'bilibili',
+          ),
+          path,
+        );
+        expect(player.lyrics.single.translationText, 'Hello');
+        final requestCount = fixture.requestCount;
+        fixture.responseOverride = (_) =>
+            throw const SocketException('offline');
+        await player.playSingle(song);
+        expect(player.lyrics.single.primaryText, '你好');
+        expect(fixture.requestCount, requestCount);
+      }, cached: true);
+    },
+  );
+
   for (final platform in [MusicPlatform.qq, MusicPlatform.bilibili]) {
     test(
       'downloaded $platform plays and restores without network requests',
@@ -488,6 +856,50 @@ Future<void> _scenario(
   }
 }
 
+final _offlineLyrics = LyricData(
+  original: '[00:01.00]你好',
+  translated: '[00:01.00]Hello',
+  wordSynced: '[1000,1000](1000,500,0)你(1500,500,0)好',
+);
+
+http.Response _lyricResponse(LyricData lyrics) => http.Response(
+  jsonEncode({
+    'code': 0,
+    'lyric': lyrics.original,
+    'trans': lyrics.translated,
+    'qrc': lyrics.wordSynced,
+  }),
+  200,
+  headers: const {'content-type': 'application/json; charset=utf-8'},
+);
+
+Future<String> _waitForCachedLyrics(
+  _NativeFixture fixture,
+  String id, {
+  String platformCode = 'qq',
+}) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 5));
+  while (DateTime.now().isBefore(deadline)) {
+    final path = await AudioCacheService.getCachedPath(
+      platformCode: platformCode,
+      songId: id,
+      scope: fixture.scope,
+    );
+    if (path != null &&
+        await AudioCacheService.getCachedLyrics(
+              platformCode: platformCode,
+              songId: id,
+              audioPath: path,
+              scope: fixture.scope,
+            ) !=
+            null) {
+      return path;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  throw StateError('Lyrics were not associated with the cached audio');
+}
+
 Future<void> _until(PlayerProvider player, bool Function() predicate) async {
   final done = Completer<void>();
   void check() {
@@ -529,6 +941,8 @@ class _NativeFixture {
   bool failQingLoads = false;
   bool failAllLoads = false;
   bool emitLoadError = false;
+  String? audioBaseUrl;
+  Future<http.Response?> Function(http.Request)? responseOverride;
 
   _NativeFixture(this.directory, this.scope);
 
@@ -662,6 +1076,8 @@ class _NativeFixture {
 
   Future<http.Response> request(http.Request request) async {
     requestCount++;
+    final override = await responseOverride?.call(request);
+    if (override != null) return override;
     if (request.url.host == 'qing.test') {
       final body = jsonDecode(request.body) as Map;
       final id = body['rid'] as String;
@@ -671,7 +1087,9 @@ class _NativeFixture {
       return http.Response(
         jsonEncode({
           'code': 0,
-          'data': {'url': 'https://audio-qing.test/$id.mp3'},
+          'data': {
+            'url': '${audioBaseUrl ?? 'https://audio-qing.test'}/$id.mp3',
+          },
         }),
         200,
       );

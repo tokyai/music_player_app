@@ -330,7 +330,9 @@ class _SettingsScreenState extends State<SettingsScreen>
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('清除缓存'),
-        content: Text('将删除 $_cacheCount 首已缓存歌曲（$_cacheSizeText），下次播放需重新联网。'),
+        content: Text(
+          '将删除 $_cacheCount 首已缓存歌曲及关联歌词（$_cacheSizeText），下次播放需重新联网。',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),

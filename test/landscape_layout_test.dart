@@ -2771,6 +2771,146 @@ void main() {
   });
 
   for (final size in const [Size(640, 360), Size(1280, 800)]) {
+    testWidgets(
+      'cached lyrics stay offline with player controls through rotation at $size',
+      (tester) async {
+        final scope = UserDataScope(
+          'landscape-lyrics-${DateTime.now().microsecondsSinceEpoch}',
+        );
+        final root = Directory.systemTemp.createTempSync(
+          'landscape_cached_lyrics_',
+        );
+        final cache = Directory('${root.path}/${scope.audioCacheRelativePath}')
+          ..createSync(recursive: true);
+        final audio = File('${cache.path}/offline.mp3')
+          ..writeAsBytesSync(List<int>.filled(16384, 0));
+        File('${cache.path}/_index.json').writeAsStringSync(
+          jsonEncode({
+            'qq_offline': {
+              'filePath': audio.path,
+              'platformCode': 'qq',
+              'songId': 'offline',
+              'quality': 'flac',
+            },
+          }),
+        );
+        _mockShuffleAudioPlayer(root.path);
+        SharedPreferences.setMockInitialValues({
+          LyricStylePreferences.translationKey: true,
+          LyricStylePreferences.wordHighlightKey: true,
+        });
+        var networkRequests = 0;
+        await http.runWithClient(
+          () async {
+            final player = PlayerProvider(
+              dataScope: scope,
+              activateRestoredSession: false,
+            );
+            final theme = ThemeController();
+            var cleanedUp = false;
+            Future<void> cleanup() async {
+              if (cleanedUp) return;
+              cleanedUp = true;
+              await tester.pumpWidget(const SizedBox.shrink());
+              await tester.runAsync(
+                () => player.disposeResources().timeout(
+                  const Duration(seconds: 5),
+                ),
+              );
+              // just_audio closes its position timer on the next 200 ms tick.
+              await tester.pump(const Duration(milliseconds: 200));
+              theme.dispose();
+              await tester.runAsync(() async {
+                await AudioCacheService.releaseMemoryContext(scope);
+                await root.delete(recursive: true);
+              });
+              tester.view.resetPhysicalSize();
+              tester.view.resetDevicePixelRatio();
+            }
+
+            addTearDown(cleanup);
+            try {
+              await tester.runAsync(
+                () => AudioCacheService.cacheLyrics(
+                  platformCode: 'qq',
+                  songId: 'offline',
+                  audioPath: audio.path,
+                  scope: scope,
+                  lyrics: LyricData(
+                    original: '[00:00.00]离线歌词',
+                    translated: '[00:00.00]Offline lyrics',
+                    wordSynced:
+                        '[0,2000](0,500,0)离(500,500,0)线(1000,500,0)歌(1500,500,0)词',
+                  ),
+                ),
+              );
+              await _pumpScreen(
+                tester,
+                const PlayerScreen(),
+                player,
+                theme,
+                size,
+              );
+              await tester.runAsync(
+                () => player.playSingle(
+                  SongSearchResult(
+                    platform: MusicPlatform.qq,
+                    id: 'offline',
+                    name: '缓存歌曲',
+                    artist: '测试歌手',
+                    album: '',
+                  ),
+                ),
+              );
+              await tester.pumpAndSettle();
+              expect(
+                find.byKey(const ValueKey('lyric-karaoke-0')),
+                findsOneWidget,
+              );
+              expect(find.text('Offline lyrics'), findsOneWidget);
+              expect(find.byTooltip('暂停').hitTestable(), findsOneWidget);
+              await tester.tap(find.byTooltip('暂停').hitTestable());
+              await tester.pumpAndSettle();
+              expect(find.byTooltip('播放').hitTestable(), findsOneWidget);
+              await tester.tap(
+                find.widgetWithText(TextButton, '收藏').hitTestable(),
+              );
+              await tester.pumpAndSettle();
+              await tester.pump(const Duration(seconds: 1));
+              await tester.pumpAndSettle();
+              expect(find.text('已收藏').hitTestable(), findsOneWidget);
+              await tester.tap(find.byTooltip('播放队列').hitTestable());
+              await tester.pumpAndSettle();
+              expect(find.text('播放队列 (1)'), findsOneWidget);
+              await tester.binding.handlePopRoute();
+              await tester.pumpAndSettle();
+              player.toggleShowLyric();
+              _setViewSize(tester, const Size(390, 844));
+              await tester.pumpAndSettle();
+              expect(find.text('Offline lyrics'), findsOneWidget);
+              _setViewSize(tester, size);
+              await tester.pumpAndSettle();
+              expect(find.text('Offline lyrics'), findsOneWidget);
+              expect(find.text('已收藏').hitTestable(), findsOneWidget);
+              expect(find.byTooltip('播放队列').hitTestable(), findsOneWidget);
+              expect(
+                find.byKey(const ValueKey('player-back')).hitTestable(),
+                findsOneWidget,
+              );
+              expect(networkRequests, 0);
+              _expectNoException(tester);
+            } finally {
+              await cleanup();
+            }
+          },
+          () => MockClient((_) async {
+            networkRequests++;
+            throw const SocketException('offline');
+          }),
+        );
+      },
+    );
+
     testWidgets('shuffle queue edits retain controls through rotation at $size', (
       tester,
     ) async {

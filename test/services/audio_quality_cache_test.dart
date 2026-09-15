@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/services/audio_cache_service.dart';
 import 'package:music_player_app/services/user_data_scope.dart';
 
@@ -51,15 +52,34 @@ void main() {
       try {
         final first = await cache('128k');
         expect(first, isNotNull);
+        expect(
+          await AudioCacheService.cacheLyrics(
+            platformCode: 'qq',
+            songId: 'test',
+            audioPath: first!,
+            lyrics: LyricData(original: '[00:01.00]保留的歌词'),
+            scope: scope,
+          ),
+          isTrue,
+        );
         expect(await lookup('128k'), first);
         expect(await lookup('flac'), isNull);
         expect(await cache('flac', fail: true), isNull);
         expect(await lookup('128k'), first);
-        expect(await File(first!).exists(), isTrue);
+        expect(await File(first).exists(), isTrue);
         for (final quality in ['flac', '128k', 'flac']) {
           final next = await cache(quality);
           expect(next, isNotNull);
           expect(await lookup(quality), next);
+          expect(
+            (await AudioCacheService.getCachedLyrics(
+              platformCode: 'qq',
+              songId: 'test',
+              audioPath: next!,
+              scope: scope,
+            ))?.original,
+            contains('保留的歌词'),
+          );
           final cacheDir = Directory(
             '${directory.path}/${scope.audioCacheRelativePath}',
           );
