@@ -1,0 +1,347 @@
+name: Android 和 iOS Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release 标签；留空时使用 pubspec.yaml 中的版本号"
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mobile-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FLUTTER_VERSION: 3.41.6
+
+jobs:
+  prepare-release:
+    name: 准备 GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      app_version: ${{ steps.metadata.outputs.app_version }}
+      build_number: ${{ steps.metadata.outputs.build_number }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      release_is_draft: ${{ steps.release.outputs.release_is_draft }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 读取版本和 Release 标签
+        id: metadata
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION_LINE="$(awk '/^version:/ { print $2; exit }' pubspec.yaml)"
+          if [[ -z "$VERSION_LINE" ]]; then
+            echo "pubspec.yaml 中缺少 version 字段" >&2
+            exit 1
+          fi
+
+          APP_VERSION="${VERSION_LINE%%+*}"
+          if [[ "$VERSION_LINE" == *+* ]]; then
+            BUILD_NUMBER="${VERSION_LINE#*+}"
+          else
+            BUILD_NUMBER="1"
+          fi
+
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            RELEASE_TAG="$GITHUB_REF_NAME"
+          elif [[ -n "$REQUESTED_TAG" ]]; then
+            RELEASE_TAG="$REQUESTED_TAG"
+          else
+            RELEASE_TAG="v${APP_VERSION}"
+          fi
+
+          if [[ ! "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || \
+             ! git check-ref-format "refs/tags/$RELEASE_TAG" >/dev/null; then
+            echo "无效的 Release 标签: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          {
+            echo "app_version=$APP_VERSION"
+            echo "build_number=$BUILD_NUMBER"
+            echo "release_tag=$RELEASE_TAG"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 创建或复用 Release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if EXISTING_DRAFT="$(gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+            echo "复用已有 Release: $RELEASE_TAG"
+            echo "release_is_draft=$EXISTING_DRAFT" >> "$GITHUB_OUTPUT"
+          else
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "库仔音乐 $RELEASE_TAG" \
+              --notes "Android APK 使用临时测试证书签名；iOS IPA 未签名，安装前需自行签名。" \
+              --draft
+            echo "release_is_draft=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-android:
+    name: 构建 Android 测试签名 APK
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: 恢复 Dart 依赖缓存
+        id: pub-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: 恢复 media-kit Android 插件缓存
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/media-kit-libs-android-video/v1.1.7
+          key: media-kit-libs-android-video-v1.1.7-83df25b6-22e21526-6fa26bf0-0d742b75
+
+      - name: 准备并校验 media-kit Android 插件缓存
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CACHE_DIR="$RUNNER_TEMP/media-kit-libs-android-video/v1.1.7"
+          TARGET_DIR="build_c/media_kit_libs_android_video/v1.1.7"
+          DOWNLOAD_BASE_URL="https://github.com/media-kit/libmpv-android-video-build/releases/download/v1.1.7"
+          mkdir -p "$CACHE_DIR" "$TARGET_DIR"
+
+          prepare_jar() {
+            local expected_md5="$1"
+            local file_name="$2"
+            local cached_file="$CACHE_DIR/$file_name"
+            local download_file="$RUNNER_TEMP/$file_name.download"
+
+            if [[ -f "$cached_file" ]] && \
+               printf '%s  %s\n' "$expected_md5" "$cached_file" \
+                 | md5sum --check --status -; then
+              return
+            fi
+
+            curl --fail --location --retry 3 --retry-all-errors \
+              "$DOWNLOAD_BASE_URL/$file_name" \
+              --output "$download_file"
+            printf '%s  %s\n' "$expected_md5" "$download_file" \
+              | md5sum --check --strict -
+            mv "$download_file" "$cached_file"
+          }
+
+          prepare_jar '83df25b61193af8fa815e373143ac9af' 'default-arm64-v8a.jar'
+          prepare_jar '22e21526fefc0a2b8f17adbec9f57590' 'default-armeabi-v7a.jar'
+          prepare_jar '6fa26bf0459b11f1c0b0dbc29e5b940d' 'default-x86_64.jar'
+          prepare_jar '0d742b756dc9d1fcd84ea271d8b68f32' 'default-x86.jar'
+
+          cp "$CACHE_DIR"/*.jar "$TARGET_DIR/"
+
+          cd "$TARGET_DIR"
+          printf '%s  %s\n' \
+            '83df25b61193af8fa815e373143ac9af' 'default-arm64-v8a.jar' \
+            '22e21526fefc0a2b8f17adbec9f57590' 'default-armeabi-v7a.jar' \
+            '6fa26bf0459b11f1c0b0dbc29e5b940d' 'default-x86_64.jar' \
+            '0d742b756dc9d1fcd84ea271d8b68f32' 'default-x86.jar' \
+            | md5sum --check --strict -
+
+      - name: 获取 Flutter 依赖
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get --offline || flutter pub get
+
+      - name: 生成临时 Android 测试签名
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TEST_KEYSTORE="$RUNNER_TEMP/android-test-release.jks"
+          keytool -genkeypair -noprompt \
+            -keystore "$TEST_KEYSTORE" \
+            -storepass android \
+            -keypass android \
+            -alias androidtestkey \
+            -dname "CN=Android Test, O=GitHub Actions, C=US" \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000
+
+          printf '%s\n' \
+            'storePassword=android' \
+            'keyPassword=android' \
+            'keyAlias=androidtestkey' \
+            "storeFile=$TEST_KEYSTORE" \
+            > android/key.properties
+
+      - name: 构建分 ABI release APK
+        shell: bash
+        run: |
+          set +e
+          flutter build apk --release --split-per-abi --no-pub
+          FLUTTER_EXIT_CODE=$?
+          set -e
+
+          MISSING_APK=0
+          for ABI in arm64-v8a armeabi-v7a x86_64; do
+            APK_PATH="build_c/app/outputs/flutter-apk/app-${ABI}-release.apk"
+            if [[ ! -f "$APK_PATH" ]]; then
+              echo "缺少 APK: $APK_PATH" >&2
+              MISSING_APK=1
+            fi
+          done
+
+          if [[ "$MISSING_APK" -ne 0 ]]; then
+            if [[ "$FLUTTER_EXIT_CODE" -ne 0 ]]; then
+              exit "$FLUTTER_EXIT_CODE"
+            fi
+            exit 1
+          fi
+          if [[ "$FLUTTER_EXIT_CODE" -ne 0 ]]; then
+            echo "Flutter 未识别重定向后的 APK，但 build_c 中的三个 APK 均已生成。"
+          fi
+
+      - name: 整理 APK 文件
+        env:
+          APP_VERSION: ${{ needs.prepare-release.outputs.app_version }}
+          BUILD_NUMBER: ${{ needs.prepare-release.outputs.build_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p release
+          for ABI in arm64-v8a armeabi-v7a x86_64; do
+            SOURCE_APK="build_c/app/outputs/flutter-apk/app-${ABI}-release.apk"
+            TARGET_APK="release/kuzi-music-${APP_VERSION}-${BUILD_NUMBER}-android-${ABI}-test-signed.apk"
+            if [[ ! -f "$SOURCE_APK" ]]; then
+              echo "缺少 APK: $SOURCE_APK" >&2
+              exit 1
+            fi
+            cp "$SOURCE_APK" "$TARGET_APK"
+          done
+          ls -lh release/*.apk
+
+      - name: 上传 APK 到 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" release/*.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+  build-ios:
+    name: 构建 iOS 未签名 IPA
+    needs: prepare-release
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: 获取 Flutter 依赖
+        run: flutter pub get
+
+      - name: 构建 iOS Runner（免签名）
+        run: flutter build ios --release --no-codesign --no-pub
+
+      - name: 打包未签名 IPA
+        env:
+          APP_VERSION: ${{ needs.prepare-release.outputs.app_version }}
+          BUILD_NUMBER: ${{ needs.prepare-release.outputs.build_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="build/ios/iphoneos/Runner.app"
+          IPA_NAME="kuzi-music-${APP_VERSION}-${BUILD_NUMBER}-ios-unsigned.ipa"
+          STAGING_DIR="$RUNNER_TEMP/unsigned-ipa"
+
+          if [[ ! -d "$APP_PATH" ]]; then
+            echo "缺少 iOS 应用目录: $APP_PATH" >&2
+            exit 1
+          fi
+
+          mkdir -p "$STAGING_DIR/Payload" release
+          cp -R "$APP_PATH" "$STAGING_DIR/Payload/Runner.app"
+          cd "$STAGING_DIR"
+          zip -qry "$GITHUB_WORKSPACE/release/$IPA_NAME" Payload
+          ls -lh "$GITHUB_WORKSPACE/release/$IPA_NAME"
+
+      - name: 上传 IPA 到 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" release/*.ipa \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+  publish-release:
+    name: 发布 GitHub Release
+    needs:
+      - prepare-release
+      - build-android
+      - build-ios
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 发布草稿 Release
+        if: needs.prepare-release.outputs.release_is_draft == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release edit "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false
