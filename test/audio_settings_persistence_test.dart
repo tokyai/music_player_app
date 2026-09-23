@@ -5,6 +5,8 @@ import 'package:music_player_app/models/audio_effects.dart';
 import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/providers/player_provider.dart';
 import 'package:music_player_app/services/audio_effects_service.dart';
+import 'package:music_player_app/services/playback_history_service.dart';
+import 'package:music_player_app/services/playback_state_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 
@@ -135,11 +137,109 @@ void main() {
       'master',
     );
   });
+
+  test(
+    'stop and disposal flush the newest checkpoint behind slow storage',
+    () async {
+      await PlaybackStateService.save(_pausedSession());
+      final player = PlayerProvider(activateRestoredSession: false);
+      try {
+        await Future.wait([
+          player.settingsReady,
+          player.playbackStateReady,
+          player.historyReady,
+        ]);
+        store.gate = Completer<void>();
+        final first = player.seekTo(const Duration(seconds: 20));
+        await store.entered.future;
+        final latest = player.seekTo(const Duration(seconds: 55));
+        var stopped = false;
+        final stopping = player.stop().then((_) => stopped = true);
+        await Future<void>.delayed(Duration.zero);
+        expect(stopped, isFalse);
+        final closing = player.disposeResources();
+        store.gate!.complete();
+        await Future.wait([first, latest, stopping, closing]);
+        await (await SharedPreferences.getInstance()).reload();
+
+        final saved = await PlaybackStateService.load();
+        expect(saved!.position, const Duration(seconds: 55));
+        expect(saved.isPlaying, isFalse);
+        final history = await PlaybackHistoryService.load();
+        expect(history.single.position, const Duration(seconds: 55));
+      } finally {
+        final gate = store.gate;
+        if (gate != null && !gate.isCompleted) gate.complete();
+        await player.disposeResources();
+      }
+    },
+  );
+
+  test(
+    'checkpoint storage failure preserves disk data and permits a later save',
+    () async {
+      await PlaybackStateService.save(_pausedSession());
+      final player = PlayerProvider(activateRestoredSession: false);
+      try {
+        await Future.wait([
+          player.settingsReady,
+          player.playbackStateReady,
+          player.historyReady,
+        ]);
+        await player.seekTo(const Duration(seconds: 20));
+        store.throwOnWrite = true;
+        await player.seekTo(const Duration(seconds: 55));
+        expect(player.position, const Duration(seconds: 55));
+        await (await SharedPreferences.getInstance()).reload();
+        expect(
+          (await PlaybackStateService.load())!.position,
+          const Duration(seconds: 20),
+        );
+        expect(
+          (await PlaybackHistoryService.load()).single.position,
+          const Duration(seconds: 20),
+        );
+
+        store.throwOnWrite = false;
+        await player.pause();
+        await (await SharedPreferences.getInstance()).reload();
+        expect(
+          (await PlaybackStateService.load())!.position,
+          const Duration(seconds: 55),
+        );
+        expect(
+          (await PlaybackHistoryService.load()).single.position,
+          const Duration(seconds: 55),
+        );
+      } finally {
+        store.throwOnWrite = false;
+        await player.disposeResources();
+      }
+    },
+  );
 }
+
+PlaybackSessionSnapshot _pausedSession() => PlaybackSessionSnapshot(
+  queue: [
+    SongSearchResult(
+      platform: MusicPlatform.qq,
+      id: 'checkpoint-song',
+      name: 'Checkpoint song',
+      artist: 'Artist',
+      album: 'Album',
+      duration: 180,
+    ),
+  ],
+  currentIndex: 0,
+  position: const Duration(seconds: 12),
+  isPlaying: false,
+  playMode: 'sequence',
+);
 
 class _Store extends InMemorySharedPreferencesStore {
   _Store() : super.empty();
   bool fail = false;
+  bool throwOnWrite = false;
   Completer<void>? gate;
   final entered = Completer<void>();
 
@@ -149,6 +249,7 @@ class _Store extends InMemorySharedPreferencesStore {
       if (!entered.isCompleted) entered.complete();
       await gate!.future;
     }
+    if (throwOnWrite) throw StateError('Storage unavailable');
     if (fail) return false;
     return super.setValue(valueType, key, value);
   }

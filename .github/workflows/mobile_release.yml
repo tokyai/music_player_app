@@ -7,9 +7,6 @@ on:
         description: "Release 标签；留空时使用 pubspec.yaml 中的版本号"
         required: false
         type: string
-  push:
-    tags:
-      - "v*"
 
 permissions:
   contents: write

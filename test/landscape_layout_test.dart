@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -25,6 +26,7 @@ import 'package:music_player_app/screens/settings_screen.dart';
 import 'package:music_player_app/screens/video_player_screen.dart';
 import 'package:music_player_app/services/audio_cache_service.dart';
 import 'package:music_player_app/services/favorite_service.dart';
+import 'package:music_player_app/services/playback_state_service.dart';
 import 'package:music_player_app/services/user_data_scope.dart';
 import 'package:music_player_app/theme/app_layout.dart';
 import 'package:music_player_app/theme/app_motion.dart';
@@ -972,6 +974,147 @@ void main() {
       _expectNoException(tester);
     }, _mockClient);
   });
+
+  for (final size in const [Size(640, 360), Size(1280, 800)]) {
+    testWidgets(
+      'paused bookmark survives idle, rotation and reopening at $size',
+      (tester) async {
+        final scope = UserDataScope('landscape-restored-${size.width.toInt()}');
+        final song = SongSearchResult(
+          platform: MusicPlatform.qq,
+          id: 'restored-landscape-song',
+          name: '恢复进度测试歌曲',
+          artist: '测试歌手',
+          album: '测试专辑',
+          duration: 180,
+        );
+        SharedPreferences.setMockInitialValues({
+          scope.preferenceKey(PlaybackStateService.preferenceKey): jsonEncode(
+            PlaybackSessionSnapshot(
+              queue: [song],
+              currentIndex: 0,
+              position: const Duration(seconds: 73),
+              isPlaying: false,
+              playMode: 'sequence',
+            ).toJson(),
+          ),
+        });
+
+        await http.runWithClient(() async {
+          final player = PlayerProvider(
+            dataScope: scope,
+            activateRestoredSession: false,
+          );
+          final theme = ThemeController();
+          addTearDown(() async {
+            await tester.pumpWidget(const SizedBox.shrink());
+            final disposing = player.disposeResources();
+            await tester.pump();
+            await disposing;
+            theme.dispose();
+            tester.view.resetPhysicalSize();
+            tester.view.resetDevicePixelRatio();
+            await AudioCacheService.releaseMemoryContext(scope);
+          });
+
+          // Restore in the compact shell first so the real mini-player route
+          // opens the restored session before rotating through both layouts.
+          await _pumpScreen(
+            tester,
+            const MainScreen(),
+            player,
+            theme,
+            const Size(390, 844),
+          );
+          await player.playbackStateReady;
+          await tester.pumpAndSettle();
+          final miniPlayer = find.byKey(
+            const ValueKey('mini-player-qq:restored-landscape-song'),
+          );
+          await tester.tap(miniPlayer.hitTestable());
+          await tester.pumpAndSettle();
+          _setViewSize(tester, size);
+          await tester.pumpAndSettle();
+          expect(find.byType(PlayerScreen), findsOneWidget);
+          expect(find.text('01:13').hitTestable(), findsOneWidget);
+          expect(find.text('03:00').hitTestable(), findsOneWidget);
+          expect(find.byTooltip('播放').hitTestable(), findsOneWidget);
+          expect(find.text('收藏').hitTestable(), findsOneWidget);
+          expect(find.byTooltip('播放队列').hitTestable(), findsOneWidget);
+          expect(
+            find.byKey(const ValueKey('player-back')).hitTestable(),
+            findsOneWidget,
+          );
+
+          // Stopping an unloaded native player must not replace the restored
+          // bookmark with its idle zero position.
+          await player.stop();
+          await tester.pump(const Duration(seconds: 1));
+          await tester.pumpAndSettle();
+          expect(find.text('01:13').hitTestable(), findsOneWidget);
+          expect(find.text('03:00').hitTestable(), findsOneWidget);
+
+          await tester.tap(find.widgetWithText(TextButton, '收藏').hitTestable());
+          await tester.pumpAndSettle();
+          await tester.pump(const Duration(seconds: 1));
+          await tester.pumpAndSettle();
+          expect(find.text('已收藏').hitTestable(), findsOneWidget);
+          await tester.tap(find.byTooltip('播放队列').hitTestable());
+          await tester.pumpAndSettle();
+          expect(find.text('播放队列 (1)'), findsOneWidget);
+          expect(
+            find.widgetWithText(ListTile, '恢复进度测试歌曲').hitTestable(),
+            findsOneWidget,
+          );
+          await tester.binding.handlePopRoute();
+          await tester.pumpAndSettle();
+
+          // The restored source is still unloaded, but its progress control
+          // should update the bookmark rather than seeking an idle source.
+          final progress = find.descendant(
+            of: find.byKey(const ValueKey('player-progress-repaint-boundary')),
+            matching: find.byType(Slider),
+          );
+          await tester.tapAt(tester.getCenter(progress));
+          await tester.pumpAndSettle();
+          final bookmark = player.position;
+          expect(bookmark.inMilliseconds, closeTo(90000, 2));
+          final bookmarkLabel =
+              '${bookmark.inMinutes.toString().padLeft(2, '0')}:'
+              '${(bookmark.inSeconds % 60).toString().padLeft(2, '0')}';
+          expect(find.text(bookmarkLabel).hitTestable(), findsOneWidget);
+
+          _setViewSize(tester, const Size(390, 844));
+          await tester.pumpAndSettle();
+          expect(player.position, bookmark);
+          expect(find.text(bookmarkLabel).hitTestable(), findsOneWidget);
+          await tester.tap(
+            find.byKey(const ValueKey('player-back')).hitTestable(),
+          );
+          await tester.pumpAndSettle();
+          expect(find.byType(PlayerScreen), findsNothing);
+          final reopenedMiniPlayer = find.byKey(
+            const ValueKey('mini-player-qq:restored-landscape-song'),
+          );
+          await tester.tap(reopenedMiniPlayer.hitTestable());
+          await tester.pumpAndSettle();
+          _setViewSize(tester, size);
+          await tester.pumpAndSettle();
+          expect(player.position, bookmark);
+          expect(find.text(bookmarkLabel).hitTestable(), findsOneWidget);
+          expect(find.text('03:00').hitTestable(), findsOneWidget);
+          expect(find.byTooltip('播放').hitTestable(), findsOneWidget);
+          expect(find.text('已收藏').hitTestable(), findsOneWidget);
+          expect(find.byTooltip('播放队列').hitTestable(), findsOneWidget);
+          expect(
+            find.byKey(const ValueKey('player-back')).hitTestable(),
+            findsOneWidget,
+          );
+          _expectNoException(tester);
+        }, _mockClient);
+      },
+    );
+  }
 
   for (final size in const [Size(640, 360), Size(1280, 800)]) {
     testWidgets(
@@ -2922,7 +3065,7 @@ void main() {
       )..createSync(recursive: true);
       _mockShuffleAudioPlayer(cacheRoot.path);
       SharedPreferences.setMockInitialValues({
-        scope.preferenceKey(PlaybackSourceConfig.preferenceKey): jsonEncode(
+        PlaybackSourceConfig.preferenceKey: jsonEncode(
           PlaybackSourceConfig.defaults()
               .copyWith(
                 chkszEnabled: false,
@@ -2935,23 +3078,34 @@ void main() {
         ),
       });
       await http.runWithClient(() async {
-        final player = PlayerProvider(
-          dataScope: scope,
-          activateRestoredSession: false,
-        );
+        final player = (await tester.runAsync(() async {
+          final player = PlayerProvider(
+            dataScope: scope,
+            activateRestoredSession: false,
+          );
+          await Future.wait([
+            player.settingsReady,
+            player.playbackStateReady,
+            player.historyReady,
+          ]);
+          return player;
+        }))!;
         final theme = ThemeController();
         addTearDown(() async {
           await tester.pumpWidget(const SizedBox.shrink());
-          final disposing = player.disposeResources();
-          await tester.pump();
-          await disposing;
+          await tester.runAsync(
+            () => player.disposeResources().timeout(const Duration(seconds: 5)),
+          );
+          await tester.pump(const Duration(milliseconds: 200));
           theme.dispose();
           tester.view.resetPhysicalSize();
           tester.view.resetDevicePixelRatio();
-          if (cacheRoot.existsSync()) {
-            await cacheRoot.delete(recursive: true);
-          }
-          await AudioCacheService.releaseMemoryContext(scope);
+          await tester.runAsync(() async {
+            await AudioCacheService.releaseMemoryContext(scope);
+            if (cacheRoot.existsSync()) {
+              await cacheRoot.delete(recursive: true);
+            }
+          });
         });
         final songs = [
           for (final id in ['a', 'b', 'c'])
@@ -2964,49 +3118,50 @@ void main() {
             ),
         ];
         await _pumpScreen(tester, const PlayerScreen(), player, theme, size);
-        debugPrint('shuffle stage before loading');
-        final loading = player.playFromSearchResults([
-          songs[0],
-          SongSearchResult.fromJson({
-            ...songs[0].toJson(),
-            'downloadId': 'a' * 24,
-          }),
-          SongSearchResult.fromJson({
-            ...songs[0].toJson(),
-            'downloadId': 'b' * 24,
-          }),
-          songs[1],
-          songs[2],
-        ], 3);
-        try {
-          await tester.runAsync(
-            () => loading.timeout(const Duration(seconds: 5)),
-          );
-        } catch (error) {
-          debugPrint(
-            'shuffle loading timeout state=${player.isLoading} '
-            'error=${player.errorMessage} song=${player.currentSong?.id}',
-          );
-        }
-        debugPrint('shuffle stage after loading');
-        await tester.pump();
+        await _runPlayerAction(
+          tester,
+          player,
+          () => player.playFromSearchResults([
+            songs[0],
+            SongSearchResult.fromJson({
+              ...songs[0].toJson(),
+              'downloadId': 'a' * 24,
+            }),
+            SongSearchResult.fromJson({
+              ...songs[0].toJson(),
+              'downloadId': 'b' * 24,
+            }),
+            songs[1],
+            songs[2],
+          ], 3),
+        );
         await tester.tap(find.byTooltip('播放模式'));
         await tester.tap(find.byTooltip('播放模式'));
         await tester.pump(const Duration(milliseconds: 100));
         final played = <String>{player.currentSong!.id};
-        await tester.tap(find.byTooltip('下一首').hitTestable());
-        await tester.pumpAndSettle();
+        await _runPlayerAction(
+          tester,
+          player,
+          () => tester.tap(find.byTooltip('下一首').hitTestable()),
+        );
         played.add(player.currentSong!.id);
         final unplayed = songs.singleWhere((song) => !played.contains(song.id));
 
-        player.removeFromQueue(player.currentIndex);
-        await tester.pumpAndSettle();
+        await _runPlayerAction(tester, player, () async {
+          player.removeFromQueue(player.currentIndex);
+        });
         expect(player.currentSong!.id, unplayed.id);
         expect(player.errorMessage, isNull);
-        await tester.tap(find.byTooltip('暂停').hitTestable());
-        await tester.pumpAndSettle();
+        await _runPlayerAction(
+          tester,
+          player,
+          () => tester.tap(find.byTooltip('暂停').hitTestable()),
+          playing: false,
+        );
         expect(find.byTooltip('播放').hitTestable(), findsOneWidget);
         await tester.tap(find.widgetWithText(TextButton, '收藏').hitTestable());
+        await tester.pumpAndSettle();
+        await tester.pump(const Duration(seconds: 1));
         await tester.pumpAndSettle();
         expect(find.text('已收藏').hitTestable(), findsOneWidget);
         await tester.tap(find.byTooltip('播放队列').hitTestable());
@@ -3785,6 +3940,36 @@ int _playerSurfaceCount(WidgetTester tester, Color color) {
       )
       .where((material) => material.color == color)
       .length;
+}
+
+Future<void> _runPlayerAction(
+  WidgetTester tester,
+  PlayerProvider player,
+  Future<void> Function() action, {
+  bool playing = true,
+}) async {
+  // Start disk/native work in the real async zone, not just its await.
+  await tester.runAsync(() async {
+    await action().timeout(const Duration(seconds: 5));
+    final done = Completer<void>();
+    void check() {
+      if (!player.isLoading &&
+          (player.isPlaying == playing || player.errorMessage != null) &&
+          !done.isCompleted) {
+        done.complete();
+      }
+    }
+
+    player.addListener(check);
+    try {
+      check();
+      await done.future.timeout(const Duration(seconds: 5));
+      expect(player.errorMessage, isNull);
+    } finally {
+      player.removeListener(check);
+    }
+  });
+  await tester.pumpAndSettle();
 }
 
 Future<void> _pumpScreen(
