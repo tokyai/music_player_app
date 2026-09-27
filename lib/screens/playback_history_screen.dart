@@ -29,7 +29,7 @@ class PlaybackHistoryScreen extends StatelessWidget {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('清空播放历史'),
-        content: const Text('将删除所有歌曲的播放记录和断点，是否继续？'),
+        content: const Text('将删除所有播放历史，当前歌曲的播放进度会保留。是否继续？'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
@@ -128,7 +128,10 @@ class PlaybackHistoryScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 4),
-          Text('播放过的歌曲会在这里保留断点', style: TextStyle(color: AppColors.textHint)),
+          Text(
+            '播放过的歌曲会显示在这里，点击后从头播放',
+            style: TextStyle(color: AppColors.textHint),
+          ),
         ],
       ),
     );
@@ -200,7 +203,7 @@ class _HistoryTile extends StatelessWidget {
               style: TextStyle(fontSize: layout.songSubtitleSize),
             ),
           Text(
-            '${song.platform.label} · ${_resumeLabel(entry)} · ${_formatDate(entry.playedAt)}',
+            '${song.platform.label} · ${_positionLabel(entry)} · ${_formatDate(entry.playedAt)}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
@@ -226,16 +229,14 @@ class _HistoryTile extends StatelessWidget {
     );
   }
 
-  String _resumeLabel(PlaybackHistoryEntry entry) {
+  String _positionLabel(PlaybackHistoryEntry entry) {
     final durationSeconds = entry.song.duration;
     final position = _formatDuration(entry.position);
     if (durationSeconds == null || durationSeconds <= 0) {
-      return entry.position > Duration.zero ? '继续 $position' : '从头播放';
+      return '上次播放 $position';
     }
     final duration = Duration(seconds: durationSeconds);
-    return entry.position > Duration.zero
-        ? '继续 $position / ${_formatDuration(duration)}'
-        : '从头播放 / ${_formatDuration(duration)}';
+    return '上次播放 $position / ${_formatDuration(duration)}';
   }
 
   String _formatDate(DateTime value) {

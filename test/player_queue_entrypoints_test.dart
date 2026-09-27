@@ -43,26 +43,22 @@ void main() {
     },
   );
 
-  test(
-    'history playback keeps every history entry and resumes the selected one',
-    () async {
-      final player = PlayerProvider();
-      addTearDown(player.dispose);
-      final entries = [
-        _historyEntry('history-one', '历史一', const Duration(seconds: 12)),
-        _historyEntry('history-two', '历史二', const Duration(seconds: 34)),
-      ];
+  test('history-list selection starts from the beginning', () async {
+    final player = PlayerProvider(activateRestoredSession: false);
+    addTearDown(player.dispose);
+    await player.historyReady;
+    final entries = [
+      _historyEntry('history-one', '历史一', const Duration(seconds: 12)),
+      _historyEntry('history-two', '历史二', const Duration(seconds: 34)),
+    ];
 
-      await player.playFromHistoryEntries(entries, 1);
+    await player.playFromHistoryEntries(entries, 1);
 
-      expect(player.queue.map((item) => item.id), [
-        'history-one',
-        'history-two',
-      ]);
-      expect(player.currentIndex, 1);
-      expect(player.currentSong?.name, '历史二');
-    },
-  );
+    expect(player.queue.map((item) => item.id), ['history-one', 'history-two']);
+    expect(player.currentIndex, 1);
+    expect(player.currentSong?.name, '历史二');
+    expect(player.position, Duration.zero);
+  });
 
   test(
     'shuffle plays every queued song once before starting a new cycle',
@@ -339,6 +335,48 @@ void main() {
     },
   );
 
+  for (final length in [1, 2]) {
+    test(
+      'history list of $length cancels an earlier Bilibili request',
+      () async {
+        final deferred = {'BVslow': Completer<http.Response>()};
+        final player = _bilibiliQueuePlayer(deferred: deferred);
+        addTearDown(player.disposeResources);
+        final earlier = player.playBilibiliResource(
+          _bilibiliSong('BVslow', '较早点击'),
+        );
+        try {
+          final entries = List.generate(
+            length,
+            (index) => _historyEntry(
+              'history-$index',
+              '最新选择 $index',
+              const Duration(seconds: 42),
+            ),
+          );
+          await player.playFromHistoryEntries(entries, 0);
+          expect(player.currentSong!.id, 'history-0');
+          deferred['BVslow']!.complete(
+            _bilibiliInfoResponse(_bilibiliInfo('BVslow', 400)),
+          );
+          await earlier;
+          expect(player.currentSong!.id, 'history-0');
+          expect(
+            player.queue.map((item) => item.id),
+            entries.map((entry) => entry.song.id),
+          );
+        } finally {
+          if (!deferred['BVslow']!.isCompleted) {
+            deferred['BVslow']!.complete(
+              _bilibiliInfoResponse(_bilibiliInfo('BVslow', 400)),
+            );
+          }
+          await earlier;
+        }
+      },
+    );
+  }
+
   test('restores a paused playback session on startup', () async {
     final snapshot = PlaybackSessionSnapshot(
       queue: [_song('saved-one', '已保存一'), _song('saved-two', '已保存二')],
@@ -448,35 +486,41 @@ void main() {
     },
   );
 
-  test('complete exit flushes the current queue and history once', () async {
-    final snapshot = PlaybackSessionSnapshot(
-      queue: [_song('exit-one', '退出保存一'), _song('exit-two', '退出保存二')],
-      currentIndex: 1,
-      position: const Duration(seconds: 41),
-      isPlaying: false,
-      playMode: 'shuffle',
-    );
-    SharedPreferences.setMockInitialValues({
-      PlaybackStateService.preferenceKey: jsonEncode(snapshot.toJson()),
-    });
-    final player = PlayerProvider();
-    addTearDown(player.dispose);
+  test(
+    'complete exit flushes the current session without rewriting history',
+    () async {
+      final snapshot = PlaybackSessionSnapshot(
+        queue: [_song('exit-one', '退出保存一'), _song('exit-two', '退出保存二')],
+        currentIndex: 1,
+        position: const Duration(seconds: 41),
+        isPlaying: false,
+        playMode: 'shuffle',
+      );
+      SharedPreferences.setMockInitialValues({
+        PlaybackStateService.preferenceKey: jsonEncode(snapshot.toJson()),
+      });
+      await PlaybackHistoryService.save([
+        _historyEntry('exit-two', '退出保存二', const Duration(seconds: 35)),
+      ]);
+      final player = PlayerProvider();
+      addTearDown(player.dispose);
 
-    await player.prepareForAppExit();
-    await player.prepareForAppExit();
+      await player.prepareForAppExit();
+      await player.prepareForAppExit();
 
-    final restored = await PlaybackStateService.load();
-    expect(restored, isNotNull);
-    expect(restored!.queue.map((song) => song.id), ['exit-one', 'exit-two']);
-    expect(restored.currentIndex, 1);
-    expect(restored.position, const Duration(seconds: 41));
-    expect(restored.playMode, 'shuffle');
+      final restored = await PlaybackStateService.load();
+      expect(restored, isNotNull);
+      expect(restored!.queue.map((song) => song.id), ['exit-one', 'exit-two']);
+      expect(restored.currentIndex, 1);
+      expect(restored.position, const Duration(seconds: 41));
+      expect(restored.playMode, 'shuffle');
 
-    final history = await PlaybackHistoryService.load();
-    expect(history, hasLength(1));
-    expect(history.single.song.id, 'exit-two');
-    expect(history.single.position, const Duration(seconds: 41));
-  });
+      final history = await PlaybackHistoryService.load();
+      expect(history, hasLength(1));
+      expect(history.single.song.id, 'exit-two');
+      expect(history.single.position, const Duration(seconds: 35));
+    },
+  );
 }
 
 SongSearchResult _song(String id, String name) => SongSearchResult(

@@ -142,6 +142,7 @@ void main() {
     'stop and disposal flush the newest checkpoint behind slow storage',
     () async {
       await PlaybackStateService.save(_pausedSession());
+      await PlaybackHistoryService.save([_previousHistory()]);
       final player = PlayerProvider(activateRestoredSession: false);
       try {
         await Future.wait([
@@ -158,6 +159,7 @@ void main() {
         await Future<void>.delayed(Duration.zero);
         expect(stopped, isFalse);
         final closing = player.disposeResources();
+        expect(player.disposeResources(), same(closing));
         store.gate!.complete();
         await Future.wait([first, latest, stopping, closing]);
         await (await SharedPreferences.getInstance()).reload();
@@ -166,7 +168,7 @@ void main() {
         expect(saved!.position, const Duration(seconds: 55));
         expect(saved.isPlaying, isFalse);
         final history = await PlaybackHistoryService.load();
-        expect(history.single.position, const Duration(seconds: 55));
+        expect(history.single.position, const Duration(seconds: 7));
       } finally {
         final gate = store.gate;
         if (gate != null && !gate.isCompleted) gate.complete();
@@ -179,6 +181,7 @@ void main() {
     'checkpoint storage failure preserves disk data and permits a later save',
     () async {
       await PlaybackStateService.save(_pausedSession());
+      await PlaybackHistoryService.save([_previousHistory()]);
       final player = PlayerProvider(activateRestoredSession: false);
       try {
         await Future.wait([
@@ -197,7 +200,7 @@ void main() {
         );
         expect(
           (await PlaybackHistoryService.load()).single.position,
-          const Duration(seconds: 20),
+          const Duration(seconds: 7),
         );
 
         store.throwOnWrite = false;
@@ -209,7 +212,7 @@ void main() {
         );
         expect(
           (await PlaybackHistoryService.load()).single.position,
-          const Duration(seconds: 55),
+          const Duration(seconds: 7),
         );
       } finally {
         store.throwOnWrite = false;
@@ -218,6 +221,12 @@ void main() {
     },
   );
 }
+
+PlaybackHistoryEntry _previousHistory() => PlaybackHistoryEntry(
+  song: _pausedSession().queue.single,
+  position: const Duration(seconds: 7),
+  playedAt: DateTime(2026, 9, 26),
+);
 
 PlaybackSessionSnapshot _pausedSession() => PlaybackSessionSnapshot(
   queue: [

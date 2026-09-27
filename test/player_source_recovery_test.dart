@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:just_audio/just_audio.dart' show ProcessingState;
 import 'package:music_player_app/models/playback_source_config.dart';
 import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/models/download_entry.dart';
@@ -21,81 +22,181 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('pause checkpoints survive selecting the same song normally', () async {
-    await _scenario((fixture, player) async {
-      final song = _song('song');
-      await player.playSingle(song);
-      await _until(player, () => player.isPlaying);
-      await fixture.readyEvent(position: const Duration(seconds: 37));
-      await _until(
-        player,
-        () => player.position >= const Duration(seconds: 37),
-      );
-      await player.pause();
-      await player.playPause();
-      await _until(player, () => player.isPlaying);
-      expect(
-        player.position,
-        greaterThanOrEqualTo(const Duration(seconds: 37)),
-      );
-      await player.playPause();
-      final checkpoint = player.position;
-      await _expectCheckpoint(fixture, song, checkpoint);
-
-      await player.playFromSearchResults([song], 0);
-      await _expectResumed(fixture, player, checkpoint);
-      await player.pause();
-      await player.seekTo(const Duration(seconds: 51));
-      await player.pause();
-      await player.playFromPlaylist([song], 0);
-      await _expectResumed(fixture, player, const Duration(seconds: 51));
-      await player.pause();
-      await player.seekTo(const Duration(seconds: 63));
-      await player.pause();
-      await player.playSingle(song);
-      await _expectResumed(fixture, player, const Duration(seconds: 63));
-    });
-  });
-
   test(
-    'stop persists a checkpoint across restart and unloaded seeking',
+    'pause resumes current session; normal selections start at zero',
     () async {
       await _scenario((fixture, player) async {
         final song = _song('song');
         await player.playSingle(song);
-        await player.pause();
-        await player.seekTo(const Duration(seconds: 42));
-        await player.stop();
-        await _expectCheckpoint(fixture, song, const Duration(seconds: 42));
-        await player.disposeResources();
-        final loadsBefore = fixture.loaded.length;
-        final restarted = PlayerProvider(
-          dataScope: fixture.scope,
-          activateRestoredSession: false,
+        await _until(player, () => player.isPlaying);
+        await fixture.readyEvent(position: const Duration(seconds: 37));
+        await _until(
+          player,
+          () => player.position >= const Duration(seconds: 37),
         );
-        try {
-          await Future.wait([
-            restarted.settingsReady,
-            restarted.playbackStateReady,
-          ]);
-          await Future<void>.delayed(Duration.zero);
-          expect(restarted.position, const Duration(seconds: 42));
-          expect(restarted.isPlaying, isFalse);
-          expect(fixture.loaded.length, loadsBefore);
-          await restarted.seekTo(const Duration(seconds: 58));
-          await restarted.pause();
-          await _expectCheckpoint(fixture, song, const Duration(seconds: 58));
-          await restarted.playPause();
-          await _expectResumed(fixture, restarted, const Duration(seconds: 58));
-        } finally {
-          await restarted.disposeResources();
-        }
+        await player.pause();
+        final checkpoint = player.position;
+        await _expectCheckpoint(fixture, song, checkpoint);
+
+        await player.playPause();
+        await _expectResumed(player, checkpoint);
+        await player.pause();
+        await player.seekTo(const Duration(seconds: 51));
+        await player.pause();
+
+        fixture.seekPositions.clear();
+        await player.playFromSearchResults([song], 0);
+        await _expectStartedAtBeginning(fixture, player);
+        await player.pause();
+
+        fixture.seekPositions.clear();
+        await player.playFromPlaylist([song], 0);
+        await _expectStartedAtBeginning(fixture, player);
+        await player.pause();
+
+        fixture.seekPositions.clear();
+        await player.playSingle(song);
+        await _expectStartedAtBeginning(fixture, player);
       });
     },
   );
 
   test(
-    'clearing history removes old bookmarks but keeps current session',
+    'history selections ignore the displayed last-played position',
+    () async {
+      await _scenario((fixture, player) async {
+        final song = _song('song');
+        await player.playSingle(song);
+        await player.pause();
+        await player.seekTo(const Duration(seconds: 46));
+        await player.pause();
+        final entry = PlaybackHistoryEntry(
+          song: song,
+          position: const Duration(seconds: 46),
+          playedAt: DateTime.now(),
+        );
+
+        fixture.seekPositions.clear();
+        await player.playFromHistory(entry);
+        await _expectStartedAtBeginning(fixture, player);
+        await player.pause();
+        await player.seekTo(const Duration(seconds: 51));
+        fixture.seekPositions.clear();
+        await player.playFromHistoryEntries([
+          entry,
+          PlaybackHistoryEntry(
+            song: _song('other'),
+            position: const Duration(seconds: 71),
+            playedAt: DateTime.now(),
+          ),
+        ], 0);
+        await _expectStartedAtBeginning(fixture, player);
+      });
+    },
+  );
+
+  test('stop stores checkpoint for this session across restart', () async {
+    await _scenario((fixture, player) async {
+      final song = _song('song');
+      await player.playSingle(song);
+      await player.pause();
+      await player.seekTo(const Duration(seconds: 42));
+      await player.stop();
+      await _expectCheckpoint(fixture, song, const Duration(seconds: 42));
+      await player.disposeResources();
+      final loadsBefore = fixture.loaded.length;
+      final restarted = PlayerProvider(
+        dataScope: fixture.scope,
+        activateRestoredSession: false,
+      );
+      try {
+        await Future.wait([
+          restarted.settingsReady,
+          restarted.playbackStateReady,
+        ]);
+        expect(restarted.position, const Duration(seconds: 42));
+        expect(restarted.isPlaying, isFalse);
+        expect(fixture.loaded.length, loadsBefore);
+        await restarted.seekTo(const Duration(seconds: 58));
+        expect(restarted.position, const Duration(seconds: 58));
+        await restarted.playPause();
+        await _expectResumed(restarted, const Duration(seconds: 58));
+      } finally {
+        await restarted.disposeResources();
+      }
+    });
+  });
+
+  for (final boundary in [
+    'periodic save',
+    'app exit',
+    'user switch',
+    'dispose',
+  ]) {
+    test('$boundary restores only the active session position', () async {
+      await _scenario((fixture, player) async {
+        await player.playSingle(_song('song'));
+        await _until(player, () => player.isPlaying);
+        await fixture.readyEvent(position: const Duration(seconds: 44));
+        await _until(player, () => player.position.inSeconds >= 44);
+
+        PlaybackSessionSnapshot? crashSnapshot;
+        if (boundary == 'periodic save') {
+          final deadline = DateTime.now().add(const Duration(seconds: 3));
+          while (DateTime.now().isBefore(deadline)) {
+            final snapshot = await PlaybackStateService.load(
+              scope: fixture.scope,
+            );
+            if (snapshot != null &&
+                snapshot.isPlaying &&
+                snapshot.position.inSeconds >= 44) {
+              crashSnapshot = snapshot;
+              break;
+            }
+            await Future<void>.delayed(const Duration(milliseconds: 10));
+          }
+          expect(crashSnapshot, isNotNull);
+        } else if (boundary == 'app exit') {
+          await player.prepareForAppExit();
+        } else if (boundary == 'user switch') {
+          await player.prepareForUserSwitch();
+        }
+        await player.disposeResources();
+        if (crashSnapshot != null) {
+          // A killed process cannot flush during disposal. Restore only the
+          // periodic snapshot that had already reached storage before cleanup.
+          await PlaybackStateService.save(crashSnapshot, scope: fixture.scope);
+        }
+        final saved = await PlaybackStateService.load(scope: fixture.scope);
+        expect(saved, isNotNull);
+        expect(saved!.position.inMilliseconds, inInclusiveRange(44000, 46999));
+        expect(saved.isPlaying, isTrue);
+        expect(
+          await PlaybackStateService.load(
+            scope: UserDataScope('${fixture.scope.userId}-other'),
+          ),
+          isNull,
+        );
+
+        final restored = PlayerProvider(
+          dataScope: fixture.scope,
+          activateRestoredSession: false,
+        );
+        try {
+          await restored.playbackStateReady;
+          expect(restored.currentSong!.id, 'song');
+          expect(restored.position, saved.position);
+          await restored.activateRestoredSession();
+          await _expectResumed(restored, saved.position);
+        } finally {
+          await restored.disposeResources();
+        }
+      });
+    });
+  }
+
+  test(
+    'clearing history keeps the current session independent of history',
     () async {
       await _scenario((fixture, player) async {
         final song = _song('song');
@@ -106,6 +207,7 @@ void main() {
         await player.pause();
         await player.playSingle(other);
         await player.pause();
+        await player.seekTo(const Duration(seconds: 13));
         await player.clearPlaybackHistory();
         await _until(player, () => player.playbackHistory.isEmpty);
         expect(
@@ -115,7 +217,7 @@ void main() {
         final session = await PlaybackStateService.load(scope: fixture.scope);
         expect(session, isNotNull);
         expect(session!.queue[session.currentIndex].id, 'other');
-        expect(session.position, Duration.zero);
+        expect(session.position, const Duration(seconds: 13));
         expect(session.isPlaying, isFalse);
         fixture.seekPositions.clear();
         await player.playSingle(song);
@@ -129,35 +231,30 @@ void main() {
     },
   );
 
-  test('queue navigation retains independent song bookmarks', () async {
+  test('queue navigation always starts the selected song at zero', () async {
     await _scenario((fixture, player) async {
       await player.playFromSearchResults([_song('a'), _song('b')], 0);
       await player.pause();
       await player.seekTo(const Duration(seconds: 23));
       await player.pause();
+
+      fixture.seekPositions.clear();
       await player.playNext();
-      expect(player.currentSong!.id, 'b');
-      expect(player.position.inMilliseconds, lessThan(1000));
+      await _expectStartedAtBeginning(fixture, player);
+
       await player.pause();
       await player.seekTo(const Duration(seconds: 67));
       await player.pause();
+      fixture.seekPositions.clear();
       await player.playPrevious();
-      await _expectResumed(fixture, player, const Duration(seconds: 23));
+      await _expectStartedAtBeginning(fixture, player);
+
+      fixture.seekPositions.clear();
       await player.playQueueItem(1);
-      await _expectResumed(fixture, player, const Duration(seconds: 67));
-      await player.pause();
-      final history = await PlaybackHistoryService.load(scope: fixture.scope);
-      expect(
-        history.singleWhere((entry) => entry.song.id == 'a').position.inSeconds,
-        23,
-      );
-      expect(
-        history.singleWhere((entry) => entry.song.id == 'b').position.inSeconds,
-        67,
-      );
+      await _expectStartedAtBeginning(fixture, player);
     });
   });
-  test('Bilibili pages of the same video retain separate bookmarks', () async {
+  test('Bilibili queue page selections always start from zero', () async {
     await _scenario((fixture, player) async {
       final cache = await Directory(
         '${fixture.directory.path}/${fixture.scope.audioCacheRelativePath}',
@@ -204,48 +301,85 @@ void main() {
       );
       expect(player.addTracksToQueue([first, second]), isTrue);
       await player.playQueueItem(0);
-      expect(player.queue.map((song) => song.bilibiliCid), [101, 202]);
+      expect(player.queue.map((item) => item.bilibiliCid), [101, 202]);
       await player.pause();
       await player.seekTo(const Duration(seconds: 19));
       await player.pause();
+
+      fixture.seekPositions.clear();
       await player.playQueueItem(1);
+      await _expectStartedAtBeginning(fixture, player);
       await player.pause();
       await player.seekTo(const Duration(seconds: 71));
       await player.pause();
+
+      fixture.seekPositions.clear();
       await player.playQueueItem(0);
-      await _expectResumed(fixture, player, const Duration(seconds: 19));
-      await player.playQueueItem(1);
-      await _expectResumed(fixture, player, const Duration(seconds: 71));
+      await _expectStartedAtBeginning(fixture, player);
       await player.pause();
+
       final history = await PlaybackHistoryService.load(scope: fixture.scope);
       expect(
         history
             .singleWhere((entry) => entry.song.bilibiliCid == 101)
             .position
-            .inSeconds,
-        19,
+            .inMilliseconds,
+        inInclusiveRange(0, 999),
       );
       expect(
-        history
-            .singleWhere((entry) => entry.song.bilibiliCid == 202)
-            .position
-            .inSeconds,
-        71,
+        history.singleWhere((entry) => entry.song.bilibiliCid == 202).position,
+        const Duration(seconds: 71),
       );
     });
   });
 
+  for (final mode in PlayMode.values) {
+    test('${mode.name} completion starts the selected track at zero', () async {
+      await _scenario((fixture, player) async {
+        await player.playFromSearchResults([_song('a'), _song('b')], 1);
+        await player.pause();
+        await player.seekTo(const Duration(seconds: 61));
+        await player.pause();
+        await player.playQueueItem(0);
+        while (player.playMode != mode) {
+          player.togglePlayMode();
+        }
+        await _until(player, () => player.isPlaying);
+        await player.pause();
+        await player.seekTo(const Duration(seconds: 179));
+        await player.playPause();
+        await _until(player, () => player.isPlaying);
+        fixture.seekPositions.clear();
+        await fixture.readyEvent(
+          state: 4,
+          position: const Duration(seconds: 180),
+        );
+        await _until(
+          player,
+          () =>
+              player.isPlaying &&
+              !player.isLoading &&
+              player.position < const Duration(seconds: 1) &&
+              player.audioPlayer.processingState == ProcessingState.ready,
+        );
+        expect(player.currentSong!.id, mode == PlayMode.repeat ? 'a' : 'b');
+        await _expectStartedAtBeginning(fixture, player);
+      });
+    });
+  }
+
   test(
-    'unfinished final second resumes but completed playback restarts',
+    'track-end sleep stop clears the session position before replay',
     () async {
       await _scenario((fixture, player) async {
         final song = _song('song');
         await player.playSingle(song);
+        await _until(player, () => player.isPlaying);
         await player.pause();
         await player.seekTo(const Duration(seconds: 179));
         await player.pause();
-        await player.playSingle(song);
-        await _expectResumed(fixture, player, const Duration(seconds: 179));
+        await player.playPause();
+        await _expectResumed(player, const Duration(seconds: 179));
         final playsBeforeCompletion = fixture.playCalls;
         player.sleepTimer.stopAfterTrack();
         await fixture.readyEvent(
@@ -258,19 +392,36 @@ void main() {
         expect(player.sleepTimer.error, isNull);
         fixture.seekPositions.clear();
         await player.playSingle(song);
-        await _until(player, () => player.isPlaying);
-        expect(player.position.inMilliseconds, lessThan(1000));
-        expect(
-          fixture.seekPositions.where((position) => position > 0),
-          isEmpty,
-        );
+        await _expectStartedAtBeginning(fixture, player);
         expect(fixture.playCalls, greaterThan(playsBeforeCompletion));
       });
     },
   );
 
+  test('failed native loads do not restore per-song positions', () async {
+    await _scenario((fixture, player) async {
+      final song = _song('song');
+      await player.playSingle(song);
+      await player.pause();
+      await player.seekTo(const Duration(seconds: 54));
+      await player.pause();
+      fixture.failAllLoads = true;
+      await player.playSingle(song);
+      expect(player.errorMessage, isNotNull);
+      expect(player.isPlaying, isFalse);
+      await player.stop();
+      await _expectCheckpoint(fixture, song, Duration.zero);
+      final history = await PlaybackHistoryService.load(scope: fixture.scope);
+      expect(history.single.position, const Duration(seconds: 54));
+      fixture.failAllLoads = false;
+      fixture.seekPositions.clear();
+      await player.playSingle(song);
+      await _expectStartedAtBeginning(fixture, player);
+    });
+  });
+
   test(
-    'stop cancels late resolution without destroying its bookmark',
+    'stop cancels late resolution and later selections start at zero',
     () async {
       await _scenario((fixture, player) async {
         await player.setPlaybackSource(
@@ -295,7 +446,8 @@ void main() {
           expect(fixture.playCalls, playsAtStop);
           expect(fixture.loaded.length, loadsAtStop);
           await player.playSingle(_song('song'));
-          await _expectResumed(fixture, player, const Duration(seconds: 46));
+          await _until(player, () => player.isPlaying);
+          expect(player.position.inMilliseconds, lessThan(1000));
         } finally {
           if (!gate.isCompleted) gate.complete();
           await pending.timeout(const Duration(seconds: 2));
@@ -304,58 +456,68 @@ void main() {
     },
   );
 
-  test(
-    'pause cancels a native load even when it later reports ready',
-    () async {
-      await _scenario((fixture, player) async {
-        await player.playSingle(_song('song'));
-        await player.pause();
-        await player.seekTo(const Duration(seconds: 39));
-        await player.pause();
-        final gate = fixture.loadGate = Completer<void>();
-        final started = fixture.loadStarted = Completer<void>();
-        final pending = player.playSingle(_song('song'));
-        try {
-          await started.future.timeout(const Duration(seconds: 2));
-          await player.pause();
-          final playsAtPause = fixture.playCalls;
-          gate.complete();
-          await pending.timeout(const Duration(seconds: 2));
-          expect(player.isPlaying, isFalse);
-          expect(player.isLoading, isFalse);
-          expect(fixture.playCalls, playsAtPause);
-          await _expectCheckpoint(
-            fixture,
-            _song('song'),
-            const Duration(seconds: 39),
-          );
-          fixture.loadGate = null;
+  for (final resumeSession in [false, true]) {
+    test(
+      'pause cancels a native load during ${resumeSession ? 'session resume' : 'new selection'}',
+      () async {
+        await _scenario((fixture, player) async {
           await player.playSingle(_song('song'));
-          await _expectResumed(fixture, player, const Duration(seconds: 39));
-        } finally {
-          if (!gate.isCompleted) gate.complete();
-          await pending.timeout(const Duration(seconds: 2));
-        }
-      });
-    },
-  );
+          await player.pause();
+          await player.seekTo(const Duration(seconds: 39));
+          await player.pause();
+          if (resumeSession) await player.stop();
+          final gate = fixture.loadGate = Completer<void>();
+          final started = fixture.loadStarted = Completer<void>();
+          final pending = resumeSession
+              ? player.playPause()
+              : player.playSingle(_song('song'));
+          try {
+            await started.future.timeout(const Duration(seconds: 2));
+            await player.pause();
+            final playsAtPause = fixture.playCalls;
+            gate.complete();
+            await pending.timeout(const Duration(seconds: 2));
+            expect(player.isPlaying, isFalse);
+            expect(player.isLoading, isFalse);
+            expect(fixture.playCalls, playsAtPause);
+            await _expectCheckpoint(
+              fixture,
+              _song('song'),
+              resumeSession ? const Duration(seconds: 39) : Duration.zero,
+            );
+            fixture.loadGate = null;
+            fixture.seekPositions.clear();
+            await player.playPause();
+            if (resumeSession) {
+              await _expectResumed(player, const Duration(seconds: 39));
+            } else {
+              await _expectStartedAtBeginning(fixture, player);
+            }
+          } finally {
+            if (!gate.isCompleted) gate.complete();
+            await pending.timeout(const Duration(seconds: 2));
+          }
+        });
+      },
+    );
+  }
 
-  test('failed native loads retain the last usable checkpoint', () async {
+  test('failed session resumes retain the checkpoint for retry', () async {
     await _scenario((fixture, player) async {
       final song = _song('song');
       await player.playSingle(song);
       await player.pause();
       await player.seekTo(const Duration(seconds: 54));
-      await player.pause();
+      await player.stop();
       fixture.failAllLoads = true;
-      await player.playSingle(song);
+      await player.playPause();
       expect(player.errorMessage, isNotNull);
       expect(player.isPlaying, isFalse);
       await player.stop();
       await _expectCheckpoint(fixture, song, const Duration(seconds: 54));
       fixture.failAllLoads = false;
-      await player.playSingle(song);
-      await _expectResumed(fixture, player, const Duration(seconds: 54));
+      await player.playPause();
+      await _expectResumed(player, const Duration(seconds: 54));
     });
   });
 
@@ -794,7 +956,7 @@ void main() {
 
   for (final platform in [MusicPlatform.qq, MusicPlatform.bilibili]) {
     test(
-      'downloaded $platform plays and restores without network requests',
+      'downloaded $platform resumes the session and restarts selections offline',
       () async {
         await _scenario((fixture, player) async {
           final entry = DownloadEntry(
@@ -844,11 +1006,32 @@ void main() {
             SongSearchResult.fromJson(persistedSong.toJson()).downloadId,
             entry.id,
           );
+          await player.pause();
+          await player.seekTo(const Duration(seconds: 35));
+          await player.stop();
+          await _expectCheckpoint(
+            fixture,
+            entry.offlineSong,
+            const Duration(seconds: 35),
+          );
+          await player.playPause();
+          await _expectResumed(player, const Duration(seconds: 35));
+          fixture.seekPositions.clear();
+          await player.playSingle(entry.offlineSong);
+          await _expectStartedAtBeginning(fixture, player);
+          expect(fixture.requestCount, 0);
           fixture.failAllLoads = true;
           await player.playSingle(entry.offlineSong);
           expect(fixture.requestCount, 0);
           expect(player.isLoading, isFalse);
           expect(player.errorMessage, isNotNull);
+          fixture.failAllLoads = false;
+          final loadsBeforeMissingFile = fixture.loaded.length;
+          await File('${dir.path}/${entry.fileName}').delete();
+          await player.playSingle(entry.offlineSong);
+          expect(player.errorMessage, contains('下载文件已不存在'));
+          expect(fixture.requestCount, 0);
+          expect(fixture.loaded.length, loadsBeforeMissingFile);
         });
       },
     );
@@ -1310,39 +1493,33 @@ Future<void> _expectCheckpoint(
   SongSearchResult song,
   Duration position,
 ) async {
-  final deadline = DateTime.now().add(const Duration(seconds: 2));
-  while (DateTime.now().isBefore(deadline)) {
-    final history = await PlaybackHistoryService.load(scope: fixture.scope);
-    final session = await PlaybackStateService.load(scope: fixture.scope);
-    final matches = history
-        .where((entry) => entry.key == PlaybackHistoryService.keyForSong(song))
-        .toList();
-    final entry = matches.isEmpty ? null : matches.first;
-    if (entry?.position.inMilliseconds == position.inMilliseconds &&
-        session?.position.inMilliseconds == position.inMilliseconds &&
-        session?.isPlaying == false) {
-      return;
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-  }
-  final history = await PlaybackHistoryService.load(scope: fixture.scope);
-  final entry = history.singleWhere(
-    (entry) => entry.key == PlaybackHistoryService.keyForSong(song),
-  );
   final session = await PlaybackStateService.load(scope: fixture.scope);
-  expect(entry.position.inMilliseconds, position.inMilliseconds);
   expect(session, isNotNull);
-  expect(session!.position.inMilliseconds, position.inMilliseconds);
+  final current = session!.queue[session.currentIndex];
+  expect(current.platform, song.platform);
+  expect(current.id, song.id);
+  expect(current.bilibiliCid, song.bilibiliCid);
+  expect(current.downloadId, song.downloadId);
+  expect(session.position.inMilliseconds, position.inMilliseconds);
   expect(session.isPlaying, isFalse);
 }
 
-Future<void> _expectResumed(
+Future<void> _expectStartedAtBeginning(
   _NativeFixture fixture,
   PlayerProvider player,
-  Duration position,
 ) async {
   await _until(player, () => player.isPlaying);
-  expect(fixture.seekPositions.last, position.inMilliseconds * 1000);
+  expect(player.position.inMilliseconds, lessThan(1000));
+  expect(player.audioPlayer.position.inMilliseconds, lessThan(1000));
+  expect(fixture.seekPositions.where((position) => position > 0), isEmpty);
+}
+
+Future<void> _expectResumed(PlayerProvider player, Duration position) async {
+  await _until(player, () => player.isPlaying);
+  expect(
+    player.audioPlayer.position.inMilliseconds,
+    inInclusiveRange(position.inMilliseconds, position.inMilliseconds + 1000),
+  );
   expect(
     player.position.inMilliseconds,
     inInclusiveRange(position.inMilliseconds, position.inMilliseconds + 1000),
