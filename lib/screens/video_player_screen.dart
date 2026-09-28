@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
@@ -16,7 +17,7 @@ import '../widgets/remote_focusable.dart';
 
 enum _MvEngine { exo, mpv }
 
-abstract class _MvPlaybackController extends ChangeNotifier {
+abstract class MvPlaybackController extends ChangeNotifier {
   String get label;
   bool get isInitialized;
   bool get isPlaying;
@@ -32,9 +33,30 @@ abstract class _MvPlaybackController extends ChangeNotifier {
   Future<void> seekTo(Duration position);
   Widget buildSurface(Key key);
   Future<void> close();
+
+  bool get canRetryWithSoftwareDecoding => false;
+
+  /// Reopens the same media and resumes only while the page still requests it.
+  /// Each controller permits only one such attempt.
+  Future<void> retryWithSoftwareDecoding(
+    Duration position, {
+    bool Function()? shouldResume,
+  }) {
+    throw UnsupportedError('此播放器不支持兼容重试');
+  }
+
+  void cancelSoftwareDecodingRetry() {}
 }
 
-class _UnavailablePlaybackController extends _MvPlaybackController {
+typedef MvPlaybackControllerFactory =
+    MvPlaybackController Function({
+      required VideoPlayerMode mode,
+      required String url,
+      required Map<String, String> headers,
+      String? audioUrl,
+    });
+
+class _UnavailablePlaybackController extends MvPlaybackController {
   final String _message;
   bool _closed = false;
 
@@ -87,7 +109,7 @@ class _UnavailablePlaybackController extends _MvPlaybackController {
   }
 }
 
-class _ExoPlaybackController extends _MvPlaybackController {
+class _ExoPlaybackController extends MvPlaybackController {
   late final VideoPlayerController _controller;
   final String? _audioUrl;
   final Map<String, String> _headers;
@@ -329,7 +351,7 @@ class _ExoPlaybackController extends _MvPlaybackController {
   }
 }
 
-class _MpvPlaybackController extends _MvPlaybackController {
+class MpvPlaybackController extends MvPlaybackController {
   late final media_kit.Player _player;
   late final media_kit_video.VideoController _controller;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
@@ -338,60 +360,67 @@ class _MpvPlaybackController extends _MvPlaybackController {
   final Map<String, String> headers;
   bool _initialized = false;
   bool _closed = false;
+  bool _softwareDecoding = false;
+  bool _recoveryCancelled = false;
+  Future<void>? _initializationOperation;
+  Future<void>? _recoveryOperation;
   Future<dynamic>? _propertyOperation;
   Future<dynamic>? _openOperation;
   Future<void>? _closeFuture;
   final Completer<void> _closedSignal = Completer<void>();
   String? _error;
 
-  _MpvPlaybackController(this.url, this.headers, {this.audioUrl}) {
+  MpvPlaybackController(this.url, this.headers, {this.audioUrl}) {
     _player = media_kit.Player(
       configuration: const media_kit.PlayerConfiguration(title: '库仔音乐 MV'),
     );
-    _controller = media_kit_video.VideoController(
-      _player,
-      configuration: const media_kit_video.VideoControllerConfiguration(
-        enableHardwareAcceleration: true,
-        androidAttachSurfaceAfterVideoParameters: false,
-      ),
-    );
-    _subscriptions.addAll([
-      _player.stream.playing.listen(
-        (_) => _changed(),
-        onError: (Object error, StackTrace stackTrace) {
-          _handleStreamError('playing', error, stackTrace);
-        },
-      ),
-      _player.stream.position.listen(
-        (_) => _changed(),
-        onError: (Object error, StackTrace stackTrace) {
-          _handleStreamError('position', error, stackTrace);
-        },
-      ),
-      _player.stream.duration.listen(
-        (_) => _changed(),
-        onError: (Object error, StackTrace stackTrace) {
-          _handleStreamError('duration', error, stackTrace);
-        },
-      ),
-      _player.stream.buffering.listen(
-        (_) => _changed(),
-        onError: (Object error, StackTrace stackTrace) {
-          _handleStreamError('buffering', error, stackTrace);
-        },
-      ),
-      _player.stream.width.listen(
-        (_) => _changed(),
-        onError: (Object error, StackTrace stackTrace) {
-          _handleStreamError('width', error, stackTrace);
-        },
-      ),
-      _player.stream.height.listen(
-        (_) => _changed(),
-        onError: (Object error, StackTrace stackTrace) {
-          _handleStreamError('height', error, stackTrace);
-        },
-      ),
+    try {
+      _controller = media_kit_video.VideoController(
+        _player,
+        configuration: const media_kit_video.VideoControllerConfiguration(
+          enableHardwareAcceleration: true,
+          androidAttachSurfaceAfterVideoParameters: false,
+        ),
+      );
+      _listenToPlayer();
+    } catch (_) {
+      unawaited(close());
+      rethrow;
+    }
+  }
+
+  @visibleForTesting
+  MpvPlaybackController.withPlayer(
+    this.url,
+    this.headers, {
+    this.audioUrl,
+    required media_kit.Player player,
+    required media_kit_video.VideoController videoController,
+  }) : _player = player,
+       _controller = videoController {
+    _listenToPlayer();
+  }
+
+  void _listenToPlayer() {
+    final streams = <String, Stream<dynamic>>{
+      'playing': _player.stream.playing,
+      'position': _player.stream.position,
+      'duration': _player.stream.duration,
+      'buffering': _player.stream.buffering,
+      'width': _player.stream.width,
+      'height': _player.stream.height,
+    };
+    for (final entry in streams.entries) {
+      _subscriptions.add(
+        entry.value.listen(
+          (_) => _changed(),
+          onError: (Object error, StackTrace stackTrace) {
+            _handleStreamError(entry.key, error, stackTrace);
+          },
+        ),
+      );
+    }
+    _subscriptions.add(
       _player.stream.error.listen(
         (message) {
           if (message.trim().isEmpty || _closed) return;
@@ -402,11 +431,11 @@ class _MpvPlaybackController extends _MvPlaybackController {
           _handleStreamError('error', error, stackTrace);
         },
       ),
-    ]);
+    );
   }
 
   @override
-  String get label => 'MPV';
+  String get label => _softwareDecoding ? 'MPV · 兼容模式' : 'MPV';
 
   @override
   bool get isInitialized => _initialized;
@@ -450,7 +479,9 @@ class _MpvPlaybackController extends _MvPlaybackController {
   }
 
   @override
-  Future<void> initialize() async {
+  Future<void> initialize() => _initializationOperation ??= _initialize();
+
+  Future<void> _initialize() async {
     if (_closed) return;
     _error = null;
     final source = audioUrl == null || audioUrl!.isEmpty
@@ -476,7 +507,7 @@ class _MpvPlaybackController extends _MvPlaybackController {
           },
         );
         await Future.any<void>([operation, _closedSignal.future]);
-        if (_closed) return;
+        if (_closed || _recoveryCancelled) return;
       }
       if (referer != null) {
         final operation = nativePlayer.setProperty('referrer', referer);
@@ -494,9 +525,12 @@ class _MpvPlaybackController extends _MvPlaybackController {
           },
         );
         await Future.any<void>([operation, _closedSignal.future]);
-        if (_closed) return;
+        if (_closed || _recoveryCancelled) return;
       }
     }
+    // Startup may have timed out while a header/property call was pending.
+    // Let recovery open the media instead of starting a late hardware attempt.
+    if (_softwareDecoding) return;
     final opening = _player.open(
       media_kit.Media(source, httpHeaders: headers),
       play: true,
@@ -512,6 +546,91 @@ class _MpvPlaybackController extends _MvPlaybackController {
     );
     await Future.any<void>([opening, _closedSignal.future]);
     if (_closed) return;
+    if (_softwareDecoding) {
+      // The page may already have timed out and requested recovery. Do not let
+      // a late completion of the original autoplay start behind the error UI.
+      await _player.pause();
+      return;
+    }
+    _initialized = true;
+    _changed();
+  }
+
+  @override
+  bool get canRetryWithSoftwareDecoding =>
+      !_closed &&
+      !_softwareDecoding &&
+      _player.platform is media_kit.NativePlayer;
+
+  @override
+  Future<void> retryWithSoftwareDecoding(
+    Duration position, {
+    bool Function()? shouldResume,
+  }) {
+    final pending = _recoveryOperation;
+    if (pending != null) return pending;
+    if (!canRetryWithSoftwareDecoding) {
+      return Future.error(StateError('MPV 兼容重试不可用'));
+    }
+    _softwareDecoding = true;
+    _initialized = false;
+    return _recoveryOperation = _retryWithSoftwareDecoding(
+      position,
+      shouldResume,
+    );
+  }
+
+  @override
+  void cancelSoftwareDecodingRetry() {
+    _recoveryCancelled = true;
+  }
+
+  bool get _canContinueRecovery => !_closed && !_recoveryCancelled;
+
+  Future<void> _retryWithSoftwareDecoding(
+    Duration position,
+    bool Function()? shouldResume,
+  ) async {
+    // A timeout does not cancel initialize/open. Finish that whole operation
+    // before touching the decoder, including any late header/property calls.
+    try {
+      await _initializationOperation;
+    } catch (_) {
+      // The original initialization failure is why this recovery was requested.
+    }
+    if (!_canContinueRecovery) return;
+    await _player.stop();
+    if (!_canContinueRecovery) return;
+    _error = null;
+    final nativePlayer = _player.platform as media_kit.NativePlayer;
+    await nativePlayer.setProperty('hwdec', 'no');
+    if (!_canContinueRecovery) return;
+    final source = audioUrl == null || audioUrl!.isEmpty
+        ? url
+        : _edlSource(url, audioUrl!);
+    // Keep the URL, headers and selected quality. Reusing the player also
+    // avoids adding a native dispose/create race to the recovery path.
+    await _player.open(
+      media_kit.Media(
+        source,
+        httpHeaders: headers,
+        start: position > Duration.zero ? position : null,
+      ),
+      play: false,
+    );
+    if (!_canContinueRecovery) return;
+    final recoveryError = _error;
+    if (recoveryError != null) throw StateError(recoveryError);
+    if (shouldResume?.call() ?? false) {
+      // Keep resume inside the tracked operation: timeout/close must cover
+      // this native call too, and backgrounding must undo a late completion.
+      await _player.play();
+      if (!_closed &&
+          (_recoveryCancelled || !(shouldResume?.call() ?? false))) {
+        await _player.pause();
+      }
+    }
+    if (!_canContinueRecovery) return;
     _initialized = true;
     _changed();
   }
@@ -549,6 +668,12 @@ class _MpvPlaybackController extends _MvPlaybackController {
   Future<void> _close() async {
     _closed = true;
     _closedSignal.complete();
+    try {
+      await _initializationOperation;
+    } catch (_) {}
+    try {
+      await _recoveryOperation;
+    } catch (_) {}
     // media_kit cannot cancel an in-flight property/open call. Wait for those
     // platform operations before disposing the native player instance.
     try {
@@ -564,7 +689,10 @@ class _MpvPlaybackController extends _MvPlaybackController {
     }
     try {
       await _player.dispose();
-    } catch (_) {}
+    } catch (error, stackTrace) {
+      debugPrint('MPV 释放失败: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
     super.dispose();
   }
 }
@@ -578,6 +706,8 @@ class VideoPlayerScreen extends StatefulWidget {
   final String artist;
   final MusicPlatform platform;
   final VideoPlayerMode mode;
+  @visibleForTesting
+  final MvPlaybackControllerFactory? controllerFactory;
 
   const VideoPlayerScreen({
     super.key,
@@ -589,6 +719,7 @@ class VideoPlayerScreen extends StatefulWidget {
     required this.artist,
     required this.platform,
     this.mode = VideoPlayerMode.exo,
+    this.controllerFactory,
   });
 
   @override
@@ -600,7 +731,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   late final List<String> _sourceUrls;
   int _sourceIndex = 0;
   late _MvEngine _activeEngine;
-  late _MvPlaybackController _controller;
+  late MvPlaybackController _controller;
   Timer? _controlsTimer;
   bool _initializing = true;
   bool _controlsVisible = true;
@@ -609,6 +740,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _switchingEngine = false;
   bool _handlingPlaybackFailure = false;
   bool _automaticFallbackUsed = false;
+  bool _resumeAfterCompatibility = false;
   String? _initializationError;
   String? _engineNotice;
   Timer? _videoUiTimer;
@@ -675,28 +807,39 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     };
   }
 
-  _MvPlaybackController _createController(_MvEngine engine) {
+  MvPlaybackController _createController(_MvEngine engine) {
     if (_sourceUrls.isEmpty) {
       return _UnavailablePlaybackController('MV 播放地址无效或为空');
     }
     // MPV is a native backend. Keep its initialization off the ordinary audio
     // startup path and pay the cost only when an MV actually needs it.
     try {
-      if (engine == _MvEngine.mpv) {
-        media_kit.MediaKit.ensureInitialized();
-      }
       final headers = _headersFor(widget.platform, widget.headers);
       final url = _sourceUrls[_sourceIndex];
       final audioUrl = _isPlayableSource(widget.audioUrl ?? '')
           ? widget.audioUrl
           : null;
+      final controllerFactory = widget.controllerFactory;
+      if (controllerFactory != null) {
+        return controllerFactory(
+          mode: engine == _MvEngine.mpv
+              ? VideoPlayerMode.mpv
+              : VideoPlayerMode.exo,
+          url: url,
+          headers: headers,
+          audioUrl: audioUrl,
+        );
+      }
+      if (engine == _MvEngine.mpv) {
+        media_kit.MediaKit.ensureInitialized();
+      }
       return switch (engine) {
         _MvEngine.exo => _ExoPlaybackController(
           url,
           headers,
           audioUrl: audioUrl,
         ),
-        _MvEngine.mpv => _MpvPlaybackController(
+        _MvEngine.mpv => MpvPlaybackController(
           url,
           headers,
           audioUrl: audioUrl,
@@ -829,11 +972,70 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         await _switchEngine(_MvEngine.mpv, notice: 'ExoPlayer 播放失败，正在切换 MPV');
         return;
       }
+      if (!kIsWeb &&
+          defaultTargetPlatform == TargetPlatform.android &&
+          widget.platform == MusicPlatform.qq &&
+          _activeEngine == _MvEngine.mpv &&
+          _controller.canRetryWithSoftwareDecoding) {
+        await _retryMpvCompatibility();
+        return;
+      }
       _showPlaybackError(cause);
     } catch (error) {
       _showPlaybackError(error);
     } finally {
       _handlingPlaybackFailure = false;
+    }
+  }
+
+  Future<void> _retryMpvCompatibility() async {
+    final controller = _controller;
+    var position = controller.position;
+    if (position < Duration.zero) position = Duration.zero;
+    final duration = controller.duration;
+    if (duration > Duration.zero && position > duration) position = duration;
+    _resumeAfterCompatibility =
+        (_initializing || controller.isPlaying) &&
+        (WidgetsBinding.instance.lifecycleState == null ||
+            WidgetsBinding.instance.lifecycleState ==
+                AppLifecycleState.resumed);
+    _switchingEngine = true;
+    _controlsTimer?.cancel();
+    _cancelVideoUiRefresh();
+    setState(() {
+      _initializing = true;
+      _initializationError = null;
+      _engineNotice = '播放异常，正在尝试兼容模式';
+      _controlsVisible = true;
+    });
+    try {
+      await controller
+          .retryWithSoftwareDecoding(
+            position,
+            shouldResume: () =>
+                mounted &&
+                identical(controller, _controller) &&
+                _resumeAfterCompatibility,
+          )
+          .timeout(const Duration(seconds: 18));
+      if (!mounted || !identical(controller, _controller)) return;
+      final playbackError = controller.error;
+      if (playbackError != null) throw StateError(playbackError);
+      setState(() {
+        _initializing = false;
+        _engineNotice = null;
+      });
+      _lastVideoUiState = _readVideoUiState();
+      _lastVideoUiRefreshMs = _videoUiClock.elapsedMilliseconds;
+      _scheduleControlsHide();
+    } catch (error) {
+      controller.cancelSoftwareDecodingRetry();
+      if (mounted && identical(controller, _controller)) {
+        _showPlaybackError(error);
+      }
+    } finally {
+      _resumeAfterCompatibility = false;
+      _switchingEngine = false;
     }
   }
 
@@ -968,14 +1170,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (!mounted) return;
-    if (state != AppLifecycleState.resumed && _controller.isPlaying) {
-      final controller = _controller;
-      unawaited(_pauseForLifecycle(controller));
+    if (state != AppLifecycleState.resumed) {
+      final shouldPause = _controller.isPlaying || _resumeAfterCompatibility;
+      _resumeAfterCompatibility = false;
+      if (!shouldPause) return;
+      unawaited(_pauseForLifecycle(_controller));
       _showControls();
     }
   }
 
-  Future<void> _pauseForLifecycle(_MvPlaybackController controller) async {
+  Future<void> _pauseForLifecycle(MvPlaybackController controller) async {
     try {
       await controller.pause();
     } catch (error) {
@@ -1053,8 +1257,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Future<bool> _runControllerCommand(
-    Future<void> Function(_MvPlaybackController controller) command,
+    Future<void> Function(MvPlaybackController controller) command,
   ) async {
+    if (!mounted || _switchingEngine || _initializing) return false;
     final controller = _controller;
     try {
       await command(controller);
