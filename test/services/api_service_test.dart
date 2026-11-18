@@ -478,7 +478,7 @@ void main() {
   });
 
   test(
-    'Xinghai resolver generates its token and preserves Kugou metadata',
+    'Xinghai resolver obtains a server token and preserves Kugou metadata',
     () async {
       final requests = <http.Request>[];
       await http.runWithClient(
@@ -509,8 +509,11 @@ void main() {
         },
         () => MockClient((request) async {
           requests.add(request);
-          if (request.url.path == '/ip.php') {
-            return _jsonResponse({'ip': '203.0.113.8'});
+          if (request.url.path == '/lx/api/token.php') {
+            return _jsonResponse({
+              'code': 0,
+              'data': {'token': 'xh3.server-issued'},
+            });
           }
           return _jsonResponse({
             'code': 200,
@@ -527,13 +530,9 @@ void main() {
       expect(request.url.queryParameters, containsPair('mainHash', 'KG-HASH'));
       expect(request.url.queryParameters, containsPair('albumId', 'album-9'));
       expect(request.headers['X-Client'], 'test-client');
-      final token =
-          jsonDecode(utf8.decode(base64Decode(request.headers['X-Token']!)))
-              as Map<String, dynamic>;
-      expect(token['device_id'], 'test-device');
-      expect(token['ip'], '203.0.113.8');
-      expect(token['timestamp'], isA<int>());
-      expect(token['random'].toString(), hasLength(10));
+      expect(request.headers['X-Token'], 'xh3.server-issued');
+      expect(requests.first.url.queryParameters['device_id'], 'test-device');
+      expect(requests.first.url.path, '/lx/api/token.php');
     },
   );
 
@@ -582,56 +581,76 @@ void main() {
     },
   );
 
-  test(
-    'GDStudio resolver maps each platform and high quality bitrate',
-    () async {
-      final requested = <Uri>[];
-      await http.runWithClient(
-        () async {
-          final config = PlaybackSourceConfig.defaults().copyWith(
-            gdStudioUrl: 'https://gd.test/api.php',
+  test('GDStudio uses Netease IDs and matches QQ/Kugou metadata', () async {
+    final requested = <Uri>[];
+    await http.runWithClient(
+      () async {
+        final config = PlaybackSourceConfig.defaults().copyWith(
+          gdStudioUrl: 'https://gd.test/api.php',
+        );
+        final api = ApiService(apiKey: '', playbackSourceConfig: config);
+        try {
+          await api.gdStudioMusic(
+            MusicPlatform.netease,
+            '163-id',
+            quality: 'jymaster',
           );
-          final api = ApiService(apiKey: '', playbackSourceConfig: config);
-          try {
-            await api.gdStudioMusic(
-              MusicPlatform.netease,
-              '163-id',
-              quality: 'jymaster',
-            );
-            await api.gdStudioMusic(
-              MusicPlatform.qq,
-              'qq-mid',
-              quality: 'flac',
-            );
-            await api.gdStudioMusic(
-              MusicPlatform.kugou,
-              'kg-hash',
-              quality: '320k',
-            );
-          } finally {
-            api.close();
-          }
-        },
-        () => MockClient((request) async {
-          requested.add(request.url);
-          return _jsonResponse({'url': 'https://audio.test/gd.flac'});
-        }),
-      );
+          await api.gdStudioMusic(
+            MusicPlatform.qq,
+            'qq-mid',
+            quality: 'flac',
+            name: '歌曲',
+            artist: '歌手',
+          );
+          await api.gdStudioMusic(
+            MusicPlatform.kugou,
+            'kg-hash',
+            quality: '320k',
+            name: '歌曲',
+            artist: '歌手',
+          );
+        } finally {
+          api.close();
+        }
+      },
+      () => MockClient((request) async {
+        requested.add(request.url);
+        if (request.url.queryParameters['types'] == 'search') {
+          return http.Response(
+            jsonEncode([
+              {
+                'id': '12345',
+                'source': 'netease',
+                'name': '歌曲',
+                'artist': ['歌手'],
+                'album': '',
+              },
+            ]),
+            200,
+            headers: const {'content-type': 'application/json; charset=utf-8'},
+          );
+        }
+        return _jsonResponse({'url': 'https://audio.test/gd.flac'});
+      }),
+    );
 
-      expect(requested.map((uri) => uri.queryParameters['source']), [
-        'netease',
-        'qq',
-        'kg',
-      ]);
-      expect(requested.map((uri) => uri.queryParameters['br']), [
-        '999',
-        '740',
-        '320',
-      ]);
-      expect(requested.first.queryParameters['use_xbridge3'], 'true');
-      expect(requested[1].queryParameters.containsKey('use_xbridge3'), isFalse);
-    },
-  );
+    final playbackRequests = requested
+        .where((uri) => uri.queryParameters['types'] == 'url')
+        .toList();
+    expect(playbackRequests.map((uri) => uri.queryParameters['source']), [
+      'netease',
+      'netease',
+      'netease',
+    ]);
+    expect(playbackRequests.map((uri) => uri.queryParameters['br']), [
+      '999',
+      '740',
+      '320',
+    ]);
+    expect(requested.first.queryParameters['use_xbridge3'], 'true');
+    expect(playbackRequests[1].queryParameters['id'], '12345');
+    expect(playbackRequests[2].queryParameters['id'], '12345');
+  });
 
   test(
     'GDStudio retries Netease Hi-Res at FLAC when 999 is unavailable',
@@ -748,7 +767,7 @@ void main() {
         },
         () => MockClient((request) async {
           requestedHosts.add(request.url.host);
-          if (request.url.host == '161.118.252.183') {
+          if (request.url.host == 'api.chksz.com') {
             return _jsonResponse({'code': 200, 'data': {}});
           }
           return _jsonResponse({
@@ -757,7 +776,7 @@ void main() {
           });
         }),
       );
-      expect(requestedHosts, ['161.118.252.183', 'qing.test']);
+      expect(requestedHosts, ['api.chksz.com', 'qing.test']);
     },
   );
 
@@ -1359,6 +1378,23 @@ void main() {
           }
           expect(request.url.host, 'group-gd.test');
           expect(primaryResponses, 2);
+          if (request.url.queryParameters['types'] == 'search') {
+            return http.Response(
+              jsonEncode([
+                {
+                  'id': '12345',
+                  'source': 'netease',
+                  'name': '歌曲',
+                  'artist': ['歌手'],
+                  'album': '专辑',
+                },
+              ]),
+              200,
+              headers: const {
+                'content-type': 'application/json; charset=utf-8',
+              },
+            );
+          }
           return _jsonResponse({'url': 'https://audio.test/group-gd.flac'});
         }),
       );
@@ -1366,6 +1402,7 @@ void main() {
       expect(requestedHosts.where((host) => host.endsWith('.test')), [
         'group-qing.test',
         'group-hyw.test',
+        'group-gd.test',
         'group-gd.test',
       ]);
     },
@@ -1536,18 +1573,26 @@ void main() {
         },
         () => MockClient((request) async {
           requests.add(request);
+          if (request.url.path == '/lx/api/token.php') {
+            return _jsonResponse({
+              'code': 0,
+              'data': {'token': 'xh3.server-issued'},
+            });
+          }
           return http.Response('{}', 503);
         }),
       );
 
       final xinghai = requests.firstWhere(
-        (request) => request.url.host == 'probe-xinghai.test',
+        (request) =>
+            request.url.host == 'probe-xinghai.test' &&
+            request.url.queryParameters.containsKey('songmid'),
       );
       expect(xinghai.url.queryParameters['source'], 'wy');
       final gd = requests.firstWhere(
         (request) => request.url.host == 'probe-gd.test',
       );
-      expect(gd.url.queryParameters['source'], 'kg');
+      expect(gd.url.queryParameters['source'], 'netease');
     },
   );
 }

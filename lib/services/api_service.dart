@@ -5,8 +5,10 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../models/playback_source_config.dart';
 import '../models/song.dart';
+import '../utils/song_source_matcher.dart';
 import 'bilibili_service.dart';
 import 'bounded_http_response.dart';
+import 'qing_gateway_auth.dart';
 
 /// 音乐 API 服务层
 /// - 网易云: interface.music.163.com 官方公开目录接口
@@ -21,8 +23,8 @@ class ApiService {
   // 播放解析等请求保留一次重试；目录直连使用更短的单次超时后快速降级。
   static const _requestTimeout = Duration(seconds: 10);
   static const _resolverTimeout = Duration(seconds: 7);
-  static const _xinghaiIpTimeout = Duration(seconds: 3);
-  static const _xinghaiTokenLifetime = Duration(minutes: 5);
+  static const _xinghaiTokenTimeout = Duration(seconds: 3);
+  static const _xinghaiTokenLifetime = Duration(minutes: 4);
   static const _catalogTimeout = Duration(seconds: 5);
   static const _catalogFallbackTimeout = Duration(seconds: 8);
   static const _probeTimeout = Duration(seconds: 4);
@@ -32,6 +34,8 @@ class ApiService {
   static const _maxJsonResponseBytes = 5 * 1024 * 1024;
   static const _maxProbeResponseBytes = 64 * 1024;
   static const _maxQualityDowngrades = 3;
+  // 精确曲名（70 分）加匹配歌手（至少 20 分），避免用现场版或翻唱兜底。
+  static const _gdMinimumMatchScore = 90;
   static const _racePollInterval = Duration(milliseconds: 60);
   // A playlist index may contain up to 100,000 IDs. Retain only the active
   // index so visiting several large playlists cannot keep their ID arrays
@@ -92,13 +96,15 @@ class ApiService {
   final BilibiliService bilibili;
   String apiKey;
   PlaybackSourceConfig _playbackSourceConfig;
-  String? _xinghaiIp;
-  Future<String?>? _xinghaiIpRequest;
-  _PlaybackCancellation? _xinghaiIpCancellation;
+  String? _qingDeviceId;
+  Future<String>? _xinghaiTokenRequest;
+  _PlaybackCancellation? _xinghaiTokenCancellation;
   String? _xinghaiToken;
   DateTime? _xinghaiTokenCreatedAt;
-  String? _xinghaiTokenDeviceId;
-  String? _xinghaiTokenIp;
+  PlaybackSourceConfig? _xinghaiTokenConfig;
+  String? _gdMatchKey;
+  String? _gdMatchedId;
+  final Set<String> _gdAttemptedBitrates = <String>{};
   bool _closed = false;
   int _playbackGeneration = 0;
   _PlaybackCancellation? _activePlaybackCancellation;
@@ -124,14 +130,10 @@ class ApiService {
     _playbackGeneration++;
     _activePlaybackCancellation?.cancel();
     _playbackSourceConfig = validated;
-    _xinghaiIpCancellation?.cancel();
-    _xinghaiIpCancellation = null;
-    _xinghaiIp = null;
-    _xinghaiIpRequest = null;
-    _xinghaiToken = null;
-    _xinghaiTokenCreatedAt = null;
-    _xinghaiTokenDeviceId = null;
-    _xinghaiTokenIp = null;
+    _clearXinghaiTokenState();
+    _gdMatchKey = null;
+    _gdMatchedId = null;
+    _gdAttemptedBitrates.clear();
   }
 
   void close() {
@@ -143,11 +145,12 @@ class ApiService {
     _playbackGeneration++;
     _activePlaybackCancellation?.cancel();
     _activePlaybackCancellation = null;
-    _xinghaiIpCancellation?.cancel();
-    _xinghaiIpCancellation = null;
-    _xinghaiIpRequest = null;
-    _xinghaiToken = null;
+    _clearXinghaiTokenState();
+    _gdMatchKey = null;
+    _gdMatchedId = null;
+    _gdAttemptedBitrates.clear();
     _client.close();
+    _qingDeviceId = null;
     bilibili.dispose();
   }
 
@@ -298,6 +301,9 @@ class ApiService {
       throw const ApiException('CHKSZ_NETWORK', 'ChKSz 网络请求失败');
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
+      if (res.statusCode == 401) {
+        throw const ApiException('API_KEY_INVALID', 'ChKSz API Key 无效或已过期');
+      }
       throw ApiException('HTTP_${res.statusCode}', '服务暂时不可用');
     }
     final dynamic body;
@@ -307,6 +313,9 @@ class ApiService {
       throw const ApiException('INVALID_RESPONSE', '服务返回了无效数据');
     }
     if (body is Map<String, dynamic>) {
+      if (body['code']?.toString() == '401') {
+        throw const ApiException('API_KEY_INVALID', 'ChKSz API Key 无效或已过期');
+      }
       if (body['code'] != null && body['code'].toString() != '200') {
         throw ApiException(
           body['code'].toString(),
@@ -318,29 +327,34 @@ class ApiService {
     return {'data': body};
   }
 
-  /// QingMusic 脚本中的备用解析协议。脚本本身只用于说明适配规则，App
-  /// 直接调用其 resolve-url 服务，不在客户端执行远程 JavaScript。
+  /// 解析 QingMusic 播放地址，官方网关自动使用 v1.4.1 请求签名。
+  ///
+  /// [id] 为原平台歌曲标识，[quality] 按该平台映射；自定义服务继续原来的
+  /// JSON POST 契约，不执行远程脚本，也不向自定义地址发送官方认证头。
   Future<SongDetail> qingMusic(
     MusicPlatform platform,
     String id, {
     required String quality,
     Future<void>? cancelSignal,
   }) async {
+    final uri = Uri.parse(_playbackSourceConfig.qingMusicUrl);
+    final payload = <String, dynamic>{
+      'source': switch (platform) {
+        MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
+        MusicPlatform.qq => 'tx',
+        MusicPlatform.netease => 'wy',
+        MusicPlatform.kugou => 'kg',
+        MusicPlatform.bilibili => throw UnsupportedError('B站使用官方播放接口'),
+      },
+      'rid': id,
+      'level': _qingMusicLevel(platform, quality),
+    };
     final http.Response response;
     try {
       response = await _postJson(
-        Uri.parse(_playbackSourceConfig.qingMusicUrl),
-        {
-          'source': switch (platform) {
-            MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
-            MusicPlatform.qq => 'tx',
-            MusicPlatform.netease => 'wy',
-            MusicPlatform.kugou => 'kg',
-            MusicPlatform.bilibili => throw UnsupportedError('B站使用官方播放接口'),
-          },
-          'rid': id,
-          'level': _qingMusicLevel(platform, quality),
-        },
+        uri,
+        payload,
+        headers: _qingAuthHeaders(uri, payload),
         timeout: _resolverTimeout,
         maxAttempts: 1,
         cancelSignal: cancelSignal,
@@ -350,54 +364,58 @@ class ApiService {
     } catch (_) {
       throw const ApiException('QING_NETWORK', 'QingMusic 网络请求失败');
     }
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ApiException(
-        'QING_HTTP_${response.statusCode}',
-        'QingMusic 服务暂时不可用',
-      );
-    }
+    final httpError = response.statusCode < 200 || response.statusCode >= 300
+        ? ApiException('QING_HTTP_${response.statusCode}', 'QingMusic 服务暂时不可用')
+        : null;
     final dynamic body;
     try {
       body = jsonDecode(utf8.decode(response.bodyBytes));
     } on FormatException {
+      if (httpError != null) throw httpError;
       throw const ApiException('QING_INVALID_RESPONSE', 'QingMusic 返回了无效数据');
     }
     if (body is! Map) {
+      if (httpError != null) throw httpError;
       throw const ApiException('QING_INVALID_RESPONSE', 'QingMusic 返回格式错误');
     }
     final result = Map<String, dynamic>.from(body);
+    // 新版官方网关要求签名及票据，升级门禁不能通过降音质解决。
+    final responseCode = result['code']?.toString();
+    if (responseCode == 'APP_UPGRADE_REQUIRED' ||
+        responseCode?.startsWith('APP_SIGN_') == true) {
+      throw const ApiException(
+        'QING_UPGRADE_REQUIRED',
+        'QingMusic 客户端认证已失效，请更新音源或使用自动备用',
+      );
+    }
+    if (httpError != null) throw httpError;
     if (result['code']?.toString() != '0') {
       throw ApiException(
         'QING_${result['code'] ?? 'FAILED'}',
         result['message']?.toString() ?? 'QingMusic 解析失败',
       );
     }
-    final rawData = result['data'];
-    final data = rawData is Map
-        ? Map<String, dynamic>.from(rawData)
-        : <String, dynamic>{};
-    final url = data['url']?.toString() ?? '';
-    if (url.isEmpty) {
-      throw const ApiException('QING_EMPTY_URL', 'QingMusic 未返回播放地址');
+    // 复用统一响应校验，授权接口声明的加密流也不能交给原生播放器。
+    return _resolvedSongDetail(result, 'QING');
+  }
+
+  Map<String, String> _qingAuthHeaders(Uri uri, Map<String, dynamic> payload) {
+    _ensureOpen();
+    if (!QingGatewayAuth.supports(uri)) return const {};
+    // 匿名设备标识只保留一个；每次签名绑定当前 JSON 和新的随机 nonce。
+    try {
+      final deviceId = _qingDeviceId ??= QingGatewayAuth.createDeviceId();
+      return QingGatewayAuth.headersFor(
+        uri,
+        jsonEncode(payload),
+        deviceId: deviceId,
+      );
+    } catch (_) {
+      throw const ApiException(
+        'QING_SIGN_UNAVAILABLE',
+        '无法生成 QingMusic 客户端认证参数',
+      );
     }
-    final rawHeaders = data['playbackHeaders'] ?? data['headers'];
-    final headers = rawHeaders is Map
-        ? rawHeaders.map(
-            (key, value) => MapEntry(key.toString(), value.toString()),
-          )
-        : null;
-    final path = Uri.tryParse(url)?.path ?? '';
-    final dot = path.lastIndexOf('.');
-    return SongDetail(
-      name: '',
-      artist: '',
-      album: '',
-      url: url,
-      format: dot >= 0 && dot < path.length - 1
-          ? path.substring(dot + 1)
-          : null,
-      playbackHeaders: headers?.isEmpty == true ? null : headers,
-    );
   }
 
   static String _qingMusicLevel(MusicPlatform platform, String quality) {
@@ -408,13 +426,17 @@ class ApiService {
         return switch (quality) {
           'standard' => 'standard',
           'exhigh' => 'exhigh',
-          'lossless' || 'hires' => 'lossless',
+          'lossless' => 'lossless',
+          'hires' => 'hires',
+          'sky' => 'sky',
+          'jyeffect' => 'jyeffect',
           _ => 'jymaster',
         };
       case MusicPlatform.qq:
         return switch (quality) {
           '128k' => 'standard',
           '320k' => 'exhigh',
+          'master' => 'jymaster',
           _ => 'lossless',
         };
       case MusicPlatform.kugou:
@@ -422,6 +444,7 @@ class ApiService {
           '128k' => 'standard',
           '320k' => 'exhigh',
           'master' => 'clear',
+          'hires' => 'hires',
           _ => 'lossless',
         };
       case MusicPlatform.bilibili:
@@ -504,6 +527,7 @@ class ApiService {
 
       final failures = <String>[];
       final attempted = <(PlaybackSource, String)>{};
+      final unavailableSources = <PlaybackSource>{...excludedSources};
       final qualityCandidates = _qualityCandidates(platform, quality);
       for (final candidateQuality in qualityCandidates) {
         _ensurePlaybackOperationActive(operation, isCancelled);
@@ -514,7 +538,7 @@ class ApiService {
         ) {
           final group = _playbackSourceGroups[groupIndex]
               .where(candidates.contains)
-              .where((source) => !excludedSources.contains(source))
+              .where((source) => !unavailableSources.contains(source))
               .where(
                 (source) => attempted.add((
                   source,
@@ -541,6 +565,8 @@ class ApiService {
             _ensurePlaybackOperationActive(operation, isCancelled);
             return detail;
           } on _PlaybackGroupFailure catch (error) {
+            // 停服、鉴权和网络错误与音质无关，本轮播放不再重复请求该源。
+            unavailableSources.addAll(error.unavailableSources);
             if (failures.length < 12) {
               final groupLabel = groupIndex == 0 ? '主竞速组' : '低优先级兜底组';
               failures.add(
@@ -591,13 +617,13 @@ class ApiService {
     return [requested, ...order.skip(fallbackStart)];
   }
 
-  static String _effectivePlaybackQuality(
+  String _effectivePlaybackQuality(
     PlaybackSource source,
     MusicPlatform platform,
     String quality,
   ) => switch (source) {
     PlaybackSource.qingMusic => _qingMusicLevel(platform, quality),
-    PlaybackSource.hyw ||
+    PlaybackSource.hyw => _hywPlaybackQuality(platform, quality),
     PlaybackSource.xinghai => _aggregatorQuality(platform, quality),
     PlaybackSource.gdStudio => _gdBitrate(platform, quality),
     _ => quality,
@@ -605,6 +631,9 @@ class ApiService {
 
   _PlaybackCancellation _beginPlaybackOperation() {
     _activePlaybackCancellation?.cancel();
+    _gdMatchKey = null;
+    _gdMatchedId = null;
+    _gdAttemptedBitrates.clear();
     _playbackGeneration++;
     final operation = _PlaybackCancellation();
     _activePlaybackCancellation = operation;
@@ -614,6 +643,9 @@ class ApiService {
   void _endPlaybackOperation(_PlaybackCancellation operation) {
     if (identical(_activePlaybackCancellation, operation)) {
       _activePlaybackCancellation = null;
+      _gdMatchKey = null;
+      _gdMatchedId = null;
+      _gdAttemptedBitrates.clear();
     }
     operation.cancel();
   }
@@ -679,6 +711,7 @@ class ApiService {
     ]);
     final completer = Completer<SongDetail>();
     final failures = <String>[];
+    final unavailableSources = <PlaybackSource>{};
     var remaining = sources.length;
     var finished = false;
 
@@ -697,12 +730,15 @@ class ApiService {
       if (failures.length < sources.length) {
         failures.add('${source.label}：${_safeResolverFailure(error)}');
       }
+      if (_qualityRetryCannotHelp(error)) unavailableSources.add(source);
       remaining--;
       if (remaining == 0) {
         finished = true;
         groupCancellation.cancel();
         if (!completer.isCompleted) {
-          completer.completeError(_PlaybackGroupFailure(failures));
+          completer.completeError(
+            _PlaybackGroupFailure(failures, unavailableSources),
+          );
         }
       }
     }
@@ -785,6 +821,19 @@ class ApiService {
         '${source.label} 未返回播放地址',
       );
     }
+    // just_audio 不负责解密 QMC 文件，不能把已知加密流交给原生解码器。
+    final format = detail.format?.toLowerCase();
+    final path = uri.path.toLowerCase();
+    if (format == 'mflac' ||
+        format == 'mgg' ||
+        format == 'cenc' ||
+        path.endsWith('.mflac') ||
+        path.endsWith('.mgg')) {
+      throw ApiException(
+        '${source.value.toUpperCase()}_ENCRYPTED_AUDIO',
+        '${source.label} 返回了加密音频，请降低音质或更换接口',
+      );
+    }
   }
 
   Future<SongDetail> _resolveWithSource(
@@ -864,6 +913,10 @@ class ApiService {
           platform,
           id,
           quality: quality,
+          name: name,
+          artist: artist,
+          album: album,
+          duration: duration,
           cancelSignal: cancelSignal,
         );
     }
@@ -880,6 +933,7 @@ class ApiService {
     int? duration,
     Future<void>? cancelSignal,
   }) async {
+    _ensureHywPlatformSupported(platform, _playbackSourceConfig);
     final source = _aggregatorSource(platform);
     final params = <String, String>{
       'source': source,
@@ -887,7 +941,7 @@ class ApiService {
       'songId': id,
       'songmid': id,
       if (platform == MusicPlatform.kugou) ...{'hash': id, 'mainHash': id},
-      'quality': _aggregatorQuality(platform, quality),
+      'quality': _hywPlaybackQuality(platform, quality),
       if (name.trim().isNotEmpty) ...{
         'name': name.trim(),
         'songName': name.trim(),
@@ -915,7 +969,11 @@ class ApiService {
       params,
     );
     final headers = <String, String>{
-      if (_playbackSourceConfig.hywCardKey.isNotEmpty)
+      // HYW 发布脚本的无 LX 版本回退标识，不能沿用目录请求的浏览器 UA。
+      'User-Agent': 'lx-music-request/1.0.0',
+      // 中文卡密只放在已编码的 query；原生 HTTP 请求头只接受 ASCII。
+      if (_playbackSourceConfig.hywCardKey.isNotEmpty &&
+          !RegExp(r'[^\x20-\x7e]').hasMatch(_playbackSourceConfig.hywCardKey))
         'X-Card-Key': _playbackSourceConfig.hywCardKey,
     };
     final http.Response response;
@@ -932,7 +990,13 @@ class ApiService {
     } catch (_) {
       throw const ApiException('HYW_NETWORK', 'HYW 网络请求失败');
     }
+    const authError = ApiException(
+      'HYW_KEY_INVALID',
+      'HYW Card Key 无效或已过期，请更新备用源配置中的卡密',
+    );
+    if (response.statusCode == 401) throw authError;
     final body = _resolverResponseMap(response, 'HYW');
+    if (body['code']?.toString() == '401') throw authError;
     if (body['code']?.toString() != '200') {
       throw ApiException(
         'HYW_${body['code'] ?? 'FAILED'}',
@@ -940,6 +1004,26 @@ class ApiService {
       );
     }
     return _resolvedSongDetail(body, 'HYW');
+  }
+
+  String _hywPlaybackQuality(MusicPlatform platform, String quality) {
+    // v1.1.0 公益版最高声明 flac24bit；用户独立服务保留原有音质契约。
+    final mapped = _aggregatorQuality(platform, quality);
+    if (!_playbackSourceConfig.usesHywPublicSource) return mapped;
+    return switch (mapped) {
+      'master' || 'hires' || 'flac24bit' => 'flac24bit',
+      _ => mapped,
+    };
+  }
+
+  static void _ensureHywPlatformSupported(
+    MusicPlatform platform,
+    PlaybackSourceConfig config,
+  ) {
+    // 官方 v1.1.0 暂停酷狗，独立服务和用户授权卡密仍允许自行解析。
+    if (platform == MusicPlatform.kugou && config.usesHywPublicSource) {
+      throw const ApiException('HYW_SOURCE_UNSUPPORTED', 'HYW 当前公益版暂不支持酷狗');
+    }
   }
 
   Future<SongDetail> xinghaiMusic(
@@ -984,61 +1068,98 @@ class ApiService {
     final uri = base.replace(
       queryParameters: {...base.queryParameters, ...params},
     );
-    final http.Response response;
-    try {
-      response = await _get(
-        uri,
-        headers: await _xinghaiHeaders(cancelSignal: cancelSignal),
-        timeout: _resolverTimeout,
-        maxAttempts: 1,
-        cancelSignal: cancelSignal,
-      );
-    } on ApiException {
-      rethrow;
-    } catch (_) {
-      throw const ApiException('XINGHAI_NETWORK', '星海网络请求失败');
+    // 服务器会将令牌绑定到 IP；换网或令牌失效时，只刷新并重试一次。
+    for (var attempt = 0; attempt < 2; attempt++) {
+      final http.Response response;
+      final headers = await _xinghaiHeaders(cancelSignal: cancelSignal);
+      try {
+        response = await _get(
+          uri,
+          headers: headers,
+          timeout: _resolverTimeout,
+          maxAttempts: 1,
+          cancelSignal: cancelSignal,
+        );
+      } on ApiException {
+        rethrow;
+      } catch (_) {
+        throw const ApiException('XINGHAI_NETWORK', '星海网络请求失败');
+      }
+      if (attempt == 0 && _xinghaiNeedsTokenRefresh(response)) {
+        if (_xinghaiToken == headers['X-Token']) {
+          _xinghaiToken = null;
+          _xinghaiTokenCreatedAt = null;
+        }
+        continue;
+      }
+      if (response.statusCode == 401) {
+        throw _xinghaiAuthorizationError(_playbackSourceConfig);
+      }
+      final body = _resolverResponseMap(response, 'XINGHAI');
+      if (body['code']?.toString() == '401') {
+        throw _xinghaiAuthorizationError(_playbackSourceConfig);
+      }
+      if (body['code']?.toString() != '200') {
+        throw ApiException(
+          'XINGHAI_${body['code'] ?? 'FAILED'}',
+          '星海当前线路不可用，请检查授权及服务状态',
+        );
+      }
+      return _resolvedSongDetail(body, '星海');
     }
-    final body = _resolverResponseMap(response, '星海');
-    if (body['code']?.toString() != '200') {
-      throw ApiException(
-        'XINGHAI_${body['code'] ?? 'FAILED'}',
-        '星海服务拒绝请求或未返回播放地址',
-      );
-    }
-    return _resolvedSongDetail(body, '星海');
+    throw const ApiException('XINGHAI_TOKEN_INVALID', '星海服务器令牌失效');
   }
 
+  /// 使用 GD音乐台（music.gdstudio.xyz）的公开接口解析歌曲。
+  ///
+  /// [name]、[artist]、[album] 和 [duration] 用于将 QQ/酷狗歌曲匹配到
+  /// 当前可用的网易云线路；网易云歌曲沿用自己的 [id]。返回对应播放地址。
   Future<SongDetail> gdStudioMusic(
     MusicPlatform platform,
     String id, {
     required String quality,
+    String name = '',
+    String artist = '',
+    String album = '',
+    int? duration,
     Future<void>? cancelSignal,
   }) async {
-    final source = switch (platform) {
-      MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
-      MusicPlatform.qq => 'qq',
-      MusicPlatform.netease => 'netease',
-      MusicPlatform.kugou => 'kg',
-      MusicPlatform.bilibili => throw const ApiException(
-        'SOURCE_UNSUPPORTED',
-        'B站使用官方播放接口',
-      ),
-    };
+    if (!configurableMusicPlatforms.contains(platform)) {
+      throw const ApiException('SOURCE_UNSUPPORTED', '该平台不使用 GDStudio 解析');
+    }
     final base = Uri.parse(_playbackSourceConfig.gdStudioUrl);
+    // GD 当前公开源不包含 QQ/酷狗，先按元数据找同一首歌再使用网易云 ID。
+    final resolvedId = platform == MusicPlatform.netease
+        ? id
+        : await _gdStudioMatchedId(
+            platform,
+            id,
+            name: name,
+            artist: artist,
+            album: album,
+            duration: duration,
+            cancelSignal: cancelSignal,
+          );
 
+    final operation = _activePlaybackCancellation;
     Future<SongDetail> requestWithBitrate(String bitrate) async {
+      // 最高档内部降级后，外层不能再次请求同一码率；状态只活到本次解析结束。
+      if (operation != null &&
+          identical(_activePlaybackCancellation, operation) &&
+          !operation.isCancelled &&
+          !_gdAttemptedBitrates.add(bitrate)) {
+        throw const ApiException('GD_QUALITY_FAILED', 'GDStudio 本轮已尝试该音质');
+      }
       final params = <String, String>{
         ...base.queryParameters,
-        if (platform == MusicPlatform.netease) ...{
-          'use_xbridge3': 'true',
-          'loader_name': 'forest',
-          'need_sec_link': '1',
-          'sec_link_scene': 'im',
-          'theme': 'light',
-        },
+        'use_xbridge3': 'true',
+        'loader_name': 'forest',
+        'need_sec_link': '1',
+        'sec_link_scene': 'im',
+        'theme': 'light',
         'types': 'url',
-        'source': source,
-        'id': id,
+        'source': 'netease',
+        'id': resolvedId,
         'br': bitrate,
       };
       final http.Response response;
@@ -1063,104 +1184,292 @@ class ApiService {
       return _resolvedSongDetail(body, 'GDStudio');
     }
 
-    final mappedQuality = _aggregatorQuality(platform, quality);
     final bitrate = _gdBitrate(platform, quality);
     try {
       return await requestWithBitrate(bitrate);
     } catch (error) {
       if (_isPlaybackCancellationError(error)) rethrow;
-      // The XingHai script retries Netease Hi-Res at standard FLAC when GD
-      // cannot serve bitrate 999. Keep this fallback bounded to one request.
-      if (platform == MusicPlatform.netease &&
-          mappedQuality == 'hires' &&
-          bitrate == '999') {
+      // 最高档缺少资源时只降级一次；网络、鉴权和取消错误不会重复请求。
+      if (!_qualityRetryCannotHelp(error) && bitrate == '999') {
         return requestWithBitrate('740');
       }
       rethrow;
     }
   }
 
+  Future<String> _gdStudioMatchedId(
+    MusicPlatform platform,
+    String id, {
+    required String name,
+    required String artist,
+    required String album,
+    int? duration,
+    Future<void>? cancelSignal,
+  }) async {
+    // 缺少曲名或歌手时无法可靠匹配，保持原歌曲的身份并报告失败。
+    if (name.trim().isEmpty ||
+        artist.trim().isEmpty ||
+        artist.trim() == '未知歌手') {
+      throw const ApiException('GD_MATCH_NOT_FOUND', 'GDStudio 换源需要曲名和歌手');
+    }
+    // 同一次解析降音质时复用匹配 ID；新歌曲、取消和结束解析都会释放缓存。
+    final operation = _activePlaybackCancellation;
+    final matchKey = jsonEncode([
+      platform.code,
+      id,
+      name,
+      artist,
+      album,
+      duration,
+    ]);
+    if (operation != null &&
+        !operation.isCancelled &&
+        _gdMatchKey == matchKey &&
+        _gdMatchedId != null) {
+      return _gdMatchedId!;
+    }
+    // 使用曲名和歌手发起一次有界搜索，原平台 ID 只用于关联本次请求。
+    final original = SongSearchResult(
+      platform: platform,
+      id: id,
+      name: name,
+      artist: artist,
+      album: album,
+      duration: duration,
+    );
+    final base = Uri.parse(_playbackSourceConfig.gdStudioUrl);
+    final uri = base.replace(
+      queryParameters: {
+        ...base.queryParameters,
+        'types': 'search',
+        'source': 'netease',
+        'name': '${name.trim()} ${artist.trim()}',
+        'count': '20',
+        'pages': '1',
+      },
+    );
+    final http.Response response;
+    try {
+      response = await _get(
+        uri,
+        headers: const {'User-Agent': 'LX-Music-Mobile'},
+        timeout: _resolverTimeout,
+        maxAttempts: 1,
+        cancelSignal: cancelSignal,
+      );
+    } on ApiException {
+      rethrow;
+    } catch (_) {
+      throw const ApiException('GD_NETWORK', 'GDStudio 备用搜索网络请求失败');
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ApiException('GD_HTTP_${response.statusCode}', 'GDStudio 备用搜索失败');
+    }
+    final dynamic rows;
+    try {
+      rows = jsonDecode(utf8.decode(response.bodyBytes));
+    } on FormatException {
+      throw const ApiException('GD_INVALID_RESPONSE', 'GDStudio 搜索返回了无效数据');
+    }
+    if (rows is! List) {
+      throw const ApiException('GD_INVALID_RESPONSE', 'GDStudio 搜索返回格式错误');
+    }
+
+    // 最多检查 20 个候选；复用既有换源匹配器，并排除时长明显不同的版本。
+    final candidates = <SongSearchResult>[];
+    final expectedTitle = _normalizeMatchText(name);
+    for (final row in rows.take(20)) {
+      if (row is! Map || row['source'] != 'netease') continue;
+      final candidateId = row['id']?.toString() ?? '';
+      if (!RegExp(r'^[0-9]{1,20}$').hasMatch(candidateId)) continue;
+      final candidateName = row['name']?.toString() ?? '';
+      if (_normalizeMatchText(candidateName) != expectedTitle) continue;
+      final rawArtist = row['artist'];
+      final candidateArtist = rawArtist is List
+          ? rawArtist.whereType<String>().join(' / ')
+          : rawArtist?.toString() ?? '';
+      final extra = row['extra_data'];
+      final candidateDuration = int.tryParse(
+        (extra is Map ? extra['duration'] : row['duration'])?.toString() ?? '',
+      );
+      if (duration != null &&
+          candidateDuration != null &&
+          (duration - candidateDuration).abs() > 10) {
+        continue;
+      }
+      candidates.add(
+        SongSearchResult(
+          platform: MusicPlatform.netease,
+          id: candidateId,
+          name: candidateName,
+          artist: candidateArtist,
+          album: row['album']?.toString() ?? '',
+          duration: candidateDuration,
+        ),
+      );
+    }
+    final match = SongSourceMatcher.bestMatch(original, candidates);
+    if (match == null ||
+        SongSourceMatcher.score(original, match) < _gdMinimumMatchScore) {
+      throw const ApiException('GD_MATCH_NOT_FOUND', 'GDStudio 未找到同一首歌曲');
+    }
+    if (operation != null &&
+        !operation.isCancelled &&
+        identical(_activePlaybackCancellation, operation)) {
+      _gdMatchKey = matchKey;
+      _gdMatchedId = match.id;
+    }
+    return match.id;
+  }
+
   Future<Map<String, String>> _xinghaiHeaders({
+    PlaybackSourceConfig? config,
+    bool useCache = true,
     Future<void>? cancelSignal,
   }) async {
     _ensureOpen();
-    // The single-flight lookup belongs to the service, while this song only
-    // waits as long as it remains current. A later song can reuse the result.
-    final ip =
-        await awaitWithCancellation(_xinghaiPublicIp(), cancelSignal) ??
-        '0.0.0.0';
-    if (_closed) {
+    final effective = config ?? _playbackSourceConfig;
+    // 当前配置的令牌请求由服务持有，切歌仅取消等待；草稿探测单独请求。
+    final request = useCache && effective == _playbackSourceConfig
+        ? _xinghaiServerToken()
+        : _requestXinghaiToken(effective, cancelSignal: cancelSignal);
+    final String token;
+    try {
+      token = await awaitWithCancellation(request, cancelSignal);
+    } on HttpRequestCancelledException {
       throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
     }
-    final config = _playbackSourceConfig;
-    final now = DateTime.now();
-    final createdAt = _xinghaiTokenCreatedAt;
-    if (_xinghaiToken == null ||
-        createdAt == null ||
-        now.difference(createdAt) > _xinghaiTokenLifetime ||
-        _xinghaiTokenDeviceId != config.xinghaiDeviceId ||
-        _xinghaiTokenIp != ip) {
-      final payload = <String, dynamic>{
-        'device_id': config.xinghaiDeviceId,
-        'ip': ip,
-        'timestamp': now.millisecondsSinceEpoch ~/ 1000,
-        'random': _randomBase36(10),
-      };
-      _xinghaiToken = base64Encode(utf8.encode(jsonEncode(payload)));
-      _xinghaiTokenCreatedAt = now;
-      _xinghaiTokenDeviceId = config.xinghaiDeviceId;
-      _xinghaiTokenIp = ip;
-    }
+    _ensureOpen();
     return {
-      'X-Token': _xinghaiToken!,
-      'X-Client': config.xinghaiClient,
+      'X-Token': token,
+      'X-Client': effective.xinghaiClient,
+      if (effective.xinghaiLicenseKey.isNotEmpty)
+        'X-License': effective.xinghaiLicenseKey,
       'User-Agent': 'lx-music',
     };
   }
 
-  Future<String?> _xinghaiPublicIp() {
-    if (_xinghaiIp != null) return Future<String?>.value(_xinghaiIp);
-    if (_playbackSourceConfig.xinghaiIpUrl.isEmpty) {
-      return Future<String?>.value(null);
+  Future<String> _xinghaiServerToken() {
+    _ensureOpen();
+    final config = _playbackSourceConfig;
+    final createdAt = _xinghaiTokenCreatedAt;
+    if (_xinghaiToken != null &&
+        _xinghaiTokenConfig == config &&
+        createdAt != null &&
+        DateTime.now().difference(createdAt) < _xinghaiTokenLifetime) {
+      return Future<String>.value(_xinghaiToken!);
     }
-    final pending = _xinghaiIpRequest;
+    final pending = _xinghaiTokenRequest;
     if (pending != null) return pending;
+
+    // 单飞请求最多保留一个；改配置和关闭服务时主动取消底层 HTTP。
     final cancellation = _PlaybackCancellation();
-    _xinghaiIpCancellation = cancellation;
-    late final Future<String?> request;
+    _xinghaiTokenCancellation = cancellation;
+    late final Future<String> request;
     request = () async {
       try {
-        final response = await _get(
-          Uri.parse(_playbackSourceConfig.xinghaiIpUrl),
-          timeout: _xinghaiIpTimeout,
-          maxAttempts: 1,
+        final token = await _requestXinghaiToken(
+          config,
           cancelSignal: cancellation.future,
-          maxBytes: _maxProbeResponseBytes,
         );
-        if (response.statusCode < 200 || response.statusCode >= 300) {
-          return null;
-        }
-        final dynamic decoded = jsonDecode(utf8.decode(response.bodyBytes));
-        final ip = decoded is Map ? decoded['ip']?.toString().trim() : null;
+        // 迟到响应不能覆盖新配置或已释放服务的状态。
         if (!_closed &&
-            identical(_xinghaiIpRequest, request) &&
-            ip != null &&
-            ip.isNotEmpty) {
-          _xinghaiIp = ip;
+            identical(_xinghaiTokenRequest, request) &&
+            _playbackSourceConfig == config) {
+          _xinghaiToken = token;
+          _xinghaiTokenCreatedAt = DateTime.now();
+          _xinghaiTokenConfig = config;
         }
-        return ip?.isNotEmpty == true ? ip : null;
-      } catch (_) {
-        return null;
+        return token;
       } finally {
-        if (identical(_xinghaiIpRequest, request)) _xinghaiIpRequest = null;
-        if (identical(_xinghaiIpCancellation, cancellation)) {
-          _xinghaiIpCancellation = null;
+        if (identical(_xinghaiTokenRequest, request)) {
+          _xinghaiTokenRequest = null;
+        }
+        if (identical(_xinghaiTokenCancellation, cancellation)) {
+          _xinghaiTokenCancellation = null;
         }
         cancellation.cancel();
       }
     }();
-    _xinghaiIpRequest = request;
+    _xinghaiTokenRequest = request;
     return request;
+  }
+
+  Future<String> _requestXinghaiToken(
+    PlaybackSourceConfig config, {
+    Future<void>? cancelSignal,
+  }) async {
+    // v3.2.20 明确要求从聚合接口同目录的 token.php 获取服务器签发令牌。
+    final base = Uri.parse(config.xinghaiUrl);
+    final directory = base.path.replaceFirst(RegExp(r'/+$'), '');
+    final uri = base.replace(
+      path: '$directory/token.php',
+      queryParameters: {
+        ...base.queryParameters,
+        'device_id': config.xinghaiDeviceId,
+      },
+    );
+    final http.Response response;
+    try {
+      response = await _get(
+        uri,
+        headers: {'X-Client': config.xinghaiClient, 'User-Agent': 'lx-music'},
+        timeout: _xinghaiTokenTimeout,
+        maxAttempts: 1,
+        maxBytes: _maxProbeResponseBytes,
+        cancelSignal: cancelSignal,
+      );
+    } on ApiException {
+      rethrow;
+    } catch (_) {
+      throw const ApiException('XINGHAI_TOKEN_NETWORK', '获取星海服务器令牌失败');
+    }
+    _ensureOpen();
+    // 只接受短且可作为请求头的令牌，避免异常响应进入后续原生请求。
+    final body = _resolverResponseMap(response, 'XINGHAI_TOKEN');
+    final data = body['data'];
+    final token = data is Map ? data['token'] : null;
+    if ((body['code']?.toString() != '0' &&
+            body['code']?.toString() != '200') ||
+        token is! String ||
+        token.isEmpty ||
+        token.length > 4096 ||
+        RegExp(r'[^\x21-\x7e]').hasMatch(token)) {
+      throw const ApiException('XINGHAI_TOKEN_INVALID', '星海未返回有效的服务器令牌');
+    }
+    return token;
+  }
+
+  void _clearXinghaiTokenState() {
+    _xinghaiTokenCancellation?.cancel();
+    _xinghaiTokenCancellation = null;
+    _xinghaiTokenRequest = null;
+    _xinghaiToken = null;
+    _xinghaiTokenCreatedAt = null;
+    _xinghaiTokenConfig = null;
+  }
+
+  static bool _xinghaiNeedsTokenRefresh(http.Response response) {
+    // 仅响应中明确的令牌错误触发刷新，歌曲不存在、授权不足等错误不重试。
+    try {
+      final body = jsonDecode(utf8.decode(response.bodyBytes));
+      final auth = body is Map ? body['auth'] : null;
+      if (auth is! Map) return false;
+      final error = auth['tk_error'];
+      return auth['tk_mismatch'] == true ||
+          auth['device_id'] == 'untrusted-token' ||
+          error != null && error != false && error != '';
+    } on FormatException {
+      return false;
+    }
+  }
+
+  static ApiException _xinghaiAuthorizationError(PlaybackSourceConfig config) {
+    // QQ 等认证线路不能靠刷新令牌或更换音质解决未授权问题。
+    if (config.xinghaiLicenseKey.isEmpty) {
+      return const ApiException('XINGHAI_LICENSE_REQUIRED', '星海当前线路需要有效授权卡密');
+    }
+    return const ApiException('XINGHAI_AUTH_FAILED', '星海授权失败，请检查卡密及上游状态');
   }
 
   static Map<String, dynamic> _resolverResponseMap(
@@ -1201,6 +1510,16 @@ class ApiService {
     }
     final data = body['data'];
     final nested = data is Map ? Map<String, dynamic>.from(data) : null;
+    // 后端已声明加密时直接降音质，不能依赖解码器尝试识别随机数据。
+    if (body['encrypted'] == true ||
+        nested?['encrypted'] == true ||
+        body['encryption'] == 'cenc' ||
+        nested?['encryption'] == 'cenc') {
+      throw ApiException(
+        '${label.toUpperCase()}_ENCRYPTED_AUDIO',
+        '$label 返回了加密音频',
+      );
+    }
     final rawHeaders =
         body['playbackHeaders'] ??
         body['headers'] ??
@@ -1227,6 +1546,17 @@ class ApiService {
         nested?['picUrl'];
     final path = Uri.parse(url).path;
     final dot = path.lastIndexOf('.');
+    // 无扩展名的地址也可能返回加密流，因此优先检查后端声明的格式。
+    final rawFormat = body['format'] ?? nested?['format'];
+    final declaredFormat = rawFormat is String ? rawFormat.toLowerCase() : '';
+    final String? format;
+    if (RegExp(r'^[a-z0-9]{1,12}$').hasMatch(declaredFormat)) {
+      format = declaredFormat;
+    } else if (dot >= 0 && dot < path.length - 1) {
+      format = path.substring(dot + 1);
+    } else {
+      format = null;
+    }
     return SongDetail(
       name: '',
       artist: '',
@@ -1234,9 +1564,7 @@ class ApiService {
       url: url,
       coverUrl: cover?.toString(),
       lyric: lyric,
-      format: dot >= 0 && dot < path.length - 1
-          ? path.substring(dot + 1)
-          : null,
+      format: format,
       playbackHeaders: headers?.isEmpty == true ? null : headers,
     );
   }
@@ -1325,26 +1653,54 @@ class ApiService {
     );
   }
 
-  static String _randomBase36(int length) {
-    Random random;
-    try {
-      random = Random.secure();
-    } catch (_) {
-      random = Random();
-    }
-    const chars = '0123456789abcdefghijklmnopqrstuvwxyz';
-    return List.generate(
-      length,
-      (_) => chars[random.nextInt(chars.length)],
-    ).join();
+  static bool _qualityRetryCannotHelp(Object error) {
+    if (error is! ApiException) return false;
+    final code = error.code;
+    // 这些失败发生在网络或权限层，改变码率不会改变结果。
+    return code.endsWith('_NETWORK') ||
+        code.endsWith('_INVALID_RESPONSE') ||
+        RegExp(r'(?:^|_)HTTP_(401|404|410|429)$').hasMatch(code) ||
+        const {
+          'API_KEY_REQUIRED',
+          'API_KEY_INVALID',
+          'RESPONSE_TOO_LARGE',
+          'SOURCE_DISABLED',
+          'SOURCE_UNSUPPORTED',
+          'QING_UPGRADE_REQUIRED',
+          'QING_SIGN_UNAVAILABLE',
+          'HYW_KEY_INVALID',
+          'HYW_SOURCE_UNSUPPORTED',
+          'XINGHAI_TOKEN_INVALID',
+          'XINGHAI_LICENSE_REQUIRED',
+          'XINGHAI_AUTH_FAILED',
+          'GD_MATCH_NOT_FOUND',
+          'XINGHAI_401',
+          'XINGHAI_403',
+          'XINGHAI_429',
+          'XINGHAI_HTTP_403',
+          '401',
+          '404',
+          '429',
+        }.contains(code);
   }
 
   static String _safeResolverFailure(Object error) {
     if (error is ApiException) {
+      if (error.code.endsWith('_ENCRYPTED_AUDIO')) return '当前音质返回加密音频';
       return switch (error.code) {
         'API_KEY_REQUIRED' => '需要配置 API Key',
+        'API_KEY_INVALID' => 'API Key 无效或已过期',
         'SOURCE_DISABLED' => '音源已停用',
         'SOURCE_UNSUPPORTED' => '音源不支持当前平台',
+        'QING_UPGRADE_REQUIRED' => '客户端认证已失效，请更新音源',
+        'QING_SIGN_UNAVAILABLE' => '无法生成客户端认证参数',
+        'HYW_KEY_INVALID' || 'HYW_HTTP_401' => 'Card Key 无效或已过期，请更新卡密',
+        'HYW_SOURCE_UNSUPPORTED' => '当前公益版暂不支持酷狗，请选择其他音源',
+        'XINGHAI_LICENSE_REQUIRED' => '当前线路需要有效授权卡密',
+        'XINGHAI_AUTH_FAILED' => '授权失败，请检查卡密及上游状态',
+        'XINGHAI_TOKEN_NETWORK' => '无法获取服务器令牌',
+        'XINGHAI_TOKEN_INVALID' => '服务器未返回有效令牌',
+        'GD_MATCH_NOT_FOUND' => '未找到曲名、歌手和版本相符的备用歌曲',
         _ =>
           RegExp(r'^[A-Za-z0-9_]{1,64}$').hasMatch(error.code)
               ? '解析失败（${error.code}）'
@@ -1356,9 +1712,8 @@ class ApiService {
 
   /// Probes one configured resolver with a small request.
   ///
-  /// This checks endpoint reachability and response latency only. It does not
-  /// assert that a particular song is licensed or playable, because that
-  /// depends on the requested platform, song and current backend state.
+  /// 检查连接、响应速度和服务明确返回的业务/鉴权错误；实际歌曲能否播放
+  /// 仍取决于平台、歌曲和后端状态。星海探测会取得当前网络的服务器令牌。
   Future<PlaybackSourceTestResult> testPlaybackSource(
     PlaybackSource source, {
     MusicPlatform platform = MusicPlatform.qq,
@@ -1423,38 +1778,50 @@ class ApiService {
             cancelSignal: cancelSignal,
           );
         case PlaybackSource.qingMusic:
-          response = await _postJson(
-            Uri.parse(effective.qingMusicUrl),
-            {
-              'source': switch (platform) {
-                MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
-                MusicPlatform.qq => 'tx',
-                MusicPlatform.netease => 'wy',
-                MusicPlatform.kugou => 'kg',
-                MusicPlatform.bilibili => 'tx',
-              },
-              'rid': '__probe__',
-              'level': 'standard',
+          final base = Uri.parse(effective.qingMusicUrl);
+          final payload = <String, dynamic>{
+            'source': switch (platform) {
+              MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
+              MusicPlatform.qq => 'tx',
+              MusicPlatform.netease => 'wy',
+              MusicPlatform.kugou => 'kg',
+              MusicPlatform.bilibili => 'tx',
             },
+            'rid': QingGatewayAuth.supports(base)
+                ? _probeSongId(platform)
+                : '__probe__',
+            'level': 'standard',
+          };
+          response = await _postJson(
+            base,
+            payload,
+            headers: _qingAuthHeaders(base, payload),
             timeout: _probeTimeout,
             maxAttempts: 1,
             maxBytes: _maxProbeResponseBytes,
             cancelSignal: cancelSignal,
           );
         case PlaybackSource.hyw:
+          _ensureHywPlatformSupported(platform, effective);
           final sourceCode = _aggregatorSource(platform);
           final params = <String, String>{
             'source': sourceCode,
             'platform': sourceCode,
-            'songId': '__probe__',
-            'songmid': '__probe__',
+            'songId': effective.usesHywPublicSource
+                ? _probeSongId(platform)
+                : '__probe__',
+            'songmid': effective.usesHywPublicSource
+                ? _probeSongId(platform)
+                : '__probe__',
             'quality': _aggregatorQuality(platform, '128k'),
             if (effective.hywCardKey.isNotEmpty) 'key': effective.hywCardKey,
           };
           response = await _get(
             _endpointUri(effective.hywBaseUrl, '/api/music/url', params),
             headers: {
-              if (effective.hywCardKey.isNotEmpty)
+              'User-Agent': 'lx-music-request/1.0.0',
+              if (effective.hywCardKey.isNotEmpty &&
+                  !RegExp(r'[^\x20-\x7e]').hasMatch(effective.hywCardKey))
                 'X-Card-Key': effective.hywCardKey,
             },
             timeout: _probeTimeout,
@@ -1480,11 +1847,11 @@ class ApiService {
                 'songmid': '__probe__',
               },
             ),
-            headers: {
-              if (effective.xinghaiClient.trim().isNotEmpty)
-                'X-Client': effective.xinghaiClient.trim(),
-              'User-Agent': 'lx-music',
-            },
+            headers: await _xinghaiHeaders(
+              config: effective,
+              useCache: false,
+              cancelSignal: cancelSignal,
+            ),
             timeout: _probeTimeout,
             maxAttempts: 1,
             maxBytes: _maxProbeResponseBytes,
@@ -1494,10 +1861,10 @@ class ApiService {
           final base = Uri.parse(effective.gdStudioUrl);
           final sourceCode = switch (platform) {
             MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
-            MusicPlatform.qq => 'qq',
+            MusicPlatform.qq => 'netease',
             MusicPlatform.netease => 'netease',
-            MusicPlatform.kugou => 'kg',
-            MusicPlatform.bilibili => 'qq',
+            MusicPlatform.kugou => 'netease',
+            MusicPlatform.bilibili => 'netease',
           };
           response = await _get(
             base.replace(
@@ -1519,15 +1886,22 @@ class ApiService {
       stopwatch.stop();
       final statusCode = response.statusCode;
       final reachable = statusCode >= 100 && statusCode <= 599;
-      final message = statusCode >= 200 && statusCode < 300
-          ? 'HTTP $statusCode'
-          : 'HTTP $statusCode（网络可达，接口返回错误）';
+      final businessError = _probeBusinessError(source, response, effective);
+      final String message;
+      if (businessError != null) {
+        message = _safeResolverFailure(businessError);
+      } else if (statusCode >= 200 && statusCode < 300) {
+        message = 'HTTP $statusCode';
+      } else {
+        message = 'HTTP $statusCode（网络可达，接口返回错误）';
+      }
       return PlaybackSourceTestResult(
         source: source,
         reachable: reachable,
         latencyMs: stopwatch.elapsedMilliseconds,
         statusCode: statusCode,
         message: message,
+        errorCode: businessError?.code,
       );
     } catch (error) {
       stopwatch.stop();
@@ -1538,9 +1912,64 @@ class ApiService {
         latencyMs: stopwatch.elapsedMilliseconds,
         statusCode: null,
         message: _safeProbeFailure(error),
+        errorCode: error is ApiException ? error.code : null,
       );
     }
   }
+
+  static ApiException? _probeBusinessError(
+    PlaybackSource source,
+    http.Response response,
+    PlaybackSourceConfig config,
+  ) {
+    // 鉴权错误也可能返回 HTML/空响应，先识别 HTTP 状态再读取业务码。
+    if (response.statusCode == 401) {
+      if (source == PlaybackSource.chksz) {
+        return const ApiException('API_KEY_INVALID', 'ChKSz API Key 无效或已过期');
+      }
+      if (source == PlaybackSource.hyw) {
+        return const ApiException('HYW_KEY_INVALID', 'HYW Card Key 无效或已过期');
+      }
+      if (source == PlaybackSource.xinghai) {
+        return _xinghaiAuthorizationError(config);
+      }
+    }
+    // 网关经常用 HTTP 200 返回停服或卡密错误，不能把它显示为正常响应。
+    final dynamic body;
+    try {
+      body = jsonDecode(utf8.decode(response.bodyBytes));
+    } on FormatException {
+      return null;
+    }
+    if (body is! Map) return null;
+    final code = body['code']?.toString();
+    if (code == null || code == '0' || code == '200') return null;
+    if (source == PlaybackSource.qingMusic &&
+        (code == 'APP_UPGRADE_REQUIRED' || code.startsWith('APP_SIGN_'))) {
+      return const ApiException('QING_UPGRADE_REQUIRED', '客户端认证已失效，请更新音源');
+    }
+    if (source == PlaybackSource.hyw && code == '401') {
+      return const ApiException('HYW_KEY_INVALID', 'HYW Card Key 无效或已过期');
+    }
+    if (source == PlaybackSource.chksz && code == '401') {
+      return const ApiException('API_KEY_INVALID', 'ChKSz API Key 无效或已过期');
+    }
+    if (source == PlaybackSource.xinghai && code == '401') {
+      return _xinghaiAuthorizationError(config);
+    }
+    final safeCode = RegExp(r'^[A-Za-z0-9_]{1,64}$').hasMatch(code)
+        ? code
+        : 'FAILED';
+    return ApiException('${source.value.toUpperCase()}_$safeCode', '接口返回业务错误');
+  }
+
+  static String _probeSongId(MusicPlatform platform) => switch (platform) {
+    // 使用已核对的标准音质样本，避免合法认证因虚构歌曲 ID 被误报失败。
+    MusicPlatform.netease => '347230',
+    MusicPlatform.qq || MusicPlatform.bilibili => '0039MnYb0qxYhV',
+    MusicPlatform.kugou => 'c41e80a18d1448fa47086372999c7f43',
+    MusicPlatform.local => '__probe__',
+  };
 
   /// Probes a bounded number of sources at once. The default is the set of
   /// enabled sources, so the same switches that control racing also control
@@ -1615,6 +2044,7 @@ class ApiService {
     if (error is ApiException && error.code == 'RESPONSE_TOO_LARGE') {
       return '响应过大';
     }
+    if (error is ApiException) return _safeResolverFailure(error);
     if (error is TimeoutException) return '连接超时';
     if (error is FormatException) return '地址格式无效';
     return '网络不可达';
@@ -3137,7 +3567,11 @@ class _PlaybackCancellation {
 
 class _PlaybackGroupFailure implements Exception {
   final List<String> failures;
+  final Set<PlaybackSource> unavailableSources;
 
-  _PlaybackGroupFailure(Iterable<String> failures)
-    : failures = List<String>.unmodifiable(failures);
+  _PlaybackGroupFailure(
+    Iterable<String> failures,
+    Iterable<PlaybackSource> unavailableSources,
+  ) : failures = List<String>.unmodifiable(failures),
+      unavailableSources = Set<PlaybackSource>.unmodifiable(unavailableSources);
 }

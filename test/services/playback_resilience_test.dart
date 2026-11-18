@@ -49,7 +49,7 @@ void main() {
             'exhigh',
             'standard',
           ],
-          MusicPlatform.qq => ['lossless', 'exhigh', 'standard'],
+          MusicPlatform.qq => ['jymaster', 'lossless', 'exhigh', 'standard'],
           _ => ['clear', 'lossless', 'exhigh', 'standard'],
         });
       },
@@ -125,12 +125,12 @@ void main() {
   );
 
   test(
-    'a new song reuses the IP lookup without inheriting the old cancellation',
+    'a new song reuses the server token lookup without inheriting the old cancellation',
     () async {
-      final ipStarted = Completer<void>();
-      final ipReply = Completer<http.Response>();
+      final tokenStarted = Completer<void>();
+      final tokenReply = Completer<http.Response>();
       final resolvedIds = <String>[];
-      var ipRequests = 0;
+      var tokenRequests = 0;
       await http.runWithClient(
         () async {
           final config = PlaybackSourceConfig.defaults().copyWith(
@@ -145,24 +145,29 @@ void main() {
               id: 'old',
             );
             final rejection = expectLater(old, throwsA(_cancelledError));
-            await ipStarted.future;
+            await tokenStarted.future;
             final latest = _resolve(
               api,
               source: PlaybackSource.xinghai,
               id: 'latest',
             );
             await rejection;
-            ipReply.complete(_json({'ip': '203.0.113.8'}));
+            tokenReply.complete(
+              _json({
+                'code': 0,
+                'data': {'token': 'xh3.server-issued'},
+              }),
+            );
             expect((await latest).url, 'https://audio.test/latest.mp3');
           } finally {
             api.close();
           }
         },
         () => MockClient((request) {
-          if (request.url.path == '/ip.php') {
-            ipRequests++;
-            ipStarted.complete();
-            return ipReply.future;
+          if (request.url.path == '/api/token.php') {
+            tokenRequests++;
+            tokenStarted.complete();
+            return tokenReply.future;
           }
           resolvedIds.add(request.url.queryParameters['songmid']!);
           return Future.value(
@@ -170,7 +175,7 @@ void main() {
           );
         }),
       );
-      expect(ipRequests, 1);
+      expect(tokenRequests, 1);
       expect(resolvedIds, ['latest']);
     },
   );

@@ -34,9 +34,10 @@ class _PlaybackSourceConfigScreenState
   late final TextEditingController _hywUrlController;
   late final TextEditingController _hywCardKeyController;
   late final TextEditingController _xinghaiUrlController;
-  late final TextEditingController _xinghaiIpUrlController;
+  String _legacyXinghaiIpUrl = '';
   late final TextEditingController _xinghaiClientController;
   late final TextEditingController _xinghaiDeviceIdController;
+  late final TextEditingController _xinghaiLicenseKeyController;
   late final TextEditingController _gdStudioUrlController;
 
   bool _chkszEnabled = true;
@@ -45,6 +46,7 @@ class _PlaybackSourceConfigScreenState
   bool _xinghaiEnabled = true;
   bool _gdStudioEnabled = true;
   bool _obscureHywKey = true;
+  bool _obscureXinghaiKey = true;
   bool _saving = false;
   bool _testingAll = false;
   final Set<PlaybackSource> _testingSources = <PlaybackSource>{};
@@ -69,9 +71,9 @@ class _PlaybackSourceConfigScreenState
     _hywUrlController = TextEditingController();
     _hywCardKeyController = TextEditingController();
     _xinghaiUrlController = TextEditingController();
-    _xinghaiIpUrlController = TextEditingController();
     _xinghaiClientController = TextEditingController();
     _xinghaiDeviceIdController = TextEditingController();
+    _xinghaiLicenseKeyController = TextEditingController();
     _gdStudioUrlController = TextEditingController();
     _applyConfig(config, rebuild: false);
   }
@@ -89,9 +91,9 @@ class _PlaybackSourceConfigScreenState
     _hywUrlController.dispose();
     _hywCardKeyController.dispose();
     _xinghaiUrlController.dispose();
-    _xinghaiIpUrlController.dispose();
     _xinghaiClientController.dispose();
     _xinghaiDeviceIdController.dispose();
+    _xinghaiLicenseKeyController.dispose();
     _gdStudioUrlController.dispose();
     super.dispose();
   }
@@ -108,9 +110,10 @@ class _PlaybackSourceConfigScreenState
       _hywUrlController.text = config.hywBaseUrl;
       _hywCardKeyController.text = config.hywCardKey;
       _xinghaiUrlController.text = config.xinghaiUrl;
-      _xinghaiIpUrlController.text = config.xinghaiIpUrl;
+      _legacyXinghaiIpUrl = config.xinghaiIpUrl;
       _xinghaiClientController.text = config.xinghaiClient;
       _xinghaiDeviceIdController.text = config.xinghaiDeviceId;
+      _xinghaiLicenseKeyController.text = config.xinghaiLicenseKey;
       _gdStudioUrlController.text = config.gdStudioUrl;
       _testResults.clear();
     }
@@ -133,9 +136,10 @@ class _PlaybackSourceConfigScreenState
     hywBaseUrl: _hywUrlController.text,
     hywCardKey: _hywCardKeyController.text,
     xinghaiUrl: _xinghaiUrlController.text,
-    xinghaiIpUrl: _xinghaiIpUrlController.text,
+    xinghaiIpUrl: _legacyXinghaiIpUrl,
     xinghaiClient: _xinghaiClientController.text,
     xinghaiDeviceId: _xinghaiDeviceIdController.text,
+    xinghaiLicenseKey: _xinghaiLicenseKeyController.text,
     gdStudioUrl: _gdStudioUrlController.text,
   );
 
@@ -465,7 +469,9 @@ class _PlaybackSourceConfigScreenState
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('接口连通性', style: Theme.of(context).textTheme.titleMedium),
+            Text('连接与鉴权检查', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 6),
+            const Text('检查连接和授权状态，歌曲可用性以实际播放为准。'),
             const SizedBox(height: 12),
             Wrap(
               spacing: 10,
@@ -500,7 +506,7 @@ class _PlaybackSourceConfigScreenState
       source: PlaybackSource.chksz,
       cardKey: const ValueKey('source-config-chksz'),
       title: 'ChKSz',
-      subtitle: '默认使用现有中转地址。',
+      subtitle: '默认直连官方 HTTPS 接口，需要有效 API Key。',
       enabled: _chkszEnabled,
       onEnabled: (value) => setState(() => _chkszEnabled = value),
       children: [
@@ -517,7 +523,7 @@ class _PlaybackSourceConfigScreenState
       source: PlaybackSource.qingMusic,
       cardKey: const ValueKey('source-config-qing'),
       title: 'QingMusic',
-      subtitle: '统一 POST 解析接口，支持返回播放请求头。',
+      subtitle: '官方接口自动认证，支持填写自定义 POST 解析接口。',
       enabled: _qingMusicEnabled,
       onEnabled: (value) => setState(() => _qingMusicEnabled = value),
       children: [
@@ -532,7 +538,7 @@ class _PlaybackSourceConfigScreenState
       source: PlaybackSource.hyw,
       cardKey: const ValueKey('source-config-hyw'),
       title: 'HYWmusic',
-      subtitle: '默认值来自 HYWmusic_beta；当前预置地址为 HTTP。',
+      subtitle: '公益版 v1.1.0 支持网易云和 QQ，最高 24-bit；暂不支持酷狗。',
       enabled: _hywEnabled,
       onEnabled: (value) => setState(() => _hywEnabled = value),
       children: [
@@ -562,7 +568,7 @@ class _PlaybackSourceConfigScreenState
       source: PlaybackSource.xinghai,
       cardKey: const ValueKey('source-config-xinghai'),
       title: '星海',
-      subtitle: '生成 5 分钟动态 X-Token；设备 ID 和 X-Client 均可覆盖。',
+      subtitle: '自动获取服务器令牌；QQ 线路需要有效授权卡密。',
       enabled: _xinghaiEnabled,
       onEnabled: (value) => setState(() => _xinghaiEnabled = value),
       children: [
@@ -573,9 +579,21 @@ class _PlaybackSourceConfigScreenState
         ),
         const SizedBox(height: 10),
         _textField(
-          key: const ValueKey('source-config-xinghai-ip-url'),
-          controller: _xinghaiIpUrlController,
-          label: '公网 IP 查询 URL（可留空）',
+          key: const ValueKey('source-config-xinghai-license'),
+          controller: _xinghaiLicenseKeyController,
+          label: '授权卡密（QQ 线路必填）',
+          obscureText: _obscureXinghaiKey,
+          maxLength: 1024,
+          suffix: IconButton(
+            tooltip: _obscureXinghaiKey ? '显示授权卡密' : '隐藏授权卡密',
+            onPressed: _busy
+                ? null
+                : () =>
+                      setState(() => _obscureXinghaiKey = !_obscureXinghaiKey),
+            icon: Icon(
+              _obscureXinghaiKey ? Icons.visibility : Icons.visibility_off,
+            ),
+          ),
         ),
         const SizedBox(height: 10),
         _textField(
@@ -597,7 +615,7 @@ class _PlaybackSourceConfigScreenState
       source: PlaybackSource.gdStudio,
       cardKey: const ValueKey('source-config-gd'),
       title: 'GDStudio',
-      subtitle: '简单 GET 兜底；母带等档位会映射到后端最高可用码率。',
+      subtitle: '网易云播放解析；QQ/酷狗按曲名和歌手匹配网易云歌曲。',
       enabled: _gdStudioEnabled,
       onEnabled: (value) => setState(() => _gdStudioEnabled = value),
       children: [

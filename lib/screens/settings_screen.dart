@@ -2772,10 +2772,10 @@ class _SettingsScreenState extends State<SettingsScreen>
     return switch (source) {
       PlaybackSource.automatic => '主组并行竞速 · 失败后 GDStudio 兜底 · 自动降音质',
       PlaybackSource.chksz => '现有解析服务 · 需要 API Key',
-      PlaybackSource.qingMusic => '统一 POST 第三方解析',
+      PlaybackSource.qingMusic => '官方接口自动认证 · 支持自定义入口',
       PlaybackSource.hyw => '统一 GET 聚合解析 · 使用 Card Key',
-      PlaybackSource.xinghai => '动态 X-Token 聚合解析',
-      PlaybackSource.gdStudio => '简单 GET 末级备用解析',
+      PlaybackSource.xinghai => '服务器签发令牌 · QQ 线路需要卡密',
+      PlaybackSource.gdStudio => '网易云解析 · QQ/酷狗同曲匹配备用',
     };
   }
 

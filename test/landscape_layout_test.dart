@@ -2559,6 +2559,187 @@ void main() {
     }, _mockClient);
   });
 
+  testWidgets(
+    'source authentication feedback and license survive landscape rotation',
+    (tester) async {
+      Future<http.Response> respond(http.Request request) async {
+        return http.Response(
+          jsonEncode({'code': 'APP_UPGRADE_REQUIRED'}),
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+      }
+
+      http.Client createClient() => MockClient(respond);
+      Future<void> scenario() async {
+        for (final size in const [Size(640, 360), Size(1280, 800)]) {
+          SharedPreferences.setMockInitialValues({'api_key': 'existing-key'});
+          final player = PlayerProvider();
+          final theme = ThemeController();
+          try {
+            await player.settingsReady;
+            await _pumpScreen(
+              tester,
+              const SettingsScreen(),
+              player,
+              theme,
+              size,
+            );
+            final entry = find.byKey(const ValueKey('playback-source-config'));
+            await tester.ensureVisible(entry);
+            await tester.tap(entry);
+            await tester.pumpAndSettle();
+
+            final license = find.byKey(
+              const ValueKey('source-config-xinghai-license'),
+            );
+            await tester.ensureVisible(license);
+            expect(license.hitTestable(), findsOneWidget);
+            await tester.enterText(license, '  user-license  ');
+            tester.view.physicalSize = size.width == 640
+                ? const Size(1280, 800)
+                : const Size(640, 360);
+            await tester.pumpAndSettle();
+            await tester.ensureVisible(license);
+            expect(
+              tester.widget<TextField>(license).controller?.text,
+              '  user-license  ',
+            );
+            expect(tester.widget<TextField>(license).obscureText, isTrue);
+            expect(tester.widget<TextField>(license).decoration?.labelText,
+                '授权卡密（QQ 线路必填）');
+            expect(find.textContaining('公益版 v1.1.0'), findsOneWidget);
+            expect(
+              find.byKey(const ValueKey('source-config-xinghai-ip-url')),
+              findsNothing,
+            );
+
+            final qingTest = find.byKey(
+              const ValueKey('test-playback-source-qing_music'),
+            );
+            await tester.ensureVisible(qingTest);
+            await tester.tap(qingTest);
+            await tester.pumpAndSettle();
+            final qingCard = find.byKey(const ValueKey('source-config-qing'));
+            expect(
+              find.textContaining('可达 · 客户端认证已失效，请更新音源'),
+              findsOneWidget,
+            );
+            expect(
+              find.descendant(
+                of: qingCard,
+                matching: find.byIcon(Icons.warning_amber_rounded),
+              ),
+              findsOneWidget,
+            );
+            expect(
+              find.descendant(
+                of: qingCard,
+                matching: find.byIcon(Icons.check_circle_outline_rounded),
+              ),
+              findsNothing,
+            );
+
+            final save = find.byKey(
+              const ValueKey('save-playback-source-config'),
+            );
+            expect(save.hitTestable(), findsOneWidget);
+            await tester.tap(save);
+            await tester.pumpAndSettle();
+            expect(
+              player.playbackSourceConfig.xinghaiLicenseKey,
+              'user-license',
+            );
+            expect(player.apiKey, 'existing-key');
+            final prefs = await SharedPreferences.getInstance();
+            final stored =
+                jsonDecode(prefs.getString(PlaybackSourceConfig.preferenceKey)!)
+                    as Map;
+            expect(stored['xinghaiLicenseKey'], 'user-license');
+            _expectNoException(tester);
+          } finally {
+            await tester.pumpWidget(const SizedBox.shrink());
+            await tester.pump();
+            await tester.runAsync(player.disposeResources);
+            theme.dispose();
+          }
+        }
+      }
+
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await http.runWithClient(scenario, createClient);
+    },
+  );
+
+  testWidgets('leaving a pending token probe ignores its late response', (
+    tester,
+  ) async {
+    final tokenStarted = Completer<void>();
+    final tokenReply = Completer<http.Response>();
+    Future<http.Response> respond(http.Request request) {
+      if (request.url.path.endsWith('/token.php')) {
+        tokenStarted.complete();
+        return tokenReply.future;
+      }
+      return Future.value(http.Response('{}', 200));
+    }
+
+    http.Client createClient() => MockClient(respond);
+    Future<void> scenario() async {
+      SharedPreferences.setMockInitialValues({});
+      final player = PlayerProvider();
+      final theme = ThemeController();
+      try {
+        await player.settingsReady;
+        await _pumpScreen(
+          tester,
+          const SettingsScreen(),
+          player,
+          theme,
+          const Size(640, 360),
+        );
+        final entry = find.byKey(const ValueKey('playback-source-config'));
+        await tester.ensureVisible(entry);
+        await tester.tap(entry);
+        await tester.pumpAndSettle();
+        final probe = find.byKey(
+          const ValueKey('test-playback-source-xinghai'),
+        );
+        await tester.ensureVisible(probe);
+        await tester.tap(probe);
+        await tester.pump();
+        await tokenStarted.future;
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+        tokenReply.complete(
+          http.Response(
+            jsonEncode({
+              'code': 0,
+              'data': {'token': 'xh3.late-response'},
+            }),
+            200,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(PlaybackSourceConfigScreen), findsNothing);
+        _expectNoException(tester);
+      } finally {
+        if (!tokenReply.isCompleted) {
+          tokenReply.complete(http.Response('{}', 200));
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await tester.runAsync(player.disposeResources);
+        theme.dispose();
+      }
+    }
+
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await http.runWithClient(scenario, createClient);
+  });
+
   testWidgets('leaving source configuration does not restore API key focus', (
     tester,
   ) async {

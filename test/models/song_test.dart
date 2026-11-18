@@ -91,6 +91,100 @@ void main() {
       expect(PlaybackSourceConfig.fromJson(defaults.toJson()), defaults);
     });
 
+    test('migrates shipped endpoints and retains user credentials', () {
+      final legacy = PlaybackSourceConfig.defaults().toJson();
+      legacy['chkszBaseUrl'] = 'http://161.118.252.183/api-chksz';
+      legacy['xinghaiUrl'] = 'https://yy.zddyr.top/lx/api/';
+      legacy['xinghaiIpUrl'] = 'https://yy.zddyr.top/ip.php';
+      legacy['xinghaiClient'] = 'XingHaiMusicSource/v3.2.13 (Android)';
+      legacy['xinghaiDeviceId'] = 'existing-device';
+      legacy['xinghaiLicenseKey'] = 'user-license';
+      legacy['hywCardKey'] = 'user-card-key';
+      final migrated = PlaybackSourceConfig.fromJson(legacy);
+
+      expect(migrated.chkszBaseUrl, 'https://api.chksz.com');
+      expect(migrated.xinghaiUrl, 'https://yy1.zddyr.top/lx/api/');
+      expect(migrated.xinghaiIpUrl, isEmpty);
+      expect(migrated.xinghaiClient, PlaybackSourceConfig.defaultXinghaiClient);
+      expect(migrated.xinghaiDeviceId, 'existing-device');
+      expect(migrated.xinghaiLicenseKey, 'user-license');
+      expect(migrated.hywCardKey, 'user-card-key');
+      expect(PlaybackSourceConfig.fromJson(migrated.toJson()), migrated);
+    });
+
+    test('retains custom routes and rejects invalid license headers', () {
+      final custom = PlaybackSourceConfig.defaults()
+          .copyWith(
+            chkszBaseUrl: 'https://proxy.test/chksz?tenant=a',
+            xinghaiUrl: 'https://proxy.test/xinghai/?tenant=b',
+            xinghaiIpUrl: 'https://proxy.test/legacy-ip',
+            xinghaiClient: 'custom-client',
+            xinghaiLicenseKey: '  user-license  ',
+          )
+          .validated();
+      expect(PlaybackSourceConfig.fromJson(custom.toJson()), custom);
+      expect(custom.xinghaiLicenseKey, 'user-license');
+      expect(
+        () => custom
+            .copyWith(xinghaiLicenseKey: 'key\r\nInjected: value')
+            .validated(),
+        throwsFormatException,
+      );
+      expect(
+        () => custom.copyWith(xinghaiLicenseKey: '中文卡密').validated(),
+        throwsFormatException,
+      );
+    });
+
+    test('updates only the legacy public HYW card', () {
+      // 旧公益服务迁移到新卡密，启停状态保持原样。
+      final legacy = PlaybackSourceConfig.defaults().toJson();
+      legacy['hywCardKey'] = 'PYPW-QFRL-3DBF-95O6';
+      legacy['hywEnabled'] = false;
+      final updated = PlaybackSourceConfig.fromJson(legacy);
+      expect(updated.hywCardKey, PlaybackSourceConfig.defaultHywCardKey);
+      expect(updated.hywEnabled, isFalse);
+      expect(updated.usesHywPublicSource, isTrue);
+
+      // 自建服务和用户独立卡密不能被公益配置覆盖。
+      legacy['hywBaseUrl'] = 'https://custom-hyw.test';
+      expect(
+        PlaybackSourceConfig.fromJson(legacy).hywCardKey,
+        'PYPW-QFRL-3DBF-95O6',
+      );
+      legacy['hywBaseUrl'] = PlaybackSourceConfig.defaultHywBaseUrl;
+      legacy['hywCardKey'] = 'personal-card';
+      expect(PlaybackSourceConfig.fromJson(legacy).hywCardKey, 'personal-card');
+    });
+
+    test('permits Unicode HYW query keys but rejects control characters', () {
+      // 中文卡密只用于 query；换行和控制字符仍然拒绝保存。
+      final defaults = PlaybackSourceConfig.defaults();
+      expect(
+        defaults.copyWith(hywCardKey: '  中文卡密  ').validated().hywCardKey,
+        '中文卡密',
+      );
+      for (final invalid in ['key\r\nInjected: value', 'key\u0000value']) {
+        expect(
+          () => defaults.copyWith(hywCardKey: invalid).validated(),
+          throwsFormatException,
+        );
+      }
+    });
+
+    test('an HTTP 200 business error is reachable but unsuccessful', () {
+      const result = PlaybackSourceTestResult(
+        source: PlaybackSource.qingMusic,
+        reachable: true,
+        latencyMs: 20,
+        statusCode: 200,
+        message: '官方网关要求签名',
+        errorCode: 'QING_UPGRADE_REQUIRED',
+      );
+      expect(result.reachable, isTrue);
+      expect(result.successful, isFalse);
+    });
+
     test(
       'rejects invalid enabled endpoints but permits blank disabled ones',
       () {
