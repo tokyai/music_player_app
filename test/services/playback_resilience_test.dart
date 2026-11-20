@@ -21,6 +21,7 @@ void main() {
         await http.runWithClient(
           () async {
             final api = ApiService(
+              useRemotePlayback: false,
               apiKey: '',
               playbackSourceConfig: _onlyQing(),
             );
@@ -64,7 +65,11 @@ void main() {
       var cancelled = false;
       await http.runWithClient(
         () async {
-          final api = ApiService(apiKey: '', playbackSourceConfig: _onlyQing());
+          final api = ApiService(
+            useRemotePlayback: false,
+            apiKey: '',
+            playbackSourceConfig: _onlyQing(),
+          );
           try {
             final result = _resolve(
               api,
@@ -99,7 +104,11 @@ void main() {
     () async {
       final oversizedCode = List.filled(4096, 'x').join();
       await http.runWithClient(() async {
-        final api = ApiService(apiKey: '', playbackSourceConfig: _onlyQing());
+        final api = ApiService(
+          useRemotePlayback: false,
+          apiKey: '',
+          playbackSourceConfig: _onlyQing(),
+        );
         try {
           await expectLater(
             _resolve(api),
@@ -137,7 +146,11 @@ void main() {
             xinghaiUrl: 'https://xinghai.test/api/',
             xinghaiIpUrl: 'https://xinghai.test/ip.php',
           );
-          final api = ApiService(apiKey: '', playbackSourceConfig: config);
+          final api = ApiService(
+            useRemotePlayback: false,
+            apiKey: '',
+            playbackSourceConfig: config,
+          );
           try {
             final old = _resolve(
               api,
@@ -187,7 +200,7 @@ void main() {
     var sends = 0;
     await http.runWithClient(
       () async {
-        final api = ApiService(apiKey: 'test-key');
+        final api = ApiService(useRemotePlayback: false, apiKey: 'test-key');
         try {
           final results = api.testPlaybackSources(
             maxConcurrent: 1,
@@ -219,6 +232,7 @@ void main() {
       await http.runWithClient(
         () async {
           final api = ApiService(
+            useRemotePlayback: false,
             apiKey: 'test',
             playbackSourceConfig: PlaybackSourceConfig.defaults().copyWith(
               chkszBaseUrl: 'https://custom.test/proxy/?tenant=a',

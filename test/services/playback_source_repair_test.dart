@@ -917,7 +917,11 @@ Future<void> _withApi(
   // 受控响应替代真实网络；每项测试最终关闭服务及其所有 HTTP/令牌资源。
   http.Client createClient() => MockClient(respond);
   Future<void> run() async {
-    final api = ApiService(apiKey: apiKey, playbackSourceConfig: config);
+    final api = ApiService(
+      useRemotePlayback: false,
+      apiKey: apiKey,
+      playbackSourceConfig: config,
+    );
     try {
       await scenario(api);
     } finally {

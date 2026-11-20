@@ -145,6 +145,25 @@ http.Client _playlistClient(
   required Completer<http.Response> delayedPage,
 }) {
   return MockClient((request) async {
+    if (request.url.path.endsWith('/api/sources')) {
+      return http.Response(
+        jsonEncode({
+          'protocolVersion': 1,
+          'revision': 'fixture',
+          'sources': [],
+        }),
+        200,
+      );
+    }
+    if (request.url.path.endsWith('/api/resolve')) {
+      return http.Response(
+        jsonEncode({
+          'code': 'SOURCE_UNAVAILABLE',
+          'message': 'Fixture unavailable',
+        }),
+        502,
+      );
+    }
     if (request.url.path == '/api/v6/playlist/detail') {
       return http.Response(
         jsonEncode({

@@ -116,6 +116,8 @@ void main() {
       expect(tester.widget<FilledButton>(save).onPressed, isNotNull);
 
       player.writeGate = Completer<void>()..complete();
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pumpAndSettle();
       await tester.ensureVisible(save);
       await tester.tap(save);
       await tester.pumpAndSettle();
@@ -152,6 +154,9 @@ void main() {
 class _DelayedApiKeyPlayer extends PlayerProvider {
   Completer<void> writeGate = Completer<void>();
   int saveCalls = 0;
+
+  @override
+  Future<void> refreshPlaybackSources() async {}
 
   @override
   Future<void> setApiKey(String key) async {

@@ -68,6 +68,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   bool _changingFloatingCapsule = false;
   bool _savingVoiceSettings = false;
   bool _batchFavoriteImportInProgress = false;
+  bool _selectingPlaybackSource = false;
   int _batchFavoriteImportGeneration = 0;
   LanFavoriteImportSession? _activeFavoriteImportSession;
 
@@ -1725,6 +1726,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                       PlaybackSource.hyw => Icons.hub_outlined,
                       PlaybackSource.xinghai => Icons.auto_awesome_outlined,
                       PlaybackSource.gdStudio => Icons.backup_outlined,
+                      _ => Icons.cloud_outlined,
                     }),
                     title: Text(
                       '${platform.label}播放源',
@@ -1733,6 +1735,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                     ),
                     subtitle: Text(
                       _playbackSourceDescription(
+                        player,
                         source,
                         enabled: player.playbackSourceConfig.isEnabled(source),
                       ),
@@ -1749,9 +1752,9 @@ class _SettingsScreenState extends State<SettingsScreen>
                   key: const ValueKey('playback-source-config'),
                   dense: compact,
                   leading: const Icon(Icons.tune_rounded),
-                  title: const Text('备用源接口配置'),
+                  title: const Text('音源配置'),
                   subtitle: const Text(
-                    '勾选参与竞速的接口，修改预置字段并测试连通性/响应速度',
+                    '更新可用音源，选择参与自动播放的音源并管理授权凭据',
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -2726,57 +2729,100 @@ class _SettingsScreenState extends State<SettingsScreen>
     MusicPlatform platform,
   ) async {
     FocusManager.instance.primaryFocus?.unfocus();
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => SimpleDialog(
-        title: Text('${platform.label}播放源'),
-        children: PlaybackSource.values.map((source) {
-          final enabled = player.playbackSourceConfig.isEnabled(source);
-          return RadioListTile<PlaybackSource>(
-            key: ValueKey('playback-source-${platform.code}-${source.value}'),
-            value: source,
-            groupValue: player.playbackSourceFor(platform),
-            title: Text(source.label),
-            subtitle: Text(
-              _playbackSourceDescription(source, enabled: enabled),
-            ),
-            onChanged: enabled
-                ? (selected) async {
-                    if (selected == null) return;
-                    try {
-                      await player.setPlaybackSource(platform, selected);
-                      if (!dialogContext.mounted) return;
-                      Navigator.pop(dialogContext);
-                    } catch (error) {
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('保存${platform.label}音源失败：$error'),
-                        ),
-                      );
-                    }
-                  }
-                : null,
-          );
-        }).toList(),
-      ),
-    );
+    Widget choicesBuilder(
+      BuildContext dialogContext,
+      PlayerProvider current,
+      Widget? child,
+    ) => _buildPlaybackSourceChoices(dialogContext, current, platform);
+    Widget dialogBuilder(BuildContext dialogContext) =>
+        Consumer<PlayerProvider>(builder: choicesBuilder);
+    await showDialog<void>(context: context, builder: dialogBuilder);
     if (mounted) FocusManager.instance.primaryFocus?.unfocus();
   }
 
+  Widget _buildPlaybackSourceChoices(
+    BuildContext dialogContext,
+    PlayerProvider player,
+    MusicPlatform platform,
+  ) => SimpleDialog(
+    title: Text('${platform.label}播放源'),
+    children: [
+      for (final source in player.playbackSourceOptions(platform))
+        _buildPlaybackSourceChoice(dialogContext, player, platform, source),
+      if (player.playbackSourcesError != null)
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+          child: Text(player.playbackSourcesError!),
+        ),
+      if (player.playbackSourcesLoading)
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+          child: LinearProgressIndicator(),
+        ),
+      TextButton.icon(
+        key: const ValueKey('refresh-source-picker'),
+        onPressed: player.playbackSourcesLoading
+            ? null
+            : player.refreshPlaybackSources,
+        icon: const Icon(Icons.refresh_rounded),
+        label: const Text('刷新音源列表'),
+      ),
+    ],
+  );
+
+  Widget _buildPlaybackSourceChoice(
+    BuildContext dialogContext,
+    PlayerProvider player,
+    MusicPlatform platform,
+    PlaybackSource source,
+  ) {
+    final enabled = player.playbackSourceConfig.isEnabled(source);
+    return RadioListTile<PlaybackSource>(
+      key: ValueKey('playback-source-${platform.code}-${source.value}'),
+      value: source,
+      groupValue: player.playbackSourceFor(platform),
+      title: Text(source.label),
+      subtitle: Text(
+        _playbackSourceDescription(player, source, enabled: enabled),
+      ),
+      onChanged: enabled
+          ? (selected) =>
+                _selectPlaybackSource(dialogContext, player, platform, selected)
+          : null,
+    );
+  }
+
+  Future<void> _selectPlaybackSource(
+    BuildContext dialogContext,
+    PlayerProvider player,
+    MusicPlatform platform,
+    PlaybackSource? selected,
+  ) async {
+    if (selected == null || _selectingPlaybackSource) return;
+    _selectingPlaybackSource = true;
+    try {
+      await player.setPlaybackSource(platform, selected);
+      if (dialogContext.mounted) Navigator.pop(dialogContext);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('保存${platform.label}音源失败：$error')));
+    } finally {
+      _selectingPlaybackSource = false;
+    }
+  }
+
   String _playbackSourceDescription(
+    PlayerProvider player,
     PlaybackSource source, {
     required bool enabled,
   }) {
-    if (!enabled) return '${source.label} · 已在接口配置中停用';
-    return switch (source) {
-      PlaybackSource.automatic => '主组并行竞速 · 失败后 GDStudio 兜底 · 自动降音质',
-      PlaybackSource.chksz => '现有解析服务 · 需要 API Key',
-      PlaybackSource.qingMusic => '官方接口自动认证 · 支持自定义入口',
-      PlaybackSource.hyw => '统一 GET 聚合解析 · 使用 Card Key',
-      PlaybackSource.xinghai => '服务器签发令牌 · QQ 线路需要卡密',
-      PlaybackSource.gdStudio => '网易云解析 · QQ/酷狗同曲匹配备用',
-    };
+    if (!enabled) return '${source.label} · 已停用';
+    if (source == PlaybackSource.automatic) {
+      return '自动选择可用音源，失败时切换或降低音质';
+    }
+    return player.descriptorFor(source)?.description ?? source.label;
   }
 
   void _showVideoPlayerModePicker(BuildContext context, PlayerProvider player) {

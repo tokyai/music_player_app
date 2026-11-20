@@ -24,7 +24,7 @@ void main() {
 
       await http.runWithClient(
         () async {
-          final api = ApiService(apiKey: '');
+          final api = ApiService(useRemotePlayback: false, apiKey: '');
           try {
             final playlists = await api.qqRecommendPlaylists();
             expect(playlists, isEmpty);
@@ -60,7 +60,7 @@ void main() {
 
     await http.runWithClient(
       () async {
-        final api = ApiService(apiKey: '');
+        final api = ApiService(useRemotePlayback: false, apiKey: '');
         try {
           final songs = await api.neteaseSearch('周杰伦');
           expect(songs, hasLength(1));
@@ -129,7 +129,7 @@ void main() {
     final requested = <Uri>[];
     await http.runWithClient(
       () async {
-        final api = ApiService(apiKey: '');
+        final api = ApiService(useRemotePlayback: false, apiKey: '');
         try {
           final page = await api.neteasePlaylistTracks(
             'playlist-id',
@@ -193,7 +193,7 @@ void main() {
     final detailRequests = <String>[];
     await http.runWithClient(
       () async {
-        final api = ApiService(apiKey: '');
+        final api = ApiService(useRemotePlayback: false, apiKey: '');
         try {
           await api.neteasePlaylistTracks('first', limit: 1);
           await api.neteasePlaylistTracks('second', limit: 1);
@@ -238,7 +238,7 @@ void main() {
     Uri? requested;
     await http.runWithClient(
       () async {
-        final api = ApiService(apiKey: '');
+        final api = ApiService(useRemotePlayback: false, apiKey: '');
         try {
           final page = await api.kugouPlaylistTracks(
             'special-id',
@@ -278,7 +278,7 @@ void main() {
     Uri? requestedUrl;
     await http.runWithClient(
       () async {
-        final api = ApiService(apiKey: '');
+        final api = ApiService(useRemotePlayback: false, apiKey: '');
         try {
           final page = await api.qqPlaylistTracks(
             'diss-id',
@@ -331,7 +331,10 @@ void main() {
     final requests = <Map<String, dynamic>>[];
     await http.runWithClient(
       () async {
-        final api = ApiService(apiKey: 'unused-by-qing');
+        final api = ApiService(
+          useRemotePlayback: false,
+          apiKey: 'unused-by-qing',
+        );
         try {
           final qq = await api.qingMusic(
             MusicPlatform.qq,
@@ -394,7 +397,11 @@ void main() {
           hywBaseUrl: 'https://hyw.test',
           hywCardKey: 'card-key',
         );
-        final api = ApiService(apiKey: '', playbackSourceConfig: config);
+        final api = ApiService(
+          useRemotePlayback: false,
+          apiKey: '',
+          playbackSourceConfig: config,
+        );
         try {
           final detail = await api.hywMusic(
             MusicPlatform.kugou,
@@ -446,7 +453,11 @@ void main() {
           hywBaseUrl: 'https://hyw.test',
           hywCardKey: 'do-not-leak',
         );
-        final api = ApiService(apiKey: '', playbackSourceConfig: config);
+        final api = ApiService(
+          useRemotePlayback: false,
+          apiKey: '',
+          playbackSourceConfig: config,
+        );
         try {
           await expectLater(
             api.hywMusic(
@@ -489,7 +500,11 @@ void main() {
             xinghaiClient: 'test-client',
             xinghaiDeviceId: 'test-device',
           );
-          final api = ApiService(apiKey: '', playbackSourceConfig: config);
+          final api = ApiService(
+            useRemotePlayback: false,
+            apiKey: '',
+            playbackSourceConfig: config,
+          );
           try {
             final detail = await api.xinghaiMusic(
               MusicPlatform.kugou,
@@ -551,7 +566,11 @@ void main() {
             qingMusicUrl: 'https://exclude-qing.test/resolve-url',
             hywBaseUrl: 'https://exclude-hyw.test',
           );
-          final api = ApiService(apiKey: '', playbackSourceConfig: config);
+          final api = ApiService(
+            useRemotePlayback: false,
+            apiKey: '',
+            playbackSourceConfig: config,
+          );
           try {
             final detail = await api.resolvePlayback(
               source: PlaybackSource.automatic,
@@ -588,7 +607,11 @@ void main() {
         final config = PlaybackSourceConfig.defaults().copyWith(
           gdStudioUrl: 'https://gd.test/api.php',
         );
-        final api = ApiService(apiKey: '', playbackSourceConfig: config);
+        final api = ApiService(
+          useRemotePlayback: false,
+          apiKey: '',
+          playbackSourceConfig: config,
+        );
         try {
           await api.gdStudioMusic(
             MusicPlatform.netease,
@@ -661,7 +684,11 @@ void main() {
           final config = PlaybackSourceConfig.defaults().copyWith(
             gdStudioUrl: 'https://gd.test/api.php',
           );
-          final api = ApiService(apiKey: '', playbackSourceConfig: config);
+          final api = ApiService(
+            useRemotePlayback: false,
+            apiKey: '',
+            playbackSourceConfig: config,
+          );
           try {
             final detail = await api.gdStudioMusic(
               MusicPlatform.netease,
@@ -701,7 +728,11 @@ void main() {
             qingMusicUrl: 'https://qing.test/resolve-url',
             hywBaseUrl: 'https://hyw.test',
           );
-          final api = ApiService(apiKey: '', playbackSourceConfig: config);
+          final api = ApiService(
+            useRemotePlayback: false,
+            apiKey: '',
+            playbackSourceConfig: config,
+          );
           try {
             final detail = await api.resolvePlayback(
               source: PlaybackSource.automatic,
@@ -747,6 +778,7 @@ void main() {
             qingMusicUrl: 'https://qing.test/resolve-url',
           );
           final api = ApiService(
+            useRemotePlayback: false,
             apiKey: 'test-key',
             playbackSourceConfig: config,
           );
@@ -796,7 +828,11 @@ void main() {
             qingMusicUrl: 'https://qing.test/resolve-url',
             hywBaseUrl: 'https://hyw.test',
           );
-          final api = ApiService(apiKey: '', playbackSourceConfig: config);
+          final api = ApiService(
+            useRemotePlayback: false,
+            apiKey: '',
+            playbackSourceConfig: config,
+          );
           try {
             await expectLater(
               api.resolvePlayback(
@@ -835,7 +871,7 @@ void main() {
   );
 
   test('closed resolver rejects delayed playback work', () async {
-    final api = ApiService(apiKey: '');
+    final api = ApiService(useRemotePlayback: false, apiKey: '');
     api.close();
     await expectLater(
       api.resolvePlayback(
@@ -876,7 +912,11 @@ void main() {
             qingMusicUrl: 'https://qing.test/resolve-url',
             hywBaseUrl: 'https://hyw.test',
           );
-          api = ApiService(apiKey: '', playbackSourceConfig: config);
+          api = ApiService(
+            useRemotePlayback: false,
+            apiKey: '',
+            playbackSourceConfig: config,
+          );
           return api.resolvePlayback(
             source: PlaybackSource.automatic,
             platform: MusicPlatform.qq,
@@ -917,7 +957,7 @@ void main() {
     final requests = <Uri>[];
     await http.runWithClient(
       () async {
-        final api = ApiService(apiKey: 'not-needed');
+        final api = ApiService(useRemotePlayback: false, apiKey: 'not-needed');
         try {
           final netease = await api.neteaseLyric('163-id');
           final qq = await api.qqLyric('qq-mid');
@@ -974,7 +1014,10 @@ void main() {
       final requests = <Uri>[];
       await http.runWithClient(
         () async {
-          final api = ApiService(apiKey: 'not-needed');
+          final api = ApiService(
+            useRemotePlayback: false,
+            apiKey: 'not-needed',
+          );
           try {
             expect(
               (await api.neteaseLyric('163-id')).original,
@@ -1016,7 +1059,7 @@ void main() {
   test('lyric candidates are sorted by metadata relevance', () async {
     await http.runWithClient(
       () async {
-        final api = ApiService(apiKey: '');
+        final api = ApiService(useRemotePlayback: false, apiKey: '');
         try {
           final results = await api.searchLyricCandidates(
             platform: MusicPlatform.qq,
@@ -1081,7 +1124,7 @@ void main() {
     final requests = <Uri>[];
     await http.runWithClient(
       () async {
-        final api = ApiService(apiKey: '');
+        final api = ApiService(useRemotePlayback: false, apiKey: '');
         try {
           expect(
             await api.musicVideoUrl(
@@ -1210,7 +1253,7 @@ void main() {
 
   test('rejects an empty Netease playlist response', () async {
     await http.runWithClient(() async {
-      final api = ApiService(apiKey: '');
+      final api = ApiService(useRemotePlayback: false, apiKey: '');
       try {
         await expectLater(
           api.neteasePlaylistSummary('12345'),
@@ -1230,7 +1273,7 @@ void main() {
     var requests = 0;
     await http.runWithClient(
       () async {
-        final api = ApiService(apiKey: '');
+        final api = ApiService(useRemotePlayback: false, apiKey: '');
         try {
           await expectLater(
             api.qqPlaylist('12345'),
@@ -1278,7 +1321,11 @@ void main() {
             qingMusicUrl: 'https://race-qing.test/resolve-url',
             hywBaseUrl: 'https://race-hyw.test',
           );
-          final api = ApiService(apiKey: '', playbackSourceConfig: config);
+          final api = ApiService(
+            useRemotePlayback: false,
+            apiKey: '',
+            playbackSourceConfig: config,
+          );
           try {
             final detail = await api.resolvePlayback(
               source: PlaybackSource.automatic,
@@ -1353,7 +1400,11 @@ void main() {
             hywBaseUrl: 'https://group-hyw.test',
             gdStudioUrl: 'https://group-gd.test/api.php',
           );
-          final api = ApiService(apiKey: '', playbackSourceConfig: config);
+          final api = ApiService(
+            useRemotePlayback: false,
+            apiKey: '',
+            playbackSourceConfig: config,
+          );
           try {
             final detail = await api.resolvePlayback(
               source: PlaybackSource.automatic,
@@ -1420,7 +1471,11 @@ void main() {
           gdStudioEnabled: false,
           qingMusicUrl: 'https://quality-qing.test/resolve-url',
         );
-        final api = ApiService(apiKey: '', playbackSourceConfig: config);
+        final api = ApiService(
+          useRemotePlayback: false,
+          apiKey: '',
+          playbackSourceConfig: config,
+        );
         try {
           final detail = await api.resolvePlayback(
             source: PlaybackSource.automatic,
@@ -1468,7 +1523,11 @@ void main() {
             gdStudioEnabled: false,
             qingMusicUrl: 'https://probe-qing.test/resolve-url',
           );
-          final api = ApiService(apiKey: '', playbackSourceConfig: config);
+          final api = ApiService(
+            useRemotePlayback: false,
+            apiKey: '',
+            playbackSourceConfig: config,
+          );
           try {
             final single = await api.testPlaybackSource(
               PlaybackSource.qingMusic,
@@ -1524,7 +1583,11 @@ void main() {
           xinghaiEnabled: false,
           gdStudioEnabled: false,
         );
-        final api = ApiService(apiKey: '', playbackSourceConfig: config);
+        final api = ApiService(
+          useRemotePlayback: false,
+          apiKey: '',
+          playbackSourceConfig: config,
+        );
         try {
           final single = await api.testPlaybackSource(
             PlaybackSource.chksz,
@@ -1555,7 +1618,11 @@ void main() {
             xinghaiUrl: 'https://probe-xinghai.test/lx/api/',
             gdStudioUrl: 'https://probe-gd.test/api.php',
           );
-          final api = ApiService(apiKey: '', playbackSourceConfig: config);
+          final api = ApiService(
+            useRemotePlayback: false,
+            apiKey: '',
+            playbackSourceConfig: config,
+          );
           try {
             await api.testPlaybackSource(
               PlaybackSource.xinghai,

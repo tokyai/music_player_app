@@ -6,6 +6,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/song.dart';
 import '../models/playback_source_config.dart';
+import '../models/remote_playback.dart';
 import '../models/audio_effects.dart';
 import '../services/audio_effects_service.dart';
 import '../services/sleep_timer.dart';
@@ -110,7 +111,7 @@ class PlayerProvider extends ChangeNotifier {
   final Map<String, _ResolvedLyrics> _lyricCache = {};
   final Map<String, Duration> _lyricOffsets = {};
   final Set<String> _bilibiliLyricAutoAttempted = {};
-  final Map<String, DateTime> _playUrlResolvedAt = {};
+  final Map<String, _ResolvedPlayUrl> _playUrlResolvedAt = {};
   List<PlaybackHistoryEntry> _playbackHistory = [];
   int _playbackHistoryRevision = 0;
   Timer? _historyPersistTimer;
@@ -144,6 +145,12 @@ class PlayerProvider extends ChangeNotifier {
   PlaybackSource _qqPlaybackSource = PlaybackSource.automatic;
   PlaybackSource _kugouPlaybackSource = PlaybackSource.automatic;
   PlaybackSourceConfig _playbackSourceConfig = PlaybackSourceConfig.defaults();
+  static const _playbackSourceCatalogKey = PlaybackSourceCatalog.preferenceKey;
+  PlaybackSourceCatalog? _playbackSourceCatalog;
+  Future<void>? _playbackSourcesRefreshFuture;
+  bool _playbackSourcesLoading = false;
+  String? _playbackSourcesError;
+  Completer<void>? _sourceSettingsSaveCompletion;
   List<MusicPlatform> _bilibiliLyricPlatformOrder = List<MusicPlatform>.from(
     _defaultBilibiliLyricPlatformOrder,
   );
@@ -173,20 +180,25 @@ class PlayerProvider extends ChangeNotifier {
     this.dataScope = UserDataScope.defaultScope,
     bool activateRestoredSession = true,
     BilibiliService? bilibiliService,
+    ApiService? apiService,
   }) : _restoredSessionActivationEnabled = activateRestoredSession {
-    _api = ApiService(
-      apiKey: '',
-      playbackSourceConfig: _playbackSourceConfig,
-      bilibili: bilibiliService ?? BilibiliService(dataScope: dataScope),
-    );
+    _api =
+        apiService ??
+        ApiService(
+          apiKey: '',
+          playbackSourceConfig: _playbackSourceConfig,
+          bilibili: bilibiliService ?? BilibiliService(dataScope: dataScope),
+        );
     _api.bilibili.addListener(_handleBilibiliChanged);
     _initAudioPlayer();
     historyReady = _loadPlaybackHistory();
     settingsReady = _loadSettings();
     playbackStateReady = _loadPlaybackState();
+    playbackSourcesReady = _initializePlaybackSources();
   }
 
   late final Future<void> historyReady;
+  late final Future<void> playbackSourcesReady;
 
   void _handleBilibiliChanged() {
     if (!_disposed) notifyListeners();
@@ -256,6 +268,17 @@ class PlayerProvider extends ChangeNotifier {
   bool get bilibiliLoggedIn => _api.bilibili.isLoggedIn;
   bool get bilibiliAccountLoading => _api.bilibili.accountLoading;
   PlaybackSource playbackSourceFor(MusicPlatform platform) {
+    final selected = _savedPlaybackSourceFor(platform);
+    if (selected == PlaybackSource.automatic) return selected;
+    final descriptor = descriptorFor(selected);
+    if (_playbackSourceCatalog != null &&
+        (descriptor == null || !descriptor.platforms.contains(platform.code))) {
+      return PlaybackSource.automatic;
+    }
+    return descriptor?.source ?? selected;
+  }
+
+  PlaybackSource _savedPlaybackSourceFor(MusicPlatform platform) {
     return switch (platform) {
       MusicPlatform.netease => _neteasePlaybackSource,
       MusicPlatform.qq => _qqPlaybackSource,
@@ -266,25 +289,112 @@ class PlayerProvider extends ChangeNotifier {
   }
 
   PlaybackSourceConfig get playbackSourceConfig => _playbackSourceConfig;
+  List<RemotePlaybackSource> get remotePlaybackSources =>
+      _playbackSourceCatalog?.sources ?? const [];
+  String? get playbackSourcesError => _playbackSourcesError;
+  bool get playbackSourcesLoading => _playbackSourcesLoading;
+  bool get savingPlaybackSourceSettings =>
+      _sourceSettingsSaveCompletion != null;
+
+  /// 获取音源的服务端名称、适用平台及凭据定义。
+  RemotePlaybackSource? descriptorFor(PlaybackSource source) =>
+      _playbackSourceCatalog?.sourceFor(source);
 
   /// The resolver that supplied the URL currently loaded for the active song.
   /// This is session state only and is never written to preferences.
   PlaybackSource? get currentPlaybackSource {
     final song = currentSong;
     if (song == null || _activePlaybackItemKey != _itemKey(song)) return null;
-    return _currentResolvedPlaybackSource ?? _currentPlaybackSourceOverride;
+    final source =
+        _currentResolvedPlaybackSource ?? _currentPlaybackSourceOverride;
+    if (source == null) return null;
+    return descriptorFor(source)?.source ?? source;
   }
 
   List<PlaybackSource> playbackSourceOptions(MusicPlatform platform) {
     if (!configurableMusicPlatforms.contains(platform)) return const [];
     return [
       PlaybackSource.automatic,
-      for (final source in PlaybackSource.values)
-        if (source != PlaybackSource.automatic &&
-            _playbackSourceConfig.isEnabled(source) &&
-            (source != PlaybackSource.chksz || _apiKey.trim().isNotEmpty))
-          source,
+      for (final descriptor in remotePlaybackSources)
+        if (descriptor.platforms.contains(platform.code) &&
+            _playbackSourceConfig.isEnabled(descriptor.source))
+          descriptor.source,
     ];
+  }
+
+  Future<void> _initializePlaybackSources() async {
+    await settingsReady;
+    if (_disposed || dataScope.isDeleted) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (_disposed || dataScope.isDeleted) return;
+      final cached = prefs.getString(_playbackSourceCatalogKey);
+      if (cached != null && cached.length <= 512 * 1024) {
+        final json = jsonDecode(cached);
+        if (json is! Map<String, dynamic>) {
+          throw const FormatException('音源列表缓存格式无效');
+        }
+        _playbackSourceCatalog = PlaybackSourceCatalog.fromJson(json);
+        notifyListeners();
+      }
+    } catch (error) {
+      debugPrint('读取音源列表缓存失败: $error');
+    }
+    if (!_disposed && !dataScope.isDeleted) await refreshPlaybackSources();
+  }
+
+  /// 同步服务端音源列表；失败时保留已验证缓存并提供可重试的错误反馈。
+  /// 同时调用会共用一次请求，页面销毁后不会发布迟到的状态。
+  /// SHIXIAOYANG，2026/11/20。
+  Future<void> refreshPlaybackSources() {
+    if (_disposed || dataScope.isDeleted) return Future<void>.value();
+    final existing = _playbackSourcesRefreshFuture;
+    if (existing != null) return existing;
+    final operation = _refreshPlaybackSources();
+    _playbackSourcesRefreshFuture = operation;
+    return operation;
+  }
+
+  Future<void> _refreshPlaybackSources() async {
+    await settingsReady;
+    if (_disposed || dataScope.isDeleted) return;
+    _playbackSourcesLoading = true;
+    _playbackSourcesError = null;
+    notifyListeners();
+    try {
+      final catalog = await _api.loadPlaybackSources();
+      if (_disposed || dataScope.isDeleted) return;
+      _playbackSourceCatalog = catalog;
+      final serialized = jsonEncode(catalog.toJson());
+      if (serialized.length <= 512 * 1024) {
+        await _cachePlaybackSourceCatalog(serialized);
+      }
+    } catch (error) {
+      if (!_disposed && !dataScope.isDeleted) {
+        _playbackSourcesError = '音源列表更新失败，请检查网络后重试';
+        debugPrint('同步音源列表失败: $error');
+      }
+    } finally {
+      _playbackSourcesRefreshFuture = null;
+      if (!_disposed && !dataScope.isDeleted) {
+        _playbackSourcesLoading = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> _cachePlaybackSourceCatalog(String serialized) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (_disposed || dataScope.isDeleted) return;
+      final saved = await prefs.setString(
+        _playbackSourceCatalogKey,
+        serialized,
+      );
+      if (!saved) debugPrint('音源列表已更新，但缓存保存失败');
+    } catch (error) {
+      debugPrint('保存音源列表缓存失败: $error');
+    }
   }
 
   List<MusicPlatform> get bilibiliLyricPlatformOrder =>
@@ -386,7 +496,7 @@ class PlayerProvider extends ChangeNotifier {
       MusicPlatform.kugou,
     ]) {
       final value = sources[platform.code];
-      if (value is! String || !containsValue(PlaybackSource.values, value)) {
+      if (value is! String || !PlaybackSource.isValidId(value)) {
         throw const FormatException('备份文件中的播放音源设置无效');
       }
     }
@@ -449,10 +559,8 @@ class PlayerProvider extends ChangeNotifier {
       final value =
           sources[platform.code] ?? json['${platform.code}PlaybackSource'];
       if (value is! String) return null;
-      for (final source in PlaybackSource.values) {
-        if (source.value == value) return source;
-      }
-      return null;
+      if (!PlaybackSource.isValidId(value)) return null;
+      return PlaybackSource.fromId(value);
     }
 
     final neteaseSource = sourceFor(MusicPlatform.netease);
@@ -592,13 +700,17 @@ class PlayerProvider extends ChangeNotifier {
     }
   }
 
-  void _rememberPlayUrl(String key) {
+  void _rememberPlayUrl(
+    String key, {
+    DateTime? expiresAt,
+    PlaybackSource? source,
+  }) {
     final now = DateTime.now();
     _playUrlResolvedAt.removeWhere(
-      (_, resolvedAt) => now.difference(resolvedAt) > _resolvedUrlLifetime,
+      (_, cached) => !_playUrlIsFresh(cached, now),
     );
     _playUrlResolvedAt.remove(key);
-    _playUrlResolvedAt[key] = now;
+    _playUrlResolvedAt[key] = _ResolvedPlayUrl(now, expiresAt, source);
     while (_playUrlResolvedAt.length > _maxCachedPlayUrls) {
       _playUrlResolvedAt.remove(_playUrlResolvedAt.keys.first);
     }
@@ -1177,16 +1289,72 @@ class PlayerProvider extends ChangeNotifier {
     }
   }
 
+  /// 保存个人 API Key，同时更新服务端解析使用的通用凭据。
+  /// 两次持久化成功后才更新内存；第二次失败时恢复第一步写入。
+  /// SHIXIAOYANG，2026/11/20。
   Future<void> setApiKey(String key) async {
     await settingsReady;
-    if (_disposed) return;
-    _apiKey = key;
-    _api.setApiKey(key);
-    await _savePreference(
-      'API Key',
-      (prefs) => prefs.setString('api_key', key),
+    if (_disposed || dataScope.isDeleted) return;
+    _ensureSourceSettingsIdle();
+    final normalized = key.trim();
+    if (normalized.length > 1024 ||
+        RegExp(r'[\x00-\x1f\x7f]').hasMatch(normalized)) {
+      throw const FormatException('API Key 必须是有限长度的单行文本');
+    }
+    final credentials = _playbackSourceConfig.credentialsForServer(
+      apiKey: normalized,
     );
-    if (!_disposed) notifyListeners();
+    credentials['chksz']!['apiKey'] = normalized;
+    final config = _playbackSourceConfig
+        .copyWith(remoteCredentials: credentials)
+        .validated();
+    if (_apiKey == normalized && _playbackSourceConfig == config) return;
+    final completion = _beginSourceSettingsSave();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (_disposed || dataScope.isDeleted) return;
+      await _writeApiKeyAndSourceConfig(prefs, normalized, config);
+      if (_disposed || dataScope.isDeleted) return;
+      _apiKey = normalized;
+      _playbackSourceConfig = config;
+      _api.setApiKey(normalized);
+      _api.setPlaybackSourceConfig(config);
+      _playUrlResolvedAt.clear();
+    } finally {
+      _finishSourceSettingsSave(completion);
+    }
+  }
+
+  Future<void> _writeApiKeyAndSourceConfig(
+    SharedPreferences prefs,
+    String key,
+    PlaybackSourceConfig config,
+  ) async {
+    final previousConfig = prefs.getString(PlaybackSourceConfig.preferenceKey);
+    var wroteConfig = false;
+    try {
+      wroteConfig = await prefs.setString(
+        PlaybackSourceConfig.preferenceKey,
+        jsonEncode(config.toJson()),
+      );
+      if (!wroteConfig) throw StateError('保存音源凭据失败');
+      final savedKey = await prefs.setString('api_key', key);
+      if (!savedKey) throw StateError('保存 API Key 失败');
+    } catch (_) {
+      if (wroteConfig) {
+        final restored = previousConfig == null
+            ? await prefs.remove(PlaybackSourceConfig.preferenceKey)
+            : await prefs.setString(
+                PlaybackSourceConfig.preferenceKey,
+                previousConfig,
+              );
+        if (!restored) {
+          throw StateError('保存 API Key 失败，恢复旧音源配置失败');
+        }
+      }
+      await prefs.reload();
+      rethrow;
+    }
   }
 
   Future<void> setNeteaseLevel(NeteaseLevel level) async {
@@ -1271,37 +1439,53 @@ class PlayerProvider extends ChangeNotifier {
     }
   }
 
+  /// 保存当前平台的稳定音源 ID；服务端名称变化不影响用户的选择。
   Future<void> setPlaybackSource(
     MusicPlatform platform,
     PlaybackSource source,
   ) async {
     await settingsReady;
     if (_disposed ||
-        platform == MusicPlatform.bilibili ||
-        playbackSourceFor(platform) == source) {
+        dataScope.isDeleted ||
+        !configurableMusicPlatforms.contains(platform)) {
       return;
     }
-    switch (platform) {
-      case MusicPlatform.local:
-        return;
-      case MusicPlatform.netease:
-        _neteasePlaybackSource = source;
-      case MusicPlatform.qq:
-        _qqPlaybackSource = source;
-      case MusicPlatform.kugou:
-        _kugouPlaybackSource = source;
-      case MusicPlatform.bilibili:
-        return;
+    _ensureSourceSettingsIdle();
+    if (_savedPlaybackSourceFor(platform) == source) return;
+    if (_playbackSourceCatalog != null &&
+        !playbackSourceOptions(platform).contains(source)) {
+      throw StateError('${platform.label}当前无法选择音源：${source.label}');
     }
-    _playUrlResolvedAt.removeWhere(
-      (key, _) => key.startsWith('${platform.code}:'),
-    );
-    await _savePreference(
-      '${platform.label}音源',
-      (prefs) =>
-          prefs.setString(_playbackSourcePreferenceKey(platform), source.value),
-    );
-    notifyListeners();
+    final completion = _beginSourceSettingsSave();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (_disposed || dataScope.isDeleted) return;
+      final saved = await prefs.setString(
+        _playbackSourcePreferenceKey(platform),
+        source.value,
+      );
+      if (!saved) {
+        await prefs.reload();
+        throw StateError('保存${platform.label}音源失败');
+      }
+      if (_disposed || dataScope.isDeleted) return;
+      switch (platform) {
+        case MusicPlatform.netease:
+          _neteasePlaybackSource = source;
+        case MusicPlatform.qq:
+          _qqPlaybackSource = source;
+        case MusicPlatform.kugou:
+          _kugouPlaybackSource = source;
+        case MusicPlatform.bilibili:
+        case MusicPlatform.local:
+          return;
+      }
+      _playUrlResolvedAt.removeWhere(
+        (key, _) => key.startsWith('${platform.code}:'),
+      );
+    } finally {
+      _finishSourceSettingsSave(completion);
+    }
   }
 
   /// Re-resolves only the current song with a temporary source choice.
@@ -1340,20 +1524,70 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> setPlaybackSourceConfig(PlaybackSourceConfig config) async {
     await settingsReady;
     if (_disposed || dataScope.isDeleted) return;
+    _ensureSourceSettingsIdle();
     final validated = config.validated();
     if (_playbackSourceConfig == validated) return;
-    final prefs = await SharedPreferences.getInstance();
+    final completion = _beginSourceSettingsSave();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (_disposed || dataScope.isDeleted) return;
+      final saved = await prefs.setString(
+        PlaybackSourceConfig.preferenceKey,
+        jsonEncode(validated.toJson()),
+      );
+      if (!saved) {
+        await prefs.reload();
+        throw StateError('保存备用源配置失败');
+      }
+      if (_disposed || dataScope.isDeleted) return;
+      _playbackSourceConfig = validated;
+      _api.setPlaybackSourceConfig(validated);
+      _playUrlResolvedAt.clear();
+    } finally {
+      _finishSourceSettingsSave(completion);
+    }
+  }
+
+  /// 保存服务端定义的音源启停和个人凭据，不需要客户端认识新音源协议。
+  /// [disabledSources] 包含所有停用音源；[credentials] 按音源 ID 保存字段。
+  /// SHIXIAOYANG，2026/11/20。
+  Future<void> setRemotePlaybackSourceSettings({
+    required List<String> disabledSources,
+    required Map<String, Map<String, String>> credentials,
+  }) async {
+    await settingsReady;
     if (_disposed || dataScope.isDeleted) return;
-    final saved = await prefs.setString(
-      PlaybackSourceConfig.preferenceKey,
-      jsonEncode(validated.toJson()),
+    final disabled = disabledSources.toSet();
+    final config = _playbackSourceConfig.copyWith(
+      disabledRemoteSources: disabledSources,
+      remoteCredentials: credentials,
+      chkszEnabled: !disabled.contains(PlaybackSource.chksz.value),
+      qingMusicEnabled: !disabled.contains(PlaybackSource.qingMusic.value),
+      hywEnabled: !disabled.contains(PlaybackSource.hyw.value),
+      xinghaiEnabled: !disabled.contains(PlaybackSource.xinghai.value),
+      gdStudioEnabled: !disabled.contains(PlaybackSource.gdStudio.value),
     );
-    if (!saved) throw StateError('保存备用源配置失败');
-    if (_disposed) return;
-    _playbackSourceConfig = validated;
-    _api.setPlaybackSourceConfig(validated);
-    _playUrlResolvedAt.clear();
+    await setPlaybackSourceConfig(config);
+  }
+
+  Completer<void> _beginSourceSettingsSave() {
+    _ensureSourceSettingsIdle();
+    final completion = Completer<void>();
+    _sourceSettingsSaveCompletion = completion;
     notifyListeners();
+    return completion;
+  }
+
+  void _ensureSourceSettingsIdle() {
+    if (_sourceSettingsSaveCompletion != null) {
+      throw StateError('正在保存音源设置，请稍后重试');
+    }
+  }
+
+  void _finishSourceSettingsSave(Completer<void> completion) {
+    if (!completion.isCompleted) completion.complete();
+    _sourceSettingsSaveCompletion = null;
+    if (!_disposed && !dataScope.isDeleted) notifyListeners();
   }
 
   Future<PlaybackSourceTestResult> testPlaybackSource(
@@ -1765,10 +1999,10 @@ class PlayerProvider extends ChangeNotifier {
       };
 
   static PlaybackSource _readPlaybackSource(String? value) {
-    return PlaybackSource.values.firstWhere(
-      (source) => source.value == value,
-      orElse: () => PlaybackSource.automatic,
-    );
+    if (value == null || !PlaybackSource.isValidId(value)) {
+      return PlaybackSource.automatic;
+    }
+    return PlaybackSource.fromId(value);
   }
 
   static List<MusicPlatform> _readBilibiliLyricPlatformOrder(
@@ -2240,6 +2474,7 @@ class PlayerProvider extends ChangeNotifier {
     if (_disposed || _preparingForExit || cancelled()) {
       throw const ApiException('RESOLVE_CANCELLED', '下载已取消');
     }
+    final selectedSource = playbackSourceFor(song.platform);
     // Playback resolution is latest-request-wins. A download must own its
     // resolver so it cannot cancel the song currently starting playback.
     final resolver = ApiService(
@@ -2274,7 +2509,7 @@ class PlayerProvider extends ChangeNotifier {
         );
       } else {
         detail = await resolver.resolvePlayback(
-          source: playbackSourceFor(song.platform),
+          source: selectedSource,
           platform: song.platform,
           id: song.id,
           quality: quality,
@@ -2299,7 +2534,7 @@ class PlayerProvider extends ChangeNotifier {
           final lyrics = data?.wordSynced?.isNotEmpty == true
               ? data!.wordSynced
               : data?.original;
-          return SongDetail(
+          detail = SongDetail(
             name: detail.name,
             artist: detail.artist,
             album: detail.album,
@@ -2311,10 +2546,48 @@ class PlayerProvider extends ChangeNotifier {
             format: detail.format,
             playbackHeaders: detail.playbackHeaders,
             playbackSource: detail.playbackSource,
+            playbackExpiresAt: detail.playbackExpiresAt,
           );
         } catch (error) {
           debugPrint('下载歌词未获取: $error');
         }
+      }
+      if (cancelled() || _disposed || _preparingForExit) {
+        throw const ApiException('RESOLVE_CANCELLED', '下载已取消');
+      }
+      final expiry = detail.playbackExpiresAt;
+      if (expiry != null &&
+          !expiry.isAfter(DateTime.now().add(const Duration(seconds: 5)))) {
+        // 歌词请求可能消耗短期地址的有效时间，下载前只刷新一次解析结果。
+        final fresh = await resolver.resolvePlayback(
+          source: selectedSource,
+          platform: song.platform,
+          id: song.id,
+          quality: quality,
+          name: song.name,
+          artist: song.artist,
+          album: song.album,
+          albumId: song.albumId,
+          duration: song.duration,
+          isCancelled: () => cancelled() || _disposed || _preparingForExit,
+        );
+        if (cancelled() || _disposed || _preparingForExit) {
+          throw const ApiException('RESOLVE_CANCELLED', '下载已取消');
+        }
+        detail = SongDetail(
+          name: fresh.name,
+          artist: fresh.artist,
+          album: fresh.album,
+          url: fresh.url,
+          coverUrl: fresh.coverUrl ?? detail.coverUrl,
+          lyric: detail.lyric ?? fresh.lyric,
+          duration: fresh.duration,
+          bitrate: fresh.bitrate,
+          format: fresh.format,
+          playbackHeaders: fresh.playbackHeaders,
+          playbackSource: fresh.playbackSource,
+          playbackExpiresAt: fresh.playbackExpiresAt,
+        );
       }
       return detail;
     } finally {
@@ -2533,9 +2806,11 @@ class PlayerProvider extends ChangeNotifier {
           break;
         } catch (_) {
           if (!_isCurrentRequest(requestId, item)) return;
-          _invalidatePlayUrl(itemKey);
           final failedSource =
-              detail?.playbackSource ?? _currentResolvedPlaybackSource;
+              detail?.playbackSource ??
+              _currentResolvedPlaybackSource ??
+              _playUrlResolvedAt[itemKey]?.source;
+          _invalidatePlayUrl(itemKey);
           final canResolveAnother =
               downloadedPath == null &&
               configurableMusicPlatforms.contains(item.platform) &&
@@ -2571,9 +2846,16 @@ class PlayerProvider extends ChangeNotifier {
       }
       if (!_isCurrentRequest(requestId, item)) return;
       _currentResolvedPlaybackSource = detail?.playbackSource;
+      if (detail == null && !usingLocalCache && resolvedUrl != null) {
+        _currentResolvedPlaybackSource = _playUrlResolvedAt[itemKey]?.source;
+      }
       _queue[_currentIndex] = _queue[_currentIndex].copyWith(loading: false);
       if (shouldCacheAudio && resolvedUrl != null) {
-        _rememberPlayUrl(itemKey);
+        _rememberPlayUrl(
+          itemKey,
+          expiresAt: detail?.playbackExpiresAt,
+          source: detail?.playbackSource,
+        );
       }
 
       final startPosition = _normalizeResumePosition(
@@ -2781,13 +3063,21 @@ class PlayerProvider extends ChangeNotifier {
 
   String? _freshPlayUrl(PlayQueueItem item) {
     final url = item.playUrl;
-    final resolvedAt = _playUrlResolvedAt[_itemKey(item)];
-    if (url == null || url.isEmpty || resolvedAt == null) return null;
-    if (DateTime.now().difference(resolvedAt) > _resolvedUrlLifetime) {
+    final cached = _playUrlResolvedAt[_itemKey(item)];
+    if (url == null || url.isEmpty || cached == null) return null;
+    if (!_playUrlIsFresh(cached, DateTime.now())) {
       _playUrlResolvedAt.remove(_itemKey(item));
       return null;
     }
     return url;
+  }
+
+  bool _playUrlIsFresh(_ResolvedPlayUrl cached, DateTime now) {
+    if (now.difference(cached.resolvedAt) > _resolvedUrlLifetime) return false;
+    final expiry = cached.expiresAt;
+    // 为即将开始的加载预留时间，不能复用已经或马上过期的临时地址。
+    return expiry == null ||
+        expiry.isAfter(now.add(const Duration(seconds: 5)));
   }
 
   void _invalidatePlayUrl(String itemKey) {
@@ -3019,7 +3309,11 @@ class PlayerProvider extends ChangeNotifier {
       );
       if (!_isCurrentRequest(requestId, item)) return null;
       if (detail.url.isNotEmpty) {
-        _rememberPlayUrl(_itemKey(item));
+        _rememberPlayUrl(
+          _itemKey(item),
+          expiresAt: detail.playbackExpiresAt,
+          source: detail.playbackSource,
+        );
         final current = _queue[_currentIndex];
         _queue[_currentIndex] = current.copyWith(
           playUrl: detail.url,
@@ -3839,6 +4133,7 @@ class PlayerProvider extends ChangeNotifier {
     List<StreamSubscription?> subscriptions,
   ) async {
     await downloads.close();
+    await _sourceSettingsSaveCompletion?.future;
     await _qualityChangeCompletion?.future;
     await audioEffects.close();
     await Future.wait([
@@ -3880,6 +4175,15 @@ class PlayerProvider extends ChangeNotifier {
     _playUrlResolvedAt.clear();
     _playbackHistory.clear();
   }
+}
+
+/// 临时播放地址的有效期和实际音源，与有界 URL 缓存一起释放。
+class _ResolvedPlayUrl {
+  final DateTime resolvedAt;
+  final DateTime? expiresAt;
+  final PlaybackSource? source;
+
+  const _ResolvedPlayUrl(this.resolvedAt, this.expiresAt, this.source);
 }
 
 class _ResolvedLyrics {

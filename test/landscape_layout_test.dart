@@ -2333,6 +2333,7 @@ void main() {
       final player = PlayerProvider();
       final theme = ThemeController();
       await player.settingsReady;
+      await player.playbackSourcesReady;
       addTearDown(() async {
         await tester.pumpWidget(const SizedBox.shrink());
         player.dispose();
@@ -2485,68 +2486,30 @@ void main() {
         final save = find.byKey(const ValueKey('save-playback-source-config'));
         expect(save.hitTestable(), findsOneWidget);
         expect(
-          tester
-              .widget<TextField>(
-                find.byKey(const ValueKey('source-config-hyw-url')),
-              )
-              .controller
-              ?.text,
-          PlaybackSourceConfig.defaultHywBaseUrl,
+          find.byKey(const ValueKey('source-config-hyw-url')),
+          findsNothing,
         );
         expect(
-          tester
-              .widget<TextField>(
-                find.byKey(const ValueKey('source-config-hyw-key')),
-              )
-              .controller
-              ?.text,
-          PlaybackSourceConfig.defaultHywCardKey,
+          find.byKey(const ValueKey('source-config-qing-url')),
+          findsNothing,
         );
+        await tester.tap(find.byTooltip('刷新音源列表'));
+        await tester.pumpAndSettle();
         expect(
-          tester
-              .widget<TextField>(
-                find.byKey(const ValueKey('source-config-xinghai-url')),
-              )
-              .controller
-              ?.text,
-          PlaybackSourceConfig.defaultXinghaiUrl,
+          tester.widget<TextField>(apiKeyField).controller?.text,
+          'updated-chksz-key',
         );
-
-        final qingUrl = find.byKey(const ValueKey('source-config-qing-url'));
-        await tester.ensureVisible(qingUrl);
-        await tester.enterText(qingUrl, 'https://custom-qing.test/resolve');
         await tester.tap(save);
         await tester.pumpAndSettle();
-
-        expect(
-          player.playbackSourceConfig.qingMusicUrl,
-          'https://custom-qing.test/resolve',
-        );
         final prefs = await SharedPreferences.getInstance();
         expect(prefs.getString('api_key'), 'updated-chksz-key');
         final stored =
             jsonDecode(prefs.getString(PlaybackSourceConfig.preferenceKey)!)
-                as Map<String, dynamic>;
-        expect(stored['hywCardKey'], PlaybackSourceConfig.defaultHywCardKey);
-        expect(stored['qingMusicUrl'], 'https://custom-qing.test/resolve');
-        await tester.ensureVisible(entry);
-        await tester.tap(entry);
-        await tester.pumpAndSettle();
+                as Map;
         expect(
-          tester.widget<TextField>(apiKeyField).controller?.text,
+          (stored['remoteCredentials'] as Map)['chksz']['apiKey'],
           'updated-chksz-key',
         );
-        final reset = find.byKey(
-          const ValueKey('reset-playback-source-config'),
-        );
-        await tester.ensureVisible(reset);
-        await tester.tap(reset);
-        await tester.pumpAndSettle();
-        expect(
-          tester.widget<TextField>(apiKeyField).controller?.text,
-          'updated-chksz-key',
-        );
-        expect(player.apiKey, 'updated-chksz-key');
         _expectNoException(tester);
 
         await tester.pumpWidget(const SizedBox.shrink());
@@ -2559,139 +2522,91 @@ void main() {
     }, _mockClient);
   });
 
-  testWidgets(
-    'source authentication feedback and license survive landscape rotation',
-    (tester) async {
-      Future<http.Response> respond(http.Request request) async {
-        return http.Response(
-          jsonEncode({'code': 'APP_UPGRADE_REQUIRED'}),
-          200,
-          headers: const {'content-type': 'application/json'},
-        );
-      }
-
-      http.Client createClient() => MockClient(respond);
-      Future<void> scenario() async {
-        for (final size in const [Size(640, 360), Size(1280, 800)]) {
-          SharedPreferences.setMockInitialValues({'api_key': 'existing-key'});
-          final player = PlayerProvider();
-          final theme = ThemeController();
-          try {
-            await player.settingsReady;
-            await _pumpScreen(
-              tester,
-              const SettingsScreen(),
-              player,
-              theme,
-              size,
-            );
-            final entry = find.byKey(const ValueKey('playback-source-config'));
-            await tester.ensureVisible(entry);
-            await tester.tap(entry);
-            await tester.pumpAndSettle();
-
-            final license = find.byKey(
-              const ValueKey('source-config-xinghai-license'),
-            );
-            await tester.ensureVisible(license);
-            expect(license.hitTestable(), findsOneWidget);
-            await tester.enterText(license, '  user-license  ');
-            tester.view.physicalSize = size.width == 640
-                ? const Size(1280, 800)
-                : const Size(640, 360);
-            await tester.pumpAndSettle();
-            await tester.ensureVisible(license);
-            expect(
-              tester.widget<TextField>(license).controller?.text,
-              '  user-license  ',
-            );
-            expect(tester.widget<TextField>(license).obscureText, isTrue);
-            expect(tester.widget<TextField>(license).decoration?.labelText,
-                '授权卡密（QQ 线路必填）');
-            expect(find.textContaining('公益版 v1.1.0'), findsOneWidget);
-            expect(
-              find.byKey(const ValueKey('source-config-xinghai-ip-url')),
-              findsNothing,
-            );
-
-            final qingTest = find.byKey(
-              const ValueKey('test-playback-source-qing_music'),
-            );
-            await tester.ensureVisible(qingTest);
-            await tester.tap(qingTest);
-            await tester.pumpAndSettle();
-            final qingCard = find.byKey(const ValueKey('source-config-qing'));
-            expect(
-              find.textContaining('可达 · 客户端认证已失效，请更新音源'),
-              findsOneWidget,
-            );
-            expect(
-              find.descendant(
-                of: qingCard,
-                matching: find.byIcon(Icons.warning_amber_rounded),
-              ),
-              findsOneWidget,
-            );
-            expect(
-              find.descendant(
-                of: qingCard,
-                matching: find.byIcon(Icons.check_circle_outline_rounded),
-              ),
-              findsNothing,
-            );
-
-            final save = find.byKey(
-              const ValueKey('save-playback-source-config'),
-            );
-            expect(save.hitTestable(), findsOneWidget);
-            await tester.tap(save);
-            await tester.pumpAndSettle();
-            expect(
-              player.playbackSourceConfig.xinghaiLicenseKey,
-              'user-license',
-            );
-            expect(player.apiKey, 'existing-key');
-            final prefs = await SharedPreferences.getInstance();
-            final stored =
-                jsonDecode(prefs.getString(PlaybackSourceConfig.preferenceKey)!)
-                    as Map;
-            expect(stored['xinghaiLicenseKey'], 'user-license');
-            _expectNoException(tester);
-          } finally {
-            await tester.pumpWidget(const SizedBox.shrink());
-            await tester.pump();
-            await tester.runAsync(player.disposeResources);
-            theme.dispose();
-          }
-        }
-      }
-
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      await http.runWithClient(scenario, createClient);
-    },
-  );
-
-  testWidgets('leaving a pending token probe ignores its late response', (
+  testWidgets('remote source license survives landscape rotation', (
     tester,
   ) async {
-    final tokenStarted = Completer<void>();
-    final tokenReply = Completer<http.Response>();
-    Future<http.Response> respond(http.Request request) {
-      if (request.url.path.endsWith('/token.php')) {
-        tokenStarted.complete();
-        return tokenReply.future;
+    await http.runWithClient(() async {
+      final player = PlayerProvider();
+      final theme = ThemeController();
+      await player.settingsReady;
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.runAsync(player.disposeResources);
+        theme.dispose();
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
+      await _pumpScreen(
+        tester,
+        const SettingsScreen(),
+        player,
+        theme,
+        const Size(640, 360),
+      );
+      final entry = find.byKey(const ValueKey('playback-source-config'));
+      await tester.ensureVisible(entry);
+      await tester.tap(entry);
+      await tester.pumpAndSettle();
+      final license = find.byKey(
+        const ValueKey('source-credential-xinghai-xinghaiLicenseKey'),
+      );
+      await tester.ensureVisible(license);
+      await tester.enterText(license, '  user-license  ');
+      for (final size in const [Size(1280, 800), Size(640, 360)]) {
+        tester.view.physicalSize = size;
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(license);
+        expect(license.hitTestable(), findsOneWidget);
+        expect(
+          tester.widget<TextField>(license).controller?.text,
+          '  user-license  ',
+        );
+        expect(tester.widget<TextField>(license).obscureText, isTrue);
+        expect(find.byTooltip('保存配置').hitTestable(), findsOneWidget);
+        _expectNoException(tester);
       }
-      return Future.value(http.Response('{}', 200));
+      await tester.tap(find.byTooltip('刷新音源列表'));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(license).controller?.text,
+        '  user-license  ',
+      );
+      await tester.tap(find.byTooltip('保存配置'));
+      await tester.pumpAndSettle();
+      expect(
+        player
+            .playbackSourceConfig
+            .remoteCredentials['xinghai']?['xinghaiLicenseKey'],
+        'user-license',
+      );
+      _expectNoException(tester);
+    }, _mockClient);
+  });
+
+  testWidgets('leaving a pending source refresh ignores its late response', (
+    tester,
+  ) async {
+    final started = Completer<void>();
+    final reply = Completer<http.Response>();
+    var delayRefresh = false;
+    Future<http.Response> respond(http.Request request) async {
+      if (request.url.path.endsWith('/api/sources')) {
+        if (delayRefresh) {
+          if (!started.isCompleted) started.complete();
+          return reply.future;
+        }
+        return _playbackCatalogResponse();
+      }
+      return http.Response('{}', 200);
     }
 
     http.Client createClient() => MockClient(respond);
     Future<void> scenario() async {
-      SharedPreferences.setMockInitialValues({});
       final player = PlayerProvider();
       final theme = ThemeController();
       try {
         await player.settingsReady;
+        await player.playbackSourcesReady;
         await _pumpScreen(
           tester,
           const SettingsScreen(),
@@ -2703,31 +2618,18 @@ void main() {
         await tester.ensureVisible(entry);
         await tester.tap(entry);
         await tester.pumpAndSettle();
-        final probe = find.byKey(
-          const ValueKey('test-playback-source-xinghai'),
-        );
-        await tester.ensureVisible(probe);
-        await tester.tap(probe);
+        delayRefresh = true;
+        await tester.tap(find.byTooltip('刷新音源列表'));
         await tester.pump();
-        await tokenStarted.future;
+        await started.future;
         await tester.pageBack();
         await tester.pumpAndSettle();
-        tokenReply.complete(
-          http.Response(
-            jsonEncode({
-              'code': 0,
-              'data': {'token': 'xh3.late-response'},
-            }),
-            200,
-          ),
-        );
+        reply.complete(_playbackCatalogResponse());
         await tester.pumpAndSettle();
         expect(find.byType(PlaybackSourceConfigScreen), findsNothing);
         _expectNoException(tester);
       } finally {
-        if (!tokenReply.isCompleted) {
-          tokenReply.complete(http.Response('{}', 200));
-        }
+        if (!reply.isCompleted) reply.complete(_playbackCatalogResponse());
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
         await tester.runAsync(player.disposeResources);
@@ -2790,17 +2692,15 @@ void main() {
   });
 
   testWidgets(
-    'playback source probes remain usable and honor enabled switches in both landscapes',
+    'remote source refresh and switches remain usable in both landscapes',
     (tester) async {
-      final requests = <http.Request>[];
-      await http.runWithClient(
-        () async {
-          for (final size in const [Size(640, 360), Size(1280, 800)]) {
-            SharedPreferences.setMockInitialValues({});
-            final player = PlayerProvider();
-            final theme = ThemeController();
-            await player.settingsReady;
-
+      await http.runWithClient(() async {
+        for (final size in const [Size(640, 360), Size(1280, 800)]) {
+          SharedPreferences.setMockInitialValues({});
+          final player = PlayerProvider();
+          final theme = ThemeController();
+          await player.settingsReady;
+          try {
             await _pumpScreen(
               tester,
               const PlaybackSourceConfigScreen(),
@@ -2808,52 +2708,34 @@ void main() {
               theme,
               size,
             );
-            final enabledTest = find.byKey(
-              const ValueKey('test-enabled-playback-sources'),
+            expect(find.byTooltip('刷新音源列表').hitTestable(), findsOneWidget);
+            expect(find.byTooltip('保存配置').hitTestable(), findsOneWidget);
+            final toggle = find.byKey(
+              const ValueKey('source-enabled-qing_music'),
             );
-            final allTest = find.byKey(
-              const ValueKey('test-all-playback-sources'),
-            );
-            expect(enabledTest.hitTestable(), findsOneWidget);
-            expect(allTest.hitTestable(), findsOneWidget);
-            final qingTest = find.byKey(
-              const ValueKey('test-playback-source-qing_music'),
-            );
-            await tester.ensureVisible(qingTest);
-            expect(qingTest.hitTestable(), findsOneWidget);
-
-            final qingCard = find.byKey(const ValueKey('source-config-qing'));
-            await tester.ensureVisible(qingCard);
-            await tester.tap(
-              find.descendant(
-                of: qingCard,
-                matching: find.byType(SwitchListTile),
-              ),
-            );
-            await tester.pump();
-            await tester.ensureVisible(enabledTest);
-            await tester.tap(enabledTest);
+            await tester.ensureVisible(toggle);
+            await tester.tap(toggle);
             await tester.pumpAndSettle();
+            await tester.tap(find.byTooltip('刷新音源列表'));
+            await tester.pumpAndSettle();
+            expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
             expect(
-              requests.any(
-                (request) => request.url.host == 'musicserver.haitangw.cc',
-              ),
-              isFalse,
+              player.playbackSourceConfig.isEnabled(PlaybackSource.qingMusic),
+              isTrue,
+            );
+            expect(
+              find.byKey(const ValueKey('test-playback-source-qing_music')),
+              findsNothing,
             );
             _expectNoException(tester);
-
+          } finally {
             await tester.pumpWidget(const SizedBox.shrink());
             await tester.pump();
-            player.dispose();
+            await tester.runAsync(player.disposeResources);
             theme.dispose();
           }
-        },
-        () => MockClient((request) async {
-          requests.add(request);
-          await Future<void>.delayed(const Duration(milliseconds: 5));
-          return http.Response('{}', 200);
-        }),
-      );
+        }
+      }, _mockClient);
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
     },
@@ -3123,7 +3005,8 @@ void main() {
           LyricStylePreferences.translationKey: true,
           LyricStylePreferences.wordHighlightKey: true,
         });
-        var networkRequests = 0;
+        var mediaNetworkRequests = 0;
+        var sourceRefreshRequests = 0;
         await http.runWithClient(
           () async {
             final player = PlayerProvider(
@@ -3221,14 +3104,19 @@ void main() {
                 find.byKey(const ValueKey('player-back')).hitTestable(),
                 findsOneWidget,
               );
-              expect(networkRequests, 0);
+              expect(mediaNetworkRequests, 0);
+              expect(sourceRefreshRequests, 1);
               _expectNoException(tester);
             } finally {
               await cleanup();
             }
           },
-          () => MockClient((_) async {
-            networkRequests++;
+          () => MockClient((request) async {
+            if (request.url.path.endsWith('/api/sources')) {
+              sourceRefreshRequests++;
+            } else {
+              mediaNetworkRequests++;
+            }
             throw const SocketException('offline');
           }),
         );
@@ -4281,6 +4169,21 @@ void _mockShuffleAudioPlayer(String cacheRoot) {
 
 http.Client _mockShuffleClient() {
   return MockClient((request) async {
+    if (request.url.path.endsWith('/api/sources')) return _playbackCatalogResponse();
+    if (request.url.path.endsWith('/api/resolve')) {
+      return http.Response(
+        jsonEncode({
+          'protocolVersion': 1,
+          'url': 'https://audio.test/shuffle.mp3',
+          'providerId': 'qing_music',
+          'providerName': 'QingMusic',
+          'quality': 'flac',
+          'format': 'mp3',
+          'playbackHeaders': <String, String>{},
+        }),
+        200,
+      );
+    }
     debugPrint('shuffle request ${request.method} ${request.url}');
     final body = request.url.host == 'qing.test'
         ? {
@@ -4296,8 +4199,67 @@ http.Client _mockShuffleClient() {
   });
 }
 
+http.Response _playbackCatalogResponse() => http.Response(
+  jsonEncode({
+    'protocolVersion': 1,
+    'revision': 'landscape-test',
+    'sources': [
+      {
+        'id': 'chksz',
+        'name': 'ChKSz',
+        'description': '需要个人 API Key',
+        'platforms': ['qq', '163', 'kugou'],
+        'credentials': [
+          {
+            'key': 'apiKey',
+            'label': 'API Key',
+            'requiredPlatforms': ['qq', '163', 'kugou'],
+          },
+        ],
+      },
+      {
+        'id': 'qing_music',
+        'name': 'QingMusic',
+        'description': '自动认证音源',
+        'platforms': ['qq', '163', 'kugou'],
+      },
+      {
+        'id': 'hyw',
+        'name': 'HYWmusic',
+        'description': '公益版支持网易云和 QQ',
+        'platforms': ['qq', '163'],
+        'credentials': [
+          {'key': 'hywCardKey', 'label': 'Card Key', 'requiredPlatforms': []},
+        ],
+      },
+      {
+        'id': 'xinghai',
+        'name': '星海',
+        'description': 'QQ 线路需要授权',
+        'platforms': ['qq', '163', 'kugou'],
+        'credentials': [
+          {
+            'key': 'xinghaiLicenseKey',
+            'label': '授权卡密（QQ 线路必填）',
+            'requiredPlatforms': ['qq'],
+          },
+        ],
+      },
+      {
+        'id': 'gd_studio',
+        'name': 'GDStudio',
+        'description': '原唱同曲匹配',
+        'platforms': ['qq', '163', 'kugou'],
+      },
+    ],
+  }),
+  200,
+  headers: const {'content-type': 'application/json; charset=utf-8'},
+);
+
 http.Client _mockClient() {
   return MockClient((request) async {
+    if (request.url.path.endsWith('/api/sources')) return _playbackCatalogResponse();
     return http.Response(
       '{}',
       200,

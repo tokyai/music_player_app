@@ -5,7 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
-import '../models/playback_source_config.dart';
+import '../models/remote_playback.dart';
 import '../models/song.dart';
 import '../providers/player_provider.dart';
 import '../services/lan_api_key_service.dart';
@@ -13,6 +13,7 @@ import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../widgets/remote_focusable.dart';
 
+/// 管理服务器提供的音源及当前用户凭据，SHIXIAOYANG，2026/11/20。
 class PlaybackSourceConfigScreen extends StatefulWidget {
   const PlaybackSourceConfigScreen({super.key});
 
@@ -24,58 +25,46 @@ class PlaybackSourceConfigScreen extends StatefulWidget {
 class _PlaybackSourceConfigScreenState
     extends State<PlaybackSourceConfigScreen> {
   final _apiKeyController = TextEditingController();
+  final Map<String, TextEditingController> _credentialControllers = {};
+  final Set<TextEditingController> _retiredControllers = {};
+  final Set<String> _disabledSources = {};
   bool _obscureKey = true;
   bool _apiKeyEdited = false;
   bool _savingApiKey = false;
   bool _apiKeyQrInputInProgress = false;
-  LanApiKeySession? _activeApiKeySession;
-  late final TextEditingController _chkszUrlController;
-  late final TextEditingController _qingMusicUrlController;
-  late final TextEditingController _hywUrlController;
-  late final TextEditingController _hywCardKeyController;
-  late final TextEditingController _xinghaiUrlController;
-  String _legacyXinghaiIpUrl = '';
-  late final TextEditingController _xinghaiClientController;
-  late final TextEditingController _xinghaiDeviceIdController;
-  late final TextEditingController _xinghaiLicenseKeyController;
-  late final TextEditingController _gdStudioUrlController;
-
-  bool _chkszEnabled = true;
-  bool _qingMusicEnabled = true;
-  bool _hywEnabled = true;
-  bool _xinghaiEnabled = true;
-  bool _gdStudioEnabled = true;
-  bool _obscureHywKey = true;
-  bool _obscureXinghaiKey = true;
   bool _saving = false;
-  bool _testingAll = false;
-  final Set<PlaybackSource> _testingSources = <PlaybackSource>{};
-  final Map<PlaybackSource, PlaybackSourceTestResult> _testResults = {};
-  late final Completer<void> _testCancelSignal;
-  int _testRequestId = 0;
+  bool _refreshing = false;
+  bool _dirty = false;
+  LanApiKeySession? _activeApiKeySession;
+
+  bool get _busy =>
+      _saving || _savingApiKey || _apiKeyQrInputInProgress || _refreshing;
 
   @override
   void initState() {
     super.initState();
-    _testCancelSignal = Completer<void>();
+    // 先显示当前用户设置，再异步同步音源定义，界面不等待网络才能打开。
     final player = context.read<PlayerProvider>();
-    final config = player.playbackSourceConfig;
     _apiKeyController.text = player.apiKey;
-    player.settingsReady.then((_) {
-      if (mounted && !_apiKeyEdited) {
-        _apiKeyController.text = player.apiKey;
+    _disabledSources.addAll(player.playbackSourceConfig.disabledSourceIds);
+    unawaited(_initialize(player));
+  }
+
+  Future<void> _initialize(PlayerProvider player) async {
+    try {
+      // 等待用户设置恢复；用户已经编辑的内容不能被迟到的加载覆盖。
+      await player.settingsReady;
+      if (!mounted) return;
+      if (!_apiKeyEdited) _apiKeyController.text = player.apiKey;
+      if (!_dirty) {
+        _disabledSources
+          ..clear()
+          ..addAll(player.playbackSourceConfig.disabledSourceIds);
       }
-    });
-    _chkszUrlController = TextEditingController();
-    _qingMusicUrlController = TextEditingController();
-    _hywUrlController = TextEditingController();
-    _hywCardKeyController = TextEditingController();
-    _xinghaiUrlController = TextEditingController();
-    _xinghaiClientController = TextEditingController();
-    _xinghaiDeviceIdController = TextEditingController();
-    _xinghaiLicenseKeyController = TextEditingController();
-    _gdStudioUrlController = TextEditingController();
-    _applyConfig(config, rebuild: false);
+      await _refresh();
+    } catch (error) {
+      _showMessage('加载音源配置失败：$error');
+    }
   }
 
   @override
@@ -84,71 +73,331 @@ class _PlaybackSourceConfigScreenState
     _activeApiKeySession = null;
     if (apiKeySession != null) unawaited(apiKeySession.stop());
     _apiKeyController.dispose();
-    _testRequestId++;
-    if (!_testCancelSignal.isCompleted) _testCancelSignal.complete();
-    _chkszUrlController.dispose();
-    _qingMusicUrlController.dispose();
-    _hywUrlController.dispose();
-    _hywCardKeyController.dispose();
-    _xinghaiUrlController.dispose();
-    _xinghaiClientController.dispose();
-    _xinghaiDeviceIdController.dispose();
-    _xinghaiLicenseKeyController.dispose();
-    _gdStudioUrlController.dispose();
+    for (final controller in _credentialControllers.values) {
+      controller.dispose();
+    }
+    for (final controller in _retiredControllers) {
+      controller.dispose();
+    }
+    _credentialControllers.clear();
+    _retiredControllers.clear();
     super.dispose();
   }
 
-  void _applyConfig(PlaybackSourceConfig config, {required bool rebuild}) {
-    void update() {
-      _chkszEnabled = config.chkszEnabled;
-      _qingMusicEnabled = config.qingMusicEnabled;
-      _hywEnabled = config.hywEnabled;
-      _xinghaiEnabled = config.xinghaiEnabled;
-      _gdStudioEnabled = config.gdStudioEnabled;
-      _chkszUrlController.text = config.chkszBaseUrl;
-      _qingMusicUrlController.text = config.qingMusicUrl;
-      _hywUrlController.text = config.hywBaseUrl;
-      _hywCardKeyController.text = config.hywCardKey;
-      _xinghaiUrlController.text = config.xinghaiUrl;
-      _legacyXinghaiIpUrl = config.xinghaiIpUrl;
-      _xinghaiClientController.text = config.xinghaiClient;
-      _xinghaiDeviceIdController.text = config.xinghaiDeviceId;
-      _xinghaiLicenseKeyController.text = config.xinghaiLicenseKey;
-      _gdStudioUrlController.text = config.gdStudioUrl;
-      _testResults.clear();
+  // 更新字段定义时保留仍存在的输入，仅释放服务端已移除字段的控制器。
+  void _synchronizeFields(PlayerProvider player) {
+    final activeKeys = <String>{};
+    final config = player.playbackSourceConfig;
+    // 升级前保存的个人卡密也参与初始化，避免未编辑就保存时被空输入覆盖。
+    final effectiveCredentials = config.credentialsForServer(
+      apiKey: player.apiKey,
+    );
+    for (final descriptor in player.remotePlaybackSources) {
+      if (!_dirty && !config.isEnabled(descriptor.source)) {
+        _disabledSources.add(descriptor.source.value);
+      }
+      for (final field in descriptor.credentials) {
+        if (_usesApiKeyShortcut(descriptor, field)) continue;
+        final key = '${descriptor.source.value}/${field.key}';
+        activeKeys.add(key);
+        if (_credentialControllers.containsKey(key)) continue;
+        _credentialControllers[key] = TextEditingController(
+          text: effectiveCredentials[descriptor.source.value]?[field.key] ?? '',
+        );
+      }
     }
-
-    if (rebuild) {
-      setState(update);
-    } else {
-      update();
+    final removedKeys = _credentialControllers.keys
+        .where((key) => !activeKeys.contains(key))
+        .toList();
+    for (final key in removedKeys) {
+      final controller = _credentialControllers.remove(key)!;
+      _retiredControllers.add(controller);
+      // 旧 TextField 在这一帧结束后移除，随后释放它使用的控制器。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_retiredControllers.remove(controller)) controller.dispose();
+      });
     }
   }
 
-  PlaybackSourceConfig _draftConfig() => PlaybackSourceConfig(
-    chkszEnabled: _chkszEnabled,
-    qingMusicEnabled: _qingMusicEnabled,
-    hywEnabled: _hywEnabled,
-    xinghaiEnabled: _xinghaiEnabled,
-    gdStudioEnabled: _gdStudioEnabled,
-    chkszBaseUrl: _chkszUrlController.text,
-    qingMusicUrl: _qingMusicUrlController.text,
-    hywBaseUrl: _hywUrlController.text,
-    hywCardKey: _hywCardKeyController.text,
-    xinghaiUrl: _xinghaiUrlController.text,
-    xinghaiIpUrl: _legacyXinghaiIpUrl,
-    xinghaiClient: _xinghaiClientController.text,
-    xinghaiDeviceId: _xinghaiDeviceIdController.text,
-    xinghaiLicenseKey: _xinghaiLicenseKeyController.text,
-    gdStudioUrl: _gdStudioUrlController.text,
+  bool _usesApiKeyShortcut(
+    RemotePlaybackSource descriptor,
+    PlaybackCredentialField field,
+  ) => descriptor.source.value == 'chksz' && field.key == 'apiKey';
+
+  Future<void> _refresh() async {
+    if (!mounted || _busy) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    final player = context.read<PlayerProvider>();
+    setState(() => _refreshing = true);
+    try {
+      // Provider 合并重复请求；刷新只更新字段定义，不重置已有输入。
+      await player.refreshPlaybackSources();
+    } catch (error) {
+      _showMessage('刷新音源失败：$error');
+    } finally {
+      if (mounted) setState(() => _refreshing = false);
+    }
+  }
+
+  Future<void> _save() async {
+    if (_busy) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    final player = context.read<PlayerProvider>();
+    // 合并当前字段草稿，保留当前列表之外已有的用户凭据。
+    final credentials = <String, Map<String, String>>{};
+    for (final entry in player.playbackSourceConfig.remoteCredentials.entries) {
+      credentials[entry.key] = Map<String, String>.from(entry.value);
+    }
+    for (final entry in _credentialControllers.entries) {
+      final parts = entry.key.split('/');
+      final values = credentials.putIfAbsent(
+        parts[0],
+        () => <String, String>{},
+      );
+      values[parts[1]] = entry.value.text.trim();
+    }
+    setState(() => _saving = true);
+    try {
+      // 先校验并写入存储，失败时继续保留编辑草稿供重试。
+      await player.setRemotePlaybackSourceSettings(
+        disabledSources: _disabledSources.toList(),
+        credentials: credentials,
+      );
+      if (!mounted) return;
+      setState(() => _dirty = false);
+      _showMessage('音源配置已保存');
+      Navigator.pop(context, true);
+    } catch (error) {
+      _showMessage('保存失败：$error');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    AppColors.syncWithTheme(context);
+    final player = context.watch<PlayerProvider>();
+    _synchronizeFields(player);
+    final sources = player.remotePlaybackSources;
+    final cards = <Widget>[
+      _buildStatusCard(player),
+      for (final source in sources) _buildSourceCard(source),
+      if (sources.isEmpty)
+        Card(
+          key: const ValueKey('source-config-chksz'),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: _buildApiKeyConfiguration(),
+          ),
+        ),
+    ];
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('音源配置'),
+        actions: [
+          IconButton(
+            key: const ValueKey('refresh-playback-sources'),
+            tooltip: '刷新音源列表',
+            onPressed: _busy || player.playbackSourcesLoading ? null : _refresh,
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+          IconButton(
+            key: const ValueKey('save-playback-source-config'),
+            tooltip: '保存配置',
+            onPressed: _busy ? null : _save,
+            icon: _saving
+                ? const SizedBox.square(
+                    dimension: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save_outlined),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            key: const PageStorageKey('playback-source-config-scroll'),
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+            child: constraints.maxWidth >= 960
+                ? _buildWideCards(cards)
+                : Column(children: cards),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWideCards(List<Widget> cards) {
+    // 宽横屏按顺序分成两列；旋转时继续使用同一组输入控制器。
+    final left = <Widget>[];
+    final right = <Widget>[];
+    for (var index = 0; index < cards.length; index++) {
+      if (index.isEven) {
+        left.add(cards[index]);
+      } else {
+        right.add(cards[index]);
+      }
+    }
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(child: Column(children: left)),
+        const SizedBox(width: 12),
+        Expanded(child: Column(children: right)),
+      ],
+    );
+  }
+
+  Widget _buildStatusCard(PlayerProvider player) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('可用音源', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 6),
+          const Text('音源列表自动更新。可选择参与自动播放的音源，并填写个人授权凭据。'),
+          if (_refreshing || player.playbackSourcesLoading) ...[
+            const SizedBox(height: 12),
+            const LinearProgressIndicator(),
+          ],
+          if (player.playbackSourcesError != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              player.playbackSourcesError!,
+              key: const ValueKey('playback-sources-error'),
+              style: const TextStyle(color: Colors.redAccent),
+            ),
+          ],
+          if (player.remotePlaybackSources.isEmpty &&
+              !player.playbackSourcesLoading &&
+              !_refreshing) ...[
+            const SizedBox(height: 8),
+            const Text('暂未取得音源列表，本地歌曲仍可播放。'),
+          ],
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                key: const ValueKey('retry-playback-sources'),
+                onPressed: _busy || player.playbackSourcesLoading
+                    ? null
+                    : _refresh,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('刷新列表'),
+              ),
+              FilledButton.icon(
+                key: const ValueKey('save-playback-source-config-bottom'),
+                onPressed: _busy ? null : _save,
+                icon: const Icon(Icons.save_outlined),
+                label: const Text('保存配置'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    ),
   );
 
-  bool get _busy =>
-      _saving ||
-      _savingApiKey ||
-      _apiKeyQrInputInProgress ||
-      _testingAll ||
-      _testingSources.isNotEmpty;
+  Widget _buildSourceCard(RemotePlaybackSource descriptor) {
+    final source = descriptor.source;
+    final enabled = !_disabledSources.contains(source.value);
+    return Card(
+      key: ValueKey('source-config-${source.value}'),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SwitchListTile.adaptive(
+              key: ValueKey('source-enabled-${source.value}'),
+              contentPadding: EdgeInsets.zero,
+              title: Text(source.label),
+              subtitle: Text(descriptor.description),
+              value: enabled,
+              onChanged: _busy
+                  ? null
+                  : (value) => _changeEnabled(source.value, value),
+            ),
+            Text('支持：${_platformLabels(descriptor.platforms)}'),
+            for (final field in descriptor.credentials)
+              if (_usesApiKeyShortcut(descriptor, field))
+                _buildApiKeyConfiguration()
+              else
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: _buildCredentialField(descriptor, field),
+                ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _platformLabels(List<String> codes) {
+    final labels = <String>[];
+    for (final code in codes) {
+      final platform = MusicPlatform.values.firstWhere(
+        (item) => item.code == code,
+        orElse: () => MusicPlatform.local,
+      );
+      labels.add(platform == MusicPlatform.local ? code : platform.label);
+    }
+    return labels.join('、');
+  }
+
+  void _changeEnabled(String sourceId, bool enabled) {
+    setState(() {
+      _dirty = true;
+      if (enabled) {
+        _disabledSources.remove(sourceId);
+      } else {
+        _disabledSources.add(sourceId);
+      }
+    });
+  }
+
+  Widget _buildCredentialField(
+    RemotePlaybackSource descriptor,
+    PlaybackCredentialField field,
+  ) {
+    // 字段来自服务端定义，所有个人凭据默认隐藏并限制输入长度。
+    final controller =
+        _credentialControllers['${descriptor.source.value}/${field.key}']!;
+    return RemoteTextFieldTraversal(
+      controller: controller,
+      child: TextField(
+        key: ValueKey(
+          'source-credential-${descriptor.source.value}-${field.key}',
+        ),
+        controller: controller,
+        enabled: !_busy,
+        obscureText: true,
+        autocorrect: false,
+        enableSuggestions: false,
+        inputFormatters: [LengthLimitingTextInputFormatter(1024)],
+        onChanged: (_) => _dirty = true,
+        decoration: InputDecoration(
+          labelText: field.label,
+          helperText: field.requiredPlatforms.isEmpty
+              ? null
+              : '${_platformLabels(field.requiredPlatforms)}需填写',
+          border: const OutlineInputBorder(),
+        ),
+      ),
+    );
+  }
 
   Future<void> _saveApiKey() async {
     if (_busy) return;
@@ -161,7 +410,6 @@ class _PlaybackSourceConfigScreenState
       setState(() {
         _apiKeyController.text = key;
         _apiKeyEdited = true;
-        _testResults.remove(PlaybackSource.chksz);
       });
       _showMessage('API Key 已保存');
     } catch (error) {
@@ -215,7 +463,6 @@ class _PlaybackSourceConfigScreenState
       setState(() {
         _apiKeyController.text = apiKey;
         _apiKeyEdited = true;
-        _testResults.remove(PlaybackSource.chksz);
       });
       _showMessage('手机提交的 API Key 已保存');
       return true;
@@ -223,434 +470,6 @@ class _PlaybackSourceConfigScreenState
       if (mounted) setState(() => _savingApiKey = false);
     }
   }
-
-  PlaybackSourceConfig? _validatedDraftForProbe() {
-    try {
-      return _draftConfig().validated();
-    } on FormatException catch (error) {
-      _showMessage(error.message);
-      return null;
-    }
-  }
-
-  List<PlaybackSource> _draftEnabledSources(PlaybackSourceConfig config) => [
-    for (final source in PlaybackSource.values)
-      if (source != PlaybackSource.automatic && config.isEnabled(source))
-        source,
-  ];
-
-  Future<void> _testSource(PlaybackSource source) async {
-    if (_busy) return;
-    final config = _validatedDraftForProbe();
-    if (config == null) return;
-    final requestId = ++_testRequestId;
-    setState(() {
-      _testingSources.add(source);
-      _testResults.remove(source);
-    });
-    try {
-      final result = await context.read<PlayerProvider>().testPlaybackSource(
-        source,
-        config: config,
-        cancelSignal: _testCancelSignal.future,
-      );
-      if (!mounted || requestId != _testRequestId) return;
-      setState(() => _testResults[source] = result);
-    } catch (error) {
-      if (mounted && requestId == _testRequestId) {
-        _showMessage('测试失败：$error');
-      }
-    } finally {
-      if (mounted && requestId == _testRequestId) {
-        setState(() => _testingSources.remove(source));
-      }
-    }
-  }
-
-  Future<void> _testEnabledSources() async {
-    if (_busy) return;
-    final config = _validatedDraftForProbe();
-    if (config == null) return;
-    final sources = _draftEnabledSources(config);
-    if (sources.isEmpty) {
-      _showMessage('请至少勾选一个音乐源');
-      return;
-    }
-    final requestId = ++_testRequestId;
-    setState(() {
-      _testingAll = true;
-      _testingSources.addAll(sources);
-      for (final source in sources) {
-        _testResults.remove(source);
-      }
-    });
-    try {
-      final results = await context.read<PlayerProvider>().testPlaybackSources(
-        config: config,
-        enabledOnly: true,
-        maxConcurrent: 3,
-        cancelSignal: _testCancelSignal.future,
-      );
-      if (!mounted || requestId != _testRequestId) return;
-      setState(() {
-        for (final result in results) {
-          _testResults[result.source] = result;
-        }
-      });
-    } catch (error) {
-      if (mounted && requestId == _testRequestId) {
-        _showMessage('测试失败：$error');
-      }
-    } finally {
-      if (mounted && requestId == _testRequestId) {
-        setState(() {
-          _testingAll = false;
-          _testingSources.removeAll(sources);
-        });
-      }
-    }
-  }
-
-  Future<void> _testAllSources() async {
-    if (_busy) return;
-    final config = _validatedDraftForProbe();
-    if (config == null) return;
-    final sources = PlaybackSource.values
-        .where((source) => source != PlaybackSource.automatic)
-        .toList(growable: false);
-    final requestId = ++_testRequestId;
-    setState(() {
-      _testingAll = true;
-      _testingSources.addAll(sources);
-      for (final source in sources) {
-        _testResults.remove(source);
-      }
-    });
-    try {
-      final results = await context.read<PlayerProvider>().testPlaybackSources(
-        config: config,
-        enabledOnly: false,
-        maxConcurrent: 3,
-        cancelSignal: _testCancelSignal.future,
-      );
-      if (!mounted || requestId != _testRequestId) return;
-      setState(() {
-        for (final result in results) {
-          _testResults[result.source] = result;
-        }
-      });
-    } catch (error) {
-      if (mounted && requestId == _testRequestId) {
-        _showMessage('测试失败：$error');
-      }
-    } finally {
-      if (mounted && requestId == _testRequestId) {
-        setState(() {
-          _testingAll = false;
-          _testingSources.removeAll(sources);
-        });
-      }
-    }
-  }
-
-  String _testStatusText(PlaybackSource source) {
-    if (_testingSources.contains(source)) return '测试中…';
-    final result = _testResults[source];
-    if (result == null) return '尚未测试';
-    final latency = result.latencyMs == null ? '' : ' · ${result.latencyMs} ms';
-    if (result.successful) return '已响应 · ${result.message}$latency';
-    if (result.reachable) {
-      return '可达 · ${result.message}$latency';
-    }
-    return '未连接 · ${result.message}$latency';
-  }
-
-  Color _testStatusColor(PlaybackSource source) {
-    if (_testingSources.contains(source)) return AppColors.textSecondary;
-    final result = _testResults[source];
-    if (result == null) return AppColors.textSecondary;
-    if (result.successful) return Colors.green.shade700;
-    if (result.reachable) return Colors.orange.shade800;
-    return Colors.red.shade700;
-  }
-
-  Future<void> _save() async {
-    if (_busy) return;
-    FocusManager.instance.primaryFocus?.unfocus();
-    PlaybackSourceConfig config;
-    try {
-      config = _draftConfig().validated();
-    } on FormatException catch (error) {
-      _showMessage(error.message);
-      return;
-    }
-    setState(() => _saving = true);
-    try {
-      await context.read<PlayerProvider>().setPlaybackSourceConfig(config);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('备用源配置已保存'),
-          duration: Duration(seconds: 1),
-        ),
-      );
-      Navigator.pop(context, true);
-    } catch (error) {
-      if (mounted) _showMessage('保存失败：$error');
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  void _showMessage(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    AppColors.syncWithTheme(context);
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('备用源接口配置'),
-        actions: [
-          IconButton(
-            key: const ValueKey('save-playback-source-config'),
-            tooltip: '保存配置',
-            onPressed: _busy ? null : _save,
-            icon: _saving
-                ? const SizedBox.square(
-                    dimension: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.save_outlined),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final cards = _buildCards();
-            final wide = constraints.maxWidth >= 960;
-            return SingleChildScrollView(
-              key: const PageStorageKey('playback-source-config-scroll'),
-              padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
-              child: wide
-                  ? Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: Column(
-                            children: [cards[0], cards[1], cards[2]],
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            children: [cards[3], cards[4], cards[5]],
-                          ),
-                        ),
-                      ],
-                    )
-                  : Column(children: cards),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  List<Widget> _buildCards() => [
-    Card(
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('连接与鉴权检查', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 6),
-            const Text('检查连接和授权状态，歌曲可用性以实际播放为准。'),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 10,
-              runSpacing: 8,
-              children: [
-                FilledButton.icon(
-                  key: const ValueKey('test-enabled-playback-sources'),
-                  onPressed: _busy
-                      ? null
-                      : () => unawaited(_testEnabledSources()),
-                  icon: _testingAll
-                      ? const SizedBox.square(
-                          dimension: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.speed_rounded),
-                  label: const Text('测试已启用源'),
-                ),
-                OutlinedButton.icon(
-                  key: const ValueKey('test-all-playback-sources'),
-                  onPressed: _busy ? null : () => unawaited(_testAllSources()),
-                  icon: const Icon(Icons.network_check_rounded),
-                  label: const Text('测试全部源'),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    ),
-    _sourceCard(
-      source: PlaybackSource.chksz,
-      cardKey: const ValueKey('source-config-chksz'),
-      title: 'ChKSz',
-      subtitle: '默认直连官方 HTTPS 接口，需要有效 API Key。',
-      enabled: _chkszEnabled,
-      onEnabled: (value) => setState(() => _chkszEnabled = value),
-      children: [
-        _textField(
-          key: const ValueKey('source-config-chksz-url'),
-          controller: _chkszUrlController,
-          label: '服务基础 URL',
-        ),
-        const SizedBox(height: 16),
-        _buildApiKeyConfiguration(),
-      ],
-    ),
-    _sourceCard(
-      source: PlaybackSource.qingMusic,
-      cardKey: const ValueKey('source-config-qing'),
-      title: 'QingMusic',
-      subtitle: '官方接口自动认证，支持填写自定义 POST 解析接口。',
-      enabled: _qingMusicEnabled,
-      onEnabled: (value) => setState(() => _qingMusicEnabled = value),
-      children: [
-        _textField(
-          key: const ValueKey('source-config-qing-url'),
-          controller: _qingMusicUrlController,
-          label: 'resolve-url 地址',
-        ),
-      ],
-    ),
-    _sourceCard(
-      source: PlaybackSource.hyw,
-      cardKey: const ValueKey('source-config-hyw'),
-      title: 'HYWmusic',
-      subtitle: '公益版 v1.1.0 支持网易云和 QQ，最高 24-bit；暂不支持酷狗。',
-      enabled: _hywEnabled,
-      onEnabled: (value) => setState(() => _hywEnabled = value),
-      children: [
-        _textField(
-          key: const ValueKey('source-config-hyw-url'),
-          controller: _hywUrlController,
-          label: '服务基础 URL',
-        ),
-        const SizedBox(height: 10),
-        _textField(
-          key: const ValueKey('source-config-hyw-key'),
-          controller: _hywCardKeyController,
-          label: 'X-Card-Key / key',
-          obscureText: _obscureHywKey,
-          maxLength: 1024,
-          suffix: IconButton(
-            tooltip: _obscureHywKey ? '显示 Card Key' : '隐藏 Card Key',
-            onPressed: () => setState(() => _obscureHywKey = !_obscureHywKey),
-            icon: Icon(
-              _obscureHywKey ? Icons.visibility : Icons.visibility_off,
-            ),
-          ),
-        ),
-      ],
-    ),
-    _sourceCard(
-      source: PlaybackSource.xinghai,
-      cardKey: const ValueKey('source-config-xinghai'),
-      title: '星海',
-      subtitle: '自动获取服务器令牌；QQ 线路需要有效授权卡密。',
-      enabled: _xinghaiEnabled,
-      onEnabled: (value) => setState(() => _xinghaiEnabled = value),
-      children: [
-        _textField(
-          key: const ValueKey('source-config-xinghai-url'),
-          controller: _xinghaiUrlController,
-          label: '聚合接口 URL',
-        ),
-        const SizedBox(height: 10),
-        _textField(
-          key: const ValueKey('source-config-xinghai-license'),
-          controller: _xinghaiLicenseKeyController,
-          label: '授权卡密（QQ 线路必填）',
-          obscureText: _obscureXinghaiKey,
-          maxLength: 1024,
-          suffix: IconButton(
-            tooltip: _obscureXinghaiKey ? '显示授权卡密' : '隐藏授权卡密',
-            onPressed: _busy
-                ? null
-                : () =>
-                      setState(() => _obscureXinghaiKey = !_obscureXinghaiKey),
-            icon: Icon(
-              _obscureXinghaiKey ? Icons.visibility : Icons.visibility_off,
-            ),
-          ),
-        ),
-        const SizedBox(height: 10),
-        _textField(
-          key: const ValueKey('source-config-xinghai-client'),
-          controller: _xinghaiClientController,
-          label: 'X-Client',
-          maxLength: 256,
-        ),
-        const SizedBox(height: 10),
-        _textField(
-          key: const ValueKey('source-config-xinghai-device'),
-          controller: _xinghaiDeviceIdController,
-          label: '设备 ID',
-          maxLength: 256,
-        ),
-      ],
-    ),
-    _sourceCard(
-      source: PlaybackSource.gdStudio,
-      cardKey: const ValueKey('source-config-gd'),
-      title: 'GDStudio',
-      subtitle: '网易云播放解析；QQ/酷狗按曲名和歌手匹配网易云歌曲。',
-      enabled: _gdStudioEnabled,
-      onEnabled: (value) => setState(() => _gdStudioEnabled = value),
-      children: [
-        _textField(
-          key: const ValueKey('source-config-gd-url'),
-          controller: _gdStudioUrlController,
-          label: 'api.php 地址',
-        ),
-        const SizedBox(height: 14),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: [
-            OutlinedButton.icon(
-              key: const ValueKey('reset-playback-source-config'),
-              onPressed: _busy
-                  ? null
-                  : () => _applyConfig(
-                      PlaybackSourceConfig.defaults(),
-                      rebuild: true,
-                    ),
-              icon: const Icon(Icons.restore),
-              label: const Text('恢复 JS 默认值'),
-            ),
-            FilledButton.icon(
-              key: const ValueKey('save-playback-source-config-bottom'),
-              onPressed: _busy ? null : _save,
-              icon: const Icon(Icons.save_outlined),
-              label: const Text('保存配置'),
-            ),
-          ],
-        ),
-      ],
-    ),
-  ];
 
   Widget _buildApiKeyConfiguration() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
@@ -741,88 +560,6 @@ class _PlaybackSourceConfigScreenState
       ),
     );
   }
-
-  Widget _sourceCard({
-    required PlaybackSource source,
-    required Key cardKey,
-    required String title,
-    required String subtitle,
-    required bool enabled,
-    required ValueChanged<bool> onEnabled,
-    required List<Widget> children,
-  }) => Card(
-    key: cardKey,
-    child: Padding(
-      padding: const EdgeInsets.fromLTRB(14, 4, 14, 14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: Text(title),
-            subtitle: Text(subtitle),
-            value: enabled,
-            onChanged: _busy ? null : onEnabled,
-          ),
-          ...children,
-          const SizedBox(height: 8),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Icon(
-                _testResults[source]?.successful == true
-                    ? Icons.check_circle_outline_rounded
-                    : _testResults[source]?.reachable == true
-                    ? Icons.warning_amber_rounded
-                    : Icons.network_check_rounded,
-                size: 19,
-                color: _testStatusColor(source),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  _testStatusText(source),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: _testStatusColor(source)),
-                ),
-              ),
-              IconButton(
-                key: ValueKey('test-playback-source-${source.value}'),
-                tooltip: '测试连通性和速度',
-                onPressed: _busy ? null : () => unawaited(_testSource(source)),
-                icon: const Icon(Icons.speed_rounded),
-              ),
-            ],
-          ),
-        ],
-      ),
-    ),
-  );
-
-  Widget _textField({
-    required Key key,
-    required TextEditingController controller,
-    required String label,
-    bool obscureText = false,
-    Widget? suffix,
-    int maxLength = 2048,
-  }) => TextField(
-    key: key,
-    controller: controller,
-    enabled: !_busy,
-    onChanged: (_) => setState(_testResults.clear),
-    obscureText: obscureText,
-    autocorrect: false,
-    enableSuggestions: false,
-    textInputAction: TextInputAction.next,
-    inputFormatters: [LengthLimitingTextInputFormatter(maxLength)],
-    decoration: InputDecoration(
-      labelText: label,
-      border: const OutlineInputBorder(),
-      suffixIcon: suffix,
-    ),
-  );
 }
 
 class _ApiKeyQrDialog extends StatelessWidget {

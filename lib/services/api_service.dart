@@ -4,11 +4,13 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../models/playback_source_config.dart';
+import '../models/remote_playback.dart';
 import '../models/song.dart';
 import '../utils/song_source_matcher.dart';
 import 'bilibili_service.dart';
 import 'bounded_http_response.dart';
 import 'qing_gateway_auth.dart';
+import 'playback_resolver_service.dart';
 
 /// 音乐 API 服务层
 /// - 网易云: interface.music.163.com 官方公开目录接口
@@ -108,12 +110,21 @@ class ApiService {
   bool _closed = false;
   int _playbackGeneration = 0;
   _PlaybackCancellation? _activePlaybackCancellation;
+  final PlaybackResolverService _playbackResolver;
+  final bool _useRemotePlayback;
+  PlaybackSourceCatalog? _playbackSourceCatalog;
+
+  PlaybackSourceCatalog? get playbackSourceCatalog => _playbackSourceCatalog;
 
   ApiService({
     required this.apiKey,
     BilibiliService? bilibili,
     PlaybackSourceConfig? playbackSourceConfig,
-  }) : bilibili = bilibili ?? BilibiliService(),
+    PlaybackResolverService? playbackResolver,
+    bool useRemotePlayback = true,
+  }) : _playbackResolver = playbackResolver ?? PlaybackResolverService(),
+       _useRemotePlayback = useRemotePlayback,
+       bilibili = bilibili ?? BilibiliService(),
        _playbackSourceConfig =
            (playbackSourceConfig ?? PlaybackSourceConfig.defaults())
                .validated();
@@ -150,6 +161,7 @@ class ApiService {
     _gdMatchedId = null;
     _gdAttemptedBitrates.clear();
     _client.close();
+    _playbackResolver.close();
     _qingDeviceId = null;
     bilibili.dispose();
   }
@@ -458,7 +470,123 @@ class ApiService {
   /// 全部失败后才进入低优先级 GDStudio 组，再失败才降一档。每个竞速组、
   /// 质量降级次数和请求响应体都有固定上限，旧播放请求失效后会取消其
   /// 余请求并阻止迟到结果继续推进回退链。
+  /// 同步服务端能力；应用关闭后的响应不能替换当前快照。
+  Future<PlaybackSourceCatalog> loadPlaybackSources() async {
+    _ensureOpen();
+    final catalog = await _playbackResolver.loadSources();
+    _ensureOpen();
+    _playbackSourceCatalog = catalog;
+    return catalog;
+  }
+
+  /// 三平台统一解析入口，生产客户端仅消费服务器结果。
   Future<SongDetail> resolvePlayback({
+    required PlaybackSource source,
+    required MusicPlatform platform,
+    required String id,
+    required String quality,
+    String name = '',
+    String artist = '',
+    String album = '',
+    String? albumId,
+    int? duration,
+    bool Function()? isCancelled,
+    Set<PlaybackSource> excludedSources = const {},
+  }) async {
+    // 旧协议实现仅保留用于定向协议回归，不参与线上失败兜底。
+    if (!_useRemotePlayback) {
+      return _resolveLegacyPlayback(
+        source: source,
+        platform: platform,
+        id: id,
+        quality: quality,
+        name: name,
+        artist: artist,
+        album: album,
+        albumId: albumId,
+        duration: duration,
+        isCancelled: isCancelled,
+        excludedSources: excludedSources,
+      );
+    }
+    _ensureOpen();
+    if (_isExternalPlaybackCancellation(isCancelled)) {
+      throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
+    }
+    _activePlaybackCancellation?.cancel();
+    final cancellation = _PlaybackCancellation();
+    _activePlaybackCancellation = cancellation;
+    final generation = ++_playbackGeneration;
+    Timer? poll;
+    if (isCancelled != null) {
+      poll = Timer.periodic(_racePollInterval, (_) {
+        if (_isExternalPlaybackCancellation(isCancelled)) cancellation.cancel();
+      });
+    }
+    try {
+      final credentials = _playbackSourceConfig.credentialsForServer(
+        apiKey: apiKey,
+      );
+      final disabledSources = _playbackSourceConfig.disabledSourceIds.toSet();
+      var catalog = _playbackSourceCatalog;
+      if ((credentials.length > 32 || disabledSources.length > 32) &&
+          catalog == null) {
+        catalog = await _playbackResolver.loadSources(
+          cancelSignal: cancellation.future,
+        );
+        if (_closed ||
+            generation != _playbackGeneration ||
+            cancellation.isCancelled) {
+          throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
+        }
+        _playbackSourceCatalog = catalog;
+      }
+      if (catalog != null) {
+        final activeIds = catalog.sources
+            .map((item) => item.source.value)
+            .toSet();
+        credentials.removeWhere((id, _) => !activeIds.contains(id));
+        disabledSources.removeWhere((id) => !activeIds.contains(id));
+      }
+      if (_isExternalPlaybackCancellation(isCancelled) ||
+          cancellation.isCancelled) {
+        throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
+      }
+      final result = await _playbackResolver.resolve({
+        'platform': platform.code,
+        'id': id,
+        'source': source.value,
+        'quality': quality,
+        'name': name,
+        'artist': artist,
+        'album': album,
+        if (albumId != null) 'albumId': albumId,
+        if (duration != null) 'duration': duration,
+        'excludedSources': excludedSources.map((item) => item.value).toList(),
+        'disabledSources': disabledSources.toList(),
+        'credentials': credentials,
+      }, cancelSignal: cancellation.future);
+      if (_closed ||
+          generation != _playbackGeneration ||
+          cancellation.isCancelled ||
+          _isExternalPlaybackCancellation(isCancelled)) {
+        throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
+      }
+      return result;
+    } on HttpRequestCancelledException {
+      throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
+    } on PlaybackServerException catch (error) {
+      throw ApiException(error.code, error.message);
+    } finally {
+      poll?.cancel();
+      cancellation.cancel();
+      if (identical(_activePlaybackCancellation, cancellation)) {
+        _activePlaybackCancellation = null;
+      }
+    }
+  }
+
+  Future<SongDetail> _resolveLegacyPlayback({
     required PlaybackSource source,
     required MusicPlatform platform,
     required String id,
@@ -919,6 +1047,8 @@ class ApiService {
           duration: duration,
           cancelSignal: cancelSignal,
         );
+      default:
+        throw const ApiException('SOURCE_UNSUPPORTED', '此音源由统一服务器解析');
     }
   }
 
@@ -3501,18 +3631,15 @@ class ApiService {
 
   /// 解析播放地址
   Future<SongDetail> resolve(MusicPlatform platform, String id) {
-    switch (platform) {
-      case MusicPlatform.local:
-        throw UnsupportedError('本地音频不使用在线接口');
-      case MusicPlatform.netease:
-        return neteaseMusic(id);
-      case MusicPlatform.qq:
-        return qqMusic(id);
-      case MusicPlatform.kugou:
-        return kugouMusic(id);
-      case MusicPlatform.bilibili:
-        throw UnsupportedError('B站播放需要当前分P信息');
+    if (!configurableMusicPlatforms.contains(platform)) {
+      throw UnsupportedError('此平台不使用统一音源解析');
     }
+    return resolvePlayback(
+      source: PlaybackSource.automatic,
+      platform: platform,
+      id: id,
+      quality: platform == MusicPlatform.netease ? 'exhigh' : '320k',
+    );
   }
 
   /// 获取歌词

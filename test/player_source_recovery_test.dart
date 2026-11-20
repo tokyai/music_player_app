@@ -14,6 +14,7 @@ import 'package:music_player_app/models/download_entry.dart';
 import 'package:music_player_app/services/download_manager.dart';
 import 'package:music_player_app/providers/player_provider.dart';
 import 'package:music_player_app/services/audio_cache_service.dart';
+import 'package:music_player_app/services/api_service.dart';
 import 'package:music_player_app/services/playback_history_service.dart';
 import 'package:music_player_app/services/playback_state_service.dart';
 import 'package:music_player_app/services/user_data_scope.dart';
@@ -106,6 +107,7 @@ void main() {
       await player.disposeResources();
       final loadsBefore = fixture.loaded.length;
       final restarted = PlayerProvider(
+        apiService: ApiService(apiKey: '', useRemotePlayback: false),
         dataScope: fixture.scope,
         activateRestoredSession: false,
       );
@@ -179,6 +181,7 @@ void main() {
         );
 
         final restored = PlayerProvider(
+          apiService: ApiService(apiKey: '', useRemotePlayback: false),
           dataScope: fixture.scope,
           activateRestoredSession: false,
         );
@@ -700,6 +703,7 @@ void main() {
                 throw const SocketException('offline');
             final requestsBeforeRestart = fixture.requestCount;
             final restarted = PlayerProvider(
+              apiService: ApiService(apiKey: '', useRemotePlayback: false),
               dataScope: fixture.scope,
               activateRestoredSession: false,
             );
@@ -1272,7 +1276,10 @@ void main() {
       await player.playNext();
       expect(fixture.requestedQualities.last, 'standard');
       expect(player.currentSong!.id, 'next');
-      final restored = PlayerProvider(activateRestoredSession: false);
+      final restored = PlayerProvider(
+        apiService: ApiService(apiKey: '', useRemotePlayback: false),
+        activateRestoredSession: false,
+      );
       try {
         await restored.settingsReady;
         expect(restored.commonLevel, CommonLevel.k128);
@@ -1413,11 +1420,16 @@ Future<void> _scenario(
   try {
     await http.runWithClient(() async {
       final player = PlayerProvider(
+        apiService: ApiService(apiKey: '', useRemotePlayback: false),
         dataScope: fixture.scope,
         activateRestoredSession: false,
       );
       try {
-        await Future.wait([player.settingsReady, player.playbackStateReady]);
+        await Future.wait([
+          player.settingsReady,
+          player.playbackStateReady,
+          player.playbackSourcesReady,
+        ]);
         await action(fixture, player);
       } finally {
         await player.disposeResources();
@@ -1703,6 +1715,46 @@ class _NativeFixture {
   }
 
   Future<http.Response> request(http.Request request) async {
+    if (request.url.path.endsWith('/api/sources')) {
+      return http.Response.bytes(
+        utf8.encode(
+          jsonEncode({
+            'protocolVersion': 1,
+            'revision': 'fixture',
+            'sources': [
+              for (final source in PlaybackSource.values)
+                if (source != PlaybackSource.automatic)
+                  {
+                    'id': source.value,
+                    'name': source.label,
+                    'description': '受控播放器生命周期测试',
+                    'platforms': ['qq', '163', 'kugou'],
+                    'credentials': [],
+                  },
+            ],
+          }),
+        ),
+        200,
+      );
+    }
+    if (request.url.path.endsWith('/api/resolve')) {
+      final body = jsonDecode(request.body) as Map;
+      final id = body['id'] as String;
+      resolvingIds.add(id);
+      await resolutionGates[id]?.future;
+      requestedQualities.add(body['quality'] as String);
+      return http.Response(
+        jsonEncode({
+          'protocolVersion': 1,
+          'providerId': 'qing_music',
+          'providerName': 'QingMusic',
+          'url': '${audioBaseUrl ?? 'https://audio-qing.test'}/$id.mp3',
+          'format': 'mp3',
+          'playbackHeaders': <String, String>{},
+        }),
+        200,
+      );
+    }
     requestCount++;
     final override = await responseOverride?.call(request);
     if (override != null) return override;

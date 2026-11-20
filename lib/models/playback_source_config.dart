@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 
 import 'song.dart';
@@ -39,10 +40,10 @@ class PlaybackSourceTestResult {
       'latencyMs: $latencyMs, statusCode: $statusCode, message: $message)';
 }
 
-/// 可编辑的第三方播放解析配置。
+/// 用户保存的音源启停和个人凭据，兼容旧版本的接口配置字段。
 ///
-/// 默认值来自项目 `tmp/yinyuan` 中已分析的音源脚本。配置只描述请求入口和
-/// 必需请求头；脚本本身不会在应用内执行。
+/// 新音源按稳定 ID 和通用凭据字段保存；线上请求协议由服务器维护。
+/// 旧接口地址仅用于历史配置、备份和定向协议回归，不作为线上解析入口。
 class PlaybackSourceConfig {
   static const preferenceKey = 'playback_source_config_v1';
   static const maxSerializedChars = 32 * 1024;
@@ -83,6 +84,8 @@ class PlaybackSourceConfig {
   final String xinghaiDeviceId;
   final String xinghaiLicenseKey;
   final String gdStudioUrl;
+  final List<String> disabledRemoteSources;
+  final Map<String, Map<String, String>> remoteCredentials;
 
   const PlaybackSourceConfig({
     required this.chkszEnabled,
@@ -100,6 +103,8 @@ class PlaybackSourceConfig {
     required this.xinghaiDeviceId,
     this.xinghaiLicenseKey = '',
     required this.gdStudioUrl,
+    this.disabledRemoteSources = const [],
+    this.remoteCredentials = const {},
   });
 
   factory PlaybackSourceConfig.defaults() => PlaybackSourceConfig(
@@ -181,17 +186,57 @@ class PlaybackSourceConfig {
       xinghaiDeviceId: text('xinghaiDeviceId', defaults.xinghaiDeviceId),
       xinghaiLicenseKey: text('xinghaiLicenseKey', ''),
       gdStudioUrl: text('gdStudioUrl', defaults.gdStudioUrl),
+      disabledRemoteSources: _readDisabledSources(
+        json['disabledRemoteSources'],
+      ),
+      remoteCredentials: _readRemoteCredentials(json['remoteCredentials']),
     ).validated();
   }
 
-  bool isEnabled(PlaybackSource source) => switch (source) {
-    PlaybackSource.automatic => true,
-    PlaybackSource.chksz => chkszEnabled,
-    PlaybackSource.qingMusic => qingMusicEnabled,
-    PlaybackSource.hyw => hywEnabled,
-    PlaybackSource.xinghai => xinghaiEnabled,
-    PlaybackSource.gdStudio => gdStudioEnabled,
-  };
+  bool isEnabled(PlaybackSource source) {
+    if (source == PlaybackSource.automatic) return true;
+    if (disabledRemoteSources.contains(source.value)) return false;
+    return switch (source) {
+      PlaybackSource.chksz => chkszEnabled,
+      PlaybackSource.qingMusic => qingMusicEnabled,
+      PlaybackSource.hyw => hywEnabled,
+      PlaybackSource.xinghai => xinghaiEnabled,
+      PlaybackSource.gdStudio => gdStudioEnabled,
+      _ => true,
+    };
+  }
+
+  /// 服务端解析需排除的音源，兼容升级前保存的启停状态。
+  List<String> get disabledSourceIds {
+    final result = <String>{...disabledRemoteSources};
+    for (final source in PlaybackSource.values) {
+      if (!isEnabled(source)) result.add(source.value);
+    }
+    return List<String>.unmodifiable(result);
+  }
+
+  /// 合并旧版本个人凭据；显式保存的空值表示用户清除了该凭据。
+  ///
+  /// [apiKey] 是升级前独立保存的个人 ChKSz API Key。
+  /// SHIXIAOYANG，2026/11/20。
+  Map<String, Map<String, String>> credentialsForServer({
+    required String apiKey,
+  }) {
+    final result = <String, Map<String, String>>{};
+    for (final entry in remoteCredentials.entries) {
+      result[entry.key] = Map<String, String>.from(entry.value);
+    }
+    final chksz = result.putIfAbsent('chksz', () => <String, String>{});
+    chksz.putIfAbsent('apiKey', () => apiKey);
+    // 公开预置卡密由服务器更新；只迁移用户自定义的个人卡密。
+    if (!usesHywPublicSource) {
+      final hyw = result.putIfAbsent('hyw', () => <String, String>{});
+      hyw.putIfAbsent('hywCardKey', () => hywCardKey);
+    }
+    final xinghai = result.putIfAbsent('xinghai', () => <String, String>{});
+    xinghai.putIfAbsent('xinghaiLicenseKey', () => xinghaiLicenseKey);
+    return result;
+  }
 
   /// 是否使用官方公益配置，用于匹配该发行版实际开放的平台和音质。
   bool get usesHywPublicSource =>
@@ -260,7 +305,9 @@ class PlaybackSourceConfig {
     if (xinghaiEnabled && normalizedDeviceId.isEmpty) {
       throw const FormatException('启用星海时必须填写设备 ID');
     }
-    return copyWith(
+    final normalizedDisabled = _readDisabledSources(disabledRemoteSources);
+    final normalizedCredentials = _readRemoteCredentials(remoteCredentials);
+    final result = copyWith(
       chkszBaseUrl: normalizedChksz,
       qingMusicUrl: normalizedQing,
       hywBaseUrl: normalizedHyw,
@@ -271,7 +318,13 @@ class PlaybackSourceConfig {
       xinghaiDeviceId: normalizedDeviceId,
       xinghaiLicenseKey: normalizedLicenseKey,
       gdStudioUrl: normalizedGd,
+      disabledRemoteSources: normalizedDisabled,
+      remoteCredentials: normalizedCredentials,
     );
+    if (jsonEncode(result.toJson()).length > maxSerializedChars) {
+      throw const FormatException('备用源配置过大');
+    }
+    return result;
   }
 
   PlaybackSourceConfig copyWith({
@@ -290,6 +343,8 @@ class PlaybackSourceConfig {
     String? xinghaiDeviceId,
     String? xinghaiLicenseKey,
     String? gdStudioUrl,
+    List<String>? disabledRemoteSources,
+    Map<String, Map<String, String>>? remoteCredentials,
   }) => PlaybackSourceConfig(
     chkszEnabled: chkszEnabled ?? this.chkszEnabled,
     qingMusicEnabled: qingMusicEnabled ?? this.qingMusicEnabled,
@@ -306,6 +361,8 @@ class PlaybackSourceConfig {
     xinghaiDeviceId: xinghaiDeviceId ?? this.xinghaiDeviceId,
     xinghaiLicenseKey: xinghaiLicenseKey ?? this.xinghaiLicenseKey,
     gdStudioUrl: gdStudioUrl ?? this.gdStudioUrl,
+    disabledRemoteSources: disabledRemoteSources ?? this.disabledRemoteSources,
+    remoteCredentials: remoteCredentials ?? this.remoteCredentials,
   );
 
   Map<String, dynamic> toJson() => {
@@ -325,6 +382,8 @@ class PlaybackSourceConfig {
     'xinghaiDeviceId': xinghaiDeviceId,
     'xinghaiLicenseKey': xinghaiLicenseKey,
     'gdStudioUrl': gdStudioUrl,
+    'disabledRemoteSources': disabledRemoteSources,
+    'remoteCredentials': remoteCredentials,
   };
 
   @override
@@ -345,7 +404,12 @@ class PlaybackSourceConfig {
           other.xinghaiClient == xinghaiClient &&
           other.xinghaiDeviceId == xinghaiDeviceId &&
           other.xinghaiLicenseKey == xinghaiLicenseKey &&
-          other.gdStudioUrl == gdStudioUrl;
+          other.gdStudioUrl == gdStudioUrl &&
+          _sameDisabledSources(
+            other.disabledRemoteSources,
+            disabledRemoteSources,
+          ) &&
+          _sameRemoteCredentials(other.remoteCredentials, remoteCredentials);
 
   @override
   int get hashCode => Object.hash(
@@ -364,7 +428,105 @@ class PlaybackSourceConfig {
     xinghaiDeviceId,
     xinghaiLicenseKey,
     gdStudioUrl,
+    Object.hashAll(disabledRemoteSources),
+    _remoteCredentialsHash(remoteCredentials),
   );
+
+  static List<String> _readDisabledSources(Object? value) {
+    if (value == null) return const [];
+    if (value is! List || value.length > 32) {
+      throw const FormatException('停用音源列表无效或过大');
+    }
+    final result = <String>{};
+    for (final item in value) {
+      if (item is! String ||
+          !PlaybackSource.isValidId(item) ||
+          item == PlaybackSource.automatic.value) {
+        throw const FormatException('停用音源标识无效');
+      }
+      result.add(item);
+    }
+    final sorted = result.toList()..sort();
+    return List<String>.unmodifiable(sorted);
+  }
+
+  static Map<String, Map<String, String>> _readRemoteCredentials(
+    Object? value,
+  ) {
+    if (value == null) return const {};
+    if (value is! Map || value.length > 32) {
+      throw const FormatException('音源凭据无效或过大');
+    }
+    final result = <String, Map<String, String>>{};
+    for (final entry in value.entries) {
+      final sourceId = entry.key;
+      final fields = entry.value;
+      if (sourceId is! String ||
+          !PlaybackSource.isValidId(sourceId) ||
+          sourceId == PlaybackSource.automatic.value ||
+          fields is! Map ||
+          fields.length > 16) {
+        throw const FormatException('音源凭据字段无效');
+      }
+      result[sourceId] = _validatedCredentialFields(fields);
+    }
+    return Map<String, Map<String, String>>.unmodifiable(result);
+  }
+
+  static Map<String, String> _validatedCredentialFields(Map fields) {
+    final result = <String, String>{};
+    for (final entry in fields.entries) {
+      final key = entry.key;
+      final value = entry.value;
+      if (key is! String ||
+          !RegExp(r'^[a-zA-Z][a-zA-Z0-9_]{0,63}$').hasMatch(key) ||
+          value is! String ||
+          value.length > _maxSecretLength ||
+          RegExp(r'[\x00-\x1f\x7f]').hasMatch(value)) {
+        throw const FormatException('音源凭据必须是有限长度的单行文本');
+      }
+      result[key] = value;
+    }
+    return Map<String, String>.unmodifiable(result);
+  }
+
+  static bool _sameDisabledSources(List<String> first, List<String> second) {
+    if (first.length != second.length) return false;
+    for (var index = 0; index < first.length; index++) {
+      if (first[index] != second[index]) return false;
+    }
+    return true;
+  }
+
+  static bool _sameRemoteCredentials(
+    Map<String, Map<String, String>> first,
+    Map<String, Map<String, String>> second,
+  ) {
+    if (first.length != second.length) return false;
+    for (final source in first.entries) {
+      final otherFields = second[source.key];
+      if (otherFields == null || otherFields.length != source.value.length) {
+        return false;
+      }
+      for (final field in source.value.entries) {
+        if (otherFields[field.key] != field.value) return false;
+      }
+    }
+    return true;
+  }
+
+  static int _remoteCredentialsHash(Map<String, Map<String, String>> value) {
+    final hashes = <int>[];
+    final sources = value.keys.toList()..sort();
+    for (final source in sources) {
+      final fields = value[source]!;
+      final keys = fields.keys.toList()..sort();
+      for (final key in keys) {
+        hashes.add(Object.hash(source, key, fields[key]));
+      }
+    }
+    return Object.hashAll(hashes);
+  }
 
   static String _validateUrl(
     String value,

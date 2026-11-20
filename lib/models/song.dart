@@ -27,17 +27,39 @@ const configurableMusicPlatforms = <MusicPlatform>[
 ];
 
 /// 播放地址解析源。搜索、歌单和收藏仍沿用各平台原有接口。
-enum PlaybackSource {
-  automatic('自动备用', 'automatic'),
-  chksz('ChKSz', 'chksz'),
-  qingMusic('QingMusic', 'qing_music'),
-  hyw('HYWmusic', 'hyw'),
-  xinghai('星海', 'xinghai'),
-  gdStudio('GDStudio', 'gd_studio');
+class PlaybackSource {
+  static const automatic = PlaybackSource('自动备用', 'automatic');
+  static const chksz = PlaybackSource('ChKSz', 'chksz');
+  static const qingMusic = PlaybackSource('QingMusic', 'qing_music');
+  static const hyw = PlaybackSource('HYWmusic', 'hyw');
+  static const xinghai = PlaybackSource('星海', 'xinghai');
+  static const gdStudio = PlaybackSource('GDStudio', 'gd_studio');
+  // 旧标识只用于读取历史偏好；在线可选音源来自服务端能力列表。
+  static const values = [automatic, chksz, qingMusic, hyw, xinghai, gdStudio];
 
   final String label;
   final String value;
   const PlaybackSource(this.label, this.value);
+
+  /// 恢复历史选择或接收服务端新增音源，身份只由稳定 ID 决定。
+  factory PlaybackSource.fromId(String id, {String? label}) {
+    if (!isValidId(id)) throw const FormatException('音源标识无效');
+    for (final source in values) {
+      if (source.value == id && label == null) return source;
+    }
+    return PlaybackSource(label ?? id, id);
+  }
+
+  /// 音源 ID 可持久化和传输，不接受路径、控制字符或超长值。
+  static bool isValidId(String id) =>
+      RegExp(r'^[a-z][a-z0-9_]{0,63}$').hasMatch(id);
+
+  @override
+  bool operator ==(Object other) =>
+      other is PlaybackSource && value == other.value;
+
+  @override
+  int get hashCode => value.hashCode;
 }
 
 /// MV 播放方式。音频始终由应用内播放器处理。
@@ -749,6 +771,7 @@ class SongDetail {
   final String? format;
   final Map<String, String>? playbackHeaders;
   final PlaybackSource? playbackSource;
+  final DateTime? playbackExpiresAt;
 
   SongDetail({
     required this.name,
@@ -762,6 +785,7 @@ class SongDetail {
     this.format,
     this.playbackHeaders,
     this.playbackSource,
+    this.playbackExpiresAt,
   });
 
   SongDetail copyWith({PlaybackSource? playbackSource}) => SongDetail(
@@ -776,6 +800,7 @@ class SongDetail {
     format: format,
     playbackHeaders: playbackHeaders,
     playbackSource: playbackSource ?? this.playbackSource,
+    playbackExpiresAt: playbackExpiresAt,
   );
 
   /// ChKSz 网易云解析结果
