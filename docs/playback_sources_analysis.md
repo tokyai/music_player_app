@@ -214,7 +214,7 @@ GD 跨平台匹配仅在能确认曲名、歌手及已有时长相符时使用�
 
 ## 9. 2026/11/18 剩余限制修复
 
-本节汇总当前修复与最终验证结果；第 8 节保留初次复核时的历史状态。作者：SHIXIAOYANG。
+本节记录 2026/11/18 修复时的验证结果；当前渠道可用性见第 10 节。第 8 节保留初次复核时的历史状态。作者：SHIXIAOYANG。
 
 QingMusic 最新包的授权由客户端请求签名和可选匿名票据组成，不需要把个人 API Key 填入 QingMusic 配置页。
 已经确认官方网关的签名解析返回 HTTP 201、`code=0`；项目实际 `ApiService` 对网易云、QQ、酷狗的解析和 512 字节 MP3 读取均通过。
@@ -295,11 +295,140 @@ Pop-Location
 
 | APK（测试签名） | 版本码 | 大小（字节） | SHA-256 |
 | --- | --- | --- | --- |
-| [arm64-v8a](../build_c/app/outputs/flutter-apk/app-arm64-v8a-release.apk) | 4917 | 33,701,795 | `1B659BA0061CCC97A67A42EED0F476B22B40D14F550559381DE103D6605C0A8D` |
-| [armeabi-v7a](../build_c/app/outputs/flutter-apk/app-armeabi-v7a-release.apk) | 3917 | 32,340,881 | `3BF3B74B75A3CF69B6F4891EFED1F8688909AF9A6F6F027CBFDA11C42B0F0A37` |
-| [x86_64](../build_c/app/outputs/flutter-apk/app-x86_64-release.apk) | 6917 | 35,894,692 | `C6416813871A6AF3455919D3FD62A9B03DCAE5BA1DAD4172C87E37B16BCC8547` |
+| [arm64-v8a](../build_c/releases/source-repair-2.9.17/app-arm64-v8a-release.apk) | 4917 | 33,701,795 | `1B659BA0061CCC97A67A42EED0F476B22B40D14F550559381DE103D6605C0A8D` |
+| [armeabi-v7a](../build_c/releases/source-repair-2.9.17/app-armeabi-v7a-release.apk) | 3917 | 32,340,881 | `3BF3B74B75A3CF69B6F4891EFED1F8688909AF9A6F6F027CBFDA11C42B0F0A37` |
+| [x86_64](../build_c/releases/source-repair-2.9.17/app-x86_64-release.apk) | 6917 | 35,894,692 | `C6416813871A6AF3455919D3FD62A9B03DCAE5BA1DAD4172C87E37B16BCC8547` |
 
 本次临时 `android/key.properties` 在验证完成后清除，测试 keystore 保留在本机工具目录。正式发行须使用原发布证书；以上产物用于测试验证。
 
 剩余不确定项：HYW QQ 本次返回 HTTP 500，HYW 公益版暂停酷狗；ChKSz 的有效个人 API Key 和星海 QQ 的个人授权卡密不在公开发行脚本中，相关默认字段为空。
 `adb devices` 未发现连接设备，**未做真机声音播放和完整音频解码验证**。剩余步骤是在目标测试设备安装对应 ABI 的测试 APK，实际播放三平台歌曲、切歌、切源和旋转；第三方在线状态仍以该设备实测为准。
+
+## 10. 2026/11/19 逐源渠道与音质实测
+
+作者：SHIXIAOYANG，2026/11/19。本节覆盖 APP 已接入的五个音源与 QQ、网易云、酷狗三平台，另测 QingMusic 备用入口、自动模式及排除失败源后的重解析。
+使用项目默认配置，没有注入个人 ChKSz API Key 或星海 QQ 授权卡密。这里的“可用”指实际项目解析器取得 URL 后，能够读取 512 字节且识别为音频；不等同于接口可达，也不代表所有歌曲或音质均有资源。
+
+### 10.1 当前渠道矩阵
+
+| 音源 | QQ | 网易云 | 酷狗 | 实测边界 |
+| --- | --- | --- | --- | --- |
+| QingMusic | 可用 | 可用 | 可用，代理路径偶有音频连接关闭 | 默认入口三平台直连均为 2/2；QQ、网易云代理也均为 2/2 |
+| HYWmusic 公益版 v1.1.0 | 本次未读通 | 可用，偶有超时 | 公益版未开放 | QQ 共 6 次尝试均未读通；有两次解析成功，但音频读取超时 |
+| 星海 | 需个人授权，未验证实播 | 可用 | 可用 | QQ 默认配置返回 403；网易云、酷狗两种网络均为 2/2 |
+| GDStudio | 部分可用：匹配网易云 | 可用，偶有 503 | 部分可用：匹配网易云 | 《海阔天空》能匹配；《晴天》原唱未匹配到，返回 `GD_MATCH_NOT_FOUND` |
+| ChKSz | 缺个人 API Key，未验证 | 缺个人 API Key，未验证 | 缺个人 API Key，未验证 | 项目在请求前返回 `API_KEY_REQUIRED`，不能据此判断服务在线状态 |
+
+QingMusic 两个入口均已核对：默认 `https://musicserver.haitangw.cc/v1/music/resolve-url`，备用 `https://qt.haitangw.net/v1/music/resolve-url`。
+备用入口的三平台直连同样为 2/2；代理下酷狗《晴天》首次读取失败，定向复验读取成功。默认入口同一代理样本复验仍发生 `CONNECTION_CLOSED`。
+这说明本次故障与具体播放地址或网络路径有关，不能将其归为签名鉴权失败，也不能将酷狗整个平台判为不支持。
+
+自动模式首次解析在直连下 6/6 读取成功，代理下 5/6 成功；代理失败样本为酷狗《晴天》，首次选中 QingMusic。
+模拟播放器排除已失败的 QingMusic 后再次调用 `resolvePlayback`，实际选中星海，约 2.9 秒取得并读取 MP3。
+这是解析与读取层的恢复验证，未运行真机播放器完整解码流程。
+
+### 10.2 歌曲与标准音质证据
+
+QQ、酷狗使用 Beyond《海阔天空》和周杰伦《晴天》；网易云使用 Beyond《海阔天空》和《光辉岁月》。
+歌曲 ID、原唱、专辑和时长从项目目录接口核对；网易云同名 239 秒剪辑版被排除。网易云公开搜索未找到《晴天》原唱，因此没有将翻唱当作原曲测试。
+
+| 平台 | 歌曲 | 原平台 ID | 时长（秒） |
+| --- | --- | --- | --- |
+| QQ | 海阔天空 | `001yS0N33yPm1B` | 324 |
+| QQ | 晴天 | `0039MnYb0qxYhV` | 269 |
+| 网易云 | 海阔天空 | `347230` | 326 |
+| 网易云 | 光辉岁月 | `346576` | 298 |
+| 酷狗 | 海阔天空 | `c41e80a18d1448fa47086372999c7f43` | 324 |
+| 酷狗 | 晴天 | `b3a52a7a958bf0aed0ebfba2e9a818b7` | 269 |
+
+标准音质输入为网易云 `standard`、QQ/酷狗 `128k`。下表每格为“成功读取数/两首样本数”，只统计首次标准测试：
+
+| 音源 | 直连 QQ | 直连网易云 | 直连酷狗 | 代理 QQ | 代理网易云 | 代理酷狗 |
+| --- | --- | --- | --- | --- | --- | --- |
+| QingMusic 默认 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 1/2 |
+| QingMusic 备用 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 1/2 |
+| HYWmusic 公益 | 0/2 | 1/2 | 未开放 | 0/2 | 2/2 | 未开放 |
+| 星海 | 无个人授权，403 | 2/2 | 2/2 | 无个人授权，403 | 2/2 | 2/2 |
+| GDStudio | 1/2 | 1/2 | 0/2 | 1/2 | 2/2 | 1/2 |
+| ChKSz | 未提供 Key | 未提供 Key | 未提供 Key | 未提供 Key | 未提供 Key | 未提供 Key |
+| 自动模式首次解析 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 1/2 |
+
+GDStudio 直连酷狗《海阔天空》的失败为 503，定向复验随后成功；网易云《海阔天空》的 503 和 HYW 网易云超时样本也均复验成功。
+GDStudio QQ/酷狗《晴天》属于曲库匹配限制，未通过重复降档将其误报为可用。
+
+### 10.3 高音质的实际输出
+
+针对已能读取的九个默认源/平台组合，用《海阔天空》抽测四档高音质，共 36/36 读取成功。
+网易云输入 `exhigh/lossless/hires/jymaster`，QQ/酷狗输入 `320k/flac/hires/master`。
+FLAC 采样率和位深按 [RFC 9639 §8.2](https://www.rfc-editor.org/rfc/rfc9639.html#name-streaminfo) 从 STREAMINFO 提取，并使用规范附录 D.1.3 的独立实例校验解析器。
+
+下表格式为“位深 / 采样率 kHz”；MP3 只确认了容器，没有据文件头断言实际码率：
+
+| 音源及平台 | 高码率请求 | 无损请求 | Hi-Res 请求 | 母带请求 |
+| --- | --- | --- | --- | --- |
+| QingMusic QQ / 网易云 | MP3 | FLAC 16/44.1 | FLAC 16/44.1 | FLAC 24/192 |
+| QingMusic 酷狗 | MP3 | FLAC 16/44.1 | FLAC 24/44.1 | FLAC 24/96 |
+| HYWmusic 网易云 | MP3 | FLAC 16/44.1 | FLAC 16/44.1 | FLAC 16/44.1 |
+| 星海网易云 | MP3 | FLAC 16/44.1 | FLAC 16/44.1 | FLAC 24/192 |
+| 星海酷狗 | MP3 | FLAC 16/44.1 | FLAC 24/44.1 | FLAC 24/96 |
+| GDStudio 网易云 | MP3 | FLAC 16/44.1 | FLAC 16/44.1 | FLAC 16/44.1 |
+| GDStudio QQ / 酷狗匹配 | MP3 | FLAC 24/44.1 | FLAC 24/44.1 | FLAC 24/44.1 |
+
+请求档位和实际输出需要分别看待。例如当前 QingMusic QQ 的 `hires` 在客户端映射为 `lossless`，本次文件仍为 16-bit/44.1 kHz；HYW 的 24-bit 参数声明也未在这首样本上取得 24-bit 文件。
+表格只反映本次录音实际输出的编码参数，不能据此推断所有歌曲具备相同品质。
+
+### 10.4 执行入口、复验与断点
+
+新增 `test/manual_source_audit/catalog_samples_test.dart` 核对目录身份，新增 `test/manual_source_audit/channel_audit_test.dart` 测量渠道、音频读取和 FLAC 参数。
+
+| 文件 | 操作 | 目的 |
+| --- | --- | --- |
+| `test/manual_source_audit/catalog_samples_test.dart` | 新增 | 核对两首歌曲的原平台身份，保存公开元数据 |
+| `test/manual_source_audit/channel_audit_test.dart` | 新增 | 逐源读取、音质参数测量、定向重解析及安全清理 |
+| `README.md` | 修改 | 指向最新默认渠道状态与本节明细 |
+| 本文 | 修改 | 记录矩阵、实际输出、执行入口和验证边界 |
+
+两个测试以 `SOURCE_AUDIT_ENABLED=1` 显式启用；不开启时直接跳过，不读取临时目录记录。普通离线调用已验证为两个跳过、退出码 0；两个文件静态分析无问题。
+主执行入口为测试文件 `main → _auditOne → ApiService.resolvePlayback → _readAudio`，失败和超时均关闭 HTTP 客户端、取消音频流；报告不保存播放 URL、签名或密钥。
+
+以下命令在项目根目录执行，使用已安装的 Flutter 3.41.6 / Dart 3.11.4；本机仍按第 8 节说明通过 SDK snapshot 调用 Flutter：
+
+```powershell
+$env:SOURCE_AUDIT_ENABLED = '1'
+flutter test --no-pub test/manual_source_audit/catalog_samples_test.dart
+
+# 两种网络分别运行，每个源/平台测两首歌。
+$env:SOURCE_AUDIT_PHASE = 'standard'
+$env:SOURCE_AUDIT_PAIRS = ''
+$env:SOURCE_AUDIT_ONLY_SONG = ''
+$env:SOURCE_AUDIT_NETWORK = 'direct'
+flutter test --no-pub test/manual_source_audit/channel_audit_test.dart
+$env:SOURCE_AUDIT_NETWORK = 'proxy'
+flutter test --no-pub test/manual_source_audit/channel_audit_test.dart
+
+# 已可读取的渠道抽测四档音质，输入固定为海阔天空。
+$env:SOURCE_AUDIT_PHASE = 'quality'
+$env:SOURCE_AUDIT_PAIRS = 'qing_music:qq,qing_music:163,qing_music:kugou,hyw:163,xinghai:163,xinghai:kugou,gd_studio:163,gd_studio:qq,gd_studio:kugou'
+flutter test --no-pub test/manual_source_audit/channel_audit_test.dart
+
+# 直连下网易云、酷狗 503 和 HYW 超时样本的定向复验。
+$env:SOURCE_AUDIT_PHASE = 'retry'
+$env:SOURCE_AUDIT_NETWORK = 'direct'
+$env:SOURCE_AUDIT_ONLY_SONG = '海阔天空'
+$env:SOURCE_AUDIT_PAIRS = 'hyw:qq,hyw:163,gd_studio:163,gd_studio:kugou'
+flutter test --no-pub test/manual_source_audit/channel_audit_test.dart
+
+# 酷狗晴天的网络故障及排除 QingMusic 后的恢复复验。
+$env:SOURCE_AUDIT_NETWORK = 'proxy'
+$env:SOURCE_AUDIT_ONLY_SONG = '晴天'
+$env:SOURCE_AUDIT_PAIRS = 'hyw:qq,qing_music:kugou,qing_mirror:kugou,automatic:kugou,automatic_recovery:kugou'
+flutter test --no-pub test/manual_source_audit/channel_audit_test.dart
+$env:SOURCE_AUDIT_ENABLED = '0'
+```
+
+本次共 129 组验证记录，其中 91 组成功读取；其余包括缺个人凭据、公益版未开放、匹配不到原唱和网络失败，不能将其统称为代码回归失败。
+标准测试为直连 25/42、代理 25/42；音质抽测 36/36；定向复验直连 3/4、代理 2/5。对应联网命令有失败样本时退出码为 1，音质命令退出码为 0。
+明细和汇总存放于 `tmp/source_audit_20261119/` 的 `results-*.jsonl`、`catalog-samples.json`、`audit-summary.json` 和各 `*-events.json`。
+
+断点优先放在 `_auditOne` 观察 `route.key`、`song.id`、`quality` 和 `result['resolved']`，在 `_readAudio` 观察 HTTP 状态、`prefix` 和 `result` 中的实际 FLAC 参数；GDStudio 匹配问题在 `ApiService._gdStudioMatchedId` 观察 `match` 和 `_gdMatchedId`。
+剩余未验证项为个人授权后的 ChKSz、星海 QQ，自定义 HYW 服务，以及完整音频解码和真机声音。渠道在线状态与歌曲库存可能变化，当前结论以本节的日期、样本及默认配置为边界。

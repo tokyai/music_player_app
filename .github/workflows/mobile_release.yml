@@ -183,7 +183,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          flutter pub get --offline || flutter pub get
+          # 优先复用缓存；冷缓存也严格恢复已批准的锁定版本。
+          flutter pub get --offline --enforce-lockfile || flutter pub get --enforce-lockfile
+
+      - name: 校验内置业务包与框架回归
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 使用当前框架公钥验签内置资产，同时验证回滚、取消和备份失败路径。
+          flutter test --no-pub test/runtime_bundle_store_test.dart test/runtime_http_client_test.dart test/runtime_api_service_test.dart test/runtime_status_landscape_test.dart test/runtime_backup_test.dart
+          node --test server/runtime/runtime.test.mjs
 
       - name: 生成临时 Android 测试签名
         shell: bash
@@ -211,6 +220,11 @@ jobs:
       - name: 构建分 ABI release APK
         shell: bash
         run: |
+          set -euo pipefail
+          # 只清理旧 APK 输出，避免失败编译误认旧包；四个插件缓存继续保留。
+          rm -f build_c/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+            build_c/app/outputs/flutter-apk/app-armeabi-v7a-release.apk \
+            build_c/app/outputs/flutter-apk/app-x86_64-release.apk
           set +e
           flutter build apk --release --split-per-abi --no-pub
           FLUTTER_EXIT_CODE=$?
@@ -235,6 +249,48 @@ jobs:
             echo "Flutter 未识别重定向后的 APK，但 build_c 中的三个 APK 均已生成。"
           fi
 
+      - name: 核验 APK 签名、ABI 与框架版本
+        env:
+          APP_VERSION: ${{ needs.prepare-release.outputs.app_version }}
+          BUILD_NUMBER: ${{ needs.prepare-release.outputs.build_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 使用构建后实际安装的 Android 工具，不额外下载另一个版本。
+          SDK_TOOLS_DIR="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          if [[ ! -x "$SDK_TOOLS_DIR/apksigner" || ! -x "$SDK_TOOLS_DIR/aapt2" ]]; then
+            echo "缺少 APK 验证工具" >&2
+            exit 1
+          fi
+          if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "基础版本码必须为整数" >&2
+            exit 1
+          fi
+          for ABI in arm64-v8a armeabi-v7a x86_64; do
+            APK_PATH="build_c/app/outputs/flutter-apk/app-${ABI}-release.apk"
+            "$SDK_TOOLS_DIR/apksigner" verify --verbose --print-certs "$APK_PATH"
+            BADGING="$("$SDK_TOOLS_DIR/aapt2" dump badging "$APK_PATH")"
+            # Flutter 3.41.6 对分 ABI 版本码分别加 2000、1000、4000。
+            case "$ABI" in
+              arm64-v8a) ABI_OFFSET=2000 ;;
+              armeabi-v7a) ABI_OFFSET=1000 ;;
+              x86_64) ABI_OFFSET=4000 ;;
+            esac
+            VERSION_CODE=$((10#$BUILD_NUMBER + ABI_OFFSET))
+            if [[ "$BADGING" != *"versionName='$APP_VERSION'"* || \
+                  "$BADGING" != *"versionCode='$VERSION_CODE'"* || \
+                  "$BADGING" != *"native-code: '$ABI'"* ]]; then
+              echo "APK 版本或 ABI 与当前框架不一致: $APK_PATH" >&2
+              exit 1
+            fi
+            # 校验实际打入 APK 的业务资产，防止声明与编译输出不一致。
+            for RESOURCE in manifest.json bundle.json; do
+              unpacked="$RUNNER_TEMP/android-$ABI-$RESOURCE"
+              unzip -p "$APK_PATH" "assets/flutter_assets/assets/runtime/$RESOURCE" > "$unpacked"
+              cmp "assets/runtime/$RESOURCE" "$unpacked"
+            done
+          done
+
       - name: 整理 APK 文件
         env:
           APP_VERSION: ${{ needs.prepare-release.outputs.app_version }}
@@ -254,6 +310,7 @@ jobs:
             cp "$SOURCE_APK" "$TARGET_APK"
           done
           ls -lh release/*.apk
+          sha256sum release/*.apk > release/SHA256SUMS-android.txt
 
       - name: 上传 APK 到 GitHub Release
         env:
@@ -262,9 +319,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release upload "$RELEASE_TAG" release/*.apk \
+          gh release upload "$RELEASE_TAG" release/*.apk release/SHA256SUMS-android.txt \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
+
+      - name: 清理临时测试签名
+        if: always()
+        shell: bash
+        run: |
+          # 私钥只属于本次 Runner，APK 和业务缓存不在清理范围内。
+          rm -f android/key.properties "$RUNNER_TEMP/android-test-release.jks"
 
   build-ios:
     name: 构建 iOS 未签名 IPA
@@ -283,7 +347,17 @@ jobs:
           cache: true
 
       - name: 获取 Flutter 依赖
-        run: flutter pub get
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get --offline --enforce-lockfile || flutter pub get --enforce-lockfile
+
+      - name: 校验 iOS 使用的内置业务包
+        shell: bash
+        run: |
+          set -euo pipefail
+          # macOS 与 Android 共用同一公钥和业务包，不依赖发布私钥。
+          flutter test --no-pub test/runtime_bundle_store_test.dart test/runtime_http_client_test.dart test/runtime_api_service_test.dart test/runtime_status_landscape_test.dart test/runtime_backup_test.dart
 
       - name: 构建 iOS Runner（免签名）
         run: flutter build ios --release --no-codesign --no-pub
@@ -305,11 +379,20 @@ jobs:
             exit 1
           fi
 
+          # 免签名产物仍必须包含实际可执行程序和完整的已验签业务资产。
+          test -f "$APP_PATH/Runner"
+          for RESOURCE in manifest.json bundle.json; do
+            cmp "assets/runtime/$RESOURCE" "$APP_PATH/Frameworks/App.framework/flutter_assets/assets/runtime/$RESOURCE"
+          done
+
           mkdir -p "$STAGING_DIR/Payload" release
           cp -R "$APP_PATH" "$STAGING_DIR/Payload/Runner.app"
           cd "$STAGING_DIR"
           zip -qry "$GITHUB_WORKSPACE/release/$IPA_NAME" Payload
+          unzip -t "$GITHUB_WORKSPACE/release/$IPA_NAME" > /dev/null
           ls -lh "$GITHUB_WORKSPACE/release/$IPA_NAME"
+          cd "$GITHUB_WORKSPACE"
+          shasum -a 256 "release/$IPA_NAME" > release/SHA256SUMS-ios.txt
 
       - name: 上传 IPA 到 GitHub Release
         env:
@@ -318,7 +401,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release upload "$RELEASE_TAG" release/*.ipa \
+          gh release upload "$RELEASE_TAG" release/*.ipa release/SHA256SUMS-ios.txt \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 

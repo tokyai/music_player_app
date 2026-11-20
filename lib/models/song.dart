@@ -749,6 +749,8 @@ class SongDetail {
   final String? format;
   final Map<String, String>? playbackHeaders;
   final PlaybackSource? playbackSource;
+  // 远程服务的音源标识不受原生枚举限制，新线路可直接在服务器发布。
+  final String? providerId;
 
   SongDetail({
     required this.name,
@@ -762,6 +764,7 @@ class SongDetail {
     this.format,
     this.playbackHeaders,
     this.playbackSource,
+    this.providerId,
   });
 
   SongDetail copyWith({PlaybackSource? playbackSource}) => SongDetail(
@@ -776,6 +779,7 @@ class SongDetail {
     format: format,
     playbackHeaders: playbackHeaders,
     playbackSource: playbackSource ?? this.playbackSource,
+    providerId: providerId,
   );
 
   /// ChKSz 网易云解析结果

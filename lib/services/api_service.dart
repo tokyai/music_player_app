@@ -9,6 +9,10 @@ import '../utils/song_source_matcher.dart';
 import 'bilibili_service.dart';
 import 'bounded_http_response.dart';
 import 'qing_gateway_auth.dart';
+import 'runtime_config.dart';
+import 'runtime_http_client.dart';
+import 'runtime_preferences.dart';
+import 'user_data_scope.dart';
 
 /// 音乐 API 服务层
 /// - 网易云: interface.music.163.com 官方公开目录接口
@@ -92,6 +96,11 @@ class ApiService {
   static const String qqBaseUrl = 'http://161.118.252.183/api-qq';
 
   final http.Client _client = http.Client();
+  final RuntimeHttpClient _runtime;
+  final bool _remoteEnabled;
+  final UserDataScope dataScope;
+  final Set<String> _runtimeFailedProviders = {};
+  String? runtimePlaybackProvider;
   final Map<String, Future<_NeteasePlaylistIndex>> _neteasePlaylistIndexes = {};
   final BilibiliService bilibili;
   String apiKey;
@@ -111,9 +120,14 @@ class ApiService {
 
   ApiService({
     required this.apiKey,
+    this.dataScope = UserDataScope.defaultScope,
+    RuntimeHttpClient? runtimeClient,
+    bool? remoteEnabled,
     BilibiliService? bilibili,
     PlaybackSourceConfig? playbackSourceConfig,
-  }) : bilibili = bilibili ?? BilibiliService(),
+  }) : _runtime = runtimeClient ?? RuntimeHttpClient(),
+       _remoteEnabled = remoteEnabled ?? RuntimeConfig.useRemote,
+       bilibili = bilibili ?? BilibiliService(),
        _playbackSourceConfig =
            (playbackSourceConfig ?? PlaybackSourceConfig.defaults())
                .validated();
@@ -150,6 +164,8 @@ class ApiService {
     _gdMatchedId = null;
     _gdAttemptedBitrates.clear();
     _client.close();
+    _runtime.close();
+    _runtimeFailedProviders.clear();
     _qingDeviceId = null;
     bilibili.dispose();
   }
@@ -496,6 +512,24 @@ class ApiService {
             }
           });
     try {
+      if (_remoteEnabled) {
+        final detail = await _remotePlayback(
+          source: source,
+          platform: platform,
+          id: id,
+          quality: quality,
+          name: name,
+          artist: artist,
+          album: album,
+          albumId: albumId,
+          duration: duration,
+          excludedSources: excludedSources,
+          cancelSignal: operation.future,
+        );
+        _ensurePlaybackOperationActive(operation, isCancelled);
+        runtimePlaybackProvider = detail.providerId;
+        return detail;
+      }
       if (source != PlaybackSource.automatic) {
         if (!_playbackSourceConfig.isEnabled(source)) {
           throw ApiException('SOURCE_DISABLED', '${source.label} 已在备用源配置中停用');
@@ -589,6 +623,100 @@ class ApiService {
       cancellationTimer?.cancel();
       _endPlaybackOperation(operation);
     }
+  }
+
+  /// 新歌曲或主动重播开始时清除本次远程解析的失败源。
+  void clearRemotePlaybackFailures() {
+    _runtimeFailedProviders.clear();
+    runtimePlaybackProvider = null;
+  }
+
+  /// 原生解码失败后排除服务端的实际线路，包括未来新增的线路。
+  void recordRemotePlaybackFailure(String? providerId) {
+    if (providerId != null && _runtimeFailedProviders.length < 8) {
+      _runtimeFailedProviders.add(providerId);
+    }
+  }
+
+  Future<SongDetail> _remotePlayback({
+    required PlaybackSource source,
+    required MusicPlatform platform,
+    required String id,
+    required String quality,
+    required String name,
+    required String artist,
+    required String album,
+    String? albumId,
+    int? duration,
+    required Set<PlaybackSource> excludedSources,
+    required Future<void> cancelSignal,
+  }) async {
+    final preferences = RuntimePreferences(dataScope);
+    final settings = await preferences.read();
+    final secrets = await preferences.credentials();
+    final selections = settings['sources'];
+    final qualities = settings['qualities'];
+    final selected = selections is Map
+        ? selections[platform.code]
+        : source.value;
+    final selectedQuality = qualities is Map ? qualities[platform.code] : null;
+    final reply = await _runtime.api('resolve', {
+      'song': {
+        'platform': platform.code,
+        'id': id,
+        'name': name,
+        'artist': artist,
+        'album': album,
+        'albumId': albumId,
+        'duration': duration,
+        'source': selected is String ? selected : source.value,
+        'quality': selectedQuality is String ? selectedQuality : quality,
+        'excludedSources': {
+          ...excludedSources.map((item) => item.value),
+          ..._runtimeFailedProviders,
+          if (settings['disabledSources'] is List)
+            ...(settings['disabledSources'] as List).whereType<String>().take(
+              8,
+            ),
+        }.toList(),
+      },
+      'credentials': {
+        'apiKey': apiKey,
+        'hywCardKey': _playbackSourceConfig.hywCardKey,
+        'xinghaiLicenseKey': _playbackSourceConfig.xinghaiLicenseKey,
+        ...secrets,
+      },
+    }, cancelSignal: cancelSignal);
+    final raw = reply['result'];
+    if (raw is! Map) {
+      throw const ApiException('REMOTE_INVALID_RESPONSE', '远程播放数据无效');
+    }
+    final data = Map<String, dynamic>.from(raw);
+    final provider = data['providerId'];
+    if (provider is! String ||
+        !RegExp(r'^[a-z0-9_]{1,64}$').hasMatch(provider)) {
+      throw const ApiException('REMOTE_INVALID_SOURCE', '远程音源标识无效');
+    }
+    final parsed = _resolvedSongDetail(data, '远程音源');
+    _requirePlayableUrl(parsed, PlaybackSource.automatic);
+    PlaybackSource? knownSource;
+    for (final candidate in PlaybackSource.values) {
+      if (candidate.value == provider) knownSource = candidate;
+    }
+    return SongDetail(
+      name: name,
+      artist: artist,
+      album: album,
+      url: parsed.url,
+      coverUrl: parsed.coverUrl,
+      lyric: parsed.lyric,
+      duration: parsed.duration,
+      format: parsed.format,
+      bitrate: parsed.bitrate,
+      playbackHeaders: parsed.playbackHeaders,
+      playbackSource: knownSource,
+      providerId: provider,
+    );
   }
 
   List<PlaybackSource> _enabledPlaybackSources() {
@@ -2060,6 +2188,15 @@ class ApiService {
     required String songName,
     required String artist,
   }) async {
+    if (_remoteEnabled && configurableMusicPlatforms.contains(platform)) {
+      final data = await _runtime.api('mv', {
+        'platform': platform.code,
+        'id': songId,
+        'name': songName,
+        'artist': artist,
+      });
+      return data['url'] as String;
+    }
     return switch (platform) {
       MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
       MusicPlatform.qq => _qqMusicVideoUrl(songId, songName, artist),
@@ -2622,6 +2759,7 @@ class ApiService {
   Future<LyricData> neteaseLyric(String id) => neteasePublicLyric(id);
 
   Future<LyricData> neteasePublicLyric(String id) async {
+    if (_remoteEnabled) return _remoteLyrics(MusicPlatform.netease, id);
     try {
       final json = await _httpGet(
         _neteaseLyricUrl,
@@ -2917,6 +3055,7 @@ class ApiService {
 
   /// 酷狗脚本的免签名歌词兜底接口。返回 LRC 文本，不参与播放地址解析。
   Future<LyricData> kugouPublicLyric(String hash) async {
+    if (_remoteEnabled) return _remoteLyrics(MusicPlatform.kugou, hash);
     final uri = Uri.parse(
       'https://m.kugou.com/app/i/krc.php',
     ).replace(queryParameters: {'cmd': '100', 'hash': hash, 'timelength': '1'});
@@ -3286,6 +3425,7 @@ class ApiService {
 
   /// QQ 歌词。官方歌词接口直连失败后才使用旧中转。
   Future<LyricData> qqLyric(String songmid) async {
+    if (_remoteEnabled) return _remoteLyrics(MusicPlatform.qq, songmid);
     try {
       final json = await _httpGet(
         _qqWebUrl,
@@ -3405,6 +3545,8 @@ class ApiService {
     MusicPlatform platform,
     String keyword,
   ) {
+    if (_remoteEnabled && configurableMusicPlatforms.contains(platform))
+      return _remoteSearch(platform, keyword);
     switch (platform) {
       case MusicPlatform.local:
         throw UnsupportedError('本地音频不使用在线接口');
@@ -3417,6 +3559,27 @@ class ApiService {
       case MusicPlatform.bilibili:
         return bilibili.search(keyword);
     }
+  }
+
+  Future<List<SongSearchResult>> _remoteSearch(
+    MusicPlatform platform,
+    String keyword,
+  ) async {
+    final data = await _runtime.api('search', {
+      'platform': platform.code,
+      'keyword': keyword,
+      'limit': 20,
+      'page': 1,
+    });
+    final rows = data['songs'];
+    if (rows is! List || rows.length > 100)
+      throw const FormatException('远程搜索数据无效');
+    final songs = <SongSearchResult>[];
+    for (final row in rows) {
+      if (row is! Map) throw const FormatException('远程歌曲字段无效');
+      songs.add(SongSearchResult.fromJson(Map<String, dynamic>.from(row)));
+    }
+    return songs;
   }
 
   /// 搜索可替换的歌词版本，并结合当前歌曲元数据按相关性降序排列。
@@ -3517,6 +3680,9 @@ class ApiService {
 
   /// 获取歌词
   Future<LyricData?> getLyric(MusicPlatform platform, String id) async {
+    if (_remoteEnabled && configurableMusicPlatforms.contains(platform)) {
+      return _remoteLyrics(platform, id);
+    }
     return switch (platform) {
       MusicPlatform.local => throw UnsupportedError('本地音频不使用在线接口'),
       MusicPlatform.netease => neteaseLyric(id),
@@ -3524,6 +3690,21 @@ class ApiService {
       MusicPlatform.kugou => kugouPublicLyric(id),
       MusicPlatform.bilibili => null,
     };
+  }
+
+  Future<LyricData> _remoteLyrics(MusicPlatform platform, String id) async {
+    final reply = await _runtime.api('lyrics', {
+      'platform': platform.code,
+      'id': id,
+    });
+    final data = reply['lyrics'];
+    if (data is! Map) throw const FormatException('远程歌词数据无效');
+    return LyricData(
+      original: data['original'] as String?,
+      translated: data['translated'] as String?,
+      romaji: data['romaji'] as String?,
+      wordSynced: data['wordSynced'] as String?,
+    );
   }
 }
 

@@ -19,6 +19,8 @@ import '../services/global_settings_service.dart';
 import '../services/playback_history_service.dart';
 import '../services/playback_state_service.dart';
 import '../services/user_data_scope.dart';
+import '../services/runtime_config.dart';
+import '../services/runtime_preferences.dart';
 import '../utils/lyric_parser.dart';
 
 // Lyrics are returned as user-facing text but then expanded into many parsed
@@ -144,6 +146,8 @@ class PlayerProvider extends ChangeNotifier {
   PlaybackSource _qqPlaybackSource = PlaybackSource.automatic;
   PlaybackSource _kugouPlaybackSource = PlaybackSource.automatic;
   PlaybackSourceConfig _playbackSourceConfig = PlaybackSourceConfig.defaults();
+  final Map<MusicPlatform, String> _runtimeQualityOverrides = {};
+  String? _runtimeSelectionFingerprint;
   List<MusicPlatform> _bilibiliLyricPlatformOrder = List<MusicPlatform>.from(
     _defaultBilibiliLyricPlatformOrder,
   );
@@ -176,6 +180,7 @@ class PlayerProvider extends ChangeNotifier {
   }) : _restoredSessionActivationEnabled = activateRestoredSession {
     _api = ApiService(
       apiKey: '',
+      dataScope: dataScope,
       playbackSourceConfig: _playbackSourceConfig,
       bilibili: bilibiliService ?? BilibiliService(dataScope: dataScope),
     );
@@ -256,6 +261,8 @@ class PlayerProvider extends ChangeNotifier {
   bool get bilibiliLoggedIn => _api.bilibili.isLoggedIn;
   bool get bilibiliAccountLoading => _api.bilibili.accountLoading;
   PlaybackSource playbackSourceFor(MusicPlatform platform) {
+    // 手机框架把具体音源选择交给远程业务配置，恢复逻辑仍按统一自动模式工作。
+    if (RuntimeConfig.useRemote) return PlaybackSource.automatic;
     return switch (platform) {
       MusicPlatform.netease => _neteasePlaybackSource,
       MusicPlatform.qq => _qqPlaybackSource,
@@ -847,6 +854,7 @@ class PlayerProvider extends ChangeNotifier {
         _playbackRecoveryAttempts < _maxPlaybackRecoveryAttempts) {
       final failedSource = _currentResolvedPlaybackSource;
       if (failedSource != null) _currentPlaybackFailedSources.add(failedSource);
+      _api.recordRemotePlaybackFailure(_api.runtimePlaybackProvider);
       _playbackRecoveryAttempts++;
       unawaited(_recoverFromPlaybackError(song, _playRequestId));
       return;
@@ -2244,6 +2252,7 @@ class PlayerProvider extends ChangeNotifier {
     // resolver so it cannot cancel the song currently starting playback.
     final resolver = ApiService(
       apiKey: _apiKey,
+      dataScope: dataScope,
       playbackSourceConfig: _playbackSourceConfig,
       bilibili: BilibiliService(dataScope: dataScope),
     );
@@ -2354,6 +2363,7 @@ class PlayerProvider extends ChangeNotifier {
     }
     if (!recovering) {
       _currentPlaybackFailedSources.clear();
+      _api.clearRemotePlaybackFailures();
       _playbackRecoveryAttempts = 0;
     }
     _currentPlaybackFailedSources.addAll(excludedSources);
@@ -2386,6 +2396,7 @@ class PlayerProvider extends ChangeNotifier {
     try {
       await settingsReady;
       await historyReady;
+      await refreshRemotePlaybackSettings();
       if (!_isCurrentRequest(requestId, item)) return;
 
       String? downloadedPath;
@@ -2536,6 +2547,7 @@ class PlayerProvider extends ChangeNotifier {
           _invalidatePlayUrl(itemKey);
           final failedSource =
               detail?.playbackSource ?? _currentResolvedPlaybackSource;
+          _api.recordRemotePlaybackFailure(detail?.providerId);
           final canResolveAnother =
               downloadedPath == null &&
               configurableMusicPlatforms.contains(item.platform) &&
@@ -2690,12 +2702,46 @@ class PlayerProvider extends ChangeNotifier {
     return '${item.platform.code}:${item.id}:q${_audioQualityFor(item)}';
   }
 
-  String _audioQualityFor(PlayQueueItem item) => switch (item.platform) {
-    MusicPlatform.local => 'original',
-    MusicPlatform.netease => _neteaseLevel.value,
-    MusicPlatform.qq || MusicPlatform.kugou => _commonLevel.value,
-    MusicPlatform.bilibili => '$_bilibiliAudioQuality',
-  };
+  String _audioQualityFor(PlayQueueItem item) {
+    final remote = _runtimeQualityOverrides[item.platform];
+    if (RuntimeConfig.useRemote && remote != null) return remote;
+    return switch (item.platform) {
+      MusicPlatform.local => 'original',
+      MusicPlatform.netease => _neteaseLevel.value,
+      MusicPlatform.qq || MusicPlatform.kugou => _commonLevel.value,
+      MusicPlatform.bilibili => '$_bilibiliAudioQuality',
+    };
+  }
+
+  /// 更新远程选择后使用相同音质作为缓存身份，避免新目标误命中旧音质缓存。
+  Future<void> refreshRemotePlaybackSettings() async {
+    if (!RuntimeConfig.useRemote || _disposed || dataScope.isDeleted) return;
+    final values = await RuntimePreferences(dataScope).read();
+    if (_disposed || dataScope.isDeleted) return;
+    final fingerprint = jsonEncode({
+      'qualities': values['qualities'],
+      'sources': values['sources'],
+      'disabledSources': values['disabledSources'],
+    });
+    if (fingerprint == _runtimeSelectionFingerprint) return;
+    final overrides = <MusicPlatform, String>{};
+    final qualities = values['qualities'];
+    if (qualities is Map) {
+      for (final platform in configurableMusicPlatforms) {
+        final quality = qualities[platform.code];
+        if (quality is String &&
+            RegExp(r'^[A-Za-z0-9_]{1,64}$').hasMatch(quality)) {
+          overrides[platform] = quality;
+        }
+      }
+    }
+    _runtimeQualityOverrides
+      ..clear()
+      ..addAll(overrides);
+    _runtimeSelectionFingerprint = fingerprint;
+    _playUrlResolvedAt.clear();
+    notifyListeners();
+  }
 
   Duration _normalizeResumePosition(
     Duration? requested,

@@ -21,6 +21,8 @@ import 'screens/player_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/playlist_screen.dart';
 import 'screens/settings_screen.dart';
+import 'screens/remote_runtime_screen.dart';
+import 'services/runtime_config.dart';
 import 'services/favorite_service.dart';
 import 'services/app_exit_service.dart';
 import 'services/audio_cache_service.dart';
@@ -181,6 +183,7 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
   GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   AiVoiceLoadMode? _runtimeVoiceLoadMode;
   int _voicePreloadGeneration = 0;
+  final ValueNotifier<int> _runtimePlayerRequests = ValueNotifier<int>(0);
 
   @override
   void initState() {
@@ -199,15 +202,24 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
     widget.users.attachSessionSwitcher(_switchUserSession);
     widget.users.attachSessionReloader(_reloadActiveUserSession);
     FloatingCapsuleService.onPlayPauseTap = () => _session.player.playPause();
-    FloatingCapsuleService.onCapsuleTap = () {
-      final context = _navigatorKey.currentContext;
-      if (context != null) {
-        _navigatorKey.currentState?.push(PlayerScreen.route(context));
-      }
-    };
+    FloatingCapsuleService.onCapsuleTap = _onFloatingCapsuleTap;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_configureVoicePreloading(_session));
     });
+  }
+
+  void _onFloatingCapsuleTap() {
+    // 原生迟到回调不能触碰已释放的页面导航和远程播放器通知器。
+    if (!mounted) return;
+    if (RuntimeConfig.useRemote) {
+      _navigatorKey.currentState?.popUntil((route) => route.isFirst);
+      _runtimePlayerRequests.value++;
+      return;
+    }
+    final navigatorContext = _navigatorKey.currentContext;
+    if (navigatorContext != null) {
+      _navigatorKey.currentState?.push(PlayerScreen.route(navigatorContext));
+    }
   }
 
   @override
@@ -341,6 +353,7 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
     widget.users.detachSessionSwitcher();
     FloatingCapsuleService.onPlayPauseTap = null;
     FloatingCapsuleService.onCapsuleTap = null;
+    _runtimePlayerRequests.dispose();
     unawaited(_disposeSessionAndSharedControllers());
     widget.users.dispose();
     super.dispose();
@@ -417,7 +430,12 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
                 ),
               );
             },
-            home: MainScreen(key: ValueKey(_session.scope.userId)),
+            home: RuntimeConfig.useRemote
+                ? RemoteRuntimeScreen(
+                    key: ValueKey(_session.scope.userId),
+                    openPlayerRequests: _runtimePlayerRequests,
+                  )
+                : MainScreen(key: ValueKey(_session.scope.userId)),
           );
         },
       ),

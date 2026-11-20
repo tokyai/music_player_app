@@ -1,7 +1,7 @@
 name: music_player_app
 description: 库仔音乐，一款支持 QQ音乐/网易云/酷狗搜索与播放的多平台音乐应用。
 publish_to: 'none'
-version: 2.9.17+2917
+version: 3.0.0+3000
 
 environment:
   sdk: ^3.11.0
@@ -15,6 +15,9 @@ dependencies:
   http: ^1.6.0
   dio: ^5.7.0
   crypto: ^3.0.6
+  # 固定原生 WebView 承载已验签的远程业务包。
+  webview_flutter: 4.14.1
+  cryptography: 2.9.0
   protobuf: ^6.0.0
 
   # 音频播放
@@ -65,6 +68,7 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
+    - assets/runtime/
     - third_party/jaudiotagger/LGPL-2.1.txt
     - assets/images/
     - assets/pets/moomew/

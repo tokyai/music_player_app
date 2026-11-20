@@ -10,6 +10,7 @@ import '../services/audio_cache_service.dart';
 import '../services/download_manager.dart';
 import '../services/user_avatar_storage.dart';
 import '../services/user_data_scope.dart';
+import '../services/runtime_preferences.dart';
 
 class UserController extends ChangeNotifier {
   static const maxUsers = 8;
@@ -426,13 +427,14 @@ class UserController extends ChangeNotifier {
   }
 
   Future<void> _deleteScopedSecret(UserDataScope scope) async {
-    try {
-      await const FlutterSecureStorage().delete(
-        key: scope.secureStorageKey(_aiSecretKey),
-      );
-    } catch (error, stackTrace) {
-      debugPrint('清理用户安全配置失败: $error');
-      debugPrintStack(stackTrace: stackTrace);
+    // 独立清理每种凭据，某个平台存储失败不能跳过其他凭据的释放。
+    for (final key in [_aiSecretKey,RuntimePreferences.credentialsKey]) {
+      try {
+        await const FlutterSecureStorage().delete(key:scope.secureStorageKey(key));
+      } catch (error,stackTrace) {
+        debugPrint('清理用户安全配置失败：userId=${scope.userId}');
+        debugPrintStack(stackTrace:stackTrace);
+      }
     }
   }
 

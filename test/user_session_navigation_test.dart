@@ -217,6 +217,15 @@ void main() {
       expect(aiConfig.petScale, 1.5);
       expect(tester.widget<Slider>(petScaleSlider).value, 1.5);
       expect(tester.takeException(), isNull);
+
+      // 保留已交给原生的旧回调，应用退出后执行也不能重新打开导航或发布状态。
+      final lateCapsuleTap = FloatingCapsuleService.onCapsuleTap;
+      expect(lateCapsuleTap, isNotNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      expect(FloatingCapsuleService.onCapsuleTap, isNull);
+      await lateCapsuleTap!();
+      expect(tester.takeException(), isNull);
     });
   }
 }
