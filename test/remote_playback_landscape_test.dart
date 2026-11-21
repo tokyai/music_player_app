@@ -202,6 +202,42 @@ void main() {
   });
 
   for (final size in const [Size(640, 360), Size(1280, 800)]) {
+    testWidgets('local package and update failure stay usable at $size', (
+      tester,
+    ) async {
+      final player = _RemotePlayer()..packageUpdateError = '解析包更新失败，继续使用本地版本';
+      await _pumpConfig(tester, size, player);
+      for (final text in [
+        '使用本地解析包。后台更新不可用时继续使用当前版本，不影响播放。',
+        '当前解析包：7',
+        '解析包更新失败，继续使用本地版本',
+      ]) {
+        final feedback = find.text(text);
+        await tester.ensureVisible(feedback);
+        expect(feedback.hitTestable(), findsOneWidget);
+      }
+      expect(find.byTooltip('刷新音源列表').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('保存配置').hitTestable(), findsOneWidget);
+      expect(find.byTooltip('Back').hitTestable(), findsOneWidget);
+      final toggle = find.byKey(const ValueKey('source-enabled-server_added'));
+      await tester.ensureVisible(toggle);
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+      final refreshCalls = player.refreshCalls;
+      await tester.tap(find.byTooltip('刷新音源列表'));
+      await tester.pumpAndSettle();
+      expect(player.refreshCalls, refreshCalls + 1);
+      expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+      await tester.tap(find.byTooltip('保存配置'));
+      await tester.pumpAndSettle();
+      expect(
+        player.playbackSourceConfig.disabledSourceIds,
+        contains('server_added'),
+      );
+      expect(find.byType(PlaybackSourceConfigScreen), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('new source can be selected in settings at $size', (
       tester,
     ) async {
@@ -317,7 +353,9 @@ class _RemotePlayer extends PlayerProvider {
   Completer<void>? saveGate;
   Completer<void>? refreshGate;
   String? refreshError;
+  String? packageUpdateError;
   int saveCalls = 0;
+  int refreshCalls = 0;
 
   @override
   List<RemotePlaybackSource> get remotePlaybackSources => descriptors;
@@ -327,6 +365,12 @@ class _RemotePlayer extends PlayerProvider {
 
   @override
   bool get playbackSourcesLoading => false;
+
+  @override
+  int? get playbackPackageVersion => 7;
+
+  @override
+  String? get playbackPackageUpdateError => packageUpdateError;
 
   @override
   List<PlaybackSource> playbackSourceOptions(MusicPlatform platform) => [
@@ -340,6 +384,7 @@ class _RemotePlayer extends PlayerProvider {
 
   @override
   Future<void> refreshPlaybackSources() async {
+    refreshCalls++;
     await refreshGate?.future;
     notifyListeners();
   }

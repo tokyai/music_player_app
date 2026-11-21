@@ -145,7 +145,6 @@ class PlayerProvider extends ChangeNotifier {
   PlaybackSource _qqPlaybackSource = PlaybackSource.automatic;
   PlaybackSource _kugouPlaybackSource = PlaybackSource.automatic;
   PlaybackSourceConfig _playbackSourceConfig = PlaybackSourceConfig.defaults();
-  static const _playbackSourceCatalogKey = PlaybackSourceCatalog.preferenceKey;
   PlaybackSourceCatalog? _playbackSourceCatalog;
   Future<void>? _playbackSourcesRefreshFuture;
   bool _playbackSourcesLoading = false;
@@ -190,6 +189,7 @@ class PlayerProvider extends ChangeNotifier {
           bilibili: bilibiliService ?? BilibiliService(dataScope: dataScope),
         );
     _api.bilibili.addListener(_handleBilibiliChanged);
+    _api.onPlaybackPackageChanged = _handlePlaybackPackageChanged;
     _initAudioPlayer();
     historyReady = _loadPlaybackHistory();
     settingsReady = _loadSettings();
@@ -293,6 +293,8 @@ class PlayerProvider extends ChangeNotifier {
       _playbackSourceCatalog?.sources ?? const [];
   String? get playbackSourcesError => _playbackSourcesError;
   bool get playbackSourcesLoading => _playbackSourcesLoading;
+  int? get playbackPackageVersion => _api.playbackPackageVersion;
+  String? get playbackPackageUpdateError => _api.playbackPackageUpdateError;
   bool get savingPlaybackSourceSettings =>
       _sourceSettingsSaveCompletion != null;
 
@@ -325,25 +327,11 @@ class PlayerProvider extends ChangeNotifier {
   Future<void> _initializePlaybackSources() async {
     await settingsReady;
     if (_disposed || dataScope.isDeleted) return;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      if (_disposed || dataScope.isDeleted) return;
-      final cached = prefs.getString(_playbackSourceCatalogKey);
-      if (cached != null && cached.length <= 512 * 1024) {
-        final json = jsonDecode(cached);
-        if (json is! Map<String, dynamic>) {
-          throw const FormatException('音源列表缓存格式无效');
-        }
-        _playbackSourceCatalog = PlaybackSourceCatalog.fromJson(json);
-        notifyListeners();
-      }
-    } catch (error) {
-      debugPrint('读取音源列表缓存失败: $error');
-    }
+    // 当前能力和代码来自同一本地包，不恢复旧服务端列表覆盖本地版本。
     if (!_disposed && !dataScope.isDeleted) await refreshPlaybackSources();
   }
 
-  /// 同步服务端音源列表；失败时保留已验证缓存并提供可重试的错误反馈。
+  /// 加载本地音源列表并后台检查包更新，不等待网络结果。
   /// 同时调用会共用一次请求，页面销毁后不会发布迟到的状态。
   /// SHIXIAOYANG，2026/11/20。
   Future<void> refreshPlaybackSources() {
@@ -365,13 +353,10 @@ class PlayerProvider extends ChangeNotifier {
       final catalog = await _api.loadPlaybackSources();
       if (_disposed || dataScope.isDeleted) return;
       _playbackSourceCatalog = catalog;
-      final serialized = jsonEncode(catalog.toJson());
-      if (serialized.length <= 512 * 1024) {
-        await _cachePlaybackSourceCatalog(serialized);
-      }
+      unawaited(_api.checkPlaybackPackageUpdate());
     } catch (error) {
       if (!_disposed && !dataScope.isDeleted) {
-        _playbackSourcesError = '音源列表更新失败，请检查网络后重试';
+        _playbackSourcesError = '本地音源列表暂不可用，请重试';
         debugPrint('同步音源列表失败: $error');
       }
     } finally {
@@ -383,18 +368,12 @@ class PlayerProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> _cachePlaybackSourceCatalog(String serialized) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      if (_disposed || dataScope.isDeleted) return;
-      final saved = await prefs.setString(
-        _playbackSourceCatalogKey,
-        serialized,
-      );
-      if (!saved) debugPrint('音源列表已更新，但缓存保存失败');
-    } catch (error) {
-      debugPrint('保存音源列表缓存失败: $error');
-    }
+  void _handlePlaybackPackageChanged(PlaybackSourceCatalog catalog) {
+    if (_disposed || _preparingForExit || dataScope.isDeleted) return;
+    _playbackSourceCatalog = catalog;
+    _playbackSourcesError = null;
+    // 切包只改变后续解析能力，不清空当前音频、队列、URL缓存或个人凭据。
+    notifyListeners();
   }
 
   List<MusicPlatform> get bilibiliLyricPlatformOrder =>

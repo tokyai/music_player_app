@@ -21,7 +21,7 @@ void main() {
         await http.runWithClient(
           () async {
             final api = ApiService(
-              useRemotePlayback: false,
+              useLocalScript: false,
               apiKey: '',
               playbackSourceConfig: _onlyQing(),
             );
@@ -66,7 +66,7 @@ void main() {
       await http.runWithClient(
         () async {
           final api = ApiService(
-            useRemotePlayback: false,
+            useLocalScript: false,
             apiKey: '',
             playbackSourceConfig: _onlyQing(),
           );
@@ -105,7 +105,7 @@ void main() {
       final oversizedCode = List.filled(4096, 'x').join();
       await http.runWithClient(() async {
         final api = ApiService(
-          useRemotePlayback: false,
+          useLocalScript: false,
           apiKey: '',
           playbackSourceConfig: _onlyQing(),
         );
@@ -147,7 +147,7 @@ void main() {
             xinghaiIpUrl: 'https://xinghai.test/ip.php',
           );
           final api = ApiService(
-            useRemotePlayback: false,
+            useLocalScript: false,
             apiKey: '',
             playbackSourceConfig: config,
           );
@@ -200,7 +200,7 @@ void main() {
     var sends = 0;
     await http.runWithClient(
       () async {
-        final api = ApiService(useRemotePlayback: false, apiKey: 'test-key');
+        final api = ApiService(useLocalScript: false, apiKey: 'test-key');
         try {
           final results = api.testPlaybackSources(
             maxConcurrent: 1,
@@ -232,7 +232,7 @@ void main() {
       await http.runWithClient(
         () async {
           final api = ApiService(
-            useRemotePlayback: false,
+            useLocalScript: false,
             apiKey: 'test',
             playbackSourceConfig: PlaybackSourceConfig.defaults().copyWith(
               chkszBaseUrl: 'https://custom.test/proxy/?tenant=a',

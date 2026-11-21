@@ -93,7 +93,14 @@ function upstreamResponse(outgoing, signal) {
 
 async function musicRequest(request, response, target, ca, active, timeoutMs) {
   const path = '/' + request.url.slice(prefix.length);
+  const packageMatch = /^\/updates\/packages\/(p[0-9]{6,9}\.json)$/.exec(path);
+  let packageRequest = false;
+  if (packageMatch) {
+    const version = Number(packageMatch[1].slice(1, -5));
+    packageRequest = version > 0 && packageMatch[1] === 'p' + String(version).padStart(6, '0') + '.json';
+  }
   const allowed = (request.method === 'GET' && ['/health', '/api/sources'].includes(path)) ||
+    (request.method === 'GET' && (path === '/updates/manifest.json' || packageRequest)) ||
     (request.method === 'POST' && path === '/api/resolve');
   if (!allowed) { response.writeHead(404); response.end(); return; }
   const controller = new AbortController();
@@ -116,7 +123,10 @@ async function musicRequest(request, response, target, ca, active, timeoutMs) {
     outgoing.end(body);
     upstream = await received;
     if (upstream.statusCode >= 300 && upstream.statusCode < 400) throw new ProxyError('UPSTREAM_REDIRECT');
-    const content = await boundedBody(upstream, 512 * 1024, controller.signal, 'RESPONSE_TOO_LARGE');
+    let maximum = 512 * 1024;
+    if (path.startsWith('/updates/packages/')) maximum = 1024 * 1024;
+    if (path === '/updates/manifest.json') maximum = 64 * 1024;
+    const content = await boundedBody(upstream, maximum, controller.signal, 'RESPONSE_TOO_LARGE');
     if (controller.signal.aborted) throw controller.signal.reason;
     response.writeHead(upstream.statusCode || 502, forwardedHeaders(upstream.headers));
     response.end(content);

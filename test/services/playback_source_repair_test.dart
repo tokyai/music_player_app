@@ -918,7 +918,7 @@ Future<void> _withApi(
   http.Client createClient() => MockClient(respond);
   Future<void> run() async {
     final api = ApiService(
-      useRemotePlayback: false,
+      useLocalScript: false,
       apiKey: apiKey,
       playbackSourceConfig: config,
     );

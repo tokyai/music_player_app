@@ -1,11 +1,64 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
+import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {getCapabilities, resolvePlayback} from './sources.mjs';
 import {SourceError} from './network.mjs';
 
 const maxRequestBytes = 64 * 1024;
+
+/** 发布已签署的本地解析包；固定文件名和上限，不公开其他服务器文件。 */
+async function sendPackageFile(request, response, root, relative, maximum) {
+  const file = path.join(root, relative);
+  let handle;
+  let details;
+  try {
+    // 发布目录固定，禁止通过父目录链接读取其他服务文件。
+    const directories = relative.startsWith('packages/') ? [root, path.join(root, 'packages')] : [root];
+    for (const directory of directories) {
+      const parent = await fs.promises.lstat(directory);
+      if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error('INVALID_PACKAGE_DIRECTORY');
+    }
+    const entry = await fs.promises.lstat(file);
+    if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('INVALID_PACKAGE_FILE');
+    handle = await fs.promises.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    // 按已打开的文件检查大小，发布时替换文件不会改变这次响应内容。
+    details = await handle.stat();
+    if (details.dev !== entry.dev || details.ino !== entry.ino || details.size !== entry.size) {
+      throw new Error('PACKAGE_FILE_CHANGED');
+    }
+  } catch (error) {
+    if (handle) await handle.close();
+    const status = error.code === 'ENOENT' ? 404 : 503;
+    sendJson(response, status, {code: 'PACKAGE_NOT_FOUND', message: '解析包暂不可用'});
+    return;
+  }
+  if (!details.isFile() || details.size < 1 || details.size > maximum) {
+    await handle.close();
+    sendJson(response, 503, {code: 'INVALID_PACKAGE_FILE', message: '解析包暂不可用'});
+    return;
+  }
+  if (response.destroyed || response.writableEnded) { await handle.close(); return; }
+  const stream = handle.createReadStream({highWaterMark: 32 * 1024});
+  function cancel() { stream.destroy(); }
+  function failed() {
+    if (!response.headersSent) sendJson(response, 503, {code: 'PACKAGE_READ_FAILED', message: '解析包读取失败'});
+    else response.destroy();
+  }
+  function cleanup() {
+    cancel();
+    request.removeListener('aborted', cancel);
+    response.removeListener('close', cleanup);
+  }
+  request.once('aborted', cancel);
+  response.once('close', cleanup);
+  stream.once('error', failed);
+  response.writeHead(200, {'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': details.size, 'Cache-Control': relative === 'manifest.json' ? 'no-store' : 'public, max-age=3600',
+    'X-Content-Type-Options': 'nosniff'});
+  stream.pipe(response);
+}
 
 function sendJson(response, status, body) {
   if (response.destroyed || response.writableEnded) return;
@@ -70,7 +123,8 @@ function errorStatus(code) {
  * 不排队积累任务，断连会取消当前解析。SHIXIAOYANG，2026/11/20。
  */
 export function createPlaybackServer({tls, resolver = resolvePlayback,
-  capabilities = getCapabilities, maxConcurrent = 8} = {}) {
+  capabilities = getCapabilities, maxConcurrent = 8,
+  packageRoot = '/runtime/updates'} = {}) {
   let active = 0;
   const controllers = new Set();
   async function handle(request, response) {
@@ -85,6 +139,20 @@ export function createPlaybackServer({tls, resolver = resolvePlayback,
     try {
       if (request.method === 'GET' && request.url === '/health') {
         sendJson(response, 200, {status: 'ok', protocolVersion: 1});
+        return;
+      }
+      if (request.method === 'GET' && request.url === '/updates/manifest.json') {
+        await sendPackageFile(request, response, packageRoot, 'manifest.json', 64 * 1024);
+        return;
+      }
+      const packageMatch = /^\/updates\/packages\/(p[0-9]{6,9}\.json)$/.exec(request.url || '');
+      if (request.method === 'GET' && packageMatch) {
+        const version = Number(packageMatch[1].slice(1, -5));
+        if (version < 1 || packageMatch[1] !== 'p' + String(version).padStart(6, '0') + '.json') {
+          sendJson(response, 404, {code: 'PACKAGE_NOT_FOUND', message: '解析包版本路径无效'});
+          return;
+        }
+        await sendPackageFile(request, response, packageRoot, 'packages/' + packageMatch[1], 1024 * 1024);
         return;
       }
       if (request.method === 'GET' && request.url === '/api/sources') {

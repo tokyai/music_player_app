@@ -111,19 +111,23 @@ class ApiService {
   int _playbackGeneration = 0;
   _PlaybackCancellation? _activePlaybackCancellation;
   final PlaybackResolverService _playbackResolver;
-  final bool _useRemotePlayback;
+  final bool _useLocalScript;
   PlaybackSourceCatalog? _playbackSourceCatalog;
+  Future<void>? _packageUpdate;
+  void Function(PlaybackSourceCatalog)? onPlaybackPackageChanged;
 
   PlaybackSourceCatalog? get playbackSourceCatalog => _playbackSourceCatalog;
+  int? get playbackPackageVersion => _playbackResolver.packageVersion;
+  String? get playbackPackageUpdateError => _playbackResolver.updateError;
 
   ApiService({
     required this.apiKey,
     BilibiliService? bilibili,
     PlaybackSourceConfig? playbackSourceConfig,
     PlaybackResolverService? playbackResolver,
-    bool useRemotePlayback = true,
+    bool useLocalScript = true,
   }) : _playbackResolver = playbackResolver ?? PlaybackResolverService(),
-       _useRemotePlayback = useRemotePlayback,
+       _useLocalScript = useLocalScript,
        bilibili = bilibili ?? BilibiliService(),
        _playbackSourceConfig =
            (playbackSourceConfig ?? PlaybackSourceConfig.defaults())
@@ -153,6 +157,7 @@ class ApiService {
     // together with the HTTP client when the owning player is disposed.
     _neteasePlaylistIndexes.clear();
     _closed = true;
+    onPlaybackPackageChanged = null;
     _playbackGeneration++;
     _activePlaybackCancellation?.cancel();
     _activePlaybackCancellation = null;
@@ -470,16 +475,101 @@ class ApiService {
   /// 全部失败后才进入低优先级 GDStudio 组，再失败才降一档。每个竞速组、
   /// 质量降级次数和请求响应体都有固定上限，旧播放请求失效后会取消其
   /// 余请求并阻止迟到结果继续推进回退链。
-  /// 同步服务端能力；应用关闭后的响应不能替换当前快照。
+  /// 读取本地包能力；应用关闭后的结果不能替换当前快照。
   Future<PlaybackSourceCatalog> loadPlaybackSources() async {
     _ensureOpen();
-    final catalog = await _playbackResolver.loadSources();
+    final PlaybackSourceCatalog catalog;
+    try {
+      catalog = _useLocalScript
+          ? await _playbackResolver.loadSources()
+          : _compiledPlaybackCatalog();
+    } catch (error) {
+      _ensureOpen();
+      debugPrint('本地解析包能力不可用，使用预置音源: ${error.runtimeType}');
+      _playbackSourceCatalog = _compiledPlaybackCatalog();
+      return _playbackSourceCatalog!;
+    }
     _ensureOpen();
     _playbackSourceCatalog = catalog;
     return catalog;
   }
 
-  /// 三平台统一解析入口，生产客户端仅消费服务器结果。
+  /// 背景检查解析包；完成前继续本地解析，更新失败不发布播放错误。
+  Future<void> checkPlaybackPackageUpdate() {
+    if (_closed || !_useLocalScript) return Future<void>.value();
+    return _packageUpdate ??= _checkPlaybackPackageUpdate();
+  }
+
+  Future<void> _checkPlaybackPackageUpdate() async {
+    try {
+      final updated = await _playbackResolver.checkUpdate();
+      if (_closed || !updated) return;
+      final catalog = await _playbackResolver.loadSources();
+      if (_closed) return;
+      _playbackSourceCatalog = catalog;
+      onPlaybackPackageChanged?.call(catalog);
+    } catch (error) {
+      if (!_closed) debugPrint('解析包检查失败，继续本地使用: ${error.runtimeType}');
+    } finally {
+      _packageUpdate = null;
+    }
+  }
+
+  PlaybackSourceCatalog _compiledPlaybackCatalog() =>
+      const PlaybackSourceCatalog(
+        revision: 'built-in-fallback',
+        sources: const [
+          RemotePlaybackSource(
+            source: PlaybackSource.qingMusic,
+            description: '预置本地解析',
+            platforms: ['qq', '163', 'kugou'],
+          ),
+          RemotePlaybackSource(
+            source: PlaybackSource.xinghai,
+            description: '预置本地解析，QQ需要授权',
+            platforms: ['qq', '163', 'kugou'],
+            credentials: [
+              PlaybackCredentialField(
+                key: 'xinghaiLicenseKey',
+                label: '授权卡密',
+                requiredPlatforms: ['qq'],
+              ),
+            ],
+          ),
+          RemotePlaybackSource(
+            source: PlaybackSource.hyw,
+            description: '预置本地解析',
+            platforms: ['163', 'qq'],
+            experimentalPlatforms: ['qq'],
+            credentials: [
+              PlaybackCredentialField(
+                key: 'hywCardKey',
+                label: 'Card Key',
+                requiredPlatforms: [],
+              ),
+            ],
+          ),
+          RemotePlaybackSource(
+            source: PlaybackSource.gdStudio,
+            description: '预置同曲匹配',
+            platforms: ['qq', '163', 'kugou'],
+          ),
+          RemotePlaybackSource(
+            source: PlaybackSource.chksz,
+            description: '使用个人API Key',
+            platforms: ['qq', '163', 'kugou'],
+            credentials: [
+              PlaybackCredentialField(
+                key: 'apiKey',
+                label: 'API Key',
+                requiredPlatforms: ['qq', '163', 'kugou'],
+              ),
+            ],
+          ),
+        ],
+      );
+
+  /// 三平台本地解析入口，包更新检查不参与这次播放请求。
   Future<SongDetail> resolvePlayback({
     required PlaybackSource source,
     required MusicPlatform platform,
@@ -493,8 +583,8 @@ class ApiService {
     bool Function()? isCancelled,
     Set<PlaybackSource> excludedSources = const {},
   }) async {
-    // 旧协议实现仅保留用于定向协议回归，不参与线上失败兜底。
-    if (!_useRemotePlayback) {
+    // 预置本地协议用于测试及原生引擎不可用时的有界兜底。
+    if (!_useLocalScript) {
       return _resolveLegacyPlayback(
         source: source,
         platform: platform,
@@ -523,6 +613,7 @@ class ApiService {
         if (_isExternalPlaybackCancellation(isCancelled)) cancellation.cancel();
       });
     }
+    final versionBeforeResolution = _playbackResolver.packageVersion;
     try {
       final credentials = _playbackSourceConfig.credentialsForServer(
         apiKey: apiKey,
@@ -575,14 +666,111 @@ class ApiService {
       return result;
     } on HttpRequestCancelledException {
       throw const ApiException('RESOLVE_CANCELLED', '播放请求已取消');
-    } on PlaybackServerException catch (error) {
+    } on PlaybackResolutionException catch (error) {
+      if ((error.code.startsWith('ENGINE_') ||
+              error.code.startsWith('PACKAGE_')) &&
+          !_closed &&
+          !cancellation.isCancelled &&
+          generation == _playbackGeneration) {
+        return await _resolveWithCompiledSources(
+          source: source,
+          platform: platform,
+          id: id,
+          quality: quality,
+          name: name,
+          artist: artist,
+          album: album,
+          albumId: albumId,
+          duration: duration,
+          isCancelled: () =>
+              cancellation.isCancelled ||
+              generation != _playbackGeneration ||
+              _isExternalPlaybackCancellation(isCancelled),
+          excludedSources: excludedSources,
+        );
+      }
       throw ApiException(error.code, error.message);
     } finally {
+      // 运行故障回滚可能切换包，选择列表也要跟随恢复后的本地能力。
+      if (!_closed &&
+          !cancellation.isCancelled &&
+          generation == _playbackGeneration &&
+          versionBeforeResolution != _playbackResolver.packageVersion) {
+        await _syncLocalPlaybackCatalog(cancellation, generation);
+      }
       poll?.cancel();
       cancellation.cancel();
       if (identical(_activePlaybackCancellation, cancellation)) {
         _activePlaybackCancellation = null;
       }
+    }
+  }
+
+  Future<void> _syncLocalPlaybackCatalog(
+    _PlaybackCancellation cancellation,
+    int generation,
+  ) async {
+    try {
+      final catalog = await _playbackResolver.loadSources(
+        cancelSignal: cancellation.future,
+      );
+      if (_closed ||
+          cancellation.isCancelled ||
+          generation != _playbackGeneration) {
+        return;
+      }
+      _playbackSourceCatalog = catalog;
+      onPlaybackPackageChanged?.call(catalog);
+    } catch (error) {
+      if (!_closed) debugPrint('本地音源能力同步失败: ${error.runtimeType}');
+    }
+  }
+
+  Future<SongDetail> _resolveWithCompiledSources({
+    required PlaybackSource source,
+    required MusicPlatform platform,
+    required String id,
+    required String quality,
+    required String name,
+    required String artist,
+    required String album,
+    String? albumId,
+    int? duration,
+    bool Function()? isCancelled,
+    Set<PlaybackSource> excludedSources = const {},
+  }) async {
+    // 原生预算不可用时仍能本地使用已有五源；个人凭据与这次设置快照一致。
+    final credentials = _playbackSourceConfig.credentialsForServer(
+      apiKey: apiKey,
+    );
+    final fallback = ApiService(
+      apiKey: credentials['chksz']?['apiKey'] ?? apiKey,
+      useLocalScript: false,
+      playbackSourceConfig: _playbackSourceConfig.copyWith(
+        hywCardKey:
+            credentials['hyw']?['hywCardKey'] ??
+            _playbackSourceConfig.hywCardKey,
+        xinghaiLicenseKey:
+            credentials['xinghai']?['xinghaiLicenseKey'] ??
+            _playbackSourceConfig.xinghaiLicenseKey,
+      ),
+    );
+    try {
+      return await fallback.resolvePlayback(
+        source: source,
+        platform: platform,
+        id: id,
+        quality: quality,
+        name: name,
+        artist: artist,
+        album: album,
+        albumId: albumId,
+        duration: duration,
+        isCancelled: () => _isExternalPlaybackCancellation(isCancelled),
+        excludedSources: excludedSources,
+      );
+    } finally {
+      fallback.close();
     }
   }
 

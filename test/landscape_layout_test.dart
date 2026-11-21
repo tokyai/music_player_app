@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:music_player_app/main.dart' show MainScreen;
 import 'package:music_player_app/models/playback_source_config.dart';
+import 'package:music_player_app/models/remote_playback.dart';
 import 'package:music_player_app/models/song.dart';
 import 'package:music_player_app/providers/player_provider.dart';
 import 'package:music_player_app/providers/search_session.dart';
@@ -25,6 +26,7 @@ import 'package:music_player_app/screens/search_screen.dart';
 import 'package:music_player_app/screens/settings_screen.dart';
 import 'package:music_player_app/screens/video_player_screen.dart';
 import 'package:music_player_app/services/audio_cache_service.dart';
+import 'package:music_player_app/services/api_service.dart';
 import 'package:music_player_app/services/favorite_service.dart';
 import 'package:music_player_app/services/playback_state_service.dart';
 import 'package:music_player_app/services/user_data_scope.dart';
@@ -50,7 +52,7 @@ void main() {
     tester,
   ) async {
     await http.runWithClient(() async {
-      final player = PlayerProvider();
+      final player = PlayerProvider(apiService: _layoutApi());
       final theme = ThemeController();
       addTearDown(() async {
         await tester.pumpWidget(const SizedBox.shrink());
@@ -181,7 +183,7 @@ void main() {
     tester,
   ) async {
     await http.runWithClient(() async {
-      final player = PlayerProvider();
+      final player = PlayerProvider(apiService: _layoutApi());
       final theme = ThemeController();
       addTearDown(() async {
         await tester.pumpWidget(const SizedBox.shrink());
@@ -385,7 +387,7 @@ void main() {
   ) async {
     await http.runWithClient(
       () async {
-        final player = PlayerProvider();
+        final player = PlayerProvider(apiService: _layoutApi());
         final theme = ThemeController();
         addTearDown(() async {
           await tester.pumpWidget(const SizedBox.shrink());
@@ -739,7 +741,7 @@ void main() {
     });
 
     await http.runWithClient(() async {
-      final player = PlayerProvider();
+      final player = PlayerProvider(apiService: _layoutApi());
       final theme = ThemeController();
       addTearDown(() async {
         await tester.pumpWidget(const SizedBox.shrink());
@@ -813,7 +815,7 @@ void main() {
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({});
-    final player = PlayerProvider();
+    final player = PlayerProvider(apiService: _layoutApi());
     final theme = ThemeController();
     final favorites = FavoriteService();
     final playlist = PlaylistInfo(
@@ -2225,7 +2227,7 @@ void main() {
     final requestedUrls = <Uri>[];
     await http.runWithClient(
       () async {
-        final player = PlayerProvider();
+        final player = PlayerProvider(apiService: _layoutApi());
         final theme = ThemeController();
         addTearDown(() async {
           await tester.pumpWidget(const SizedBox.shrink());
@@ -2293,7 +2295,7 @@ void main() {
     tester,
   ) async {
     await http.runWithClient(() async {
-      final player = PlayerProvider();
+      final player = PlayerProvider(apiService: _layoutApi());
       final theme = ThemeController();
       addTearDown(() async {
         await tester.pumpWidget(const SizedBox.shrink());
@@ -2330,7 +2332,9 @@ void main() {
         'playback_source_qq': PlaybackSource.qingMusic.value,
         'video_player_mode': 'system',
       });
-      final player = PlayerProvider();
+      final player = PlayerProvider(
+        apiService: ApiService(apiKey: '', useLocalScript: false),
+      );
       final theme = ThemeController();
       await player.settingsReady;
       await player.playbackSourcesReady;
@@ -2430,7 +2434,7 @@ void main() {
         SharedPreferences.setMockInitialValues({
           'api_key': 'existing-chksz-key',
         });
-        final player = PlayerProvider();
+        final player = PlayerProvider(apiService: _layoutApi());
         final theme = ThemeController();
         await player.settingsReady;
 
@@ -2473,8 +2477,14 @@ void main() {
         expect(player.apiKey, 'updated-chksz-key');
         expect(find.byType(PlaybackSourceConfigScreen), findsOneWidget);
 
+        // 等保存反馈退出，避免底部 Snackbar 遮住最后一张音源卡的帮助按钮。
+        await tester.pump(const Duration(seconds: 4));
+        await tester.pumpAndSettle();
+
         final help = find.text('如何获取？');
-        await tester.ensureVisible(help);
+        await Scrollable.ensureVisible(tester.element(help), alignment: 0.5);
+        await tester.pumpAndSettle();
+        expect(help.hitTestable(), findsOneWidget);
         await tester.tap(help);
         await tester.pumpAndSettle();
         expect(find.text('获取 API Key'), findsOneWidget);
@@ -2526,7 +2536,7 @@ void main() {
     tester,
   ) async {
     await http.runWithClient(() async {
-      final player = PlayerProvider();
+      final player = PlayerProvider(apiService: _layoutApi());
       final theme = ThemeController();
       await player.settingsReady;
       addTearDown(() async {
@@ -2586,23 +2596,9 @@ void main() {
   testWidgets('leaving a pending source refresh ignores its late response', (
     tester,
   ) async {
-    final started = Completer<void>();
-    final reply = Completer<http.Response>();
-    var delayRefresh = false;
-    Future<http.Response> respond(http.Request request) async {
-      if (request.url.path.endsWith('/api/sources')) {
-        if (delayRefresh) {
-          if (!started.isCompleted) started.complete();
-          return reply.future;
-        }
-        return _playbackCatalogResponse();
-      }
-      return http.Response('{}', 200);
-    }
-
-    http.Client createClient() => MockClient(respond);
+    final api = _DelayedLocalCatalogApi();
     Future<void> scenario() async {
-      final player = PlayerProvider();
+      final player = PlayerProvider(apiService: api);
       final theme = ThemeController();
       try {
         await player.settingsReady;
@@ -2618,18 +2614,20 @@ void main() {
         await tester.ensureVisible(entry);
         await tester.tap(entry);
         await tester.pumpAndSettle();
-        delayRefresh = true;
+        api.pending = Completer<PlaybackSourceCatalog>();
         await tester.tap(find.byTooltip('刷新音源列表'));
         await tester.pump();
-        await started.future;
+        expect(api.started.isCompleted, isTrue);
         await tester.pageBack();
         await tester.pumpAndSettle();
-        reply.complete(_playbackCatalogResponse());
+        api.pending!.complete(api.initialCatalog!);
         await tester.pumpAndSettle();
         expect(find.byType(PlaybackSourceConfigScreen), findsNothing);
         _expectNoException(tester);
       } finally {
-        if (!reply.isCompleted) reply.complete(_playbackCatalogResponse());
+        if (api.pending != null && !api.pending!.isCompleted) {
+          api.pending!.complete(api.initialCatalog!);
+        }
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
         await tester.runAsync(player.disposeResources);
@@ -2639,7 +2637,7 @@ void main() {
 
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    await http.runWithClient(scenario, createClient);
+    await http.runWithClient(scenario, _mockClient);
   });
 
   testWidgets('leaving source configuration does not restore API key focus', (
@@ -2648,7 +2646,7 @@ void main() {
     await http.runWithClient(() async {
       for (final size in const [Size(640, 360), Size(1280, 800)]) {
         SharedPreferences.setMockInitialValues({});
-        final player = PlayerProvider();
+        final player = PlayerProvider(apiService: _layoutApi());
         final theme = ThemeController();
         await player.settingsReady;
 
@@ -2697,7 +2695,7 @@ void main() {
       await http.runWithClient(() async {
         for (final size in const [Size(640, 360), Size(1280, 800)]) {
           SharedPreferences.setMockInitialValues({});
-          final player = PlayerProvider();
+          final player = PlayerProvider(apiService: _layoutApi());
           final theme = ThemeController();
           await player.settingsReady;
           try {
@@ -2744,7 +2742,7 @@ void main() {
   testWidgets('API key QR input is usable in both landscapes', (tester) async {
     for (final size in const [Size(640, 360), Size(1280, 800)]) {
       SharedPreferences.setMockInitialValues({});
-      final player = PlayerProvider();
+      final player = PlayerProvider(apiService: _layoutApi());
       final theme = ThemeController();
       await player.settingsReady;
 
@@ -2808,7 +2806,7 @@ void main() {
   ) async {
     for (final size in const [Size(640, 360), Size(1280, 800)]) {
       SharedPreferences.setMockInitialValues({});
-      final player = PlayerProvider();
+      final player = PlayerProvider(apiService: _layoutApi());
       final theme = ThemeController();
       await player.settingsReady;
 
@@ -3006,7 +3004,7 @@ void main() {
           LyricStylePreferences.wordHighlightKey: true,
         });
         var mediaNetworkRequests = 0;
-        var sourceRefreshRequests = 0;
+        var packageUpdateRequests = 0;
         await http.runWithClient(
           () async {
             final player = PlayerProvider(
@@ -3105,15 +3103,15 @@ void main() {
                 findsOneWidget,
               );
               expect(mediaNetworkRequests, 0);
-              expect(sourceRefreshRequests, 1);
+              expect(packageUpdateRequests, lessThanOrEqualTo(1));
               _expectNoException(tester);
             } finally {
               await cleanup();
             }
           },
           () => MockClient((request) async {
-            if (request.url.path.endsWith('/api/sources')) {
-              sourceRefreshRequests++;
+            if (request.url.path.endsWith('/updates/manifest.json')) {
+              packageUpdateRequests++;
             } else {
               mediaNetworkRequests++;
             }
@@ -3149,6 +3147,7 @@ void main() {
       await http.runWithClient(() async {
         final player = (await tester.runAsync(() async {
           final player = PlayerProvider(
+            apiService: _layoutApi(),
             dataScope: scope,
             activateRestoredSession: false,
           );
@@ -3351,7 +3350,7 @@ void main() {
     'global font scale is live, persistent, and usable in landscape',
     (tester) async {
       await http.runWithClient(() async {
-        final player = PlayerProvider();
+        final player = PlayerProvider(apiService: _layoutApi());
         final theme = ThemeController();
         addTearDown(() async {
           await tester.pumpWidget(const SizedBox.shrink());
@@ -3819,7 +3818,7 @@ void main() {
     final offsets = <int>[];
     await http.runWithClient(
       () async {
-        final player = PlayerProvider();
+        final player = PlayerProvider(apiService: _layoutApi());
         final theme = ThemeController();
         addTearDown(() async {
           await tester.pumpWidget(const SizedBox.shrink());
@@ -4169,21 +4168,6 @@ void _mockShuffleAudioPlayer(String cacheRoot) {
 
 http.Client _mockShuffleClient() {
   return MockClient((request) async {
-    if (request.url.path.endsWith('/api/sources')) return _playbackCatalogResponse();
-    if (request.url.path.endsWith('/api/resolve')) {
-      return http.Response(
-        jsonEncode({
-          'protocolVersion': 1,
-          'url': 'https://audio.test/shuffle.mp3',
-          'providerId': 'qing_music',
-          'providerName': 'QingMusic',
-          'quality': 'flac',
-          'format': 'mp3',
-          'playbackHeaders': <String, String>{},
-        }),
-        200,
-      );
-    }
     debugPrint('shuffle request ${request.method} ${request.url}');
     final body = request.url.host == 'qing.test'
         ? {
@@ -4199,67 +4183,8 @@ http.Client _mockShuffleClient() {
   });
 }
 
-http.Response _playbackCatalogResponse() => http.Response(
-  jsonEncode({
-    'protocolVersion': 1,
-    'revision': 'landscape-test',
-    'sources': [
-      {
-        'id': 'chksz',
-        'name': 'ChKSz',
-        'description': '需要个人 API Key',
-        'platforms': ['qq', '163', 'kugou'],
-        'credentials': [
-          {
-            'key': 'apiKey',
-            'label': 'API Key',
-            'requiredPlatforms': ['qq', '163', 'kugou'],
-          },
-        ],
-      },
-      {
-        'id': 'qing_music',
-        'name': 'QingMusic',
-        'description': '自动认证音源',
-        'platforms': ['qq', '163', 'kugou'],
-      },
-      {
-        'id': 'hyw',
-        'name': 'HYWmusic',
-        'description': '公益版支持网易云和 QQ',
-        'platforms': ['qq', '163'],
-        'credentials': [
-          {'key': 'hywCardKey', 'label': 'Card Key', 'requiredPlatforms': []},
-        ],
-      },
-      {
-        'id': 'xinghai',
-        'name': '星海',
-        'description': 'QQ 线路需要授权',
-        'platforms': ['qq', '163', 'kugou'],
-        'credentials': [
-          {
-            'key': 'xinghaiLicenseKey',
-            'label': '授权卡密（QQ 线路必填）',
-            'requiredPlatforms': ['qq'],
-          },
-        ],
-      },
-      {
-        'id': 'gd_studio',
-        'name': 'GDStudio',
-        'description': '原唱同曲匹配',
-        'platforms': ['qq', '163', 'kugou'],
-      },
-    ],
-  }),
-  200,
-  headers: const {'content-type': 'application/json; charset=utf-8'},
-);
-
 http.Client _mockClient() {
   return MockClient((request) async {
-    if (request.url.path.endsWith('/api/sources')) return _playbackCatalogResponse();
     return http.Response(
       '{}',
       200,
@@ -4272,7 +4197,28 @@ void _expectNoException(WidgetTester tester) {
   expect(tester.takeException(), isNull);
 }
 
+// 布局测试使用编译的本地五源，解析包更新与关闭另有真实 Store 用例验证。
+ApiService _layoutApi() => ApiService(apiKey: '', useLocalScript: false);
+
+class _DelayedLocalCatalogApi extends ApiService {
+  Completer<PlaybackSourceCatalog>? pending;
+  final started = Completer<void>();
+  PlaybackSourceCatalog? initialCatalog;
+
+  _DelayedLocalCatalogApi() : super(apiKey: '', useLocalScript: false);
+
+  @override
+  Future<PlaybackSourceCatalog> loadPlaybackSources() async {
+    if (pending != null) {
+      if (!started.isCompleted) started.complete();
+      return pending!.future;
+    }
+    return initialCatalog ??= await super.loadPlaybackSources();
+  }
+}
+
 class _PlayerWithLyrics extends PlayerProvider {
+  _PlayerWithLyrics() : super(apiService: _layoutApi());
   String? lastLyricQuery;
   String? appliedLyricId;
   PlaybackSource? switchedPlaybackSource;
@@ -4286,8 +4232,8 @@ class _PlayerWithLyrics extends PlayerProvider {
   );
 
   late final List<LyricLine> _testLyrics = [
-    LyricLine(Duration.zero, '第一句歌词'),
-    LyricLine(const Duration(seconds: 10), '第二句歌词'),
+    const LyricLine(Duration.zero, '第一句歌词'),
+    const LyricLine(Duration(seconds: 10), '第二句歌词'),
   ];
 
   @override
@@ -4414,6 +4360,7 @@ class _CenteredLyricsPlayer extends _PlayerWithLyrics {
 }
 
 class _ControllablePlayer extends PlayerProvider {
+  _ControllablePlayer() : super(apiService: _layoutApi());
   PlayQueueItem? _currentSong;
 
   @override

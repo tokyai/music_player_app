@@ -13,7 +13,7 @@ import '../theme/app_layout.dart';
 import '../theme/app_theme.dart';
 import '../widgets/remote_focusable.dart';
 
-/// 管理服务器提供的音源及当前用户凭据，SHIXIAOYANG，2026/11/20。
+/// 管理本地解析包提供的音源及个人凭据，SHIXIAOYANG，2026/11/21。
 class PlaybackSourceConfigScreen extends StatefulWidget {
   const PlaybackSourceConfigScreen({super.key});
 
@@ -265,7 +265,15 @@ class _PlaybackSourceConfigScreenState
         children: [
           Text('可用音源', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 6),
-          const Text('音源列表自动更新。可选择参与自动播放的音源，并填写个人授权凭据。'),
+          const Text('使用本地解析包。后台更新不可用时继续使用当前版本，不影响播放。'),
+          if (player.playbackPackageVersion != null) ...[
+            const SizedBox(height: 6),
+            Text('当前解析包：${player.playbackPackageVersion}'),
+          ],
+          if (player.playbackPackageUpdateError != null) ...[
+            const SizedBox(height: 6),
+            Text(player.playbackPackageUpdateError!),
+          ],
           if (_refreshing || player.playbackSourcesLoading) ...[
             const SizedBox(height: 12),
             const LinearProgressIndicator(),
@@ -372,7 +380,7 @@ class _PlaybackSourceConfigScreenState
     RemotePlaybackSource descriptor,
     PlaybackCredentialField field,
   ) {
-    // 字段来自服务端定义，所有个人凭据默认隐藏并限制输入长度。
+    // 字段来自当前解析包，所有个人凭据默认隐藏并限制输入长度。
     final controller =
         _credentialControllers['${descriptor.source.value}/${field.key}']!;
     return RemoteTextFieldTraversal(

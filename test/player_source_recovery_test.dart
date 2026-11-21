@@ -107,7 +107,7 @@ void main() {
       await player.disposeResources();
       final loadsBefore = fixture.loaded.length;
       final restarted = PlayerProvider(
-        apiService: ApiService(apiKey: '', useRemotePlayback: false),
+        apiService: ApiService(apiKey: '', useLocalScript: false),
         dataScope: fixture.scope,
         activateRestoredSession: false,
       );
@@ -181,7 +181,7 @@ void main() {
         );
 
         final restored = PlayerProvider(
-          apiService: ApiService(apiKey: '', useRemotePlayback: false),
+          apiService: ApiService(apiKey: '', useLocalScript: false),
           dataScope: fixture.scope,
           activateRestoredSession: false,
         );
@@ -703,7 +703,7 @@ void main() {
                 throw const SocketException('offline');
             final requestsBeforeRestart = fixture.requestCount;
             final restarted = PlayerProvider(
-              apiService: ApiService(apiKey: '', useRemotePlayback: false),
+              apiService: ApiService(apiKey: '', useLocalScript: false),
               dataScope: fixture.scope,
               activateRestoredSession: false,
             );
@@ -1277,7 +1277,7 @@ void main() {
       expect(fixture.requestedQualities.last, 'standard');
       expect(player.currentSong!.id, 'next');
       final restored = PlayerProvider(
-        apiService: ApiService(apiKey: '', useRemotePlayback: false),
+        apiService: ApiService(apiKey: '', useLocalScript: false),
         activateRestoredSession: false,
       );
       try {
@@ -1420,7 +1420,7 @@ Future<void> _scenario(
   try {
     await http.runWithClient(() async {
       final player = PlayerProvider(
-        apiService: ApiService(apiKey: '', useRemotePlayback: false),
+        apiService: ApiService(apiKey: '', useLocalScript: false),
         dataScope: fixture.scope,
         activateRestoredSession: false,
       );

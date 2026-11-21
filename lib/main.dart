@@ -214,6 +214,7 @@ class _MusicPlayerAppState extends State<MusicPlayerApp>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(_syncFloatingCapsuleOnResume());
+      unawaited(_session.player.refreshPlaybackSources());
     }
   }
 

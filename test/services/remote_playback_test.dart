@@ -1,441 +1,299 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:crypto/crypto.dart';
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:music_player_app/models/remote_playback.dart';
-import 'package:music_player_app/models/playback_source_config.dart';
+import 'package:music_player_app/models/playback_package.dart';
 import 'package:music_player_app/models/song.dart';
-import 'package:music_player_app/services/api_service.dart';
 import 'package:music_player_app/services/bounded_http_response.dart';
+import 'package:music_player_app/services/playback_package_store.dart';
 import 'package:music_player_app/services/playback_resolver_service.dart';
+import 'package:music_player_app/services/playback_script_runtime.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  setUp(() => SharedPreferences.setMockInitialValues({}));
-
-  testWidgets('capability HTTP response completes in a widget lifecycle', (
-    tester,
-  ) async {
-    var completed = false;
-    Object? failure;
-    late ApiService api;
-    http.runWithClient(() {
-      api = ApiService(apiKey: '');
-      unawaited(
-        api
-            .loadPlaybackSources()
-            .then((_) {
-              completed = true;
-            })
-            .catchError((Object error) {
-              failure = error;
-            }),
-      );
-    }, () => MockClient((_) async => _json(_catalog())));
-    try {
-      for (var index = 0; index < 5 && !completed; index++) {
-        await tester.pump(const Duration(milliseconds: 10));
-      }
-      expect(failure, isNull);
-      expect(completed, isTrue);
-    } finally {
-      api.close();
-      await tester.pump();
-    }
+  late _Fixture fixture;
+  setUp(() async {
+    fixture = await _Fixture.create();
   });
-  test(
-    'new server source is discovered and consumed without a local handler',
-    () async {
-      final sent = <Map<String, dynamic>>[];
-      final api = ApiService(
-        apiKey: 'personal-key',
-        playbackSourceConfig: PlaybackSourceConfig.defaults().copyWith(
-          remoteCredentials: {
-            'new_source': {'accessKey': 'new-source-key'},
-          },
-        ),
-        playbackResolver: PlaybackResolverService(
-          client: MockClient((request) async {
-            expect(request.url.host, '137.175.62.3');
-            if (request.url.path.endsWith('/api/sources')) {
-              return _json(_catalog());
-            }
-            expect(request.url.path, '/music-player-api/api/resolve');
-            sent.add(jsonDecode(request.body) as Map<String, dynamic>);
-            return _json(_result());
-          }),
-        ),
-      );
-      try {
-        final catalog = await api.loadPlaybackSources();
-        final source = catalog.sources.single.source;
-        expect(source.value, 'new_source');
-        expect(source.label, '新音源');
-        final detail = await api.resolvePlayback(
-          source: source,
-          platform: MusicPlatform.qq,
-          id: 'song-id',
-          quality: 'flac',
-          name: '歌曲',
-          artist: '歌手',
-        );
-        expect(detail.url, 'https://cdn.example.com/song.mp3');
-        expect(detail.playbackSource, source);
-        expect(detail.playbackHeaders, {
-          'Referer': 'https://music.example.com/',
-        });
-        expect(sent.single['source'], 'new_source');
-        expect(sent.single['platform'], 'qq');
-        expect(sent.single['name'], '歌曲');
-        expect(sent.single['credentials'], {
-          'new_source': {'accessKey': 'new-source-key'},
-        });
-      } finally {
-        api.close();
-      }
-    },
-  );
-
-  test(
-    'old disabled IDs and credentials do not exceed active server capability bounds',
-    () async {
-      final config = PlaybackSourceConfig.defaults().copyWith(
-        chkszEnabled: false,
-        qingMusicEnabled: false,
-        hywEnabled: false,
-        xinghaiEnabled: false,
-        gdStudioEnabled: false,
-        disabledRemoteSources: List.generate(32, (index) => 'removed_$index'),
-        remoteCredentials: {
-          for (var index = 0; index < 32; index++)
-            'removed_$index': {'key': 'value'},
-        },
-      );
-      Map<String, dynamic>? sent;
-      final api = ApiService(
-        apiKey: 'personal-key',
-        playbackSourceConfig: config,
-        playbackResolver: PlaybackResolverService(
-          client: MockClient((request) async {
-            if (request.url.path.endsWith('/api/sources')) {
-              return _json(_catalog());
-            }
-            sent = jsonDecode(request.body) as Map<String, dynamic>;
-            return _json(_result());
-          }),
-        ),
-      );
-      try {
-        await _resolve(api);
-        expect(sent!['disabledSources'], isEmpty);
-        expect(sent!['credentials'], isEmpty);
-      } finally {
-        api.close();
-      }
-    },
-  );
-
-  test('bundled public card key never overrides future server defaults', () {
-    final defaults = PlaybackSourceConfig.defaults();
-    expect(defaults.credentialsForServer(apiKey: ''), isNot(contains('hyw')));
-    final personal = defaults.copyWith(hywCardKey: 'my-personal-key');
-    expect(personal.credentialsForServer(apiKey: '')['hyw'], {
-      'hywCardKey': 'my-personal-key',
-    });
-    final explicit = defaults.copyWith(
-      remoteCredentials: {
-        'hyw': {'hywCardKey': 'explicit-key'},
-      },
-    );
-    expect(explicit.credentialsForServer(apiKey: '')['hyw'], {
-      'hywCardKey': 'explicit-key',
-    });
+  tearDown(() async {
+    await fixture.close();
   });
 
   test(
-    'cancelling resolution also cancels its capability request without publishing it',
+    'new source is read and resolved entirely from the local package',
     () async {
-      final gate = Completer<http.Response>();
-      final entered = Completer<void>();
-      final api = ApiService(
-        apiKey: '',
-        playbackSourceConfig: PlaybackSourceConfig.defaults().copyWith(
-          disabledRemoteSources: List.generate(32, (index) => 'removed_$index'),
-          chkszEnabled: false,
-        ),
-        playbackResolver: PlaybackResolverService(
-          client: MockClient((_) async {
-            entered.complete();
-            return gate.future;
-          }),
-        ),
-      );
-      try {
-        final resolving = _resolve(api);
-        final assertion = expectLater(
-          resolving,
-          throwsA(
-            isA<ApiException>().having(
-              (error) => error.code,
-              'code',
-              'RESOLVE_CANCELLED',
-            ),
-          ),
-        );
-        await entered.future;
-        api.setApiKey('changed-key');
-        await assertion;
-        gate.complete(_json(_catalog()));
-        await Future<void>.delayed(Duration.zero);
-        expect(api.playbackSourceCatalog, isNull);
-      } finally {
-        api.close();
-      }
+      final catalog = await fixture.service.loadSources();
+      final detail = await fixture.resolve();
+      expect(catalog.sources.single.source.value, 'new_source');
+      expect(detail.playbackSource, PlaybackSource.fromId('new_source'));
+      expect(detail.url, 'https://audio.test/song.mp3');
+      expect(fixture.requests, isEmpty);
+      expect(fixture.service.activeRequestCount, 0);
     },
   );
 
   test(
-    'server failure is returned without requesting a local upstream',
+    'unreachable updater does not stop subsequent local resolution',
     () async {
-      var requests = 0;
-      final api = ApiService(
-        apiKey: '',
-        playbackResolver: PlaybackResolverService(
-          client: MockClient((request) async {
-            requests++;
-            return _json({
-              'code': 'SERVER_BUSY',
-              'message': '解析服务繁忙',
-            }, status: 503);
-          }),
-        ),
-      );
-      try {
-        await expectLater(
-          _resolve(api),
-          throwsA(
-            isA<ApiException>().having(
-              (error) => error.code,
-              'code',
-              'SERVER_BUSY',
-            ),
-          ),
-        );
-        expect(requests, 1);
-      } finally {
-        api.close();
-      }
+      fixture.offline = true;
+      expect(await fixture.service.checkUpdate(), isFalse);
+      final detail = await fixture.resolve();
+      expect(detail.url, 'https://audio.test/song.mp3');
+      expect(fixture.requests, ['/updates/manifest.json']);
+      expect(fixture.service.updateError, isNotNull);
     },
   );
 
-  for (final invalid in <Map<String, dynamic>>[
+  test(
+    'a hanging update request never queues local package lookup or playback',
+    () async {
+      fixture.manifestGate = Completer<http.Response>();
+      final updating = fixture.service.checkUpdate();
+      await fixture.opened.future;
+      final catalog = await fixture.service.loadSources().timeout(
+        const Duration(seconds: 1),
+      );
+      final detail = await fixture.resolve().timeout(
+        const Duration(seconds: 1),
+      );
+      expect(catalog.sources, hasLength(1));
+      expect(detail.url, 'https://audio.test/song.mp3');
+      fixture.service.close();
+      fixture.manifestGate!.complete(http.Response('{}', 503));
+      expect(await updating, isFalse);
+    },
+  );
+
+  final invalid = <Map<String, dynamic>>[
     {'url': 'file:///private/song.mp3'},
-    {'url': 'https://user:password@cdn.example.com/song.mp3'},
-    {'providerId': '../new_source'},
+    {'url': 'https://user:password@audio.test/song.mp3'},
+    {'providerId': '../source'},
+    {'providerName': 'name\r\n'},
     {'format': 'cenc'},
     {'expiresAt': 1},
     {
-      'playbackHeaders': {'X-Test': 'value\r\nInjected: true'},
-    },
-    {
       'playbackHeaders': {'Host': 'localhost'},
     },
-  ]) {
-    test('rejects invalid playback result ${invalid.keys.single}', () async {
-      final service = PlaybackResolverService(
-        client: MockClient((_) async => _json({..._result(), ...invalid})),
-      );
-      try {
+    {
+      'playbackHeaders': {'X-Test': 'value\r\nInjected: true'},
+    },
+  ];
+  for (var index = 0; index < invalid.length; index++) {
+    test(
+      'invalid local result $index cannot enter the native player',
+      () async {
+        fixture.runtime.response = <String, dynamic>{
+          ..._result(),
+          ...invalid[index],
+        };
         await expectLater(
-          service.resolve({'name': '', 'artist': '', 'album': ''}),
-          throwsA(isA<PlaybackServerException>()),
+          fixture.resolve(),
+          throwsA(isA<PlaybackResolutionException>()),
         );
-      } finally {
-        service.close();
-      }
-    });
+        expect(fixture.service.activeRequestCount, 0);
+      },
+    );
   }
 
-  test('closing resolver cancels a response and does not publish it', () async {
-    final entered = Completer<void>();
-    final reply = Completer<http.Response>();
-    final service = PlaybackResolverService(
-      client: MockClient((_) async {
-        entered.complete();
-        return reply.future;
-      }),
-    );
-    final resolving = service.resolve({'name': '', 'artist': '', 'album': ''});
-    final assertion = expectLater(
-      resolving,
-      throwsA(isA<HttpRequestCancelledException>()),
-    );
-    await entered.future;
-    service.close();
-    reply.complete(_json(_result()));
-    await assertion;
-    expect(service.activeRequestCount, 0);
-  });
+  test(
+    'closing local resolver cancels pending work and discards a late reply',
+    () async {
+      fixture.runtime.gate = Completer<Map<String, dynamic>>();
+      final resolving = fixture.resolve();
+      final assertion = expectLater(
+        resolving,
+        throwsA(isA<HttpRequestCancelledException>()),
+      );
+      await fixture.runtime.entered.future;
+      fixture.service.close();
+      fixture.runtime.gate!.complete(_result());
+      await assertion;
+      expect(fixture.service.activeRequestCount, 0);
+    },
+  );
 
-  test('completed requests leave no retained cancellation records', () async {
-    final service = PlaybackResolverService(
-      client: MockClient((_) async => _json(_catalog())),
-    );
-    try {
-      for (var index = 0; index < 200; index++) {
-        await service.loadSources();
-        expect(service.activeRequestCount, 0);
-      }
-    } finally {
-      service.close();
-    }
-  });
-
-  test('client refuses excess requests without growing a wait queue', () async {
-    final response = Completer<http.Response>();
-    final service = PlaybackResolverService(
-      client: MockClient((_) => response.future),
-    );
-    final requests = <Future<PlaybackSourceCatalog>>[];
+  test('local work is limited without accumulating a wait queue', () async {
+    fixture.runtime.gate = Completer<Map<String, dynamic>>();
+    final tasks = <Future<SongDetail>>[];
     for (var index = 0; index < 4; index++) {
-      requests.add(service.loadSources());
+      tasks.add(fixture.resolve());
     }
     await expectLater(
-      service.loadSources(),
-      throwsA(
-        isA<PlaybackServerException>().having(
-          (error) => error.code,
-          'code',
-          'REQUEST_BUSY',
-        ),
-      ),
+      fixture.resolve(),
+      throwsA(isA<PlaybackResolutionException>()),
     );
-    expect(service.activeRequestCount, 4);
-    response.complete(_json(_catalog()));
-    await Future.wait(requests);
-    expect(service.activeRequestCount, 0);
-    service.close();
-  });
-
-  test('repeated resolution discards the previous response', () async {
-    final entered = Completer<void>();
-    final first = Completer<http.Response>();
-    var calls = 0;
-    final api = ApiService(
-      apiKey: '',
-      playbackResolver: PlaybackResolverService(
-        client: MockClient((_) async {
-          calls++;
-          if (calls == 1) {
-            entered.complete();
-            return first.future;
-          }
-          return _json(_result());
-        }),
-      ),
-    );
-    try {
-      final previous = _resolve(api);
-      final assertion = expectLater(
-        previous,
-        throwsA(
-          isA<ApiException>().having(
-            (error) => error.code,
-            'code',
-            'RESOLVE_CANCELLED',
-          ),
-        ),
-      );
-      await entered.future;
-      final current = await _resolve(api);
-      first.complete(
-        _json({..._result(), 'url': 'https://cdn.example.com/old.mp3'}),
-      );
-      await assertion;
-      expect(current.url, 'https://cdn.example.com/song.mp3');
-    } finally {
-      api.close();
-    }
+    expect(fixture.service.activeRequestCount, 4);
+    fixture.runtime.gate!.complete(_result());
+    await Future.wait(tasks);
+    expect(fixture.service.activeRequestCount, 0);
   });
 
   test(
-    'capabilities reject incompatible versions duplicate IDs and unbounded fields',
-    () {
-      expect(
-        () => PlaybackSourceCatalog.fromJson({
-          ..._catalog(),
-          'protocolVersion': 2,
-        }),
-        throwsFormatException,
+    'owner signal errors cancel local work without an unhandled error',
+    () async {
+      fixture.runtime.gate = Completer<Map<String, dynamic>>();
+      final owner = Completer<void>();
+      final resolving = fixture.resolve(cancelSignal: owner.future);
+      final assertion = expectLater(
+        resolving,
+        throwsA(isA<HttpRequestCancelledException>()),
       );
-      expect(
-        () => PlaybackSourceCatalog.fromJson({
-          ..._catalog(),
-          'sources': [_source(), _source()],
-        }),
-        throwsFormatException,
-      );
-      expect(
-        () => PlaybackSourceCatalog.fromJson({
-          ..._catalog(),
-          'sources': [
-            {
-              ..._source(),
-              'credentials': List.filled(17, {'key': 'key', 'label': '密钥'}),
-            },
-          ],
-        }),
-        throwsFormatException,
-      );
-      final source = PlaybackSource.fromId('new_source', label: '服务端名称');
-      expect(source, PlaybackSource.fromId('new_source'));
-      expect({source, PlaybackSource.fromId('new_source')}.length, 1);
+      await fixture.runtime.entered.future;
+      owner.completeError(StateError('owner disposed'));
+      await assertion;
+      fixture.runtime.gate!.complete(_result());
+      expect(fixture.service.activeRequestCount, 0);
+    },
+  );
+
+  test(
+    'hundreds of local lookups keep no historical cancellation records',
+    () async {
+      for (var index = 0; index < 200; index++) {
+        await fixture.service.loadSources();
+        await fixture.resolve();
+        expect(fixture.service.activeRequestCount, 0);
+      }
+      expect(fixture.requests, isEmpty);
     },
   );
 }
 
-Future<SongDetail> _resolve(ApiService api) => api.resolvePlayback(
-  source: PlaybackSource.automatic,
-  platform: MusicPlatform.qq,
-  id: 'song-id',
-  quality: '320k',
-);
-
-http.Response _json(Map<String, dynamic> value, {int status = 200}) =>
-    http.Response.bytes(
-      utf8.encode(jsonEncode(value)),
-      status,
-      headers: {'content-type': 'application/json; charset=utf-8'},
-    );
-
-Map<String, dynamic> _source() => {
-  'id': 'new_source',
-  'name': '新音源',
-  'description': '新增解析渠道',
-  'platforms': ['qq'],
-  'credentials': [
-    {
-      'key': 'accessKey',
-      'label': '访问密钥',
-      'requiredPlatforms': ['qq'],
-    },
-  ],
-};
-
-Map<String, dynamic> _catalog() => {
-  'protocolVersion': 1,
-  'revision': 'test-1',
-  'sources': [_source()],
-};
-
-Map<String, dynamic> _result() => {
+Map<String, dynamic> _result() => <String, dynamic>{
   'protocolVersion': 1,
   'providerId': 'new_source',
   'providerName': '新音源',
-  'url': 'https://cdn.example.com/song.mp3',
+  'url': 'https://audio.test/song.mp3',
   'format': 'mp3',
-  'playbackHeaders': {'Referer': 'https://music.example.com/'},
+  'playbackHeaders': <String, String>{},
 };
+
+class _Runtime extends PlaybackScriptRuntime {
+  Map<String, dynamic> response = _result();
+  Completer<Map<String, dynamic>>? gate;
+  final entered = Completer<void>();
+  @override
+  Future<void> validate(PlaybackPackage package) async {}
+  @override
+  Future<Map<String, dynamic>> resolve(
+    PlaybackPackage package,
+    Map<String, dynamic> input, {
+    Future<void>? cancelSignal,
+  }) async {
+    if (!entered.isCompleted) entered.complete();
+    if (gate == null) return response;
+    return cancelSignal == null
+        ? await gate!.future
+        : await awaitWithCancellation(gate!.future, cancelSignal);
+  }
+}
+
+class _Fixture {
+  final Directory root;
+  final PlaybackPackage package;
+  final String publicKey;
+  final runtime = _Runtime();
+  final requests = <String>[];
+  final opened = Completer<void>();
+  late final PlaybackResolverService service;
+  bool offline = false;
+  Completer<http.Response>? manifestGate;
+
+  _Fixture(this.root, this.package, this.publicKey) {
+    final store = PlaybackPackageStore(
+      root: root,
+      publicKey: publicKey,
+      bundledLoader: loadBundled,
+      client: MockClient(request),
+      updateServer: Uri.parse('https://update.test/updates/'),
+      validator: runtime.validate,
+    );
+    service = PlaybackResolverService(
+      packageStore: store,
+      scriptRuntime: runtime,
+    );
+  }
+
+  static Future<_Fixture> create() async {
+    final root = await Directory.systemTemp.createTemp('local-parser-facade-');
+    final key = await Ed25519().newKeyPairFromSeed(
+      List<int>.generate(32, (index) => index + 1),
+    );
+    final publicKey = base64Encode((await key.extractPublicKey()).bytes);
+    final bytes = utf8.encode(
+      jsonEncode(<String, dynamic>{
+        'packageFormat': 1,
+        'packageVersion': 1,
+        'minimumBridgeVersion': 1,
+        'allowedOrigins': ['https://source.test'],
+        'script': 'globalThis.localPackage=true;',
+        'capabilities': <String, dynamic>{
+          'protocolVersion': 1,
+          'revision': 'local-1',
+          'sources': [
+            <String, dynamic>{
+              'id': 'new_source',
+              'name': '新音源',
+              'description': '本地测试',
+              'platforms': ['qq'],
+              'credentials': [],
+            },
+          ],
+        },
+      }),
+    );
+    final payload = utf8.encode(
+      jsonEncode(<String, dynamic>{
+        'packageFormat': 1,
+        'packageVersion': 1,
+        'minimumBridgeVersion': 1,
+        'packagePath': 'packages/p000001.json',
+        'sha256': sha256.convert(bytes).toString(),
+        'bytes': bytes.length,
+      }),
+    );
+    final signature = await Ed25519().sign(payload, keyPair: key);
+    final envelope = utf8.encode(
+      jsonEncode(<String, dynamic>{
+        'payloadBase64': base64Encode(payload),
+        'signatureBase64': base64Encode(signature.bytes),
+      }),
+    );
+    final package = await PlaybackPackage.verify(
+      envelope,
+      bytes,
+      publicKey: publicKey,
+    );
+    return _Fixture(root, package, publicKey);
+  }
+
+  Future<PlaybackPackage> loadBundled() async => package;
+  Future<SongDetail> resolve({Future<void>? cancelSignal}) =>
+      service.resolve(<String, dynamic>{
+        'platform': 'qq',
+        'id': 'song',
+        'source': 'new_source',
+        'quality': '320k',
+        'name': '歌曲',
+        'artist': '歌手',
+        'album': '专辑',
+      }, cancelSignal: cancelSignal);
+
+  Future<http.Response> request(http.Request request) async {
+    requests.add(request.url.path);
+    if (!opened.isCompleted) opened.complete();
+    if (offline) throw const SocketException('updater offline');
+    if (manifestGate != null) return manifestGate!.future;
+    return http.Response('{}', 503);
+  }
+
+  Future<void> close() async {
+    service.close();
+    if (await root.exists()) await root.delete(recursive: true);
+  }
+}

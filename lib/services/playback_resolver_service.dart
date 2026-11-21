@@ -1,81 +1,171 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 
 import 'package:http/http.dart' as http;
-import 'package:http/io_client.dart';
 
+import '../models/playback_package.dart';
 import '../models/remote_playback.dart';
 import '../models/song.dart';
 import 'bounded_http_response.dart';
+import 'playback_package_store.dart';
+import 'playback_script_runtime.dart';
 
-/// 统一音源接口的客户端；只传输参数并校验结果，不执行第三方协议。
+/// 本地解析包入口；网络更新不进入播放依赖。SHIXIAOYANG，2026/11/21。
 class PlaybackResolverService {
-  static const baseUrl = 'https://137.175.62.3:8443/music-player-api/';
-  final http.Client _client;
-  final Uri _base;
+  late final PlaybackPackageStore _store;
+  late final PlaybackScriptRuntime _runtime;
   final Set<Completer<void>> _activeRequests = {};
   bool _closed = false;
 
-  /// 当前网络任务数量，用于确认取消和资源释放；不累计历史请求。
-  int get activeRequestCount => _activeRequests.length;
-
-  PlaybackResolverService({http.Client? client, Uri? server})
-    : _client = client ?? _createClient(),
-      _base = server ?? Uri.parse(baseUrl);
-
-  static http.Client _createClient() {
-    final scopedClient = http.Client();
-    if (scopedClient is! IOClient) return scopedClient;
-    scopedClient.close();
-    // 固定HTTPS入口使用公开可信证书，续期不需要重新发布客户端。
-    final client = HttpClient();
-    client.connectionTimeout = const Duration(seconds: 7);
-    client.idleTimeout = const Duration(seconds: 15);
-    client.maxConnectionsPerHost = 4;
-    return IOClient(client);
+  /// 更新客户端与上游请求独立，解析只使用本地已验证包。
+  PlaybackResolverService({
+    PlaybackPackageStore? packageStore,
+    PlaybackScriptRuntime? scriptRuntime,
+    http.Client? updateClient,
+  }) {
+    _runtime = scriptRuntime ?? PlaybackScriptRuntime();
+    _store =
+        packageStore ??
+        PlaybackPackageStore(
+          client: updateClient,
+          validator: _runtime.validate,
+          isPackageFailure: _isPackageFailure,
+        );
   }
 
-  /// 获取当前音源列表和凭据定义；调用失败不替换已验证的本地快照。
+  bool _isPackageFailure(Object error) =>
+      error is FormatException ||
+      (error is PlaybackScriptException && error.code.startsWith('PACKAGE_'));
+
+  int get activeRequestCount => _activeRequests.length;
+  int? get packageVersion => _store.current?.packageVersion;
+  bool get checkingUpdate => _store.checking;
+  String? get updateError => _store.updateError;
+
+  /// 读取本地有效包能力；更新接口挂起时也能完成，不发网络请求。
   Future<PlaybackSourceCatalog> loadSources({
     Future<void>? cancelSignal,
   }) async {
-    final json = await _request(
-      '/api/sources',
-      cancelSignal: cancelSignal,
-      timeout: const Duration(seconds: 8),
-    );
-    return PlaybackSourceCatalog.fromJson(json);
+    _ensureOpen();
+    final package = await _localPackage(cancelSignal);
+    _ensureOpen();
+    return package.capabilities;
   }
 
-  /// 请求服务器解析，返回可交给本地播放器的统一结果。
+  /// 后台检查更新，失败继续使用当前包，不抛给正常播放流程。
+  Future<bool> checkUpdate() async {
+    if (_closed) return false;
+    return _store.checkUpdate();
+  }
+
+  Future<PlaybackPackage> _localPackage(Future<void>? cancelSignal) async {
+    final request = _store.ready;
+    return cancelSignal == null
+        ? await request
+        : await awaitWithCancellation(request, cancelSignal);
+  }
+
+  void _ensureOpen() {
+    if (_closed) throw const HttpRequestCancelledException();
+  }
+
+  /// 捕获包快照解析；更新切换不改变进行中操作的代码和凭据。
   Future<SongDetail> resolve(
     Map<String, dynamic> parameters, {
     Future<void>? cancelSignal,
   }) async {
-    final json = await _request(
-      '/api/resolve',
-      body: parameters,
-      cancelSignal: cancelSignal,
-      timeout: const Duration(seconds: 22),
-    );
-    // 只接受约定的协议和音源身份，拒绝不完整或被替换的解析结果。
+    _ensureOpen();
+    // 不排队累积重复任务，当前操作结束就释放取消记录。
+    if (_activeRequests.length >= 4) {
+      throw const PlaybackResolutionException('REQUEST_BUSY', '音源请求繁忙，请稍后重试');
+    }
+    final cancellation = Completer<void>();
+    _activeRequests.add(cancellation);
+    StreamSubscription<void>? owner;
+    void cancel() {
+      if (!cancellation.isCompleted) cancellation.complete();
+    }
+
+    if (cancelSignal != null) {
+      // 所有者异常退出也按取消处理，不能产生未捕获的异步错误。
+      owner = cancelSignal.asStream().listen(
+        (_) => cancel(),
+        onError: (Object _, StackTrace __) => cancel(),
+      );
+    }
+    try {
+      final package = await _localPackage(cancellation.future);
+      _ensureOpen();
+      var usedPackage = package;
+      Map<String, dynamic> result;
+      try {
+        result = await _runtime.resolve(
+          package,
+          parameters,
+          cancelSignal: cancellation.future,
+        );
+      } on PlaybackScriptException catch (error) {
+        // 代码故障才回退解析包，上游网络/授权错误不能误判为坏版本。
+        if (!error.code.startsWith('PACKAGE_')) rethrow;
+        await _store.rollback(package.packageVersion);
+        final previous = _store.current;
+        if (previous == null ||
+            previous.packageVersion == package.packageVersion) {
+          rethrow;
+        }
+        usedPackage = previous;
+        result = await _runtime.resolve(
+          previous,
+          parameters,
+          cancelSignal: cancellation.future,
+        );
+      }
+      if (_closed || cancellation.isCompleted) {
+        throw const HttpRequestCancelledException();
+      }
+      return _detail(result, parameters, usedPackage);
+    } on HttpRequestCancelledException {
+      rethrow;
+    } on PlaybackScriptException catch (error) {
+      throw PlaybackResolutionException(error.code, error.message);
+    } on FormatException {
+      throw const PlaybackResolutionException('PACKAGE_INVALID', '本地解析包不可用');
+    } finally {
+      _activeRequests.remove(cancellation);
+      cancel();
+      if (owner != null) unawaited(owner.cancel());
+    }
+  }
+
+  /// 校验本地脚本结果后才交给播放器，拒绝过期或不可播放的地址。
+  static SongDetail _detail(
+    Map<String, dynamic> json,
+    Map<String, dynamic> input,
+    PlaybackPackage package,
+  ) {
     if (json['protocolVersion'] != 1) {
-      throw const PlaybackServerException('PROTOCOL_VERSION', '音源服务协议不兼容');
+      throw const PlaybackResolutionException('INVALID_RESULT', '本地解析结果协议无效');
     }
     final url = json['url'];
-    final providerId = json['providerId'];
-    final providerName = json['providerName'];
+    final id = json['providerId'];
+    final name = json['providerName'];
     if (url is! String ||
         url.length > 8192 ||
-        providerId is! String ||
-        !PlaybackSource.isValidId(providerId) ||
-        providerId == 'automatic' ||
-        providerName is! String ||
-        providerName.isEmpty ||
-        providerName.length > 80 ||
-        RegExp(r'[\x00-\x1f\x7f]').hasMatch(providerName)) {
-      throw const PlaybackServerException('INVALID_RESULT', '音源服务返回了无效结果');
+        id is! String ||
+        !PlaybackSource.isValidId(id) ||
+        id == 'automatic' ||
+        name is! String ||
+        name.isEmpty ||
+        name.length > 80 ||
+        RegExp(r'[\x00-\x1f\x7f]').hasMatch(name)) {
+      throw const PlaybackResolutionException('INVALID_RESULT', '本地解析返回了无效结果');
+    }
+    // 正在解析的旧包仍可返回已移除的旧源，校验必须使用本次包快照。
+    final provider = package.capabilities.sourceFor(PlaybackSource.fromId(id));
+    if (provider == null || !provider.platforms.contains(input['platform'])) {
+      throw const PlaybackResolutionException(
+        'INVALID_RESULT',
+        '本地解析返回了未支持的音源',
+      );
     }
     final uri = Uri.tryParse(url);
     if (uri == null ||
@@ -83,127 +173,45 @@ class PlaybackResolverService {
         uri.host.isEmpty ||
         uri.userInfo.isNotEmpty ||
         uri.hasFragment) {
-      throw const PlaybackServerException('INVALID_AUDIO_URL', '音频地址无效');
+      throw const PlaybackResolutionException('INVALID_AUDIO_URL', '音频地址无效');
     }
     final rawFormat = json['format'];
     if (rawFormat != null && rawFormat is! String) {
-      throw const PlaybackServerException('INVALID_FORMAT', '音频格式无效');
+      throw const PlaybackResolutionException('INVALID_FORMAT', '音频格式无效');
     }
-    final format = rawFormat is String ? rawFormat.toLowerCase() : null;
+    final format = (rawFormat as String?)?.toLowerCase();
     if (const ['mgg', 'mflac', 'cenc'].contains(format)) {
-      throw const PlaybackServerException('ENCRYPTED_AUDIO', '音源返回了加密音频');
+      throw const PlaybackResolutionException('ENCRYPTED_AUDIO', '音源返回了加密音频');
     }
     if (format != null && !RegExp(r'^[a-z0-9]{1,12}$').hasMatch(format)) {
-      throw const PlaybackServerException('INVALID_FORMAT', '音频格式无效');
+      throw const PlaybackResolutionException('INVALID_FORMAT', '音频格式无效');
     }
-    final expiresAt = json['expiresAt'];
-    if (expiresAt != null &&
-        (expiresAt is! int ||
-            expiresAt > 8640000000000000 ||
-            expiresAt <= DateTime.now().millisecondsSinceEpoch)) {
-      throw const PlaybackServerException('EXPIRED_URL', '音频地址已过期，请重试');
+    final expiry = json['expiresAt'];
+    if (expiry != null &&
+        (expiry is! int ||
+            expiry > 8640000000000000 ||
+            expiry <= DateTime.now().millisecondsSinceEpoch)) {
+      throw const PlaybackResolutionException('EXPIRED_URL', '音频地址已过期，请重试');
     }
-    // 转成播放器已有模型，必要请求头和有效期一起交给播放/下载流程。
+    // 元数据沿用队列，脚本只提供音频结果，不更新页面或用户设置。
     return SongDetail(
-      name: parameters['name'] as String? ?? '',
-      artist: parameters['artist'] as String? ?? '',
-      album: parameters['album'] as String? ?? '',
+      name: input['name'] as String? ?? '',
+      artist: input['artist'] as String? ?? '',
+      album: input['album'] as String? ?? '',
       url: url,
       format: format,
       playbackHeaders: _headers(json['playbackHeaders']),
-      playbackSource: PlaybackSource.fromId(providerId, label: providerName),
-      playbackExpiresAt: expiresAt is int
-          ? DateTime.fromMillisecondsSinceEpoch(expiresAt)
+      playbackSource: provider.source,
+      playbackExpiresAt: expiry is int
+          ? DateTime.fromMillisecondsSinceEpoch(expiry)
           : null,
     );
-  }
-
-  Future<Map<String, dynamic>> _request(
-    String path, {
-    Map<String, dynamic>? body,
-    Future<void>? cancelSignal,
-    required Duration timeout,
-  }) async {
-    if (_closed) throw const HttpRequestCancelledException();
-    // 请求不排队，避免重复操作产生不断增长的等待任务。
-    if (_activeRequests.length >= 4) {
-      throw const PlaybackServerException('REQUEST_BUSY', '音源请求繁忙，请稍后重试');
-    }
-    final endpoint = _base.resolve(
-      path.startsWith('/') ? path.substring(1) : path,
-    );
-    final request = http.Request(body == null ? 'GET' : 'POST', endpoint);
-    request.followRedirects = false;
-    request.headers['Accept'] = 'application/json';
-    if (body != null) {
-      request.headers['Content-Type'] = 'application/json';
-      request.body = jsonEncode(body);
-      if (utf8.encode(request.body).length > 64 * 1024) {
-        throw const PlaybackServerException('REQUEST_TOO_LARGE', '音源配置超过上限');
-      }
-    }
-    // 只记录进行中请求；完成后移除，不向长期Future累积历史监听回调。
-    final cancellation = Completer<void>();
-    _activeRequests.add(cancellation);
-    final subscriptions = <StreamSubscription<void>>[];
-    void cancel() {
-      if (!cancellation.isCompleted) cancellation.complete();
-    }
-
-    if (cancelSignal != null) {
-      subscriptions.add(cancelSignal.asStream().listen((_) => cancel()));
-    }
-    try {
-      // 发送和接收共用大小、时间、取消上限，断连时释放底层网络流。
-      final response = await sendBoundedHttpRequest(
-        _client,
-        request,
-        maxBytes: path == '/api/sources' ? 512 * 1024 : 128 * 1024,
-        timeout: timeout,
-        totalTimeout: timeout,
-        cancelSignal: cancellation.future,
-      );
-      if (_closed || cancellation.isCompleted) {
-        throw const HttpRequestCancelledException();
-      }
-      final dynamic decoded = jsonDecode(utf8.decode(response.bodyBytes));
-      if (decoded is! Map<String, dynamic>) {
-        throw const PlaybackServerException('INVALID_RESPONSE', '音源服务响应无效');
-      }
-      if (response.statusCode != 200) {
-        final code = decoded['code'];
-        final message = decoded['message'];
-        throw PlaybackServerException(
-          code is String && code.length <= 80 ? code : 'SERVER_UNAVAILABLE',
-          message is String && message.length <= 512 ? message : '音源服务暂时不可用',
-        );
-      }
-      return decoded;
-    } on HttpRequestCancelledException {
-      rethrow;
-    } on PlaybackServerException {
-      rethrow;
-    } on FormatException {
-      throw const PlaybackServerException('INVALID_RESPONSE', '音源服务响应无效');
-    } on Exception {
-      throw const PlaybackServerException(
-        'SERVER_NETWORK',
-        '无法连接音源服务器，请检查网络后重试',
-      );
-    } finally {
-      _activeRequests.remove(cancellation);
-      cancel();
-      for (final subscription in subscriptions) {
-        // 请求结果不等待尚未结束的生命周期信号，取消订阅仍立即启动。
-        unawaited(subscription.cancel());
-      }
-    }
   }
 
   static Map<String, String> _headers(dynamic raw) {
     if (raw == null) return const {};
     if (raw is! Map || raw.length > 16) {
-      throw const PlaybackServerException('INVALID_HEADERS', '音频请求头无效');
+      throw const PlaybackResolutionException('INVALID_HEADERS', '音频请求头无效');
     }
     final result = <String, String>{};
     for (final entry in raw.entries) {
@@ -220,30 +228,30 @@ class PlaybackResolverService {
           value is! String ||
           value.length > 4096 ||
           RegExp(r'[^\x20-\x7e]').hasMatch(value)) {
-        throw const PlaybackServerException('INVALID_HEADERS', '音频请求头无效');
+        throw const PlaybackResolutionException('INVALID_HEADERS', '音频请求头无效');
       }
       result[key] = value;
     }
     return Map.unmodifiable(result);
   }
 
-  /// 取消未完成的请求并释放HTTP连接；关闭后禁止迟到结果发布。
+  /// 关闭解析和更新所有者，取消信号只存在于进行中的操作集合。
   void close() {
     if (_closed) return;
     _closed = true;
-    for (final cancellation in _activeRequests) {
-      if (!cancellation.isCompleted) cancellation.complete();
+    for (final request in _activeRequests) {
+      if (!request.isCompleted) request.complete();
     }
     _activeRequests.clear();
-    _client.close();
+    _runtime.close();
+    _store.close();
   }
 }
 
-class PlaybackServerException implements Exception {
+class PlaybackResolutionException implements Exception {
   final String code;
   final String message;
-  const PlaybackServerException(this.code, this.message);
-
+  const PlaybackResolutionException(this.code, this.message);
   @override
   String toString() => '[$code] $message';
 }

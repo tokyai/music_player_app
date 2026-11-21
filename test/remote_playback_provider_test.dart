@@ -50,12 +50,11 @@ void main() {
     }
   });
 
-  test('unknown source preference survives offline catalog recovery', () async {
+  test('unknown source preference uses the local package while updater is offline', () async {
     SharedPreferences.setMockInitialValues({
       'playback_source_qq': 'new_provider',
-      PlaybackSourceCatalog.preferenceKey: jsonEncode(_catalog().toJson()),
     });
-    final api = _CatalogApi()..failure = StateError('Offline');
+    final api = _CatalogApi()..updateOffline = true;
     final player = PlayerProvider(
       apiService: api,
       activateRestoredSession: false,
@@ -64,7 +63,8 @@ void main() {
       await _ready(player);
       expect(player.playbackSourceFor(MusicPlatform.qq).value, 'new_provider');
       expect(player.playbackSourceFor(MusicPlatform.qq).label, '服务器新增音源');
-      expect(player.playbackSourcesError, isNotNull);
+      expect(player.playbackSourcesError, isNull);
+      expect(player.playbackPackageUpdateError, isNotNull);
       expect(player.playbackSourceOptions(MusicPlatform.qq).length, 2);
       expect(player.playbackSourceOptions(MusicPlatform.local), isEmpty);
     } finally {
@@ -457,11 +457,16 @@ PlaybackSourceCatalog _catalog() => PlaybackSourceCatalog.fromJson({
 });
 
 class _CatalogApi extends ApiService {
-  _CatalogApi() : super(apiKey: '', useRemotePlayback: false);
+  _CatalogApi() : super(apiKey: '', useLocalScript: false);
   int calls = 0;
   bool closed = false;
   Object? failure;
+  bool updateOffline = false;
   Completer<PlaybackSourceCatalog>? pending;
+
+  @override
+  String? get playbackPackageUpdateError => updateOffline
+      ? '解析包更新失败，继续使用本地版本' : null;
 
   @override
   Future<PlaybackSourceCatalog> loadPlaybackSources() async {

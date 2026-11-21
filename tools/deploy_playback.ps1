@@ -22,12 +22,12 @@ function Invoke-PlaybackRemote {
 Push-Location $workspaceRoot
 try {
     # 先运行协议与异常回归，失败时不上传或重启线上服务。
-    node --test server/playback/playback.test.mjs
+    node --test server/playback/playback.test.mjs server/playback/front_proxy.test.mjs server/playback/package_updates.test.mjs
     if ($LASTEXITCODE -ne 0) { throw '音源服务测试失败，已停止发布' }
     $publishDirectory = Join-Path $workspaceRoot 'tmp/playback-publish'
     [IO.Directory]::CreateDirectory($publishDirectory) | Out-Null
     $archivePath = Join-Path $publishDirectory 'server.tar'
-    & 'C:\Windows\System32\tar.exe' -cf $archivePath -C $workspaceRoot server/playback
+    & 'C:\Windows\System32\tar.exe' -cf $archivePath -C $workspaceRoot server/playback tools/install_playback_package.mjs tools/build_playback_package.mjs playback_package/sources.js
     if ($LASTEXITCODE -ne 0) { throw '服务端归档失败' }
     # 旧助手的上传范围限定为已废弃的目录；临时副本只授权新服务的归档路径。
     # 凭据仍从原目录解密，不复制密码、密钥或修改原助手。
@@ -103,7 +103,8 @@ finish() {
 }
 trap finish EXIT
 tar -xf "$root/server.tar" -C "$stage"
-docker run --rm --pull=never --network=none --read-only --cap-drop=ALL -v "$stage:/runtime:ro" node:24.21.0-bookworm-slim node --test /runtime/server/playback/playback.test.mjs /runtime/server/playback/front_proxy.test.mjs
+# 文件发布测试仅在有上限的临时文件系统写入，线上目录保持只读。
+docker run --rm --pull=never --network=none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=32m --cap-drop=ALL -v "$stage:/runtime:ro" node:24.21.0-bookworm-slim node --test /runtime/server/playback/playback.test.mjs /runtime/server/playback/front_proxy.test.mjs /runtime/server/playback/package_updates.test.mjs
 test "$(docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' kuzai-music-api)" = "$root"
 if test "$front_existed" = 1; then
   test "$(docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' kuzai-music-front)" = "$(printf '%s\n%s' "$root" "$site_certs")"
@@ -147,7 +148,7 @@ done
 test "$healthy" = 1
 printf 'API和原站TLS健康检查通过\n'
 '@
-    Write-Output '音源服务已发布并通过健康验证，客户端下次解析使用新代码'
+    Write-Output '更新静态入口已发布并通过健康验证，解析包通过独立发布脚本更新'
 } finally {
     Pop-Location
 }
